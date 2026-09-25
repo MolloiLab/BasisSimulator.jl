@@ -108,8 +108,8 @@ end
 """
     HYPRKernel(window, profile = BoxProfile(); guided = true, linear = true)
 
-A generalized HYPR-LR kernel: the window extent in odd widths — `(columns, views)` in the
-projection domain, `(x, y, slices)` in the image domain; its spatial profile ([`HYPRProfile`](@ref)),
+A generalized HYPR-LR kernel: the window extent in odd widths — `(columns, views)` within a
+detector row in the projection domain, `(x, y, 1)` within a slice in the image domain; its spatial profile ([`HYPRProfile`](@ref)),
 separable along each axis; whether each weight is also multiplied by the likelihood that the
 neighbour's composite shares the centre's (`guided`); and whether the complement is fitted locally
 linear (`linear`) or locally constant — HYPR-LR's pooled ratio. The local linear fit is available
@@ -141,8 +141,6 @@ function Base.show(io::IO, k::HYPRKernel)
     print(io, ")")
 end
 
-"Weight a projection-domain kernel gives a ray at its own centre (its likelihood factor is 1)."
-center_weight(k::HYPRKernel) = profile_weight(k.profile, 0.0)^length(k.window)
 
 # =============================================================================
 # The two instances and the chain's denoiser
@@ -172,41 +170,25 @@ function ProjectionHYPR(; kernel::HYPRKernel{2} = HYPRKernel((3, 3)), dispersion
 end
 
 """
-    ImageHYPR(; composite = nothing, complement = :risk,
-                candidates = (3, 5, 7, 11, 15, 21, 31, 41), noise_window = 15)
+    ImageHYPR(; candidates = (3, 5, 7, 11, 15, 21, 31, 41), noise_window = 15)
 
-The image-domain instance on the reconstructed basis pair ([`image_hypr`](@ref)). Both images are
-pooled within their slice only — a window is `(x, y, 1)`: averaging adjacent slices would make a
-thicker slice of any object that does not change along z.
-
-- `composite = nothing`: the minimum-noise VMI is kept as reconstructed, its resolution and noise
-  texture those of FDK; or a `HYPRKernel((w, w, 1); linear = false)` pools it with its own
-  likelihood weights.
-- `complement = :risk`: the complement's window is the width among `candidates` with the least
-  estimated full-data risk ([`image_hypr`](@ref)); or a fixed `HYPRKernel((w, w, 1); linear = false)`.
-- `noise_window`: the width of the neighbourhood over which the local noise of the composite, the
-  scale of every weight, is measured from the half-view difference (225 samples at 15: about 5 %
-  precision).
+The image-domain instance on the reconstructed basis pair ([`image_hypr`](@ref)). The composite, the
+minimum-noise VMI, is kept as reconstructed; the complement is pooled within its slice — adjacent
+slices are never averaged, which on an object that does not change along z would be a thicker slice —
+over the width among `candidates` with the least estimated full-data risk. `noise_window` is the width
+of the neighbourhood over which the composite's local noise, the scale of every weight, is measured
+from the half-view difference (225 samples at 15: about 5 % precision).
 """
-struct ImageHYPR{C <: Union{Nothing, HYPRKernel{3}}, P <: Union{Symbol, HYPRKernel{3}}, N}
-    composite::C
-    complement::P
+struct ImageHYPR{N}
     candidates::NTuple{N, Int}
     noise_window::Int
 end
-function ImageHYPR(; composite::Union{Nothing, HYPRKernel{3}} = nothing,
-        complement::Union{Symbol, HYPRKernel{3}} = :risk,
-        candidates = (3, 5, 7, 11, 15, 21, 31, 41), noise_window::Integer = 15)
-    in_plane(k) = k === nothing || k isa Symbol || k.window[3] == 1 || throw(ArgumentError(
-        "image-domain windows are (x, y, 1): pooling adjacent slices makes a thicker slice, got $(k.window)"))
-    in_plane(composite); in_plane(complement)
-    complement isa Symbol && complement !== :risk &&
-        throw(ArgumentError("complement must be :risk or a HYPRKernel, got :$(complement)"))
+function ImageHYPR(; candidates = (3, 5, 7, 11, 15, 21, 31, 41), noise_window::Integer = 15)
     all(w -> w >= 1 && isodd(w), candidates) ||
         throw(ArgumentError("candidate widths must be odd and positive, got $(candidates)"))
     noise_window >= 3 && isodd(noise_window) ||
         throw(ArgumentError("noise_window must be odd and at least 3, got $(noise_window)"))
-    return ImageHYPR(composite, complement, Tuple(Int.(candidates)), Int(noise_window))
+    return ImageHYPR(Tuple(Int.(candidates)), Int(noise_window))
 end
 
 """
@@ -324,26 +306,23 @@ function kernel_sums(N::AbstractArray{Float32, 4}, T::AbstractArray{Float32, 3},
 end
 
 """
-    pooled_split(N, T, kernel; leave_out = false, to_backend = identity) -> p (n_col, n_row, n_view, K)
+    pooled_split(N, T, kernel; view_stride = 1, to_backend = identity) -> p (n_col, n_row, n_view, K)
 
 Every ray's pooled split under `kernel`: the kernel-weighted pooled ratio (locally constant —
 HYPR-LR), or the intercept of the weighted least-squares fit of the neighbours' splits `y_jk / T_j`
 on `(1, Δc, Δv)` with weights `w_ij T_j` (locally linear, which removes the bias an asymmetric
-window would otherwise put into the pooled ratio). `leave_out` removes the ray's own counts from
-its fit, for leave-one-out scores. Fractions are floored at 1e-6 and renormalised to sum to one.
+window would otherwise put into the pooled ratio). Fractions are floored at 1e-6 and renormalised to sum to one.
 """
 function pooled_split(N::AbstractArray{Float32, 4}, T::AbstractArray{Float32, 3}, kernel::HYPRKernel{2};
-        leave_out::Bool = false, view_stride::Integer = 1, to_backend = identity)
+        view_stride::Integer = 1, to_backend = identity)
     nc, nr, nv, K = size(N)
     n = nc * nr * nv
-    w0 = Float32(center_weight(kernel))
     S = kernel_sums(N, T, kernel; moments = kernel.linear, view_stride = view_stride, to_backend = to_backend)
     p = Array{Float32, 4}(undef, nc, nr, nv, K)
     Threads.@threads for idx in 1:n
         if kernel.linear
             m00 = Float64(S[idx]); m10 = Float64(S[idx + n]); m01 = Float64(S[idx + 2n])
             m20 = Float64(S[idx + 3n]); m11 = Float64(S[idx + 4n]); m02 = Float64(S[idx + 5n])
-            leave_out && (m00 -= w0 * T[idx])
             # Cramer's rule on the 3 × 3 moment system; its intercept is the pooled split
             c00 = m20 * m02 - m11^2
             F = m00 * c00 - m10 * (m10 * m02 - m11 * m01) + m01 * (m10 * m11 - m20 * m01)
@@ -352,7 +331,6 @@ function pooled_split(N::AbstractArray{Float32, 4}, T::AbstractArray{Float32, 3}
             for k in 1:K
                 base = (6 + 3(k - 1)) * n
                 b0 = Float64(S[idx + base]); b1 = Float64(S[idx + base + n]); b2 = Float64(S[idx + base + 2n])
-                leave_out && (b0 -= w0 * N[idx + (k - 1) * n])
                 v = ok ? (b0 * c00 - m10 * (b1 * m02 - m11 * b2) + m01 * (b1 * m11 - m20 * b2)) / F :
                     b0 / max(m00, 1.0e-30)
                 v = max(v, 1.0e-6)
@@ -363,9 +341,9 @@ function pooled_split(N::AbstractArray{Float32, 4}, T::AbstractArray{Float32, 3}
                 p[idx + (k - 1) * n] = Float32(p[idx + (k - 1) * n] / tot)
             end
         else
-            den = Float64(S[idx + K * n]) - (leave_out ? w0 * T[idx] : 0.0)
+            den = Float64(S[idx + K * n])
             for k in 1:K
-                num = Float64(S[idx + (k - 1) * n]) - (leave_out ? w0 * N[idx + (k - 1) * n] : 0.0)
+                num = Float64(S[idx + (k - 1) * n])
                 p[idx + (k - 1) * n] = Float32(max(num, 1.0e-6 * den) / max(den, 1.0e-30))
             end
         end
@@ -375,7 +353,7 @@ end
 
 """
     hypr_lr(channels, I0; kernel = HYPRKernel((3, 3)), dispersion = ones(K), view_stride = 1,
-            floor_counts = 1e-6, to_backend = identity) -> Vector{Array{Float32,3}}
+            to_backend = identity) -> Vector{Array{Float32,3}}
 
 Count-domain generalized HYPR-LR within each detector row: each ray keeps its own total count,
 and its split across the `K` channels is the `kernel`'s pooled split of its neighbourhood
@@ -389,10 +367,10 @@ Rows are never mixed.
 """
 function hypr_lr(channels::AbstractVector, I0::AbstractArray{<:Real, 3};
         kernel::HYPRKernel{2} = HYPRKernel((3, 3)), dispersion = ones(length(channels)),
-        view_stride::Integer = 1, floor_counts::Real = 1.0e-6, to_backend = identity)
+        view_stride::Integer = 1, to_backend = identity)
     N, T = poisson_counts(channels, I0, dispersion)
     p = pooled_split(N, T, kernel; view_stride = view_stride, to_backend = to_backend)
-    fl = Float32(floor_counts)
+    fl = 1.0f-6   # a count that the log can take, far below any count a detector reports
     n_col, n_row = size(T, 1), size(T, 2)
     return map(eachindex(channels)) do k
         air = _air_slab(I0, k, n_col, n_row, dispersion)
@@ -434,21 +412,22 @@ end
 """
     guided_pool(X, G, σ, kernel; to_backend = identity) -> Array{Float32,3}
 
-The local estimate of `X` at every voxel over `kernel`'s `(x, y, slices)` window: each neighbour
-weighted by the kernel's spatial profile and, if `kernel.guided`, by the Gaussian likelihood that
-its guide value equals the voxel's, `exp(-(G_i - G_j)² / 2(σ_i² + σ_j²))`, with `σ` the guide's
-noise — a map the size of `X`, or one value per slice. The chain's image-domain windows are one
-slice thick ([`ImageHYPR`](@ref)).
+The local estimate of `X` at every voxel over `kernel`'s in-plane window `(x, y, 1)`, within the
+voxel's slice: each neighbour weighted by the kernel's spatial profile and, if `kernel.guided`, by
+the Gaussian likelihood that its guide value equals the voxel's, `exp(-(G_i - G_j)² / 2(σ_i² + σ_j²))`,
+with `σ` the guide's noise, a map the size of `X`. Slices are never pooled: on an object that does not
+change along z that would be a thicker slice.
 """
 function guided_pool(X::AbstractArray{<:Real, 3}, G::AbstractArray{<:Real, 3}, σ::AbstractArray{<:Real, 3},
         kernel::HYPRKernel{3}; to_backend = identity)
     size(X) == size(G) == size(σ) ||
         throw(DimensionMismatch("X $(size(X)), guide $(size(G)) and noise map $(size(σ)) differ"))
+    kernel.window[3] == 1 || throw(ArgumentError(
+        "image-domain windows are (x, y, 1): pooling adjacent slices makes a thicker slice, got $(kernel.window)"))
     nx, ny, nz = size(X)
-    a, b, c = kernel.window .÷ 2
+    a, b = kernel.window[1] ÷ 2, kernel.window[2] ÷ 2
     wx = to_backend(Float32.(profile_weights(kernel.profile, 2a + 1)))
     wy = to_backend(Float32.(profile_weights(kernel.profile, 2b + 1)))
-    wz = to_backend(Float32.(profile_weights(kernel.profile, 2c + 1)))
     Xd = to_backend(Float32.(X))
     Gd = to_backend(Float32.(G))
     σd = to_backend(Float32.(σ))
@@ -463,29 +442,22 @@ function guided_pool(X::AbstractArray{<:Real, 3}, G::AbstractArray{<:Real, 3}, �
             si = σd[i, j, z]
             s = 0.0f0
             sw = 0.0f0
-            for zz in max(1, z - c):min(nz, z + c), jj in max(1, j - b):min(ny, j + b),
-                    ii in max(1, i - a):min(nx, i + a)
-                w = wx[ii - i + a + 1] * wy[jj - j + b + 1] * wz[zz - z + c + 1]
+            for jj in max(1, j - b):min(ny, j + b), ii in max(1, i - a):min(nx, i + a)
+                w = wx[ii - i + a + 1] * wy[jj - j + b + 1]
                 if guided
-                    d = Gi - Gd[ii, jj, zz]
-                    sj = σd[ii, jj, zz]
+                    d = Gi - Gd[ii, jj, z]
+                    sj = σd[ii, jj, z]
                     w *= exp(-d * d / (2.0f0 * max(si * si + sj * sj, 1.0f-30)))
                 end
-                s += w * Xd[ii, jj, zz]
+                s += w * Xd[ii, jj, z]
                 sw += w
             end
             out[idx] = sw > 0 ? s / sw : Xd[idx]
         end
         return Array(out)
     finally
-        release_backend!((Xd, Gd, σd, out, wx, wy, wz); collect = false)
+        release_backend!((Xd, Gd, σd, out, wx, wy); collect = false)
     end
-end
-function guided_pool(X::AbstractArray{<:Real, 3}, G::AbstractArray{<:Real, 3}, σ::AbstractVector,
-        kernel::HYPRKernel{3}; to_backend = identity)
-    length(σ) == size(X, 3) || throw(DimensionMismatch("$(length(σ)) noise levels for $(size(X, 3)) slices"))
-    return guided_pool(X, G, repeat(reshape(Float64.(σ), 1, 1, :), size(X, 1), size(X, 2), 1), kernel;
-        to_backend = to_backend)
 end
 
 """
@@ -555,8 +527,8 @@ _reconstruction_circle(nx, ny) = [hypot(i - (nx + 1) / 2, j - (ny + 1) / 2) < 0.
 
 """
     spectral_pair(sino_water, sino_iodine, geom, matrix_size; filter = SoftFilter(),
-                  basis = nothing, antialias = true, n_rows = geom.n_rows, to_backend = identity,
-                  energies = 40:140) -> NamedTuple
+                  basis = nothing, composite_energy = nothing, antialias = true,
+                  n_rows = geom.n_rows, to_backend = identity, energies = 40:140) -> NamedTuple
 
 FDK of a decomposed basis pair (g/cm², as [`vmi_pipeline`](@ref) returns them) and of its odd- and
 even-view halves, whose difference measures the noise of everything downstream:
@@ -572,6 +544,11 @@ even-view halves, whose difference measures the noise of everything downstream:
 - then the minimum-noise composite of the reconstructed pair itself, `E*`, `f` and `β` from the
   noise of its halves: what ACNR and the image-domain instance act on.
 
+`composite_energy` fixes the composite's energy instead of measuring it; `β` is still measured from
+the pair's halves at that energy. Where the noise of the VMIs hardly changes with energy near its
+minimum, the measured argmin is itself noise and moves between acquisitions of one scanner and
+protocol; its energy is a property of the scanner and protocol, measured once.
+
 `basis = (Estar = …, β = …)` fixes the pair the windows act on instead of measuring it: a
 noise-free acquisition has no noise to measure it from, and is reconstructed exactly as its
 noisy counterpart. The composite of the result is still measured from the result (for a noise-free
@@ -583,8 +560,8 @@ pair and its noise covariance `Σ`, and `basis`, the `(Estar, β)` the windows a
 """
 function spectral_pair(sino_water::AbstractArray{<:Real, 3}, sino_iodine::AbstractArray{<:Real, 3},
         geom::CTGeometry, matrix_size; filter = SoftFilter(), basis = nothing,
-        antialias::Bool = true, n_rows::Integer = geom.n_rows, to_backend = identity,
-        energies = 40.0:1.0:140.0)
+        composite_energy = nothing, antialias::Bool = true, n_rows::Integer = geom.n_rows,
+        to_backend = identity, energies = 40.0:1.0:140.0)
     size(sino_water) == size(sino_iodine) ||
         throw(DimensionMismatch("water $(size(sino_water)) and iodine $(size(sino_iodine)) differ"))
     nv = size(sino_water, 3)
@@ -631,7 +608,8 @@ function spectral_pair(sino_water::AbstractArray{<:Real, 3}, sino_iodine::Abstra
     dI = vec(((halves[1].iodine .- halves[2].iodine) ./ 2)[inside])
     dW = vec(((halves[1].water .- halves[2].water) ./ 2)[inside])
     Σp = [var(dI) cov(dI, dW); cov(dI, dW) var(dW)]
-    Ep = Float64(energies[argmin([let g = [μI(E), μW(E)] ./ μW(E); g' * Σp * g end for E in energies])])
+    Ep = composite_energy !== nothing ? Float64(composite_energy) :
+        Float64(energies[argmin([let g = [μI(E), μW(E)] ./ μW(E); g' * Σp * g end for E in energies])])
     fp = [μI(Ep), μW(Ep)]
     return (water = full.water, iodine = full.iodine, halves = halves, Estar = Ep, f = fp,
         β = (Σp * fp)[1] / (fp' * Σp * fp), Σ = Σp, basis = (Estar = Estar, β = β))
@@ -666,75 +644,55 @@ end
 
 """
     image_hypr(pair; image = ImageHYPR(), to_backend = identity) -> NamedTuple
-    image_hypr(sino_water, sino_iodine, geom, matrix_size; image = ImageHYPR(), filter = SoftFilter(),
-               kwargs...) -> NamedTuple
 
 The image-domain instance on a reconstructed pair ([`spectral_pair`](@ref), after ACNR when the chain
 uses it), slice by slice — adjacent slices are never pooled:
 
-- the composite `M = f₁ a + f₂ c` at the pair's `E*`, kept as reconstructed or pooled in-plane by
-  `image.composite`; its local noise `σ_M` from the half-view difference ([`local_noise`](@ref));
-- the complement `I⊥ = a − βM`, `β = cov(δa, δM) / var(δM)` measured on the halves' differences of
-  the pair as received, so that its noise is uncorrelated with `M`'s;
+- the composite `M = f₁ a + f₂ c` at the pair's `E*`, kept as reconstructed; its local noise `σ_M`
+  from the half-view difference ([`local_noise`](@ref));
+- the complement `I⊥ = a − βM` with the pair's `β`, measured by [`spectral_pair`](@ref) before any
+  step that changes the pair, so that its noise is uncorrelated with `M`'s (ACNR's correction,
+  [`acnr_complement!`](@ref), leaves the complement correlated with the composite; re-measuring `β`
+  after it would fold part of the composite, its edges included, into the pooled complement);
 - `I⊥` pooled with weights from `M`, `exp(-(M_i − M_j)² / 2(σ_i² + σ_j²))`: the complement carries
   only spectral information, which changes where the material does, and there the composite does
-  too. Its window is `image.complement`, or, with `:risk`, the candidate width with the least
-  estimated full-data risk: the weights come from `M`, whose noise is uncorrelated with `I⊥`'s, so
-  the pool is a linear smoother `S` of `I⊥`, and with `I⊥₁, I⊥₂` the halves' complements and
-  `δ = (I⊥₁ − I⊥₂) / 2` — the full reconstruction's noise —
-  `E‖S I⊥₁ − I⊥₂‖² − E‖S δ‖² = ‖(S − 1) I⊥‖² + tr(S C Sᵀ) + const`, bias² plus variance of the
-  full-data estimate (`C` the complement's noise covariance), summed inside the reconstruction
+  too. Its window is the candidate width with the least estimated full-data risk: the weights come
+  from `M`, whose noise is uncorrelated with `I⊥`'s, so the pool is a linear smoother `S` of `I⊥`,
+  and with `I⊥₁, I⊥₂` the halves' complements and `δ = (I⊥₁ − I⊥₂) / 2` — the full reconstruction's
+  noise — `E‖S I⊥₁ − I⊥₂‖² − E‖S δ‖² = ‖(S − 1) I⊥‖² + tr(S C Sᵀ) + const`, bias² plus variance of
+  the full-data estimate (`C` the complement's noise covariance), summed inside the reconstruction
   circle. The halves must be independent, which the projection-domain instance keeps
   ([`ProjectionHYPR`](@ref)'s `view_stride`);
-- the pair recombined, `a = Î⊥ + βM̂`, `c = (M̂ − f₁ a) / f₂`.
-
-The sinogram form runs [`spectral_pair`](@ref) first, with its keywords.
+- the pair recombined, `a = Î⊥ + βM`, `c = (M − f₁ a) / f₂`.
 
 Returns `(water, iodine, Estar, β, window, risks, σM)`, `window` the complement's width and `risks`
 each candidate's estimated risk relative to the smallest's.
 """
 function image_hypr(pair::NamedTuple; image::ImageHYPR = ImageHYPR(), to_backend = identity)
-    f = pair.f
+    f, β = pair.f, pair.β
     Mof(p) = f[1] .* Float64.(p.iodine) .+ f[2] .* Float64.(p.water)
     M = Mof(pair)
     dM = (Mof(pair.halves[1]) .- Mof(pair.halves[2])) ./ 2
-    dI = (Float64.(pair.halves[1].iodine) .- Float64.(pair.halves[2].iodine)) ./ 2
     nx, ny, nz = size(M)
     inside = repeat(_reconstruction_circle(nx, ny), 1, 1, nz)
-    β = cov(vec(dI[inside]), vec(dM[inside])) / var(vec(dM[inside]))
     σM = local_noise(dM, image.noise_window)
-    if image.composite !== nothing
-        M = Float64.(guided_pool(M, M, σM, image.composite; to_backend = to_backend))
-    end
-    P = Float64.(pair.iodine) .- β .* Mof(pair)
+    P = Float64.(pair.iodine) .- β .* M
     Ph = [Float64.(h.iodine) .- β .* Mof(h) for h in pair.halves]
-    guide = Mof(pair)
+    δ = (Ph[1] .- Ph[2]) ./ 2
     kernel_of(w) = HYPRKernel((w, w, 1); linear = false)
-    window, risks = if image.complement === :risk
-        δ = (Ph[1] .- Ph[2]) ./ 2
-        r = map(image.candidates) do w
-            k = kernel_of(w)
-            e = guided_pool(Ph[1], guide, σM, k; to_backend = to_backend) .- Ph[2]
-            q = guided_pool(δ, guide, σM, k; to_backend = to_backend)
-            sum(abs2, e[inside]) - sum(abs2, q[inside])
-        end
-        (image.candidates[argmin(r)], collect(zip(image.candidates, r ./ first(r))))
-    else
-        (image.complement.window[1], nothing)
+    r = map(image.candidates) do w
+        k = kernel_of(w)
+        e = guided_pool(Ph[1], M, σM, k; to_backend = to_backend) .- Ph[2]
+        q = guided_pool(δ, M, σM, k; to_backend = to_backend)
+        sum(abs2, e[inside]) - sum(abs2, q[inside])
     end
-    kernel = image.complement === :risk ? kernel_of(window) : image.complement
-    Pp = Float64.(guided_pool(P, guide, σM, kernel; to_backend = to_backend))
+    window = image.candidates[argmin(r)]
+    Pp = Float64.(guided_pool(P, M, σM, kernel_of(window); to_backend = to_backend))
     iodine = Float32.(Pp .+ β .* M)
     water = Float32.((M .- f[1] .* iodine) ./ f[2])
     return (water = water, iodine = iodine, Estar = pair.Estar, β = β, window = window,
-        risks = risks, σM = σM)
+        risks = collect(zip(image.candidates, r ./ first(r))), σM = σM)
 end
-function image_hypr(sino_water::AbstractArray{<:Real, 3}, sino_iodine::AbstractArray{<:Real, 3},
-        geom::CTGeometry, matrix_size; image::ImageHYPR = ImageHYPR(), to_backend = identity, kwargs...)
-    return image_hypr(spectral_pair(sino_water, sino_iodine, geom, matrix_size; to_backend = to_backend,
-        kwargs...); image = image, to_backend = to_backend)
-end
-
 export HYPRProfile, BoxProfile, TriangleProfile, CustomProfile, HYPRKernel
 export ProjectionHYPR, ImageHYPR, SpectralHYPR, PairFilter
 export hypr_lr, estimate_dispersion, guided_pool, local_noise, spectral_pair, acnr_complement!, image_hypr

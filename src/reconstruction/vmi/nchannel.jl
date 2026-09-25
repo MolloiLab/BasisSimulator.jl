@@ -1031,7 +1031,9 @@ Stages, all optional:
   `fbp_filter = SoftFilter()` — one window, or a [`PairFilter`](@ref), a window for the composite
   and one for its complement; `pair_basis = nothing`, or `(Estar = …, β = …)` to fix the pair
   [`spectral_pair`](@ref) otherwise measures (a noise-free acquisition, reconstructed as its noisy
-  counterpart); `antialias = true`, `recon_rows = geom.n_rows`.
+  counterpart); `composite_energy = nothing`, or the energy of the composite ACNR and the
+  image-domain instance act on, fixed for a scanner and protocol ([`spectral_pair`](@ref));
+  `antialias = true`, `recon_rows = geom.n_rows`.
 - `recon_method = :fbp` (the published chain) or `:hir`, with `hir_strength = 60`,
   `recon_projector = :dd_fast` and `hir_reference_kev = 70`. `:hir` reconstructs the basis pair
   with the penalized iterative reconstructor and nothing else changes: T-LBF, ACNR and the
@@ -1070,6 +1072,7 @@ function vmi_pipeline(;
         matrix_size,
         fbp_filter = SoftFilter(),
         pair_basis = nothing,
+        composite_energy = nothing,
         antialias::Bool = true,
         recon_rows::Integer = geom.n_rows,
         recon_method::Symbol = :fbp,
@@ -1153,7 +1156,8 @@ function vmi_pipeline(;
     acnr_settings = nothing
     water_image, iodine_image = if spectral
         pair = spectral_pair(sino_water, sino_iodine, geom, matrix_size; filter = fbp_filter,
-            basis = pair_basis, antialias = antialias, n_rows = recon_rows, to_backend = to_backend)
+            basis = pair_basis, composite_energy = composite_energy, antialias = antialias,
+            n_rows = recon_rows, to_backend = to_backend)
         pair_settings = (Estar = pair.Estar, β = pair.β, Σ = pair.Σ, basis = pair.basis)
         if use_acnr && acnr_passes > 0
             acnr_complement!(pair; acnr_kwargs...)

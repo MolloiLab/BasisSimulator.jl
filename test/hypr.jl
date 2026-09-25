@@ -19,20 +19,15 @@ using Statistics: var
     @test_throws ArgumentError BS.HYPRKernel((4, 3))
     @test_throws ArgumentError BS.HYPRKernel((3, 3, 7); linear = true)
     @test_throws ArgumentError BS.HYPRKernel((3,))
-    @test BS.center_weight(BS.HYPRKernel((5, 5), p)) ≈ 1.0
     d = BS.SpectralHYPR()
     @test d.projection.kernel.window == (3, 3) && d.projection.dispersion === :measured
     @test d.projection.view_stride == 2
-    @test d.image.composite === nothing && d.image.complement === :risk && d.image.noise_window == 15
+    @test d.image.noise_window == 15 && d.image.candidates == (3, 5, 7, 11, 15, 21, 31, 41)
     @test BS.SpectralHYPR(image = nothing).image === nothing
     @test_throws ArgumentError BS.ProjectionHYPR(dispersion = :bogus)
     @test_throws ArgumentError BS.ProjectionHYPR(view_stride = 3)
-    # image-domain windows are one slice thick: pooling adjacent slices is a thicker slice
-    @test_throws ArgumentError BS.ImageHYPR(complement = BS.HYPRKernel((15, 15, 7); linear = false))
-    @test_throws ArgumentError BS.ImageHYPR(composite = BS.HYPRKernel((3, 3, 3); linear = false))
-    @test_throws ArgumentError BS.ImageHYPR(complement = :bogus)
     @test_throws ArgumentError BS.ImageHYPR(candidates = (3, 4))
-    @test BS.ImageHYPR(complement = BS.HYPRKernel((9, 9, 1); linear = false)).complement.window == (9, 9, 1)
+    @test_throws ArgumentError BS.ImageHYPR(noise_window = 4)
     @test occursin("3 × 3", sprint(show, k)) || occursin("3 × 5", sprint(show, k))
 end
 
@@ -110,13 +105,17 @@ end
     nx, nz = 32, 5
     step = [i <= 16 ? 0.0 : 100.0 for i in 1:nx, j in 1:nx, z in 1:nz]
     noisy = step .+ randn(rng, nx, nx, nz)
-    k = BS.HYPRKernel((5, 5, 3); linear = false)
-    pooled = BS.guided_pool(noisy, noisy, ones(nz), k)
+    k = BS.HYPRKernel((5, 5, 1); linear = false)
+    pooled = BS.guided_pool(noisy, noisy, ones(size(noisy)), k)
     @test std(pooled[1:14, :, :]) < 0.7 * std(noisy[1:14, :, :])
     @test abs(mean(pooled[16, :, :])) < 1.0 && abs(mean(pooled[17, :, :]) - 100) < 1.0
-    unguided = BS.guided_pool(noisy, noisy, ones(nz), BS.HYPRKernel((5, 5, 3); guided = false, linear = false))
+    unguided = BS.guided_pool(noisy, noisy, ones(size(noisy)), BS.HYPRKernel((5, 5, 1); guided = false, linear = false))
     @test mean(unguided[16, :, :]) > 20                     # plain box blurs across the edge
-    @test BS.guided_pool(fill(3.0, 8, 8, 2), zeros(8, 8, 2), ones(2), k) ≈ fill(3.0, 8, 8, 2)
+    @test BS.guided_pool(fill(3.0, 8, 8, 2), zeros(8, 8, 2), ones(8, 8, 2), k) ≈ fill(3.0, 8, 8, 2)
+    # within the slice only: a window across slices is refused, and slices never exchange values
+    @test_throws ArgumentError BS.guided_pool(noisy, noisy, ones(size(noisy)), BS.HYPRKernel((5, 5, 3); linear = false))
+    layered = cat(zeros(8, 8, 1), fill(100.0, 8, 8, 1); dims = 3)
+    @test BS.guided_pool(layered, layered, ones(8, 8, 2), BS.HYPRKernel((5, 5, 1); guided = false, linear = false)) ≈ layered
 end
 
 @testset "view_stride pools one parity of views" begin
@@ -145,10 +144,6 @@ end
     @test mean(σ[4:24, :, :]) ≈ 1.0 rtol = 0.05
     @test mean(σ[42:60, :, :]) ≈ 3.0 rtol = 0.05
     @test_throws ArgumentError BS.local_noise(d, 4)
-    # a noise map the size of the image and one value per slice pool alike when the map is flat
-    X = randn(rng, 16, 16, 2)
-    k = BS.HYPRKernel((5, 5, 1); linear = false)
-    @test BS.guided_pool(X, X, fill(0.7, 16, 16, 2), k) ≈ BS.guided_pool(X, X, [0.7, 0.7], k)
 end
 
 @testset "vmi_pipeline with SpectralHYPR" begin
@@ -223,8 +218,15 @@ end
     # the image-domain instance keeps an unpooled composite and returns its selected window
     x = BS.image_hypr(sp(BS.SoftFilter()))
     @test M((f = one.f, water = x.water, iodine = x.iodine))[circle] ≈ M(one)[circle] rtol = 1.0e-4
-    fixedk = BS.image_hypr(sp(BS.SoftFilter()); image = BS.ImageHYPR(complement = BS.HYPRKernel((7, 7, 1); linear = false)))
-    @test fixedk.window == 7 && fixedk.risks === nothing
+    # the complement uses the pair's β as measured before ACNR, not re-measured after it
+    q = sp(BS.PairFilter(BS.SoftFilter(), BS.BoneFilter())); β0 = q.β
+    BS.acnr_complement!(q)
+    @test BS.image_hypr(q).β == β0
+    one1 = BS.image_hypr(sp(BS.SoftFilter()); image = BS.ImageHYPR(candidates = (7,)))
+    @test one1.window == 7
+    # a fixed composite energy is used as given, its β measured at that energy
+    fe = sp(BS.SoftFilter(); composite_energy = 65.0)
+    @test fe.Estar == 65.0 && fe.f ≈ μ(65.0)
     # vmi_pipeline with a PairFilter and no image instance: the pair, then ACNR on its complement
     pp = BS.vmi_pipeline(; channels = noisy, common..., fbp_filter = BS.PairFilter(BS.SoftFilter(), BS.BoneFilter()))
     @test pp.settings.acnr.on === :complement && pp.settings.pair.Estar == pf.Estar
