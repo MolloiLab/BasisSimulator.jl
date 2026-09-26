@@ -31,15 +31,23 @@ mixed image and the spectral results:
 UFC MC η(E) LUT  (BS.UFC_MC_EFFICIENCY_LUT, 1–140 keV)
         │ via EICTScanner(detector_material = :ufc)
         ▼
-Simulate 100 kVp (tube A) ──┬─→ POLY: per-tube η-aware BHC → FDK → HU
-Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
-        │                               (water-HU validation, §7)
+100 kVp (tube A) + Sn140 kVp (tube B), view_samples = 5
+   each tube projected once → draws 0 (noise-free), 1 (measured), 9 (calibration)
+        ├─→ POLY: per-tube η-aware BHC → FDK → HU
+        │         → Siemens-style mixed image M_w      (water-HU validation, §7)
         ▼
-   BS.spectral_basis_from_acquisitions                           (§8)
-   BS.vmi_pipeline: projection HYPR → K = 2 n-channel decomposition
-        → image HYPR → ACNR → VMI 50/70/100/140 keV              (§9–10)
+   spectral basis (BS.spectral_basis_from_acquisitions, shared by every draw) (§8)
+   pair_basis, composite_energy ← calibration draw
+   BS.vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = SoftFilter(), …)
+        → VMI 50/70/100/140 keV vs the noise-free reference              (§9–10)
         → Per-Rod Measured vs Theoretical Regression
 ```
+
+The acquisition and the VMI chain follow the basis-spectral-denoising
+paper (view integration, one projection per tube shared by every noise
+draw, the noise-free reference, `SpectralHYPR`, the pair basis fixed from a
+calibration draw) on this notebook's own Force model; §9 explains why the
+Force reconstructs with one window rather than a fitted pair.
 
 !!! note "Single-energy vs dual-energy on the Force"
     The Force is *not* inherently spectral: routine protocols run both
@@ -320,38 +328,59 @@ protocol_high = BS.CTProtocol(
 md"""
 ## 5. `SimOptions` and `ReconOptions`
 
-`use_detector_efficiency = true` (the `SimOptions` default) routes
-through the **src UFC MC LUT**: `build_physics_config` sees
-`EICTScanner(detector_material = :ufc)` and dispatches to
-`detector_efficiency_ufc()`, so the EICT forward model weights every
-energy by `w(E) · η_UFC(E)` and the detected flux (and therefore the
-Poisson noise level) automatically reflects the UFC absorption.
+`force_opts` are the physics switches the basis-spectral-denoising paper
+settled on for its dual-source scanner, applied to the Force:
 
-**Tube B gets its own seed** (`sim_opts_b`): the two tube/detector chains
-are physically independent, so their noise must be too.  Two acquisitions
-drawn from one seed carry the same noise pattern, correlated between the
-channels, which the decomposition would then amplify.
+- **Detector efficiency.** `use_detector_efficiency = true` (the default)
+  routes through the **src UFC MC LUT**: `build_physics_config` sees
+  `EICTScanner(detector_material = :ufc)` and dispatches to
+  `detector_efficiency_ufc()`, so the EICT forward model weights every
+  energy by `w(E) · η_UFC(E)` and the detected flux (and therefore the
+  Poisson noise level) reflects the UFC absorption.
+- **Heel effect off** (`use_heel_effect = false`) keeps the forward
+  spectral model exactly equal to the η-folded response the spectral basis
+  inverts (with 4.8 mm collimation the heel is a small row-direction
+  effect).
+- **View integration** (`view_samples = 5`).  A detector integrates while
+  the gantry turns, so each view reads the transmission averaged over the
+  arc it sweeps, `r · Δθ` at radius `r`: a blur of the object, largest far
+  from the isocentre, that the noise, counted once per view, does not
+  share.  Five sub-views sample that arc.  Without it the simulated signal
+  is sharper, relative to its noise, than a physical scanner's.  Each Force
+  tube reads its own detector for the whole view period, so both integrate
+  over the full view arc (`view_arc = 1.0`).
 
-`use_heel_effect = false` keeps the forward spectral model exactly equal
-to the η-folded response the spectral basis uses (heel is a small
-row-direction effect; with 4.8 mm collimation at center it is negligible).
+**Each tube gets its own seed** (`realization_seed`): the two tube/detector
+chains are physically independent, so their noise must be too.  Two
+acquisitions drawn from one seed carry the same noise pattern, correlated
+between the channels, which the decomposition would then amplify.
 """
 
 # ╔═╡ 09000006-0000-4000-8000-000000000010
-sim_opts = BS.SimOptions(
-    seed = 1234,               # tube A chain
-    use_heel_effect = false,   # exact forward/inverse spectral match
-    projector = :dd_fast,      # distance-driven, single-pass fused kernels (the default)
-);
+begin
+    VIEW_SAMPLES = 5
+    force_opts = BS.SimOptions(projector = :dd_fast, use_heel_effect = false, view_samples = VIEW_SAMPLES)
+    "The same physics switches with one field replaced."
+    with_option(opts, field, value) = BS.SimOptions(;
+        (f => getfield(opts, f) for f in fieldnames(BS.SimOptions) if f !== field)...,
+        (field => value,)...,
+    )
+end;
 
 # ╔═╡ 09000006-0000-4000-8000-000000000012
-# Independent noise chain for tube B (identical physics; only the random
-# stream differs).
-sim_opts_b = BS.SimOptions(
-    seed = 4321,               # tube B chain — must differ from tube A
-    use_heel_effect = false,
-    projector = :dd_fast,
-);
+begin
+    # The two exposures: tube A sees the phantom, tube B the phantom through its −0.88 mm z-offset (§6).
+    # Draw 0 is the noise-free expectation; draw r ≥ 1 gives each tube the seed `seed + 1000 (r − 1)`,
+    # so the tubes stay independent within a draw, and draws of each other.
+    EXPOSURES = [
+        (label = "100 kVp", protocol = protocol_low, seed = 1234, view_arc = 1.0, tube = :a),
+        (label = "Sn140 kVp", protocol = protocol_high, seed = 4321, view_arc = 1.0, tube = :b),
+    ]
+    DE_DRAWS = (reference = 0, measured = 1, calibration = 9)
+    realization_seed(e, r) = e.seed + 1000 * (max(r, 1) - 1)
+    opts_for(e, r) = with_option(with_option(with_option(force_opts, :seed, realization_seed(e, r)),
+        :use_noise, r > 0), :view_arc, e.view_arc)
+end;
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
 # Keep the intended centered 5 × 0.6 mm saved grid. The axial workspace
@@ -373,7 +402,7 @@ detector actually integrates (centered ray, no bowtie).
 """
 function ufc_detected_spectrum(protocol)
     e, w = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, protocol; scanner = scanner,
+        force_opts, protocol; scanner = scanner,
     )
     return e, Float64.(w) .* BS.get_ufc_mc_efficiency.(e)
 end;
@@ -417,21 +446,31 @@ end
 
 # ╔═╡ 09000007-0000-4000-8000-000000000001
 md"""
-## 6. Forward Project (one DE acquisition = two tube scans)
+## 6. Forward Project: One Projection per Tube, Three Draws
 
-Each tube builds its own workspace (the UFC η enters through the
-`detector_efficiency` pathway) and keeps what the spectral basis needs: the
-noisy corrected log sinogram, its per-ray air counts `I0_ray` (detector air
-count × bowtie air profile) and its per-ray detected spectrum from
-`resolve_source_spectrum_full` (source × filtration × bowtie × UFC η), the
-same model the forward projector applied.  Tube B runs on its own noise
-chain (`sim_opts_b`).
+`acquire` simulates the DE acquisition the way the basis-spectral-denoising
+paper does.  Each tube builds its workspace (`BS.create_workspace`; the UFC η
+enters through the `detector_efficiency` pathway) and is **projected once**:
+everything before the noise is the same for every draw, so the first draw
+keeps it (`keep_projection = true`) and every further draw passes it back
+(`projection`) and only draws its noise, bit-identically to simulating
+afresh.  Three draws share the projection:
+
+- draw **0**, `use_noise = false`: the **noise-free reference**, the
+  expectation every noisy result below is scored against;
+- draw **1**: the **measured** acquisition every result comes from;
+- draw **9**: the **calibration** draw, which only fixes the
+  reconstruction's pair (§9); nothing is measured on it.
+
+The first draw also keeps what the spectral basis needs: the per-ray air
+counts `I0_ray` (detector air count × bowtie air profile) and the per-ray
+detected spectrum from `resolve_source_spectrum_full` (source × filtration ×
+bowtie × UFC η), the model the forward projector applied.
 
 Tube B sees the phantom through a **−0.88 mm z-shifted origin** — the real
 detector-B z-offset (Wang et al. 2021).  For the z-invariant Gammex this
 changes nothing, but the mechanism mirrors the physical scanner so
-z-varying phantoms inherit the misalignment (and any future z-rebinning
-step has something real to correct).
+z-varying phantoms inherit the misalignment.
 """
 
 # ╔═╡ 09000007-0000-4000-8000-000000000005
@@ -446,56 +485,88 @@ phantom_b = BS.Phantom(
 );
 
 # ╔═╡ 09000007-0000-4000-8000-000000000020
-sim_low = let
-    @info "Simulating: 100 kVp / $(round(protocol_low.mA, digits = 1)) mA (tube A, UFC η folded)…"
-    ws = BS.create_eict_workspace(
-        scanner, protocol_low, sim_opts, recon_opts, phantom,
-    )
-    try
-        BS.simulate!(ws, phantom, protocol_low, sim_opts)
-        I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
-        air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-            Array(ws.bowtie_air_reference)
-        energies, response = BS.resolve_source_spectrum_full(
-            sim_opts, protocol_low; scanner = scanner, geom = ws.geom,
-        )
-        (sino = Array(ws.sinogram), geom = ws.geom,
-            I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
-            energies = Float64.(energies), response = Float32.(response))
-    finally
-        BS.release_backend!(ws)
+"""
+    acquire(draws) -> Dict{Int, NamedTuple}
+
+The DE acquisition of the Gammex (`EXPOSURES`, both tubes) for every draw in `draws`: draw 0 the
+noise-free expectation, draw `r ≥ 1` a noisy realisation with the seeds `realization_seed(e, r)`.
+Each tube is projected once, by the first draw, and every other draw re-uses that projection
+(`keep_projection`, `projection`), only its noise drawn. Each entry holds the two log-transmission
+channels, the spectral basis (shared by every draw), the geometry and the wall time per tube.
+"""
+function acquire(draws)
+    parts = map(EXPOSURES) do e
+        ph = e.tube === :b ? phantom_b : phantom
+        projection = nothing
+        channels = Dict{Int, Array{Float32, 3}}()
+        seconds = Dict{Int, Float64}()
+        model = nothing
+        for r in draws
+            opts = opts_for(e, r)
+            t = time()
+            ws = BS.create_workspace(scanner, e.protocol, opts, recon_opts, ph)
+            try
+                result = BS.simulate!(ws, ph, e.protocol, opts; report_dose = false,
+                    keep_projection = projection === nothing, projection)
+                projection === nothing && (projection = result.projection)
+                channels[r] = Array(ws.sinogram)
+                if model === nothing
+                    air = ws.bowtie_air_reference === nothing ?
+                        ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+                        Float32.(Array(ws.bowtie_air_reference))
+                    I0 = BS.compute_detector_I0(ws.geom, e.protocol, sum(ws.weights)) * Float64(ws.η_eff)
+                    energies, response = BS.resolve_source_spectrum_full(
+                        opts, e.protocol; scanner = scanner, geom = ws.geom)
+                    model = (geom = ws.geom, I0_ray = Float32.(I0 .* air),
+                        energies = Float64.(energies), response = Float32.(response))
+                end
+            finally
+                BS.release_backend!(ws)
+            end
+            seconds[r] = time() - t
+        end
+        projection = nothing
+        (; channels, seconds, model...)
     end
+    GC.gc(true)
+    basis = BS.spectral_basis_from_acquisitions(acquisitions = [
+        (energies = p.energies, response = p.response, I0_ray = p.I0_ray) for p in parts])
+    Dict(r => (draw = r, channels = [p.channels[r] for p in parts], basis = basis,
+               geom = first(parts).geom, seconds = [p.seconds[r] for p in parts])
+         for r in draws)
 end;
 
 # ╔═╡ 09000007-0000-4000-8000-000000000030
-sim_high = let
-    @info "Simulating: Sn140 kVp / $(round(protocol_high.mA, digits = 1)) mA (tube B, UFC η folded, z-offset −0.88 mm, own seed)…"
-    ws = BS.create_eict_workspace(
-        scanner, protocol_high, sim_opts_b, recon_opts, phantom_b,
-    )
-    try
-        BS.simulate!(ws, phantom_b, protocol_high, sim_opts_b)
-        I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
-        air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-            Array(ws.bowtie_air_reference)
-        energies, response = BS.resolve_source_spectrum_full(
-            sim_opts_b, protocol_high; scanner = scanner, geom = ws.geom,
-        )
-        (sino = Array(ws.sinogram), geom = ws.geom,
-            I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
-            energies = Float64.(energies), response = Float32.(response))
-    finally
-        BS.release_backend!(ws)
-    end
-end;
+de_acq = acquire((DE_DRAWS.reference, DE_DRAWS.measured, DE_DRAWS.calibration));
+
+# ╔═╡ 09000007-0000-4000-8000-000000000035
+let
+    role = Dict(DE_DRAWS.reference => "noise-free reference", DE_DRAWS.measured => "measured",
+        DE_DRAWS.calibration => "calibration")
+    seeds(r) = r == 0 ? "none" : join([realization_seed(e, r) for e in EXPOSURES], ", ")
+    secs(v) = join([string(round(s, digits = 1)) for s in v], ", ")
+    rows = ["| $(r) | $(role[r]) | $(seeds(r)) | $(secs(de_acq[r].seconds)) |" for r in sort(collect(keys(de_acq)))]
+    Markdown.parse("""
+    | Draw | Role | Seeds (A, B) | Seconds (A, B) |
+    |---:|---|---|---|
+    $(join(rows, "\n"))
+
+    Draw 0 projects each tube, $(VIEW_SAMPLES) sub-views per view; draws 1 and 9 re-use that projection
+    and only draw their noise (wall time on this render, compilation included in the first call).
+    """)
+end
+
+# ╔═╡ 09000007-0000-4000-8000-000000000036
+# The measured draw: every result below comes from it.
+de_measured = de_acq[DE_DRAWS.measured];
 
 # ╔═╡ 09000007-0000-4000-8000-000000000040
 let
-    n_row = size(sim_low.sino, 2)
+    n_row = size(de_measured.channels[1], 2)
     mid_r = n_row ÷ 2 + 1
 
-    slice_lo = permutedims(sim_low.sino[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sim_high.sino[:, mid_r, :], (2, 1))
+    slice_lo = permutedims(de_measured.channels[1][:, mid_r, :], (2, 1))
+    slice_hi = permutedims(de_measured.channels[2][:, mid_r, :], (2, 1))
 
     all_v = vcat(vec(slice_lo), vec(slice_hi))
     sino_window = (
@@ -562,7 +633,7 @@ function ufc_bhc_calibration(protocol, geom)
     # resolve_source_spectrum_full folds bowtie AND the src UFC η(E)
     # (via the same build_physics_config the forward model used).
     e, ŵ = BS.resolve_source_spectrum_full(
-        sim_opts, protocol; scanner = scanner, geom = geom,
+        force_opts, protocol; scanner = scanner, geom = geom,
     )
     e2, w_col = BS.bhc_spectrum_per_column(e, ŵ)          # [n_E, n_col]
 
@@ -607,10 +678,10 @@ function ufc_poly_recon(sino_cpu, geom, bhc)
 end;
 
 # ╔═╡ 09000008-0000-4000-8000-000000000010
-bhc_low = ufc_bhc_calibration(protocol_low, sim_low.geom);
+bhc_low = ufc_bhc_calibration(protocol_low, de_measured.geom);
 
 # ╔═╡ 09000008-0000-4000-8000-000000000012
-bhc_high = ufc_bhc_calibration(protocol_high, sim_high.geom);
+bhc_high = ufc_bhc_calibration(protocol_high, de_measured.geom);
 
 # ╔═╡ 09000008-0000-4000-8000-000000000015
 md"""
@@ -623,8 +694,8 @@ lac water = $(round(bhc_high.μ_water, digits = 5)) cm⁻¹
 
 # ╔═╡ 09000008-0000-4000-8000-000000000020
 hu_tube = (
-    low = ufc_poly_recon(sim_low.sino, sim_low.geom, bhc_low),
-    high = ufc_poly_recon(sim_high.sino, sim_high.geom, bhc_high),
+    low = ufc_poly_recon(de_measured.channels[1], de_measured.geom, bhc_low),
+    high = ufc_poly_recon(de_measured.channels[2], de_measured.geom, bhc_high),
 );
 
 # ╔═╡ 09000008-0000-4000-8000-000000000025
@@ -776,20 +847,18 @@ end
 md"""
 ## 8. Spectral Basis from the Two Tubes
 
-`spectral_basis_from_acquisitions` merges the two tubes' energy grids onto
-their union and scales each tube's per-ray detected spectrum by its own air
-counts, so the likelihood sees the absolute response ``\Phi_k(E)`` of every
-ray and channel: **source × flat filters × bowtie × UFC η(E)**, the identical
-model the forward projector applied (`resolve_source_spectrum_full` builds it
-from the same `build_physics_config`, and therefore the same UFC table, that
-`simulate!` used).  No calibration scan is involved.
+`acquire` built the basis with `spectral_basis_from_acquisitions`, which merges
+the two tubes' energy grids onto their union and scales each tube's per-ray
+detected spectrum by its own air counts, so the likelihood sees the absolute
+response ``\Phi_k(E)`` of every ray and channel: **source × flat filters ×
+bowtie × UFC η(E)**, the identical model the forward projector applied
+(`resolve_source_spectrum_full` builds it from the same `build_physics_config`,
+and therefore the same UFC table, that `simulate!` used).  No calibration scan
+is involved, and the noise-free, measured and calibration draws all share it.
 """
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000010
-basis = BS.spectral_basis_from_acquisitions(acquisitions = [
-    (energies = s.energies, response = s.response, I0_ray = s.I0_ray)
-    for s in (sim_low, sim_high)
-]);
+basis = de_measured.basis;
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000015
 Markdown.parse("""
@@ -804,59 +873,124 @@ md"""
 ## 9. The VMI Chain: `vmi_pipeline`
 
 One package call from the two corrected sinograms to the VMI stack, the chain
-of the basis-vmi paper (the n-channel decomposition, ACNR) with the basis-spectral-denoising paper's SpectralHYPR:
+of the basis-spectral-denoising paper:
+`vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter, pair_basis, composite_energy)`.
 
-1. **Projection HYPR-LR** (`BS.SpectralHYPR`'s projection instance): a 3 × 3
-   (column × view) window on the counts of each detector row, with each
-   tube's dispersion measured from its own air rays.
+1. **Projection HYPR-LR** (`ProjectionHYPR`): a 3 × 3 window (columns ×
+   views of one parity, `view_stride = 2`, so the odd and even views stay
+   independent) on the counts of each detector row, with each tube's
+   dispersion measured from its own air rays.
 2. **K = 2 n-channel decomposition**: per ray, the Poisson maximum-likelihood
-   iodine + water pair under the exact polychromatic mean of both tubes.
-3. **Image HYPR** on the FDK-reconstructed basis pair (a 1 × 1 × 7 composite (across slices only)
-   and a 15 × 15 × 7 complement window), then **Kalender ACNR**.
-4. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
+   iodine + water pair under the exact polychromatic mean of both tubes,
+   every detector row kept.
+3. **The spectral pair** (`spectral_pair`): FDK of the basis pair and of its
+   odd- and even-view halves, whose difference measures the noise of
+   everything downstream; the composite `M` (the minimum-noise VMI) and its
+   complement `I⊥` (noise uncorrelated with `M`'s) at the energy fixed from
+   the calibration draw.
+4. **ACNR** on the complement only (`acnr_complement!`): the composite is
+   left as reconstructed.
+5. **Image HYPR** (`ImageHYPR`): the composite kept, the complement pooled
+   within its slice with weights from the composite, over the window with
+   the least estimated risk.
+6. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
 
-The FBP kernel is the notebook's soft-tissue kernel, `BS.SoftFilter()`; the
-grid is `recon_opts.matrix_size` with every detector row kept.
+!!! warning "One window, not a fitted pair: the Force has none"
+    The other dual-energy notebooks reconstruct the composite and its
+    complement with a `PairFilter` of two windows **fitted** in
+    basis-spectral-denoising to the MTF and NPS of a *physical* scan of the
+    Gammex on that scanner.  No physical Force scan was fitted, so no Force
+    pair exists.  The GE and Flash pairs are not transferred either: a
+    fitted pair absorbs everything that shapes one scanner's resolution and
+    noise texture — its detector pitch (the Force's 0.561 mm against the
+    Flash's 0.705 mm), focal spot and the vendor kernel of the series it was
+    matched to — so on the Force it would impose another scanner's
+    resolution.  This notebook reconstructs both with one window, the
+    soft-tissue `SoftFilter()`.
+
+**`pair_basis` and `composite_energy`, from the calibration draw.** The pair
+(`E*`, `β`) and the composite energy ACNR and the image HYPR act on are
+properties of the scanner and protocol, not of one noise draw: near its
+minimum the VMI noise hardly changes with energy, so an argmin measured on
+the draw being evaluated would itself be noise.  They are measured once, on
+the calibration draw: `E*` and `β` from its plain decomposition, the
+composite energy from its decomposition after the projection HYPR.  The
+measured draw, the same draw without denoising, and the noise-free reference
+are then reconstructed alike.
 """
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000005
-# the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
-# the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
+# basis-spectral-denoising's HYPR_CHAIN: ProjectionHYPR(3 × 3 Box, view_stride = 2) and ImageHYPR()
 HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000006
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
+
+# ╔═╡ 0900000b-0000-4000-8000-000000000007
+# One window for the composite and its complement alike: no fitted Force pair exists (see above).
+FORCE_FILTER = BS.SoftFilter();
+
+# ╔═╡ 0900000b-0000-4000-8000-000000000008
+# `pair_basis` and `composite_energy` (basis-spectral-denoising's `PAIR_BASIS`), from the calibration draw
+calibration = let a = de_acq[DE_DRAWS.calibration]
+    decompose(denoiser) = BS.vmi_pipeline(; channels = a.channels, basis = a.basis, geom = a.geom,
+        to_backend = to_gpu, matrix_size = recon_opts.matrix_size, vmi_energies = Tuple(de_vmi_energies),
+        denoiser, keep_sinograms = true, VMI_CHAIN..., use_acnr = false).sinograms
+    sp(d; kw...) = BS.spectral_pair(d.water, d.iodine, a.geom, recon_opts.matrix_size;
+        filter = BS.SoftFilter(), antialias = VMI_CHAIN.antialias, to_backend = to_gpu, kw...)
+    x = sp(decompose(nothing))                                   # the plain decomposition
+    c = sp(decompose(BS.SpectralHYPR(image = nothing));          # after the projection HYPR
+        basis = (Estar = x.Estar, β = x.β))
+    (pair_basis = (Estar = x.Estar, β = x.β), composite_energy = c.Estar)
+end;
 
 # ╔═╡ 0900000c-0000-4000-8000-000000000015
 de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000010
 de_vmi = BS.vmi_pipeline(;
-    channels = [sim_low.sino, sim_high.sino],
+    channels = de_measured.channels,
     basis,
-    geom = sim_low.geom,
+    geom = de_measured.geom,
     to_backend = to_gpu,
     matrix_size = recon_opts.matrix_size,
     vmi_energies = Tuple(de_vmi_energies),
-    fbp_filter = BS.SoftFilter(),
     denoiser = HYPR_CHAIN,
-    use_acnr = true,
+    fbp_filter = FORCE_FILTER,
+    pair_basis = calibration.pair_basis,
+    composite_energy = calibration.composite_energy,
     keep_sinograms = true,
     VMI_CHAIN...,
 );
+
+# ╔═╡ 0900000b-0000-4000-8000-000000000011
+# The same draw and reconstruction without the denoising (no HYPR, no ACNR), and the noise-free
+# reference (draw 0, the same projection), reconstructed alike.
+de_none, de_ref = (BS.vmi_pipeline(;
+        channels = de_acq[r].channels, basis, geom = de_measured.geom, to_backend = to_gpu,
+        matrix_size = recon_opts.matrix_size, vmi_energies = Tuple(de_vmi_energies),
+        denoiser = nothing, use_acnr = false, fbp_filter = FORCE_FILTER,
+        pair_basis = calibration.pair_basis, composite_energy = calibration.composite_energy,
+        VMI_CHAIN...,
+    ) for r in (DE_DRAWS.measured, DE_DRAWS.reference));
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000015
 let
     q = de_vmi.quality
     d = de_vmi.settings.denoiser
     pct(x) = round(100x, digits = 3)
+    pb = calibration.pair_basis
     Markdown.parse("""
     The decomposition solved $(q.n_rays) rays in $(round(de_vmi.elapsed_s, digits = 1)) s
-    ($(round(q.outer_mean, digits = 1)) outer iterations on average); $(pct(q.frac_not_converged))% did not
+    with $(round(q.outer_mean, digits = 1)) outer iterations on average; $(pct(q.frac_not_converged))% did not
     converge and $(pct(q.frac_bound_iodine))% / $(pct(q.frac_bound_water))% touched the iodine / water bounds.
     The projection HYPR measured dispersions (variance / mean of the counts on the air rays) of
-    $(join(round.(d.dispersion, digits = 2), " and ")) for tube A and tube B. The image HYPR's
-    minimum-noise composite energy is E* = $(round(Int, d.image_estimates.Estar)) keV.
+    $(join(round.(d.dispersion, digits = 2), " and ")) for tube A and tube B.
+
+    From the calibration draw: the pair at E* = $(round(pb.Estar, digits = 1)) keV,
+    β = $(round(pb.β, sigdigits = 3)), and the composite ACNR and the image HYPR act on at
+    $(round(calibration.composite_energy, digits = 1)) keV. The image HYPR pooled the complement over a
+    $(d.image_estimates.window) × $(d.image_estimates.window) window.
     """)
 end
 
@@ -943,7 +1077,9 @@ md"""
 HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 ```
 
-The `solid_water_basis` diagnostic reports the basis pair in the eroded
+The figure shows the three reconstructions of §9 side by side: the measured
+draw without denoising, the measured draw through the full chain, and the
+noise-free reference.  The `solid_water_basis` diagnostic reports the basis pair in the eroded
 solid-water region: a perfect decomposition reads water density ≈ 1 g/cm³
 (solid water is not pure water, so a small offset is expected) and iodine ≈ 0.
 """
@@ -985,27 +1121,23 @@ vmi_HU_final = Dict(
 # ╔═╡ 0900000c-0000-4000-8000-000000000040
 let
     HU_window = (-200, 500)
-
-    fig = Mke.Figure(size = (1180, 1180))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
     mid = size(de_vmi.vmis, 3) ÷ 2 + 1
+    runs = (("No denoising", de_none), ("SpectralHYPR", de_vmi), ("Noise-free reference", de_ref))
 
-    for (k, E) in enumerate(de_vmi_energies)
-        r = ((k - 1) ÷ 2) + 1
-        c = ((k - 1) % 2) + 1
-        ax = Mke.Axis(
-            fig[r, c]; title = "$(Int(E)) keV VMI",
-            aspect = Mke.DataAspect(), axis_kwargs...,
-        )
-        Mke.heatmap!(
-            ax, vmi_HU_final[E][:, :, mid];
-            colormap = :grays, colorrange = HU_window,
-        )
-        Mke.hidedecorations!(ax)
+    fig = Mke.Figure(size = (1500, 1150))
+    for (r, (label, run)) in enumerate(runs)
+        Mke.Label(fig[r, 1], label; rotation = π / 2, fontsize = 26, tellheight = false)
+        for (c, E) in enumerate(de_vmi_energies)
+            ax = Mke.Axis(
+                fig[r, c + 1]; title = r == 1 ? "$(Int(E)) keV" : "",
+                aspect = Mke.DataAspect(), titlesize = 30,
+            )
+            Mke.heatmap!(ax, run.vmis[:, :, mid, c]; colormap = :grays, colorrange = HU_window)
+            Mke.hidedecorations!(ax)
+        end
     end
     Mke.Colorbar(
-        fig[1:2, 3];
+        fig[1:3, length(de_vmi_energies) + 2];
         colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
     )
@@ -1157,6 +1289,7 @@ let
         return s / n
     end
     sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in de_vmi_energies]
+    ref_hu_per_keV = [_mean_hu(view(de_ref.vmis, :, :, :, k)) for k in eachindex(de_vmi_energies)]
 
     n_E = length(de_vmi_energies)
     bar_colors = [Mke.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
@@ -1164,10 +1297,10 @@ let
     ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water Region Mean HU",
-        subtitle = "Per VMI Energy",
+        subtitle = "SpectralHYPR (bars) vs noise-free reference (◆)",
         xlabel = "VMI Energy (keV)", ylabel = "HU",
         xticks = (collect(1:n_E), ["$(Int(E))" for E in de_vmi_energies]),
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32, subtitlesize = 22,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
@@ -1176,19 +1309,19 @@ let
         color = bar_colors,
         strokecolor = :black, strokewidth = 1,
     )
+    Mke.scatter!(ax2, 1:n_E, ref_hu_per_keV; color = :black, marker = :diamond, markersize = 18)
     Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
-    for (k, h) in pairs(sw_hu_per_keV)
+    y_max = max(15.0, 1.2 * maximum(abs, vcat(sw_hu_per_keV, ref_hu_per_keV)))
+    Mke.ylims!(ax2, -y_max, y_max)
+    # the values, above the bars and clear of the reference markers
+    for (k, (h, r)) in enumerate(zip(sw_hu_per_keV, ref_hu_per_keV))
         Mke.text!(
-            ax2, k, h;
-            text = "$(round(h, digits = 1)) HU",
-            align = (:center, h ≥ 0 ? :bottom : :top),
-            fontsize = 16, offset = (0, h ≥ 0 ? 4 : -4),
+            ax2, k, 0.6 * y_max;
+            text = "$(round(h, digits = 1)) HU\nref $(round(r, digits = 1))",
+            align = (:center, :center), fontsize = 16,
         )
     end
-
-    y_max = max(15.0, 1.2 * maximum(abs, sw_hu_per_keV))
-    Mke.ylims!(ax2, -y_max, y_max)
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_roi.png"),
@@ -1200,6 +1333,11 @@ end
 # ╔═╡ 0900000e-0000-4000-8000-000000000060
 md"""
 ### Water-Region Noise
+
+σ is measured in a central water ROI **against the noise-free reference**,
+σ = std(VMI − reference): the reference shares the projection and the
+reconstruction, so the difference is the noise alone, with no structure
+mixed in.  The same draw without the denoising shows what the chain removes.
 """
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000065
@@ -1230,15 +1368,17 @@ end;
 # ╔═╡ 0900000e-0000-4000-8000-000000000080
 vmi_noise_by_keV = let
     roi_idx = findall(water_noise_roi.mask_2d)
-    nz_r = size(vmi_HU_final[70.0], 3)
+    nz_r = size(de_vmi.vmis, 3)
+    vals(run, k) = Float64[Float64(run.vmis[ci, z, k]) for z in 1:nz_r, ci in roi_idx]
 
     out = Dict{Float64, NamedTuple}()
-    for E in de_vmi_energies
-        vol = vmi_HU_final[E]
-        vals = Float64[Float64(vol[ci, z]) for z in 1:nz_r, ci in roi_idx]
-        μ = mean(vals); σ = std(vals)
-        out[E] = (mean = μ, std = σ, n = length(vals))
-        @info "water-region noise @ $(Int(E)) keV: ⟨HU⟩ = $(round(μ, digits = 2)),  σ = $(round(σ, digits = 2)) HU  (n = $(length(vals)))"
+    for (k, E) in enumerate(de_vmi_energies)
+        p, n, r = vals(de_vmi, k), vals(de_none, k), vals(de_ref, k)
+        out[E] = (mean = mean(p), reference = mean(r), std = std(p .- r), std_none = std(n .- r),
+            n = length(p))
+        @info "water ROI @ $(Int(E)) keV: ⟨HU⟩ = $(round(mean(p), digits = 2)) " *
+            "(reference $(round(mean(r), digits = 2))), σ = $(round(std(p .- r), digits = 2)) HU " *
+            "(no denoising $(round(std(n .- r), digits = 2)) HU, n = $(length(p)))"
     end
     out
 end;
@@ -1268,33 +1408,34 @@ let
     Mke.hidedecorations!(ax1)
 
     Es = sort(collect(keys(vmi_noise_by_keV)))
-    σs = [vmi_noise_by_keV[E].std  for E in Es]
-    μs = [vmi_noise_by_keV[E].mean for E in Es]
+    σs = [vmi_noise_by_keV[E].std for E in Es]
+    σn = [vmi_noise_by_keV[E].std_none for E in Es]
 
     ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water-Region Noise vs Energy",
+        subtitle = "σ of (VMI − noise-free reference)",
         xlabel = "VMI Energy (keV)",
         ylabel = "Noise σ (HU)",
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32, subtitlesize = 22,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    Mke.scatterlines!(
-        ax2, Es, σs;
-        color = :tomato, markersize = 18, linewidth = 3,
-    )
-    for (E, σ, μ) in zip(Es, σs, μs)
-        Mke.text!(
-            ax2, E, σ;
-            text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
-            align = (:center, :bottom),
-            fontsize = 16, offset = (0, 12),
-        )
+    Mke.scatterlines!(ax2, Es, σn; color = :gray45, markersize = 14, linewidth = 2.5,
+        linestyle = :dash, label = "No denoising")
+    Mke.scatterlines!(ax2, Es, σs; color = :tomato, markersize = 18, linewidth = 3,
+        label = "SpectralHYPR")
+    for (E, σ) in zip(Es, σs)
+        Mke.text!(ax2, E, σ; text = "$(round(σ; digits = 1))", align = (:center, :top),
+            fontsize = 16, offset = (0, -12))
     end
-    # room for the labels above the highest point and beside the end energies
+    for (E, σ) in zip(Es, σn)
+        Mke.text!(ax2, E, σ; text = "$(round(σ; digits = 1))", align = (:center, :bottom),
+            fontsize = 16, offset = (0, 10), color = :gray35)
+    end
     Mke.xlims!(ax2, first(Es) - 15, last(Es) + 15)
-    Mke.ylims!(ax2, 0, 1.3 * maximum(σs))
+    Mke.ylims!(ax2, 0, 1.25 * maximum(σn))
+    Mke.axislegend(ax2; position = :rt, framevisible = true, labelsize = 16)
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_noise.png"),
@@ -1476,13 +1617,14 @@ md"""
 ```
 UFC MC η(E) LUT (BS.UFC_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
    → EICTScanner(detector_material = :ufc) → detector_efficiency_ufc()
-Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition,
-                                one noise seed per tube)
+100 kVp + Sn140 kVp  (one SOMATOM Force dual-source DE acquisition,
+                      view_samples = 5, one noise seed per tube)
+   each tube projected once → draws 0 (noise-free), 1 (measured), 9 (calibration)
    ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w     (§7)
-   └─→ VMI:  BS.spectral_basis_from_acquisitions (bowtie + η_UFC per ray)
-             → BS.vmi_pipeline(; denoiser = HYPR_CHAIN, use_acnr = true):
-               projection HYPR → K = 2 n-channel decomposition
-               → image HYPR → ACNR → VMI 50/70/100/140 keV      (§8–10)
+   └─→ VMI:  spectral basis (bowtie + η_UFC per ray, shared by every draw)
+             pair_basis, composite_energy ← calibration draw
+             → BS.vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = SoftFilter(), …)
+             → VMI 50/70/100/140 keV vs the noise-free reference  (§8–10)
              → Per-Rod Measured vs Theoretical Regression
 ```
 
@@ -1496,7 +1638,8 @@ Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition,
    measured-vs-theoretical overlays: the table survives the harsher test of
    per-ray spectral inversion across the two detected spectra (100 kVp vs
    Sn140 kVp, separated by the 0.6 mm tin filter and sitting on opposite
-   sides of the Gd K-edge fluorescence-escape cliff).
+   sides of the Gd K-edge fluorescence-escape cliff), each result scored
+   against the noise-free draw of the same projection.
 """
 
 # ╔═╡ Cell order:
@@ -1531,6 +1674,8 @@ Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition,
 # ╠═09000007-0000-4000-8000-000000000005
 # ╠═09000007-0000-4000-8000-000000000020
 # ╠═09000007-0000-4000-8000-000000000030
+# ╟─09000007-0000-4000-8000-000000000035
+# ╠═09000007-0000-4000-8000-000000000036
 # ╟─09000007-0000-4000-8000-000000000040
 # ╟─09000008-0000-4000-8000-000000000001
 # ╠═09000008-0000-4000-8000-000000000005
@@ -1551,8 +1696,11 @@ Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition,
 # ╟─0900000b-0000-4000-8000-000000000001
 # ╠═0900000b-0000-4000-8000-000000000005
 # ╠═0900000b-0000-4000-8000-000000000006
+# ╠═0900000b-0000-4000-8000-000000000007
+# ╠═0900000b-0000-4000-8000-000000000008
 # ╠═0900000c-0000-4000-8000-000000000015
 # ╠═0900000b-0000-4000-8000-000000000010
+# ╠═0900000b-0000-4000-8000-000000000011
 # ╟─0900000b-0000-4000-8000-000000000015
 # ╟─0900000a-0000-4000-8000-000000000040
 # ╟─0900000b-0000-4000-8000-000000000040

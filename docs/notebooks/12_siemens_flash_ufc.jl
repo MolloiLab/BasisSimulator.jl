@@ -22,28 +22,32 @@ md"""
 
 The **second-generation dual-source** scanner (2008, FDA K082220; Stellar
 detector K113342) as a complete simulated system: **two STRATON tubes + two
-UFC detectors at 95°**, its published geometry/filtration, and the new
-**Flash-specific Monte-Carlo detector LUT** — exercised through *both* of the
-scanner's signature acquisition classes in one notebook:
+UFC detectors at 95°**, its published geometry and filtration, and the
+**Flash-specific Monte-Carlo detector LUT**, exercised through *both* of the
+scanner's signature acquisition classes in one notebook. The scanner, its
+physics switches, the dual-energy protocol and the VMI chain are the Flash of
+the basis-spectral-denoising paper, carried over unchanged.
 
 ```
 Flash UFC MC η(E) LUT  (BS.UFC_FLASH_MC_EFFICIENCY_LUT, 1–140 keV)
         │ via EICTScanner(detector_material = :ufc_flash)
         ▼
 ┌─ REGULAR (dual power): 120 kVp on BOTH tubes ──────────────────────────┐
-│  tube A + tube B (independent noise) → per-tube η-aware BHC → FDK → HU │
-│  → combined image → water ≈ 0 HU ×3, σ_combined ≈ σ_single/√2     (§6) │
+│  one projection, two independent noise draws → per-tube η-aware BHC    │
+│  → FDK → HU → combined image: water ≈ 0 HU ×3, σ ≈ σ_single/√2    (§6) │
 └────────────────────────────────────────────────────────────────────────┘
-┌─ DUAL ENERGY: 100 kVp (A) / Sn140 kVp (B, 0.4 mm Sn) ──────────────────┐
-│  POLY: per-tube η-aware BHC → FDK → HU → Siemens mixed image M_w  (§8) │
-│  VMI:  BS.spectral_basis_from_acquisitions → BS.vmi_pipeline:          │
-│        projection HYPR → K = 2 n-channel decomposition                 │
-│        → image HYPR → ACNR → VMI 50/70/100/140 keV          (§9–§11)   │
-│        → per-rod regression                                            │
+┌─ DUAL ENERGY: 80 kVp (A) / Sn140 kVp (B, 0.4 mm Sn) ───────────────────┐
+│  each tube projected once → noise-free, measured, calibration draws    │
+│  POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w          (§8) │
+│  VMI:  BS.vmi_pipeline(; denoiser = SpectralHYPR(),                    │
+│          fbp_filter = the fitted Flash PairFilter,                     │
+│          pair_basis, composite_energy from the calibration draw)       │
+│        → VMI 50/70/100/140 keV, scored against the noise-free draw     │
+│        → per-rod regression                                 (§9–§11)   │
 └────────────────────────────────────────────────────────────────────────┘
         ▼
-   Automated PASS/FAIL verification (water HU, √2 noise, monotonic
-   VMI noise, per-rod regression gates)
+   Automated PASS/FAIL verification (water HU, √2 noise, VMI noise and
+   bias against the noise-free reference, the chain, per-rod regression)
 ```
 
 !!! danger "The Flash is NOT the Force — measured, not assumed"
@@ -216,6 +220,9 @@ at 95°** in the same gantry.  Every value below is sourced in the
 | Rotation | 0.28 s min (0.5 s routine) | Siemens datasheet |
 | Projections | 1152 / rotation per focal-spot position (2304 with z-FFS) | Siemens datasheet; AAPM LDCT |
 
+`flash_scanner` below is the Flash of the basis-spectral-denoising paper
+(basis-vmi's `flash_scanner`), verbatim.
+
 !!! warning "Documented modeling assumptions (no public source exists)"
     - **Anode angle in the spectrum model**: the Flash's anode is a
       *published* 7°, but the bundled IPEM spectra come only in 8°/10° →
@@ -247,7 +254,8 @@ at 95°** in the same gantry.  Every value below is sourced in the
       ≲1%; the term matters when this scanner model is reused at low
       dose.
     - **Tube-B z-offset**: unpublished for the Flash (Force ≈ 0.88 mm) →
-      **0.0 mm**, kept as an explicit constant so the mechanism is in place.
+      not modeled.  The Gammex is z-invariant, so an offset would change
+      nothing here; notebook 09 carries the mechanism for the Force.
     - **z-FFS not modeled** → 1152 views/rotation (one focal-spot position,
       half of the 2304 FFS-interleaved readings).
 
@@ -269,153 +277,197 @@ at 95°** in the same gantry.  Every value below is sourced in the
       rotation on the same angle grid — a constant angular offset has no
       effect on a full-rotation axial scan (notebook 09 §3 argument).
     - **DE-mode collimation**: the Flash reads 2 × 128 × 0.6 mm in DE mode;
-      we use 4.8 mm (8 × 0.6 mm) — the thin-collimation equivalent that
-      fits the 1 cm Gammex z-extent, same convention as notebooks 03 and 09.
+      we use 4.8 mm (8 × 0.6 mm), the collimation of the
+      basis-spectral-denoising acquisition — the thin-collimation equivalent
+      that fits the 1 cm Gammex z-extent.
 """
 
 # ╔═╡ 12000004-0000-4000-8000-000000000010
-# Tube/detector A geometry — shared by both modeled tubes (see md above).
-scanner = BS.EICTScanner(
+# Siemens SOMATOM Definition Flash: basis-spectral-denoising's `flash_scanner`, verbatim. Both
+# tubes run on detector A's arc so the two channels stay co-registered ray by ray (see md above).
+flash_scanner = BS.EICTScanner(
     source_to_isocenter = 595.0,
     source_to_detector = 1085.6,
-
     detector_rows = 64,
     detector_cols = 736,
     detector_row_size = 0.6,
     detector_col_size = 0.70473,
-
+    detector_shape = :arc,
     focal_spot_width = 0.7,
     focal_spot_length = 0.7,
     target_angle = 7.0,
-
+    gantry_rotation_time = 0.5,
+    scan_diameter = 500.0,
+    gantry_aperture = 780.0,
     flat_filter_material = :aluminum,
-    flat_filter_thickness = 8.4,
+    flat_filter_thickness = 8.4,          # 6.8 mm Al tube assembly + 1.6 mm beam limiter
     bowtie_filter = :large_body,
-
-    detector_material = :ufc_flash,   # → Flash-specific MC LUT (NOT :ufc)
+    detector_material = :ufc_flash,       # the Flash's own Monte Carlo table (NOT :ufc)
     detector_depth = 1.0,
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
-
-    electronic_noise = 1500,   # e⁻ — Stellar DAS floor; pre-2011 build ≈ 3500 (§3)
+    electronic_noise = 1500,              # e⁻ — Stellar DAS floor; pre-2011 build ≈ 3500 (§3)
     detection_gain = 10.0,
 );
 
+# ╔═╡ 12000006-0000-4000-8000-000000000001
+md"""
+## 4. Physics Switches: `SimOptions`
+
+`flash_opts` are the Flash's physics switches in the basis-spectral-denoising
+paper, verbatim: every effect of the EICT forward model on, the heel effect
+off as there, and **view integration**.
+
+- **Detector efficiency.** `use_detector_efficiency = true` (the default)
+  routes through the Flash UFC MC LUT: `build_physics_config` sees
+  `EICTScanner(detector_material = :ufc_flash)` and dispatches to
+  `detector_efficiency_ufc_flash()`, so every energy is weighted by
+  `w(E) · η_Flash(E)` and the detected flux, and therefore the Poisson
+  noise, reflects the Flash absorption.
+- **Heel effect off** (`use_heel_effect = false`) keeps the forward spectral
+  model exactly equal to the η-folded response the spectral basis inverts
+  (with 4.8 mm collimation the heel is a small row-direction effect).
+- **View integration** (`view_samples = 5`). A detector integrates while
+  the gantry turns, so each view reads the transmission averaged over the
+  arc it sweeps, `r · Δθ` at radius `r`: a blur of the object, largest far
+  from the isocentre, that the noise, counted once per view, does not
+  share.  Five sub-views sample that arc (0.2 mm apart at the edge of a
+  35 cm field, a third of a pixel).  Without it the simulated signal is
+  sharper, relative to its noise, than a physical scanner's.  Each Flash
+  tube reads its own detector for the whole view period, so both integrate
+  over the full view arc (`view_arc = 1.0`); GE's rapid kVp switching, by
+  contrast, reads each energy for its duty cycle of the view only.
+
+`with_option` replaces one field (a seed, `use_noise`, `view_arc`) and keeps
+every other switch.
+"""
+
+# ╔═╡ 12000006-0000-4000-8000-000000000010
+begin
+    VIEW_SAMPLES = 5
+    flash_opts = BS.SimOptions(projector = :dd_fast, use_heel_effect = false, view_samples = VIEW_SAMPLES)
+    "The same physics switches with one field replaced."
+    with_option(opts, field, value) = BS.SimOptions(;
+        (f => getfield(opts, f) for f in fieldnames(BS.SimOptions) if f !== field)...,
+        (field => value,)...,
+    )
+end;
+
 # ╔═╡ 12000005-0000-4000-8000-000000000001
 md"""
-## 4. Protocols: Two Acquisition Classes
+## 5. Protocols, Dose and Grid
 
-**Regular (dual power)** — the Flash's bread-and-butter dual-source mode:
-both tubes at the **same** kVp, doubling the available power (40–1600 mA
-combined).  Routine abdomen 120 kV; each tube at 420 mA (210 quality-ref
-mAs at 0.5 s).
+**Dual energy** is the protocol of the physical Flash scan of the Gammex that
+the basis-spectral-denoising paper compares its simulations with:
+**80 kVp / Sn140 kVp** at 470 / 182 mA, the 0.4 mm Sn Selective Photon
+Shield on tube B (Primak AJR 2010), 1152 views in 0.5 s, 4.8 mm collimation,
+reconstructed as 4 × 1.0 mm slices over 33 cm (its clinical series: DE
+monoenergetic, D40f).  `FLASH` holds every value, as `SCANNERS.flash` does
+there.  The bundled IPEM spectra top out at 140 kVp, exactly the Flash's top
+kV, so no kV substitution is needed.
 
-**Dual energy** — the Flash's clinical abdomen pair is **100/Sn140** with
-the 0.4 mm Sn Selective Photon Shield on tube B (Primak AJR 2010).  The
-bundled IPEM spectra top out at 140 kVp — **exactly the Flash's top kV**,
-so unlike the Force (Sn150) *no kV substitution is needed*: this notebook
-runs the true clinical pair.  Currents follow the published liver-VNC
-quality-reference 230/178 mAs at 0.5 s → 460/356 mA (≈1.29 : 1 A : B).
+**Dose matching (`DOSE_SCALE`).**  A physical tube's output per mA is its
+own and the simulator's is generic, so the tube currents alone do not fix
+the dose.  Both tube currents are scaled by one factor, which keeps the
+physical 470 : 182 split, so that the simulated CTDIvol (the package's Monte
+Carlo dose, 32 cm body phantom, summed over both tubes) equals the value the
+physical scan reported.
 
-| Acquisition | Tube | kVp | Filters | mA | views | rotation |
-|-------------|------|-----|---------|----|-------|----------|
-| Regular | A | 120 | 8.4 Al | 420 | 1152 | 0.5 s |
-| Regular | B | 120 | 8.4 Al | 420 | 1152 | 0.5 s |
-| DE | A (low)  | 100 | 8.4 Al | 460 | 1152 | 0.5 s |
-| DE | B (high) | 140 | 8.4 Al + **0.4 Sn** | 356 | 1152 | 0.5 s |
+**Regular (dual power)** is the Flash's bread-and-butter dual-source mode:
+both tubes at the **same** kVp, doubling the available power.  Routine
+abdomen 120 kV at 420 mA per tube (210 quality-reference mAs at 0.5 s),
+scaled by the same `DOSE_SCALE`, which calibrates the simulated tube whatever
+protocol it runs.
 
 !!! note "Why the views are NOT halved per tube"
     Each tube/detector system has its **own DAS sampling a full
     rotation** — the datasheet quotes "up to 4,608 projections per 360°
     *per data-acquisition unit*."  In DE mode tube A acquires a complete
-    1152-view rotation at 100 kV **and** tube B acquires a complete
+    1152-view rotation at 80 kV **and** tube B acquires a complete
     1152-view rotation at Sn140: full angular sampling per energy is the
     defining advantage of dual-source DE over rapid-kVp *switching*,
-    where a single tube alternates kV between views and each channel
-    really does get half the angular samples (notebook 03 approximates the GE
-    switching with two full-rotation acquisitions).  The
-    2,304 readings/rotation figure is the z-FFS focal-spot doubling (not
+    where a single tube alternates kV between views.  The 2,304
+    readings/rotation figure is the z-FFS focal-spot doubling (not
     modeled → 1152), and cardiac quarter-rotation segments are a recon
     mode, not an acquisition split.
 """
 
 # ╔═╡ 12000005-0000-4000-8000-000000000005
-protocol_reg = BS.CTProtocol(
-    kVp = 120,
-    mA = 420.0,
-    views = 1152,
-    rotation_time = 0.5,
-    collimation_mm = 4.8,    # nominal beam width; axial cone guards are automatic
-    anode_angle = 8,         # IPEM bundle has 8°/10° only; published anode is 7° (see §3)
-);
+# The dual-energy acquisition: basis-spectral-denoising's `SCANNERS.flash`, verbatim. Seeds are per
+# exposure: a shared seed would correlate the two channels' noise.
+FLASH = (name = "Siemens SOMATOM Flash", mechanism = "dual source", kind = :eict,
+    scanner = flash_scanner, opts = flash_opts, views = 1152, rotation_time = 0.5,
+    collimation_mm = 4.8, slice_mm = 1.0, n_slices = 4, fov_cm = 33.0, anode_angle = 8,
+    clinical_recon = "DE monoenergetic, D40f, 1.0 mm, 330 mm", ctdi_vol_mGy = 10.01,
+    exposures = [
+        (label = "80 kVp", kVp = 80, mA = 470.0, view_arc = 1.0, seed = 1234, filters = Tuple{String, Float64}[]),
+        (label = "Sn140 kVp", kVp = 140, mA = 182.0, view_arc = 1.0, seed = 4321, filters = [("Sn", 0.4)]),
+    ]);
 
 # ╔═╡ 12000005-0000-4000-8000-000000000010
-protocol_low = BS.CTProtocol(
-    kVp = 100,
-    mA = 460.0,
-    views = 1152,
-    rotation_time = 0.5,
-    collimation_mm = 4.8,
-    anode_angle = 8,         # IPEM bundle has 8°/10° only; published anode is 7° (see §3)
-);
+begin
+    "The CTProtocol of one exposure of scanner `s`, its tube current scaled by `mA_scale` (`DOSE_SCALE`)."
+    exposure_protocol(s, e; mA_scale = 1.0) = BS.CTProtocol(;
+        kVp = e.kVp, mA = e.mA * mA_scale, views = s.views, rotation_time = s.rotation_time,
+        collimation_mm = s.collimation_mm, additional_filters = e.filters,
+        (s.anode_angle === nothing ? (;) : (; anode_angle = s.anode_angle))...,
+    )
+    "Reconstruction grid of scanner `s`: its clinical series' slices, field of view and 512²."
+    recon_options(s) = BS.ReconOptions(
+        matrix_size = (512, 512, s.n_slices),
+        fov_cm = s.fov_cm, z_cm = s.n_slices * s.slice_mm / 10,
+    )
+end;
 
 # ╔═╡ 12000005-0000-4000-8000-000000000020
-protocol_high = BS.CTProtocol(
-    kVp = 140,
-    mA = 356.0,
-    views = 1152,
-    rotation_time = 0.5,
-    collimation_mm = 4.8,
-    anode_angle = 8,         # IPEM bundle has 8°/10° only; published anode is 7° (see §3)
-    additional_filters = [("Sn", 0.4)],
-);
+# One factor for both tubes: the simulated CTDIvol (32 cm body phantom, summed over the exposures)
+# equals the physical scan's.
+DOSE_SCALE = FLASH.ctdi_vol_mGy / sum(FLASH.exposures) do e
+    p = exposure_protocol(FLASH, e)
+    BS.compute_dose(BS.dose_source(FLASH.scanner, p), p).ctdi_vol_mGy
+end
 
-# ╔═╡ 12000006-0000-4000-8000-000000000001
-md"""
-## 5. `SimOptions` and `ReconOptions`
+# ╔═╡ 12000005-0000-4000-8000-000000000030
+begin
+    # dual energy: tube A (low) and tube B (high), at the physical scan's dose
+    protocol_low, protocol_high = (exposure_protocol(FLASH, e; mA_scale = DOSE_SCALE) for e in FLASH.exposures)
+    # regular (dual power): 120 kVp, 420 mA on each tube, on the same simulated tube
+    protocol_reg = BS.CTProtocol(
+        kVp = 120, mA = 420.0 * DOSE_SCALE, views = FLASH.views, rotation_time = FLASH.rotation_time,
+        collimation_mm = FLASH.collimation_mm, anode_angle = FLASH.anode_angle,
+    )
+end;
 
-`use_detector_efficiency = true` (the `SimOptions` default) routes
-through the **src Flash UFC MC LUT**: `build_physics_config` sees
-`EICTScanner(detector_material = :ufc_flash)` and dispatches to
-`detector_efficiency_ufc_flash()`, so the EICT forward model weights every
-energy by `w(E) · η_Flash(E)` and the detected flux (and therefore the
-Poisson noise level) automatically reflects the Flash absorption.
+# ╔═╡ 12000005-0000-4000-8000-000000000040
+let
+    filt(p) = isempty(p.additional_filters) ? "none" :
+        join(["$(f[2]) mm $(f[1])" for f in p.additional_filters], ", ")
+    rows = ["| $(m) | $(t) | $(p.kVp) | $(filt(p)) | $(round(Int, p.mA / DOSE_SCALE)) | $(round(p.mA, digits = 1)) |"
+            for (m, t, p) in (("Regular", "A and B", protocol_reg), ("Dual energy", "A (low)", protocol_low),
+                              ("Dual energy", "B (high)", protocol_high))]
+    Markdown.parse("""
+    `DOSE_SCALE` = $(round(DOSE_SCALE, digits = 3)): at the scaled currents the dual-energy scan's
+    simulated CTDIvol is the physical scan's $(FLASH.ctdi_vol_mGy) mGy.
 
-**Tube B gets its own seed** (`sim_opts_b`): the two tube/detector chains
-are physically independent, so their noise realizations must be too —
-otherwise the §6 dual-power average would cancel *nothing*.
+    | Acquisition | Tube | kVp | Added filter | Physical mA | Simulated mA |
+    |---|---|---:|---|---:|---:|
+    $(join(rows, "\n"))
 
-`use_heel_effect = false` keeps the forward spectral model exactly equal
-to the η-folded response the spectral inversion uses (heel is a small
-row-direction effect; with 4.8 mm collimation at center it is negligible).
-"""
-
-# ╔═╡ 12000006-0000-4000-8000-000000000010
-sim_opts = BS.SimOptions(
-    seed = 1234,               # tube A chain
-    use_heel_effect = false,   # exact forward/inverse spectral match
-    projector = :dd_fast,      # distance-driven, single-pass fused kernels (the default)
-                               #  BHC (flash_poly_recon) reads sim_opts.projector to match.
-);
-
-# ╔═╡ 12000006-0000-4000-8000-000000000012
-# Independent noise chain for tube B (spectra/geometry identical handling;
-# only the random stream differs).
-sim_opts_b = BS.SimOptions(
-    seed = 4321,               # tube B chain — MUST differ from tube A
-    use_heel_effect = false,
-    projector = :dd_fast,
-);
+    Every exposure: $(FLASH.views) views in $(FLASH.rotation_time) s, $(FLASH.collimation_mm) mm
+    collimation, the 8.4 mm Al flat filter and the large-body bowtie.
+    """)
+end
 
 # ╔═╡ 12000006-0000-4000-8000-000000000020
-# Keep the intended centered 5 × 0.6 mm saved grid. The axial workspace
-# automatically adds symmetric detector guard rows so peripheral voxels
-# on both terminal slices retain measured cone-beam support.
-recon_opts = BS.ReconOptions(
-    matrix_size = (512, 512, 5),
-    fov_cm = 35.0,
-    z_cm = 0.30,
-);
+# The clinical series' grid (`recon_options`): 4 × 1.0 mm slices over 33 cm, 512².
+recon_opts = recon_options(FLASH);
+
+# ╔═╡ 12000006-0000-4000-8000-000000000025
+# The Gammex's labels on the reconstruction grid (the phantom itself is voxelized over 35 cm):
+# every ROI below is drawn on this map.
+roi_labels = BS.create_gammex_472(
+    n_voxels = recon_opts.matrix_size[1], n_slices = 1, fov_cm = recon_opts.fov_cm, z_cm = 0.1,
+).mask[:, :, 1];
 
 # ╔═╡ 12000006-0000-4000-8000-000000000030
 """
@@ -427,7 +479,7 @@ detector actually integrates (centered ray, no bowtie).
 """
 function flash_detected_spectrum(protocol)
     e, w = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, protocol; scanner = scanner,
+        flash_opts, protocol; scanner = flash_scanner,
     )
     return e, Float64.(w) .* BS.get_ufc_flash_mc_efficiency.(e)
 end;
@@ -436,7 +488,7 @@ end;
 let
     specs = (
         ("120 kVp · both tubes (regular)", protocol_reg, :seagreen),
-        ("100 kVp · tube A (DE)", protocol_low, :royalblue),
+        ("80 kVp · tube A (DE)", protocol_low, :royalblue),
         ("Sn140 kVp · tube B (DE)", protocol_high, :crimson),
     )
 
@@ -483,10 +535,14 @@ acquisitions leaves accuracy untouched and cuts noise by **√2**:
 - water ≈ 0 HU in the tube-A recon, the tube-B recon, *and* the combined
   image (the η-aware BHC is right on both chains), and
 - `σ_combined ≈ σ_single / √2` (the two noise realizations are
-  independent — this is exactly what `sim_opts_b`'s separate seed buys).
+  independent — this is exactly what tube B's own seed buys).
 
-Each tube runs the standard correction stack: parameter-free η-aware water
-sinogram BHC → FDK → HU.
+The two tubes run one protocol through one geometry, so their noise-free
+expectation is a single projection: tube A keeps it (`keep_projection = true`)
+and tube B passes it back (`projection`), drawing only its own noise from its
+own seed — bit-identical to projecting again.  Each tube then runs the
+standard correction stack: parameter-free η-aware water sinogram BHC → FDK →
+HU.
 """
 
 # ╔═╡ 12000007-0000-4000-8000-000000000005
@@ -500,7 +556,7 @@ function flash_bhc_calibration(protocol, geom)
     # resolve_source_spectrum_full folds bowtie AND the src Flash UFC η(E)
     # (via the same build_physics_config the forward model used).
     e, ŵ = BS.resolve_source_spectrum_full(
-        sim_opts, protocol; scanner = scanner, geom = geom,
+        flash_opts, protocol; scanner = flash_scanner, geom = geom,
     )
     e2, w_col = BS.bhc_spectrum_per_column(e, ŵ)          # [n_E, n_col]
 
@@ -541,36 +597,31 @@ function flash_poly_recon(sino_cpu, geom, bhc)
 end;
 
 # ╔═╡ 12000007-0000-4000-8000-000000000010
-sim_reg_a = let
-    @info "Simulating: 120 kVp / 420 mA (tube A, regular mode, Flash η folded)…"
-    ws = BS.create_eict_workspace(
-        scanner, protocol_reg, sim_opts, recon_opts, phantom,
-    )
-    BS.simulate!(ws, phantom, protocol_reg, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
-    ws = nothing; GC.gc(true)
-    result
-end;
-
-# ╔═╡ 12000007-0000-4000-8000-000000000012
-sim_reg_b = let
-    @info "Simulating: 120 kVp / 420 mA (tube B, regular mode, independent seed)…"
-    ws = BS.create_eict_workspace(
-        scanner, protocol_reg, sim_opts_b, recon_opts, phantom,
-    )
-    BS.simulate!(ws, phantom, protocol_reg, sim_opts_b)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
-    ws = nothing; GC.gc(true)
-    result
+sim_reg = let projection = nothing, out = Dict{Symbol, Any}()
+    for (tube, seed) in ((:a, 1234), (:b, 4321))
+        opts = with_option(flash_opts, :seed, seed)
+        ws = BS.create_workspace(flash_scanner, protocol_reg, opts, recon_opts, phantom)
+        try
+            t = time()
+            result = BS.simulate!(ws, phantom, protocol_reg, opts; report_dose = false,
+                keep_projection = projection === nothing, projection)
+            projection === nothing && (projection = result.projection)   # tube B reuses tube A's
+            out[tube] = (sino = Array(ws.sinogram), geom = ws.geom, seconds = time() - t)
+        finally
+            BS.release_backend!(ws)
+        end
+    end
+    projection = nothing; GC.gc(true)
+    (a = out[:a], b = out[:b])
 end;
 
 # ╔═╡ 12000007-0000-4000-8000-000000000015
-bhc_reg = flash_bhc_calibration(protocol_reg, sim_reg_a.geom);
+bhc_reg = flash_bhc_calibration(protocol_reg, sim_reg.a.geom);
 
 # ╔═╡ 12000007-0000-4000-8000-000000000020
 hu_reg = (
-    a = flash_poly_recon(sim_reg_a.sino, sim_reg_a.geom, bhc_reg),
-    b = flash_poly_recon(sim_reg_b.sino, sim_reg_b.geom, bhc_reg),
+    a = flash_poly_recon(sim_reg.a.sino, sim_reg.a.geom, bhc_reg),
+    b = flash_poly_recon(sim_reg.b.sino, sim_reg.b.geom, bhc_reg),
 );
 
 # ╔═╡ 12000007-0000-4000-8000-000000000025
@@ -582,13 +633,12 @@ hu_reg_combined = 0.5f0 .* hu_reg.a .+ 0.5f0 .* hu_reg.b;
 # ╔═╡ 12000007-0000-4000-8000-000000000030
 dp_stats = let
     ERODE_PX = 12.0
-    mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
     sw_bool = BS.erode_mask_2d(
-        mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER); erode_px = ERODE_PX,
+        roi_labels .== UInt8(BS.REGION_SOLID_WATER); erode_px = ERODE_PX,
     )
     sw_idx = findall(sw_bool)
 
-    # Central noise ROI (12 px ≈ 8.2 mm at 0.683 mm/px) — background water.
+    # Central noise ROI (12 px ≈ 7.7 mm at 0.645 mm/px) — background water.
     nx_r, ny_r, _ = size(hu_reg_combined)
     cx = nx_r ÷ 2 + 1; cy = ny_r ÷ 2 + 1
     noise_bool = falses(nx_r, ny_r)
@@ -699,80 +749,126 @@ end
 
 # ╔═╡ 12000008-0000-4000-8000-000000000001
 md"""
-## 7. DE Forward Project (one DE acquisition = two tube scans)
+## 7. DE Acquisition: One Projection per Tube, Three Draws
 
-Each tube builds its own workspace (the Flash UFC η enters via the src
-`detector_efficiency` pathway) and keeps only the noisy log-line-integral
-sinogram + geometry.  Tube B runs on its **independent noise chain**
-(`sim_opts_b`) and sees the phantom through the tube-B z-offset — which for
-the Flash is unpublished and set to **0.0 mm** (documented assumption; the
-mechanism mirrors notebook 09's Force −0.88 mm so a measured value can drop in).
+`acquire` simulates the dual-energy acquisition the way basis-spectral-denoising
+does.  Each tube builds its workspace (`BS.create_workspace`; the Flash UFC η
+enters through the `detector_efficiency` pathway) and is **projected once**:
+everything before the noise is the same for every draw, so the first draw
+keeps it (`keep_projection = true`) and every further draw passes it back
+(`projection`) and only draws its noise, bit-identically to simulating
+afresh.  Three draws share the projection:
+
+- draw **0**, `use_noise = false`: the **noise-free reference**, the
+  expectation every noisy result below is scored against;
+- draw **1**: the **measured** acquisition every result comes from;
+- draw **9**: the **calibration** draw, which only fixes the
+  reconstruction's pair (§10); nothing is measured on it.
+
+Each draw keeps the two corrected log sinograms.  The first also keeps what
+the spectral basis needs: the per-ray air counts `I0_ray` (detector air count
+× bowtie air profile) and the per-ray detected spectrum from
+`resolve_source_spectrum_full` (source × filtration × bowtie × Flash η), the
+model the forward projector applied.  The basis does not depend on the
+noise, so every draw shares it.
 """
 
-# ╔═╡ 12000008-0000-4000-8000-000000000005
+# ╔═╡ 12000006-0000-4000-8000-000000000012
 begin
-    # Tube-B z-offset: unpublished for the Flash → 0.0 mm documented
-    # assumption (Force: −0.88 mm).  The mechanism stays in place.
-    FLASH_TUBE_B_Z_OFFSET_MM = 0.0
-    phantom_b = BS.Phantom(
-        phantom.mask,
-        phantom.materials,
-        phantom.voxel_size,
-        (phantom.origin[1], phantom.origin[2],
-            phantom.origin[3] - FLASH_TUBE_B_Z_OFFSET_MM / 10.0),
-        phantom.extent,
-    )
+    # Draw 0 is the noise-free expectation; draw r ≥ 1 gives each exposure the seed
+    # `seed + 1000 (r − 1)`, so the two tubes stay independent within a draw, and draws of each other.
+    DE_DRAWS = (reference = 0, measured = 1, calibration = 9)
+    realization_seed(e, r) = e.seed + 1000 * (max(r, 1) - 1)
+    opts_for(e, r) = with_option(with_option(with_option(FLASH.opts, :seed, realization_seed(e, r)),
+        :use_noise, r > 0), :view_arc, e.view_arc)
+end;
+
+# ╔═╡ 12000008-0000-4000-8000-000000000005
+"""
+    acquire(draws) -> Dict{Int, NamedTuple}
+
+The dual-energy acquisition of the Gammex (both tubes of `FLASH`) for every draw in `draws`: draw 0
+the noise-free expectation, draw `r ≥ 1` a noisy realisation with the seeds `realization_seed(e, r)`.
+Each exposure is projected once, by the first draw, and every other draw re-uses that projection
+(`keep_projection`, `projection`), only its noise drawn. Each entry holds the two log-transmission
+channels, the spectral basis the decomposition inverts (shared by every draw), the geometry and the
+wall time of the draw per tube.
+"""
+function acquire(draws)
+    parts = map(FLASH.exposures) do e
+        protocol = exposure_protocol(FLASH, e; mA_scale = DOSE_SCALE)
+        projection = nothing
+        channels = Dict{Int, Array{Float32, 3}}()
+        seconds = Dict{Int, Float64}()
+        model = nothing
+        for r in draws
+            opts = opts_for(e, r)
+            t = time()
+            ws = BS.create_workspace(FLASH.scanner, protocol, opts, recon_opts, phantom)
+            try
+                result = BS.simulate!(ws, phantom, protocol, opts; report_dose = false,
+                    keep_projection = projection === nothing, projection)
+                projection === nothing && (projection = result.projection)
+                channels[r] = Array(ws.sinogram)
+                if model === nothing
+                    air = ws.bowtie_air_reference === nothing ?
+                        ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+                        Float32.(Array(ws.bowtie_air_reference))
+                    I0 = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * Float64(ws.η_eff)
+                    energies, response = BS.resolve_source_spectrum_full(
+                        opts, protocol; scanner = FLASH.scanner, geom = ws.geom)
+                    model = (geom = ws.geom, I0_ray = Float32.(I0 .* air),
+                        energies = Float64.(energies), response = Float32.(response))
+                end
+            finally
+                BS.release_backend!(ws)
+            end
+            seconds[r] = time() - t
+        end
+        projection = nothing
+        (; channels, seconds, model...)
+    end
+    GC.gc(true)
+    basis = BS.spectral_basis_from_acquisitions(acquisitions = [
+        (energies = p.energies, response = p.response, I0_ray = p.I0_ray) for p in parts])
+    Dict(r => (draw = r, channels = [p.channels[r] for p in parts], basis = basis,
+               geom = first(parts).geom, seconds = [p.seconds[r] for p in parts])
+         for r in draws)
 end;
 
 # ╔═╡ 12000008-0000-4000-8000-000000000020
-sim_low = let
-    @info "Simulating: 100 kVp / $(round(protocol_low.mA, digits = 1)) mA (tube A, Flash η folded)…"
-    ws = BS.create_eict_workspace(
-        scanner, protocol_low, sim_opts, recon_opts, phantom,
-    )
-    BS.simulate!(ws, phantom, protocol_low, sim_opts)
-    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
-    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-        Array(ws.bowtie_air_reference)
-    # Per-ray detected spectrum for the spectral basis (§9):
-    # source × flat filter × bowtie × Flash η(E), same model simulate! used.
-    energies, response = BS.resolve_source_spectrum_full(
-        sim_opts, protocol_low; scanner = scanner, geom = ws.geom,
-    )
-    result = (sino = Array(ws.sinogram), geom = ws.geom,
-        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
-        energies = Float64.(energies), response = Float32.(response))
-    ws = nothing; GC.gc(true)
-    result
-end;
+de_acq = acquire((DE_DRAWS.reference, DE_DRAWS.measured, DE_DRAWS.calibration));
 
 # ╔═╡ 12000008-0000-4000-8000-000000000030
-sim_high = let
-    @info "Simulating: Sn140 kVp / $(round(protocol_high.mA, digits = 1)) mA (tube B, Flash η folded, independent seed)…"
-    ws = BS.create_eict_workspace(
-        scanner, protocol_high, sim_opts_b, recon_opts, phantom_b,
-    )
-    BS.simulate!(ws, phantom_b, protocol_high, sim_opts_b)
-    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
-    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-        Array(ws.bowtie_air_reference)
-    energies, response = BS.resolve_source_spectrum_full(
-        sim_opts_b, protocol_high; scanner = scanner, geom = ws.geom,
-    )
-    result = (sino = Array(ws.sinogram), geom = ws.geom,
-        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
-        energies = Float64.(energies), response = Float32.(response))
-    ws = nothing; GC.gc(true)
-    result
-end;
+let
+    role = Dict(DE_DRAWS.reference => "noise-free reference", DE_DRAWS.measured => "measured",
+        DE_DRAWS.calibration => "calibration")
+    seeds(r) = r == 0 ? "none" : join([realization_seed(e, r) for e in FLASH.exposures], ", ")
+    secs(v) = join([string(round(s, digits = 1)) for s in v], ", ")
+    rows = ["| $(r) | $(role[r]) | $(seeds(r)) | $(secs(de_acq[r].seconds)) |" for r in sort(collect(keys(de_acq)))]
+    Markdown.parse("""
+    | Draw | Role | Seeds (A, B) | Seconds (A, B) |
+    |---:|---|---|---|
+    $(join(rows, "\n"))
+
+    Draw 0 projects each tube, $(VIEW_SAMPLES) sub-views per view; draws 1 and 9 re-use that
+    projection and only draw their noise. In the regular mode of §6, tube A took
+    $(round(sim_reg.a.seconds, digits = 1)) s and tube B, re-using its projection,
+    $(round(sim_reg.b.seconds, digits = 1)) s (wall time on this render, compilation included in the first call).
+    """)
+end
+
+# ╔═╡ 12000008-0000-4000-8000-000000000035
+# The measured draw: every DE result below comes from it.
+de_measured = de_acq[DE_DRAWS.measured];
 
 # ╔═╡ 12000008-0000-4000-8000-000000000040
 let
-    n_row = size(sim_low.sino, 2)
+    n_row = size(de_measured.channels[1], 2)
     mid_r = n_row ÷ 2 + 1
 
-    slice_lo = permutedims(sim_low.sino[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sim_high.sino[:, mid_r, :], (2, 1))
+    slice_lo = permutedims(de_measured.channels[1][:, mid_r, :], (2, 1))
+    slice_hi = permutedims(de_measured.channels[2][:, mid_r, :], (2, 1))
 
     all_v = vcat(vec(slice_lo), vec(slice_hi))
     sino_window = (
@@ -789,7 +885,7 @@ let
     )
 
     panels = (
-        (1, 1, "100 kVp (tube A)", slice_lo),
+        (1, 1, "80 kVp (tube A)", slice_lo),
         (1, 2, "Sn140 kVp (tube B)", slice_hi),
     )
 
@@ -811,8 +907,9 @@ md"""
 In DE mode the scanner's routine-equivalent grayscale output is the
 **mixed image** — a linear image-domain blend of the two per-tube
 reconstructions (Yu et al., *Med Phys* 2009: `M = w·I_low + (1−w)·I_high`;
-Eusemann et al., SPIE 2008).  On the Flash's 100/Sn140 pair the historical
-clinical default is w = 0.5 (later w ≈ 0.5–0.6).
+Eusemann et al., SPIE 2008).  This notebook shows the equal blend,
+w = 0.5; clinical Flash blends weight the low-kV image between about 0.3
+and 0.6.
 
 So the poly validation of the Flash LUT runs the standard correction stack
 **per tube** — η-aware water sinogram BHC → FDK → HU — then blends.  If the
@@ -821,10 +918,10 @@ therefore in any blend).
 """
 
 # ╔═╡ 12000009-0000-4000-8000-000000000010
-bhc_low = flash_bhc_calibration(protocol_low, sim_low.geom);
+bhc_low = flash_bhc_calibration(protocol_low, de_measured.geom);
 
 # ╔═╡ 12000009-0000-4000-8000-000000000012
-bhc_high = flash_bhc_calibration(protocol_high, sim_high.geom);
+bhc_high = flash_bhc_calibration(protocol_high, de_measured.geom);
 
 # ╔═╡ 12000009-0000-4000-8000-000000000015
 md"""
@@ -838,13 +935,12 @@ regular 120 kVp ref energy = $(round(bhc_reg.ref_E_keV, digits = 1)) keV
 
 # ╔═╡ 12000009-0000-4000-8000-000000000020
 hu_tube = (
-    low = flash_poly_recon(sim_low.sino, sim_low.geom, bhc_low),
-    high = flash_poly_recon(sim_high.sino, sim_high.geom, bhc_high),
+    low = flash_poly_recon(de_measured.channels[1], de_measured.geom, bhc_low),
+    high = flash_poly_recon(de_measured.channels[2], de_measured.geom, bhc_high),
 );
 
 # ╔═╡ 12000009-0000-4000-8000-000000000025
-# Siemens linear mixed image: M = w·I_low + (1−w)·I_high (image domain,
-# Yu 2009).  w = 0.5 is the Flash-era 100/Sn140 default.
+# Siemens linear mixed image: M = w·I_low + (1−w)·I_high (image domain, Yu 2009): the equal blend.
 MIX_W_LOW = 0.5f0;
 
 # ╔═╡ 12000009-0000-4000-8000-000000000028
@@ -853,9 +949,8 @@ hu_mixed = MIX_W_LOW .* hu_tube.low .+ (1.0f0 - MIX_W_LOW) .* hu_tube.high;
 # ╔═╡ 12000009-0000-4000-8000-000000000030
 poly_water_stats = let
     ERODE_PX = 12.0
-    mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
     sw_bool = BS.erode_mask_2d(
-        mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER); erode_px = ERODE_PX,
+        roi_labels .== UInt8(BS.REGION_SOLID_WATER); erode_px = ERODE_PX,
     )
     sw_idx = findall(sw_bool)
     n_z = size(hu_mixed, 3)
@@ -884,7 +979,7 @@ let
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     panels = (
-        (1, "100 kVp (tube A)", hu_tube.low),
+        (1, "80 kVp (tube A)", hu_tube.low),
         (2, "Sn140 kVp (tube B)", hu_tube.high),
         (3, "Mixed M$(MIX_W_LOW)", hu_mixed),
     )
@@ -920,7 +1015,7 @@ and the mixed image.  All three should cluster at ≈ 0 HU.
 # ╔═╡ 12000009-0000-4000-8000-000000000060
 let
     entries = (
-        ("100 kVp", poly_water_stats.low),
+        ("80 kVp", poly_water_stats.low),
         ("Sn140 kVp", poly_water_stats.high),
         ("Mixed M$(MIX_W_LOW)", poly_water_stats.mixed),
     )
@@ -991,20 +1086,18 @@ end
 md"""
 ## 9. Spectral Basis from the Two Tubes
 
-`spectral_basis_from_acquisitions` merges the two tubes' energy grids onto
-their union and scales each tube's per-ray detected spectrum by its own air
-counts, so the likelihood sees the absolute response ``\Phi_k(E)`` of every
-ray and channel: **source × flat filter × bowtie × Flash UFC η(E)**, the
-identical model the forward projector applied (it is resolved from the same
-`build_physics_config`, and therefore the same Flash table, that `simulate!`
-used).  No calibration scan is involved.
+`acquire` built the basis with `spectral_basis_from_acquisitions`, which merges
+the two tubes' energy grids onto their union and scales each tube's per-ray
+detected spectrum by its own air counts, so the likelihood sees the absolute
+response ``\Phi_k(E)`` of every ray and channel: **source × flat filter ×
+bowtie × Flash UFC η(E)**, the identical model the forward projector applied
+(it is resolved from the same `build_physics_config`, and therefore the same
+Flash table, that `simulate!` used).  No calibration scan is involved, and
+the noise-free, measured and calibration draws all share it.
 """
 
 # ╔═╡ 1200000a-0000-4000-8000-000000000010
-basis = BS.spectral_basis_from_acquisitions(acquisitions = [
-    (energies = s.energies, response = s.response, I0_ray = s.I0_ray)
-    for s in (sim_low, sim_high)
-]);
+basis = de_measured.basis;
 
 # ╔═╡ 1200000a-0000-4000-8000-000000000015
 Markdown.parse("""
@@ -1019,69 +1112,130 @@ md"""
 ## 10. The VMI Chain: `vmi_pipeline`
 
 One package call from the two corrected sinograms to the VMI stack, the chain
-of the basis-vmi paper (the n-channel decomposition, ACNR) with the basis-spectral-denoising paper's SpectralHYPR:
+of the basis-spectral-denoising paper:
+`vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = PAIR_FILTER.filter, pair_basis, composite_energy)`.
 
-1. **Projection HYPR-LR** (`BS.SpectralHYPR`'s projection instance): a 3 × 3
-   (column × view) window on the counts of each detector row, with each
-   tube's dispersion measured from its own air rays.
+1. **Projection HYPR-LR** (`ProjectionHYPR`): a 3 × 3 window (columns ×
+   views of one parity, `view_stride = 2`, so the odd and even views stay
+   independent) on the counts of each detector row, with each tube's
+   dispersion measured from its own air rays.
 2. **K = 2 n-channel decomposition**: per ray, the Poisson maximum-likelihood
    iodine + water pair under the exact polychromatic mean of both tubes,
-   in the count domain, with per-ray quality flags.
-3. **Image HYPR** on the FDK-reconstructed basis pair (a 1 × 1 × 7 composite (across slices only)
-   and a 15 × 15 × 7 complement window), then **Kalender ACNR**.
-4. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
+   every detector row kept.
+3. **The spectral pair** (`spectral_pair`): FDK of the composite `M`, the
+   minimum-noise VMI, and of its complement `I⊥`, whose noise is
+   uncorrelated with `M`'s, each with its own window of the fitted
+   `PairFilter`, on the pair `pair_basis` fixed from the calibration draw.
+4. **ACNR** on the complement only (`acnr_complement!`): the composite is
+   left as reconstructed.
+5. **Image HYPR** (`ImageHYPR`): the composite kept, the complement pooled
+   within its slice with weights from the composite, over the window with
+   the least estimated risk.
+6. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
 
-The FBP kernel is the notebook's soft-tissue kernel (a CatSim-style
-apodization halfway between the Standard and Soft windows); the grid is
-`recon_opts.matrix_size`, 5 × 0.6 mm, with every detector row kept.
+Nothing in the chain averages detector rows or slices.
+
+**The fitted windows (`PAIR_FILTER`).** Each window is an apodized ramp
+`W(f) = exp(-(f / f_c)^p)` on the grid's Nyquist axis.  The Flash's pair
+(composite `f_c = 1.05, p = 1.5`; complement `f_c = 0.8, p = 1.0`) was
+fitted in basis-spectral-denoising to the MTF and NPS of the physical Flash
+scan of the Gammex, on 512² over 33 cm, the grid used here.  A window is a
+function of physical frequency, so on another grid it is rescaled by the
+ratio of the two grids' `grid_bandlimit`; the ratio on this grid is printed
+below.
+
+**`pair_basis` and `composite_energy`, from the calibration draw.** The pair
+the windows act on (`E*`, `β`) and the composite energy ACNR and the image
+HYPR act on are properties of the scanner and protocol, not of one noise
+draw: near its minimum the VMI noise hardly changes with energy, so an
+argmin measured on the draw being evaluated would itself be noise.  They are
+measured once, on the calibration draw, with a standard soft-tissue window
+(`SoftFilter`): `E*` and `β` from its plain decomposition, the composite
+energy from its decomposition after the projection HYPR.  The measured
+draw, the same draw without denoising, and the noise-free reference are then
+reconstructed alike.
 """
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000005
-# the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
-# the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
+# basis-spectral-denoising's HYPR_CHAIN: ProjectionHYPR(3 × 3 Box, view_stride = 2) and ImageHYPR()
 HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000006
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000007
-# Halfway between CatSim Standard (1, .934, .744, .443, .053) and Soft: the same soft-tissue
-# kernel as notebook 03 (no measured Definition Flash kernel is published).
-FLASH_KERNEL = BS.CustomFilter(
-    (0.0, 0.25, 0.5, 0.75, 1.0),
-    (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
-);
+# The Flash's fitted pair of FDK windows (basis-spectral-denoising's `RECON.flash`), fitted on
+# 512² over 33 cm and rescaled onto this grid's frequency axis as its `RECON_BY` does.
+PAIR_FILTER = let knots = Tuple(range(0.0, 1.0, length = 11)),
+        fitted = (composite = (fc = 1.05, p = 1.5), complement = (fc = 0.8, p = 1.0)),
+        g = de_measured.geom,
+        r = BS.grid_bandlimit(g, recon_opts.matrix_size) / min(1.0, g.pixel_size / (33.0 / 512))
+    window(q) = BS.CustomFilter(knots, Tuple(round(exp(-(x * r / q.fc)^q.p), digits = 5) for x in knots))
+    (filter = BS.PairFilter(window(fitted.composite), window(fitted.complement)), kernels = fitted, scale = r)
+end;
+
+# ╔═╡ 1200000b-0000-4000-8000-000000000008
+# `pair_basis` and `composite_energy` (basis-spectral-denoising's `PAIR_BASIS`), from the calibration draw
+calibration = let a = de_acq[DE_DRAWS.calibration]
+    decompose(denoiser) = BS.vmi_pipeline(; channels = a.channels, basis = a.basis, geom = a.geom,
+        to_backend = to_gpu, matrix_size = recon_opts.matrix_size, vmi_energies = Tuple(de_vmi_energies),
+        denoiser, keep_sinograms = true, VMI_CHAIN..., use_acnr = false).sinograms
+    sp(d; kw...) = BS.spectral_pair(d.water, d.iodine, a.geom, recon_opts.matrix_size;
+        filter = BS.SoftFilter(), antialias = VMI_CHAIN.antialias, to_backend = to_gpu, kw...)
+    x = sp(decompose(nothing))                                   # the plain decomposition
+    c = sp(decompose(BS.SpectralHYPR(image = nothing));          # after the projection HYPR
+        basis = (Estar = x.Estar, β = x.β))
+    (pair_basis = (Estar = x.Estar, β = x.β), composite_energy = c.Estar)
+end;
 
 # ╔═╡ 1200000c-0000-4000-8000-000000000015
 de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000010
 de_vmi = BS.vmi_pipeline(;
-    channels = [sim_low.sino, sim_high.sino],
+    channels = de_measured.channels,
     basis,
-    geom = sim_low.geom,
+    geom = de_measured.geom,
     to_backend = to_gpu,
     matrix_size = recon_opts.matrix_size,
     vmi_energies = Tuple(de_vmi_energies),
-    fbp_filter = FLASH_KERNEL,
     denoiser = HYPR_CHAIN,
-    use_acnr = true,
+    fbp_filter = PAIR_FILTER.filter,
+    pair_basis = calibration.pair_basis,
+    composite_energy = calibration.composite_energy,
     keep_sinograms = true,
     VMI_CHAIN...,
 );
+
+# ╔═╡ 1200000b-0000-4000-8000-000000000011
+# The same draw and reconstruction without the denoising (no HYPR, no ACNR), and the noise-free
+# reference (draw 0, the same projection), reconstructed alike.
+de_none, de_ref = (BS.vmi_pipeline(;
+        channels = de_acq[r].channels, basis, geom = de_measured.geom, to_backend = to_gpu,
+        matrix_size = recon_opts.matrix_size, vmi_energies = Tuple(de_vmi_energies),
+        denoiser = nothing, use_acnr = false, fbp_filter = PAIR_FILTER.filter,
+        pair_basis = calibration.pair_basis, composite_energy = calibration.composite_energy,
+        VMI_CHAIN...,
+    ) for r in (DE_DRAWS.measured, DE_DRAWS.reference));
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000015
 let
     q = de_vmi.quality
     d = de_vmi.settings.denoiser
     pct(x) = round(100x, digits = 3)
+    pb = calibration.pair_basis
     Markdown.parse("""
     The decomposition solved $(q.n_rays) rays in $(round(de_vmi.elapsed_s, digits = 1)) s
-    ($(round(q.outer_mean, digits = 1)) outer iterations on average); $(pct(q.frac_not_converged))% did not
+    with $(round(q.outer_mean, digits = 1)) outer iterations on average; $(pct(q.frac_not_converged))% did not
     converge and $(pct(q.frac_bound_iodine))% / $(pct(q.frac_bound_water))% touched the iodine / water bounds.
     The projection HYPR measured dispersions (variance / mean of the counts on the air rays) of
-    $(join(round.(d.dispersion, digits = 2), " and ")) for tube A and tube B. The image HYPR's
-    minimum-noise composite energy is E* = $(round(Int, d.image_estimates.Estar)) keV.
+    $(join(round.(d.dispersion, digits = 2), " and ")) for tube A and tube B.
+
+    From the calibration draw: the windows act on the pair at E* = $(round(pb.Estar, digits = 1)) keV,
+    β = $(round(pb.β, sigdigits = 3)), and ACNR and the image HYPR on the composite at
+    $(round(calibration.composite_energy, digits = 1)) keV. The image HYPR pooled the complement over a
+    $(d.image_estimates.window) × $(d.image_estimates.window) window. The fitted windows were rescaled by
+    $(round(PAIR_FILTER.scale, digits = 3)) onto this grid's frequency axis.
     """)
 end
 
@@ -1168,17 +1322,19 @@ md"""
 HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 ```
 
-The `solid_water_basis` diagnostic reports the basis pair in the eroded
-solid-water region: a perfect decomposition reads water density ≈ 1 g/cm³
-(solid water is not pure water, so a small offset is expected) and iodine ≈ 0.
+The figure shows the three reconstructions of §10 side by side: the measured
+draw without denoising, the measured draw through the full chain, and the
+noise-free reference.  The `solid_water_basis` diagnostic reports the basis
+pair in the eroded solid-water region: a perfect decomposition reads water
+density ≈ 1 g/cm³ (solid water is not pure water, so a small offset is
+expected) and iodine ≈ 0.
 """
 
 # ╔═╡ 1200000c-0000-4000-8000-000000000010
 solid_water_basis = let
     ERODE_PX = 12.0
 
-    mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
-    sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
+    sw_bool_raw = (roi_labels .== UInt8(BS.REGION_SOLID_WATER))
     sw_bool = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
 
     n_raw = count(sw_bool_raw); n_eroded = count(sw_bool)
@@ -1210,28 +1366,23 @@ vmi_HU_final = Dict(
 # ╔═╡ 1200000c-0000-4000-8000-000000000040
 let
     HU_window = (-200, 500)
+    mid = (size(de_vmi.vmis, 3) + 1) ÷ 2
+    runs = (("No denoising", de_none), ("SpectralHYPR", de_vmi), ("Noise-free reference", de_ref))
 
-    fig = Mke.Figure(size = (1180, 1180))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    sample = vmi_HU_final[50.0]
-    mid = (size(sample, 3) + 1) ÷ 2
-
-    for (k, E) in enumerate(de_vmi_energies)
-        r = ((k - 1) ÷ 2) + 1
-        c = ((k - 1) % 2) + 1
-        ax = Mke.Axis(
-            fig[r, c]; title = "$(Int(E)) keV VMI",
-            aspect = Mke.DataAspect(), axis_kwargs...,
-        )
-        Mke.heatmap!(
-            ax, vmi_HU_final[E][:, :, mid];
-            colormap = :grays, colorrange = HU_window,
-        )
-        Mke.hidedecorations!(ax)
+    fig = Mke.Figure(size = (1500, 1150))
+    for (r, (label, run)) in enumerate(runs)
+        Mke.Label(fig[r, 1], label; rotation = π / 2, fontsize = 26, tellheight = false)
+        for (c, E) in enumerate(de_vmi_energies)
+            ax = Mke.Axis(
+                fig[r, c + 1]; title = r == 1 ? "$(Int(E)) keV" : "",
+                aspect = Mke.DataAspect(), titlesize = 30,
+            )
+            Mke.heatmap!(ax, run.vmis[:, :, mid, c]; colormap = :grays, colorrange = HU_window)
+            Mke.hidedecorations!(ax)
+        end
     end
     Mke.Colorbar(
-        fig[1:2, 3];
+        fig[1:3, length(de_vmi_energies) + 2];
         colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
     )
@@ -1271,7 +1422,7 @@ ROD_NAMES = (
 # ╔═╡ 1200000e-0000-4000-8000-000000000030
 rod_data = let
     materials = phantom_cpu.materials
-    mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+    mask_2d = roi_labels
     nx, ny = size(mask_2d)
     ROI_RADIUS_PX = 8
 
@@ -1373,16 +1524,8 @@ let
     )
     Mke.hidedecorations!(ax1)
 
-    sw_idx = findall(solid_water_basis.mask_2d)
-    n_z = size(vmi_HU_final[70.0], 3)
-    function _mean_hu(vol)
-        s = 0.0; n = 0
-        for z in 1:n_z, ci in sw_idx
-            s += vol[ci, z]; n += 1
-        end
-        return s / n
-    end
-    sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in de_vmi_energies]
+    sw_hu_per_keV = [vmi_noise_by_keV[E].mean for E in de_vmi_energies]
+    ref_hu_per_keV = [vmi_noise_by_keV[E].reference for E in de_vmi_energies]
 
     n_E = length(de_vmi_energies)
     bar_colors = [Mke.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
@@ -1390,10 +1533,10 @@ let
     ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water Region Mean HU",
-        subtitle = "Per VMI Energy",
+        subtitle = "SpectralHYPR (bars) vs noise-free reference (◆)",
         xlabel = "VMI Energy (keV)", ylabel = "HU",
         xticks = (collect(1:n_E), ["$(Int(E))" for E in de_vmi_energies]),
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32, subtitlesize = 22,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
@@ -1402,19 +1545,19 @@ let
         color = bar_colors,
         strokecolor = :black, strokewidth = 1,
     )
+    Mke.scatter!(ax2, 1:n_E, ref_hu_per_keV; color = :black, marker = :diamond, markersize = 18)
     Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
-    for (k, h) in pairs(sw_hu_per_keV)
+    y_max = max(15.0, 1.2 * maximum(abs, vcat(sw_hu_per_keV, ref_hu_per_keV)))
+    Mke.ylims!(ax2, -y_max, y_max)
+    # the values, above the bars and clear of the reference markers
+    for (k, (h, r)) in enumerate(zip(sw_hu_per_keV, ref_hu_per_keV))
         Mke.text!(
-            ax2, k, h;
-            text = "$(round(h, digits = 1)) HU",
-            align = (:center, h ≥ 0 ? :bottom : :top),
-            fontsize = 16, offset = (0, h ≥ 0 ? 4 : -4),
+            ax2, k, 0.6 * y_max;
+            text = "$(round(h, digits = 1)) HU\nref $(round(r, digits = 1))",
+            align = (:center, :center), fontsize = 16,
         )
     end
-
-    y_max = max(15.0, 1.2 * maximum(abs, sw_hu_per_keV))
-    Mke.ylims!(ax2, -y_max, y_max)
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "flash_ufc_vmi_water_roi.png"),
@@ -1427,25 +1570,30 @@ end
 md"""
 ### Water-Region Noise
 
-Mean and σ are both measured on the **deeply eroded solid-water region**
-(the same 12-px-eroded mask as the accuracy ROI, as in notebook 03).  The large
-region, over every slice, keeps the per-keV mean and σ statistically
-stable; a small central circle is underpowered when FBP noise is spatially
-correlated.
+The mean and σ are both measured on the **deeply eroded solid-water region**
+(the same 12-px-eroded mask as the accuracy ROI, as in notebook 03), over
+every slice: a large region keeps the per-keV statistics stable where FBP
+noise is spatially correlated.  The noise is measured **against the
+noise-free reference**, σ = std(VMI − reference): the reference shares the
+projection and the reconstruction, so the difference is the noise alone,
+with no structure (residual cupping, the rods' edges) mixed in.  The same
+draw without the denoising shows what the chain removes.
 """
 
 # ╔═╡ 1200000e-0000-4000-8000-000000000080
 vmi_noise_by_keV = let
     roi_idx = findall(solid_water_basis.mask_2d)
-    nz_r = size(vmi_HU_final[70.0], 3)
+    nz_r = size(de_vmi.vmis, 3)
+    vals(run, k) = Float64[Float64(run.vmis[ci, z, k]) for z in 1:nz_r, ci in roi_idx]
 
     out = Dict{Float64, NamedTuple}()
-    for E in de_vmi_energies
-        vol = vmi_HU_final[E]
-        vals = Float64[Float64(vol[ci, z]) for z in 1:nz_r, ci in roi_idx]
-        μ = mean(vals); σ = std(vals)
-        out[E] = (mean = μ, std = σ, n = length(vals))
-        @info "water-region noise @ $(Int(E)) keV: ⟨HU⟩ = $(round(μ, digits = 2)),  σ = $(round(σ, digits = 2)) HU  (n = $(length(vals)))"
+    for (k, E) in enumerate(de_vmi_energies)
+        p, n, r = vals(de_vmi, k), vals(de_none, k), vals(de_ref, k)
+        out[E] = (mean = mean(p), reference = mean(r), std = std(p .- r), std_none = std(n .- r),
+            n = length(p))
+        @info "water region @ $(Int(E)) keV: ⟨HU⟩ = $(round(mean(p), digits = 2)) " *
+            "(reference $(round(mean(r), digits = 2))), σ = $(round(std(p .- r), digits = 2)) HU " *
+            "(no denoising $(round(std(n .- r), digits = 2)) HU, n = $(length(p)))"
     end
     out
 end;
@@ -1475,33 +1623,42 @@ let
     Mke.hidedecorations!(ax1)
 
     Es = sort(collect(keys(vmi_noise_by_keV)))
-    σs = [vmi_noise_by_keV[E].std  for E in Es]
-    μs = [vmi_noise_by_keV[E].mean for E in Es]
+    σs = [vmi_noise_by_keV[E].std for E in Es]
+    σn = [vmi_noise_by_keV[E].std_none for E in Es]
 
     ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water-Region Noise vs Energy",
+        subtitle = "σ of (VMI − noise-free reference)",
         xlabel = "VMI Energy (keV)",
         ylabel = "Noise σ (HU)",
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32, subtitlesize = 22,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    Mke.scatterlines!(
-        ax2, Es, σs;
-        color = :tomato, markersize = 18, linewidth = 3,
-    )
-    for (E, σ, μ) in zip(Es, σs, μs)
+    Mke.scatterlines!(ax2, Es, σn; color = :gray45, markersize = 14, linewidth = 2.5,
+        linestyle = :dash, label = "No denoising")
+    Mke.scatterlines!(ax2, Es, σs; color = :tomato, markersize = 18, linewidth = 3,
+        label = "SpectralHYPR")
+    for (E, σ) in zip(Es, σs)
         Mke.text!(
             ax2, E, σ;
-            text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
-            align = (:center, :bottom),
-            fontsize = 16, offset = (0, 12),
+            text = "$(round(σ; digits = 1))",
+            align = (:center, :top),
+            fontsize = 16, offset = (0, -12),
         )
     end
-    # room for the labels above the highest point and beside the end energies
+    for (E, σ) in zip(Es, σn)
+        Mke.text!(
+            ax2, E, σ;
+            text = "$(round(σ; digits = 1))",
+            align = (:center, :bottom),
+            fontsize = 16, offset = (0, 10), color = :gray35,
+        )
+    end
     Mke.xlims!(ax2, first(Es) - 15, last(Es) + 15)
-    Mke.ylims!(ax2, 0, 1.3 * maximum(σs))
+    Mke.ylims!(ax2, 0, 1.25 * maximum(σn))
+    Mke.axislegend(ax2; position = :rt, framevisible = true, labelsize = 16)
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "flash_ufc_vmi_water_noise.png"),
@@ -1688,12 +1845,27 @@ Automated PASS/FAIL gates over both acquisition classes (notebook 01 convention)
 3. **DE poly water accuracy** — |⟨HU⟩| ≤ 5 in low, high, mixed.
 4. **VMI water accuracy** — |⟨HU⟩| ≤ 10 at every synthesized keV,
    measured on the deeply eroded solid-water region (notebook 03 convention).
-5. **Monotonic VMI noise** — σ(50) > σ(70) > σ(100) > σ(140) (clinical
-   truth; hard gate, no tolerance — the same standard every other VMI
-   notebook meets).
-6. **The published chain ran** — both tubes in the likelihood, projection +
-   image HYPR and ACNR all applied (`de_vmi.settings`).
-7. **Per-rod regression** — measured-vs-theoretical slope ∈ [0.85, 1.15]
+5. **VMI bias against the noise-free reference** — the chain's water
+   ⟨HU⟩ within 2 HU of the noise-free reference's at every keV: the
+   denoising moves the noise, not the CT number.
+6. **VMI noise flat in energy** — max / min σ over 50–140 keV ≤ 1.10, σ
+   against the noise-free reference.  Without denoising the VMI noise is
+   U-shaped: highest at 50 keV, lowest near the minimum-noise energy E*,
+   rising again above it.  The chain keeps the composite (the VMI at E*) as
+   reconstructed and pools only the complement, which carries the noise
+   that grows away from E*; what remains in every VMI is mostly the
+   composite's noise, and the curve flattens (the undenoised curve's
+   max / min is printed beside the gate).  The gate this notebook used
+   before, σ strictly decreasing from 50 to 140 keV, described the earlier
+   chain and no longer holds; the check for this chain is that the noise
+   stays near its minimum at every energy.
+7. **The denoising lowers the noise** — σ below the undenoised
+   reconstruction of the same draw at every keV.
+8. **The chain that ran** — both tubes in the likelihood, projection and
+   image HYPR, ACNR on the complement, the fitted `PairFilter`, the pair and
+   composite energy of the calibration draw, view integration
+   (`de_vmi.settings`, `FLASH.opts`).
+9. **Per-rod regression** — measured-vs-theoretical slope ∈ [0.85, 1.15]
    and R² ≥ 0.99 at every keV, both rod groups.
 """
 
@@ -1717,7 +1889,7 @@ verification = let
     ))
 
     # 3. DE poly water accuracy
-    for (tag, s) in (("100 kVp", poly_water_stats.low), ("Sn140 kVp", poly_water_stats.high),
+    for (tag, s) in (("80 kVp", poly_water_stats.low), ("Sn140 kVp", poly_water_stats.high),
         ("mixed", poly_water_stats.mixed))
         push!(checks, (
             "DE poly water $(tag)", abs(s.mean) ≤ 5.0,
@@ -1734,25 +1906,48 @@ verification = let
         ))
     end
 
-    # 5. Monotonic noise decrease with keV — HARD gate, no tolerance
-    # (clinical truth; same standard every other VMI notebook meets).
-    σs = [vmi_noise_by_keV[E].std for E in de_vmi_energies]
+    # 5. Bias against the noise-free reference (same projection, same reconstruction)
+    bias = [vmi_noise_by_keV[E].mean - vmi_noise_by_keV[E].reference for E in de_vmi_energies]
     push!(checks, (
-        "VMI noise monotonic ↓", all(diff(σs) .< 0),
-        "σ = " * join([string(round(σ, digits = 1)) for σ in σs], " > "),
+        "VMI bias vs noise-free reference", maximum(abs, bias) ≤ 2.0,
+        "⟨HU⟩ − ⟨HU⟩_ref = " * join([string(round(b, digits = 2)) for b in bias], ", ") * " (gate ±2)",
     ))
 
-    # 6. The published chain ran: K = 2, projection + image HYPR, ACNR
+    # 6. The noise is flat in energy: the chain carries the composite's noise to every VMI
+    σs = [vmi_noise_by_keV[E].std for E in de_vmi_energies]
+    σn_all = [vmi_noise_by_keV[E].std_none for E in de_vmi_energies]
+    flat = maximum(σs) / minimum(σs)
+    push!(checks, (
+        "VMI noise flat in energy", flat ≤ 1.10,
+        "σ = " * join([string(round(σ, digits = 1)) for σ in σs], ", ") *
+            " HU, max / min = $(round(flat, digits = 3)) (gate ≤ 1.10; no denoising " *
+            "$(round(maximum(σn_all) / minimum(σn_all), digits = 2)))",
+    ))
+
+    # 7. The denoising lowers the noise at every keV
+    σn = [vmi_noise_by_keV[E].std_none for E in de_vmi_energies]
+    push!(checks, (
+        "denoising lowers σ", all(σs .< σn),
+        "σ / σ_none = " * join([string(round(a / b, digits = 2)) for (a, b) in zip(σs, σn)], ", "),
+    ))
+
+    # 8. The chain that ran
     chain = de_vmi.settings
     push!(checks, (
         "VMI chain",
         chain.n_channels == 2 && chain.denoiser !== nothing &&
             chain.denoiser.projection !== nothing && chain.denoiser.image !== nothing &&
-            chain.acnr !== nothing,
-        "K = $(chain.n_channels), projection + image HYPR, ACNR `$(chain.acnr)`",
+            chain.acnr !== nothing && chain.acnr.on === :complement &&
+            chain.recon.filter isa BS.PairFilter &&
+            chain.pair.basis == calibration.pair_basis &&
+            chain.pair.Estar == calibration.composite_energy &&
+            FLASH.opts.view_samples == 5 && all(e -> e.view_arc == 1.0, FLASH.exposures),
+        "K = $(chain.n_channels), projection + image HYPR, ACNR on the `$(chain.acnr === nothing ? "none" : chain.acnr.on)`, " *
+            "`PairFilter`, calibration pair E* = $(round(chain.pair.basis.Estar, digits = 1)) keV, " *
+            "composite $(round(chain.pair.Estar, digits = 1)) keV, `view_samples` = $(FLASH.opts.view_samples)",
     ))
 
-    # 7. Per-rod regression gates
+    # 9. Per-rod regression gates
     function _fit(x, y)
         x̄ = mean(x); ȳ = mean(y)
         β = sum((x .- x̄) .* (y .- ȳ)) / sum((x .- x̄) .^ 2)
@@ -1803,18 +1998,20 @@ md"""
 
 ```
 Flash UFC MC η(E) LUT (BS.UFC_FLASH_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
-   → EICTScanner(detector_material = :ufc_flash)
-                → detector_efficiency_ufc_flash()
-REGULAR: 120 kVp × 2 tubes (independent seeds)
+   → EICTScanner(detector_material = :ufc_flash) → detector_efficiency_ufc_flash()
+   flash_opts: view_samples = 5 (view_arc 1.0 per tube), heel effect off
+REGULAR: 120 kVp × 2 tubes, one projection, two seeds
    → per-tube η-aware BHC → FDK → HU → (A+B)/2
-   → water ≈ 0 HU ×3, σ_combined ≈ σ_single/√2               (§6)
-DUAL ENERGY: 100 kVp (A) + Sn140 kVp (B, 0.4 mm Sn)
-   ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w  (§8)
-   └─→ VMI:  BS.spectral_basis_from_acquisitions (bowtie + η_Flash per ray)
-             → BS.vmi_pipeline(; denoiser = HYPR_CHAIN, use_acnr = true):
-               projection HYPR → K = 2 n-channel decomposition
-               → image HYPR → ACNR → VMI 50/70/100/140 keV
-             → per-rod measured vs theoretical regression    (§9–11)
+   → water ≈ 0 HU ×3, σ_combined ≈ σ_single/√2                    (§6)
+DUAL ENERGY: 80 kVp (A) + Sn140 kVp (B, 0.4 mm Sn), × DOSE_SCALE
+   each tube projected once → draws 0 (noise-free), 1 (measured), 9 (calibration)
+   ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w       (§8)
+   └─→ VMI:  spectral basis (bowtie + η_Flash per ray, shared by every draw)
+             pair_basis, composite_energy ← calibration draw
+             → BS.vmi_pipeline(; denoiser = SpectralHYPR(),
+                   fbp_filter = PairFilter(fitted Flash windows), …)
+             → VMI 50/70/100/140 keV vs the noise-free reference
+             → per-rod measured vs theoretical regression        (§9–11)
    → automated PASS/FAIL verification over both classes
 ```
 
@@ -1823,15 +2020,16 @@ DUAL ENERGY: 100 kVp (A) + Sn140 kVp (B, 0.4 mm Sn)
 1. **The Flash is modeled as itself, not as a re-badged Force**: its own
    MC detector LUT (−28% η at 140 keV vs the Force), its published
    geometry (595/1085.6 mm, 64 × 736 @ 0.70473 mm iso), published anode
-   angle (7°), published flat filtration (8.4 mm Al eq.), and its actual
-   clinical DE pair (100/Sn140 with 0.4 mm Sn — no kV substitution
-   needed, unlike the Force's Sn150).
+   angle (7°), published flat filtration (8.4 mm Al eq.), and the physical
+   Flash scan's DE protocol (80/Sn140 with 0.4 mm Sn, dose-matched to its
+   CTDIvol) — the scanner and acquisition of the basis-spectral-denoising
+   paper.
 2. **Both dual-source acquisition classes in one place**: the regular
-   (dual-power) readout verifies accuracy + the √2 independence of the
+   (dual-power) readout verifies accuracy and the √2 independence of the
    two tube chains; the DE readout verifies the poly/mixed chain and the
-   full VMI chain (`vmi_pipeline`) on two very different
-   detected spectra sitting on opposite sides of the Gd K-edge
-   fluorescence-escape cliff.
+   full VMI chain (`vmi_pipeline`) on two very different detected spectra
+   on opposite sides of the Gd K-edge fluorescence-escape cliff, each
+   result scored against the noise-free draw of the same projection.
 3. **Documented assumptions are explicit** (§3): bowtie profile, crystal
    depth, fill factor, electronic noise, tube-B z-offset, z-FFS — the
    remaining gaps on the parity checklist of the
@@ -1864,30 +2062,33 @@ never-alias-the-Force regression test).
 # ╠═12000003-0000-4000-8000-000000000020
 # ╟─12000004-0000-4000-8000-000000000001
 # ╠═12000004-0000-4000-8000-000000000010
+# ╟─12000006-0000-4000-8000-000000000001
+# ╠═12000006-0000-4000-8000-000000000010
 # ╟─12000005-0000-4000-8000-000000000001
 # ╠═12000005-0000-4000-8000-000000000005
 # ╠═12000005-0000-4000-8000-000000000010
 # ╠═12000005-0000-4000-8000-000000000020
-# ╟─12000006-0000-4000-8000-000000000001
-# ╠═12000006-0000-4000-8000-000000000010
-# ╠═12000006-0000-4000-8000-000000000012
+# ╠═12000005-0000-4000-8000-000000000030
+# ╟─12000005-0000-4000-8000-000000000040
 # ╠═12000006-0000-4000-8000-000000000020
+# ╠═12000006-0000-4000-8000-000000000025
 # ╠═12000006-0000-4000-8000-000000000030
 # ╟─12000006-0000-4000-8000-000000000040
 # ╟─12000007-0000-4000-8000-000000000001
 # ╠═12000007-0000-4000-8000-000000000005
 # ╠═12000007-0000-4000-8000-000000000008
 # ╠═12000007-0000-4000-8000-000000000010
-# ╠═12000007-0000-4000-8000-000000000012
 # ╠═12000007-0000-4000-8000-000000000015
 # ╠═12000007-0000-4000-8000-000000000020
 # ╠═12000007-0000-4000-8000-000000000025
 # ╠═12000007-0000-4000-8000-000000000030
 # ╟─12000007-0000-4000-8000-000000000040
 # ╟─12000008-0000-4000-8000-000000000001
+# ╠═12000006-0000-4000-8000-000000000012
 # ╠═12000008-0000-4000-8000-000000000005
 # ╠═12000008-0000-4000-8000-000000000020
-# ╠═12000008-0000-4000-8000-000000000030
+# ╟─12000008-0000-4000-8000-000000000030
+# ╠═12000008-0000-4000-8000-000000000035
 # ╟─12000008-0000-4000-8000-000000000040
 # ╟─12000009-0000-4000-8000-000000000001
 # ╠═12000009-0000-4000-8000-000000000010
@@ -1907,8 +2108,10 @@ never-alias-the-Force regression test).
 # ╠═1200000b-0000-4000-8000-000000000005
 # ╠═1200000b-0000-4000-8000-000000000006
 # ╠═1200000b-0000-4000-8000-000000000007
+# ╠═1200000b-0000-4000-8000-000000000008
 # ╠═1200000c-0000-4000-8000-000000000015
 # ╠═1200000b-0000-4000-8000-000000000010
+# ╠═1200000b-0000-4000-8000-000000000011
 # ╟─1200000b-0000-4000-8000-000000000015
 # ╟─1200000a-0000-4000-8000-000000000040
 # ╟─1200000b-0000-4000-8000-000000000040
