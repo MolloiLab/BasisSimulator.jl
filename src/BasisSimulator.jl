@@ -232,6 +232,7 @@ include("detector/pcct/mc_pileup.jl")
 
 include("api/options.jl")
 include("api/workspace.jl")
+include("api/view_integration.jl")
 include("api/driver.jl")
 
 # =============================================================================

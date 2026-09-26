@@ -425,7 +425,30 @@ end
 """
 is_helical(geom::CTGeometry) = geom.table_feed != 0.0
 
-export is_helical
+"""
+    rotate_geometry(geom, δ) -> CTGeometry
+
+`geom` with the gantry turned on by `δ` radians about the rotation axis (``z`` through the
+isocentre), every view alike: sources, detector centres and column axes rotated,
+``(x, y) → (x cos δ + y sin δ, y cos δ − x sin δ)`` (the direction in which the angles advance),
+the angles shifted by `δ`, and on a helix the gantry ``z`` advanced by the table feed over `δ`.
+"""
+function rotate_geometry(geom::CTGeometry, δ::Real)
+    c, s = cos(δ), sin(δ)
+    dz = geom.table_feed * δ / (2π)
+    rot(M, shift) = let out = copy(M)
+        out[1, :] .= c .* M[1, :] .+ s .* M[2, :]
+        out[2, :] .= c .* M[2, :] .- s .* M[1, :]
+        out[3, :] .= M[3, :] .+ shift
+        out
+    end
+    return CTGeometry(geom.SAD, geom.SDD, geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size,
+        geom.pixel_row_size, geom.angles .+ δ, rot(geom.source_positions, dz),
+        rot(geom.detector_centers, dz), rot(geom.detector_u, 0.0), copy(geom.detector_v), geom.fov,
+        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset)
+end
+
+export is_helical, rotate_geometry
 
 """
     is_arc(geom::CTGeometry) -> Bool

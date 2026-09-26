@@ -999,8 +999,8 @@ Measured channels to virtual monoenergetic images:
 
     channels ─ hypr_lr ─┬─ merge_channels ─┬─ reduce_detector_rows ─┬─ decompose_nchannel ─┐
                         └──────────────────┘                        └─ decompose_cong ─────┤
-        └─ tlbf_denoise ─ reconstruct_basis_slice ─┬─ apply_acnr_kalender! ─┬─ synthesize_vmi_stack
-                           image_hypr ─────────────┴────────────────────────┘
+        └─ tlbf_denoise ─┬─ reconstruct_basis_slice ─ apply_acnr_kalender! ────────────────┬─ synthesize_vmi_stack
+                         └─ spectral_pair ─ acnr_complement! ─ image_hypr ─────────────────┘
 
 Every stage's settings are keywords, so the function makes no decision the caller cannot see
 and override, which is what makes it usable as the inner call of an ablation sweep.
@@ -1013,7 +1013,7 @@ Stages, all optional:
 - `denoiser = nothing` or a [`SpectralHYPR`](@ref) — generalized HYPR-LR: its projection-domain
   instance ([`hypr_lr`](@ref)) on the counts of each detector row before anything else, with the
   dispersion measured from the acquisition's air rays by default, and its image-domain instance
-  ([`image_hypr`](@ref)) in place of the plain FDK of the basis pair. Either can be `nothing`.
+  ([`image_hypr`](@ref)) on the reconstructed pair, after ACNR. Either can be `nothing`.
 - `method = :nchannel` or `:cong`; `controls = NChannelControls()`.
 - `merge_groups = nothing` — channel groups summed before decomposing, e.g. `[1:2, 3:4]`.
 - `reduce_rows = false`, `rows = :` — sum detector rows in counts, for a z-invariant object whose
@@ -1021,12 +1021,18 @@ Stages, all optional:
   slice onto `matrix_size`.
 - `use_tlbf = false`, `tlbf_alpha1`, `tlbf_alpha2`, `tlbf_radius` — photon-counting only; filters
   each detector row in its own (column, view) plane.
-- `use_acnr = (denoiser === nothing)`, `acnr_passes = 4`, `acnr_beta_max = 20`, `acnr_hp_sigma_px = 1.5`,
-  `acnr_window = 4`.
+- `use_acnr = true`, `acnr_passes = 4`, `acnr_beta_max = 20`, `acnr_hp_sigma_px = 1.5`,
+  `acnr_window = 4`. On a pair reconstructed by [`spectral_pair`](@ref) — a [`PairFilter`](@ref), or
+  the image-domain instance — ACNR acts on the complement only ([`acnr_complement!`](@ref)), before
+  the image-domain instance; on a plain FDK pair it is basis-vmi's [`apply_acnr_kalender!`](@ref).
 - `matrix_size` (required) — the reconstruction grid, `(nx, ny, nz)`; this function never sees a
   workspace's `ReconOptions`, so the caller states the grid. One slice when the rows were reduced.
-  `fbp_filter = SoftFilter()` — one window, or `(water = …, iodine = …)` a window for each basis
-  image ([`basis_filter`](@ref)), `antialias = true`, `recon_rows = geom.n_rows`.
+  `fbp_filter = SoftFilter()` — one window, or a [`PairFilter`](@ref), a window for the composite
+  and one for its complement; `pair_basis = nothing`, or `(Estar = …, β = …)` to fix the pair
+  [`spectral_pair`](@ref) otherwise measures (a noise-free acquisition, reconstructed as its noisy
+  counterpart); `composite_energy = nothing`, or the energy of the composite ACNR and the
+  image-domain instance act on, fixed for a scanner and protocol ([`spectral_pair`](@ref));
+  `antialias = true`, `recon_rows = geom.n_rows`.
 - `recon_method = :fbp` (the published chain) or `:hir`, with `hir_strength = 60`,
   `recon_projector = :dd_fast` and `hir_reference_kev = 70`. `:hir` reconstructs the basis pair
   with the penalized iterative reconstructor and nothing else changes: T-LBF, ACNR and the
@@ -1043,7 +1049,8 @@ The published photon-counting configuration of basis-vmi is
 `vmi_pipeline(; channels, basis, geom, to_backend, reduce_rows = true, use_tlbf = true)`. The
 generic chain of basis-spectral-denoising, the same for photon-counting, rapid kVp-switching and
 dual-source acquisitions and with every detector row kept, is
-`vmi_pipeline(; channels, basis, geom, to_backend, matrix_size, denoiser = SpectralHYPR())`.
+`vmi_pipeline(; channels, basis, geom, to_backend, matrix_size, denoiser = SpectralHYPR(),
+fbp_filter = PairFilter(composite, complement))`.
 
 Returns `(vmis, energies, images = (water, iodine), quality, elapsed_s, settings)`, with `vmis`
 `(nx, ny, nz, n_energies)` in HU.
@@ -1058,11 +1065,13 @@ function vmi_pipeline(;
         use_tlbf::Bool = false,
         tlbf_alpha1::Real = 0.9, tlbf_alpha2::Real = 24.635648571666497,
         tlbf_radius::Integer = 2,
-        use_acnr::Bool = denoiser === nothing,
+        use_acnr::Bool = true,
         acnr_passes::Integer = 4, acnr_beta_max::Real = 20.0,
         acnr_hp_sigma_px::Real = 1.5, acnr_window::Integer = 4,
         matrix_size,
         fbp_filter = SoftFilter(),
+        pair_basis = nothing,
+        composite_energy = nothing,
         antialias::Bool = true,
         recon_rows::Integer = geom.n_rows,
         recon_method::Symbol = :fbp,
@@ -1081,16 +1090,17 @@ function vmi_pipeline(;
     hir = recon_method === :hir
     projection_hypr = denoiser === nothing ? nothing : denoiser.projection
     image_instance = denoiser === nothing ? nothing : denoiser.image
-    hir && image_instance !== nothing && throw(ArgumentError(
-        "the image-domain HYPR instance measures its noise from FDK of the half-view pair; " *
-        "use recon_method = :fbp or SpectralHYPR(image = nothing)"))
+    spectral = fbp_filter isa PairFilter || image_instance !== nothing
+    hir && spectral && throw(ArgumentError(
+        "the spectral pair and the image-domain HYPR instance measure their noise from FDK of the " *
+        "half-view pair; use recon_method = :fbp, one window and SpectralHYPR(image = nothing)"))
 
     dispersion = nothing
     if projection_hypr !== nothing
         dispersion = projection_hypr.dispersion === :measured ?
             estimate_dispersion(channels, basis.I0) : collect(Float64, projection_hypr.dispersion)
         channels = hypr_lr(channels, basis.I0; kernel = projection_hypr.kernel,
-            dispersion = dispersion, to_backend = to_backend)
+            dispersion = dispersion, view_stride = projection_hypr.view_stride, to_backend = to_backend)
     end
 
     prepared = prepare_channels(; channels, basis, merge_groups, reduce_rows, rows)
@@ -1131,36 +1141,42 @@ function vmi_pipeline(;
     else
         (:uniform, :uniform)
     end
-    reconstruct(one_sino, weights, scale, material) = reconstruct_basis_slice(
+    reconstruct(one_sino, weights, scale) = reconstruct_basis_slice(
         one_sino, geom, matrix_size;
-        to_backend = to_backend, filter = basis_filter(fbp_filter, material), n_rows = recon_rows,
+        to_backend = to_backend, filter = fbp_filter, n_rows = recon_rows,
         antialias = antialias,
         method = recon_method, hir_strength = hir_strength, projector = recon_projector,
         hir_weights = weights, scale = scale,
     )
+    acnr_kwargs = (hp_sigma_px = acnr_hp_sigma_px, window = acnr_window,
+        passes = acnr_passes, beta_max = acnr_beta_max)
     image_settings = nothing
-    water_image, iodine_image = if image_instance === nothing
-        reconstruct(sino_water, weights_water, scale_water, :water),
-        reconstruct(sino_iodine, weights_iodine, scale_iodine, :iodine)
-    else
-        pooled = image_hypr(sino_water, sino_iodine, geom, matrix_size;
-            image = image_instance, filter = fbp_filter, antialias = antialias,
-            n_rows = recon_rows, to_backend = to_backend)
-        image_settings = (Estar = pooled.Estar, β = pooled.β, Σ = pooled.Σ, σM = pooled.σM, σMp = pooled.σMp)
-        pooled.water, pooled.iodine
-    end
-
+    pair_settings = nothing
     acnr_settings = nothing
-    if use_acnr && acnr_passes > 0
-        apply_acnr_kalender!(
-            water_image, iodine_image;
-            hp_sigma_px = acnr_hp_sigma_px, window = acnr_window,
-            passes = acnr_passes, beta_max = acnr_beta_max,
-        )
-        acnr_settings = (
-            hp_sigma_px = acnr_hp_sigma_px, window = acnr_window,
-            passes = acnr_passes, beta_max = acnr_beta_max,
-        )
+    water_image, iodine_image = if spectral
+        pair = spectral_pair(sino_water, sino_iodine, geom, matrix_size; filter = fbp_filter,
+            basis = pair_basis, composite_energy = composite_energy, antialias = antialias,
+            n_rows = recon_rows, to_backend = to_backend)
+        pair_settings = (Estar = pair.Estar, β = pair.β, Σ = pair.Σ, basis = pair.basis)
+        if use_acnr && acnr_passes > 0
+            acnr_complement!(pair; acnr_kwargs...)
+            acnr_settings = (acnr_kwargs..., on = :complement)
+        end
+        if image_instance === nothing
+            pair.water, pair.iodine
+        else
+            pooled = image_hypr(pair; image = image_instance, to_backend = to_backend)
+            image_settings = (Estar = pooled.Estar, β = pooled.β, window = pooled.window, risks = pooled.risks)
+            pooled.water, pooled.iodine
+        end
+    else
+        W = reconstruct(sino_water, weights_water, scale_water)
+        I = reconstruct(sino_iodine, weights_iodine, scale_iodine)
+        if use_acnr && acnr_passes > 0
+            apply_acnr_kalender!(W, I; acnr_kwargs...)
+            acnr_settings = (acnr_kwargs..., on = :pair)
+        end
+        W, I
     end
 
     result = (
@@ -1175,12 +1191,13 @@ function vmi_pipeline(;
                 projection = projection_hypr, dispersion = dispersion,
                 image = image_instance, image_estimates = image_settings,
             ),
+            pair = pair_settings,
             merge_groups = merge_groups, reduce_rows = reduce_rows, n_rows = prepared.n_rows,
             tlbf = use_tlbf ?
                 (alpha1 = tlbf_alpha1, alpha2 = tlbf_alpha2, radius = tlbf_radius) : nothing,
             acnr = acnr_settings,
             recon = (;
-                method = recon_method, matrix_size, antialias, recon_rows, filter = fbp_filter,
+                method = recon_method, matrix_size, antialias, recon_rows, filter = fbp_filter, pair_basis,
                 hir = hir ? (;
                     strength = hir_strength, projector = recon_projector,
                     reference_kev = hir_reference_kev,
