@@ -1,4 +1,4 @@
-<!-- basissim-export-fingerprint: 463fe9c8d127a4c2e2d2a15f9580d04bc5611ec394252a686604b7071130a326 -->
+<!-- basissim-export-fingerprint: cf5dc6864448979257b01213dd63e3af01fef50c16371f4d13feba7b13e5f7f2 -->
 <div class="snap-notebook" data-snapshot-requires="daisyui-themes@5.6.2 katex@0.11.1">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.6.2/themes.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.css">
@@ -2666,8 +2666,8 @@ function acquire(draws)
          for r in draws)
 end;</code></pre></div>
 <div class="pl-cell"><pre class="pl-code"><code class="pl-jl">de_acq = acquire((DE_DRAWS.reference, DE_DRAWS.measured, DE_DRAWS.calibration));</code></pre></div>
-<div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-12000008-0000-4000-8000-000000000030"><div class="markdown"><table><tr><th align="right">Draw</th><th align="right">Role</th><th align="right">Seeds &#40;A, B&#41;</th><th align="right">Seconds &#40;A, B&#41;</th></tr><tr><td align="right">0</td><td align="right">noise-free reference</td><td align="right">none</td><td align="right">21.2, 20.1</td></tr><tr><td align="right">1</td><td align="right">measured</td><td align="right">1234, 4321</td><td align="right">0.2, 0.2</td></tr><tr><td align="right">9</td><td align="right">calibration</td><td align="right">9234, 12321</td><td align="right">0.2, 0.2</td></tr></table>
-<p>Draw 0 projects each tube, 5 sub-views per view; draws 1 and 9 re-use that projection and only draw their noise. In the regular mode of §6, tube A took 43.6 s and tube B, re-using its projection, 0.2 s &#40;wall time on this render, compilation included in the first call&#41;.</p>
+<div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-12000008-0000-4000-8000-000000000030"><div class="markdown"><table><tr><th align="right">Draw</th><th align="right">Role</th><th align="right">Seeds &#40;A, B&#41;</th><th align="right">Seconds &#40;A, B&#41;</th></tr><tr><td align="right">0</td><td align="right">noise-free reference</td><td align="right">none</td><td align="right">28.1, 27.7</td></tr><tr><td align="right">1</td><td align="right">measured</td><td align="right">1234, 4321</td><td align="right">0.2, 0.2</td></tr><tr><td align="right">9</td><td align="right">calibration</td><td align="right">9234, 12321</td><td align="right">0.2, 0.2</td></tr></table>
+<p>Draw 0 projects each tube, 5 sub-views per view; draws 1 and 9 re-use that projection and only draw their noise. In the regular mode of §6, tube A took 47.0 s and tube B, re-using its projection, 0.2 s &#40;wall time on this render, compilation included in the first call&#41;.</p>
 </div></pluto-output></div>
 <div class="pl-cell"><pre class="pl-code"><code class="pl-jl"># The measured draw: every DE result below comes from it.
 de_measured = de_acq[DE_DRAWS.measured];</code></pre></div>

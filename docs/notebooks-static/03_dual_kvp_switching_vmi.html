@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="fun-light">
-<head><meta name="basissim-export-fingerprint" content="4a3e79a2ee6aa41a67576292547313aec26a5a62df2ff80c96cdee4436c7c17f">
+<head><meta name="basissim-export-fingerprint" content="8c1c4bf5410dbbbce3c3921a881ba161a149e9a29e199ffc17cd4e89ce700591">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{var t=localStorage.getItem('snap-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
@@ -2324,7 +2324,7 @@ end;</code></pre></div>
     end
     (; label = e.label, channels, elapsed_s, model...)
 end;</code></pre></div>
-<div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-03c00001-0000-4000-8000-000000000007"><div class="markdown"><p>The three draws of the two exposures took 51.6 s for 80 kVp and 34.1 s for 140 kVp, one projection each. Each sinogram is 834 × 12 × 984 &#40;columns × rows × views&#41;.</p>
+<div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-03c00001-0000-4000-8000-000000000007"><div class="markdown"><p>The three draws of the two exposures took 51.8 s for 80 kVp and 37.8 s for 140 kVp, one projection each. Each sinogram is 834 × 12 × 984 &#40;columns × rows × views&#41;.</p>
 </div></pluto-output></div>
 <div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-dc8a8352-5598-4cdd-952f-3d77367850e9"><div class="markdown"><h2 id="VMI-Pipeline">VMI Pipeline</h2>
 <h3 id="1.-Spectral-Basis-from-the-Two-Acquisitions">1. Spectral Basis from the Two Acquisitions</h3>
@@ -2407,7 +2407,7 @@ end</code></pre></div>
     use_acnr = false,
     VMI_CHAIN...,
 );</code></pre></div>
-<div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-03a10001-0000-4000-8000-000000000007"><div class="markdown"><p>The calibration draw fixed the windows&#39; pair at E* &#61; 78 keV, β &#61; 0.0174, and the composite at 76 keV. On the measured draw the decomposition solved 9847872 rays in 1.7 s, 2.0 outer iterations on average; 0.0&#37; did not converge and 0.006&#37; / 0.0&#37; touched the iodine / water bounds. The projection HYPR measured dispersions, the variance-to-mean ratio of the counts on the air rays, of 1.32 and 1.3 for 80 and 140 kVp. The image HYPR pooled the complement over a 31 × 31 window.</p>
+<div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-03a10001-0000-4000-8000-000000000007"><div class="markdown"><p>The calibration draw fixed the windows&#39; pair at E* &#61; 78 keV, β &#61; 0.0174, and the composite at 76 keV. On the measured draw the decomposition solved 9847872 rays in 1.8 s, 2.0 outer iterations on average; 0.0&#37; did not converge and 0.006&#37; / 0.0&#37; touched the iodine / water bounds. The projection HYPR measured dispersions, the variance-to-mean ratio of the counts on the air rays, of 1.32 and 1.3 for 80 and 140 kVp. The image HYPR pooled the complement over a 31 × 31 window.</p>
 </div></pluto-output></div>
 <div class="pl-cell"><pluto-output class="rich_output" data-mime="text/html" id="out-040e0002-0000-4000-8000-000000000003"><div class="markdown"><h3 id="5.-Basis-Maps-and-VMIs">5. Basis Maps and VMIs</h3>
 <p>The water and iodine basis pair after ACNR and image HYPR &#40;mid slice&#41;, and the VMIs synthesized from it. Every VMI comes from the same basis pair.</p>
