@@ -734,17 +734,26 @@ let
 end
 
 # ╔═╡ 12000003-0000-4000-8000-000000000003
-# this protocol's scalars — tube current (mA), CTDIvol (mGy) and FBP water noise (HU) of the
-# standard scan — the inputs of the calculator below, which runs live in the browser
-dose_inputs = (Float64(protocol_standard.mA), Float64(sim_std.dose.ctdi_vol_mGy), Float64(noise.fbp_std.σ));
+# The calculator's inputs — this scan's tube current (mA), CTDIvol (mGy) and FBP water noise (HU) —
+# written as constants: the browser runs the calculator compiled to WebAssembly, which bakes constants
+# in but would have to compile any computation behind them (here, the whole simulation). The cell
+# below checks them against the scan, so they cannot go stale.
+const DOSE_INPUTS = (200.0, 13.72, 54.4);
+
+# ╔═╡ 12000003-0000-4000-8000-000000000007
+let measured = (Float64(protocol_standard.mA), Float64(sim_std.dose.ctdi_vol_mGy), Float64(noise.fbp_std.σ))
+    all(isapprox.(DOSE_INPUTS, measured; rtol = 0.01)) ||
+        error("DOSE_INPUTS = $(DOSE_INPUTS) no longer match this scan, $(measured): update them")
+    nothing
+end
 
 # ╔═╡ 12000003-0000-4000-8000-000000000004
 @bind tube_mA PlutoUI.Slider(10:10:500; default = 200, show_value = true)
 
 # ╔═╡ 12000003-0000-4000-8000-000000000005
 # tube current, CTDIvol (mGy), expected FBP noise (HU), noise relative to the standard scan
-dose_plan = let r = tube_mA / dose_inputs[1]
-    (tube_mA, round(dose_inputs[2] * r; digits = 2), round(dose_inputs[3] / sqrt(r); digits = 1),
+dose_plan = let r = tube_mA / DOSE_INPUTS[1]
+    (tube_mA, round(DOSE_INPUTS[2] * r; digits = 2), round(DOSE_INPUTS[3] / sqrt(r); digits = 1),
      round(1 / sqrt(r); digits = 2))
 end;
 
@@ -965,6 +974,7 @@ Every other notebook reuses this pattern: build the structs, create a workspace,
 # ╟─12000003-0000-4000-8000-000000000001
 # ╟─12000003-0000-4000-8000-000000000002
 # ╟─12000003-0000-4000-8000-000000000003
+# ╟─12000003-0000-4000-8000-000000000007
 # ╠═12000003-0000-4000-8000-000000000004
 # ╟─12000003-0000-4000-8000-000000000005
 # ╟─12000003-0000-4000-8000-000000000006

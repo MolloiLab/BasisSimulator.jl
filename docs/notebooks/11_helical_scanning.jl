@@ -349,13 +349,19 @@ from this scan's measured CTDIvol and its 20 mm collimation.
 """
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000002
-# this scan's scalars — CTDIvol scaled to pitch 1, the collimation (mm), the rotation time (s) —
-# the inputs of the calculator below, which runs live in the browser
-helical_inputs = (
-    Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),
-    Float64(helical_result.dose.nominal_collimation_mm),
-    Float64(protocol_helical.rotation_time),
-);
+# The calculator's inputs — this scan's CTDIvol at pitch 1 (mGy), collimation (mm) and rotation time
+# (s) — written as constants: the browser runs the calculator compiled to WebAssembly, which bakes
+# constants in but would have to compile any computation behind them (here, the whole simulation).
+# The cell below checks them against the scan, so they cannot go stale.
+const HELICAL_INPUTS = (12.94, 20.0, 0.5);
+
+# ╔═╡ 1100000b-0000-4000-8000-000000000006
+let measured = (Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),
+                Float64(helical_result.dose.nominal_collimation_mm), Float64(protocol_helical.rotation_time))
+    all(isapprox.(HELICAL_INPUTS, measured; rtol = 0.01)) ||
+        error("HELICAL_INPUTS = $(HELICAL_INPUTS) no longer match this scan, $(measured): update them")
+    nothing
+end
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000003
 @bind pitch_x100 PlutoUI.Slider(50:5:150; default = 100, show_value = true)
@@ -363,10 +369,10 @@ helical_inputs = (
 # ╔═╡ 1100000b-0000-4000-8000-000000000004
 # pitch, table feed (mm), CTDIvol (mGy), rotations and seconds for a 30 cm range
 helical_plan = let p = pitch_x100 / 100
-    feed = helical_inputs[2] * p
+    feed = HELICAL_INPUTS[2] * p
     rotations = 300.0 / feed
-    (p, round(feed; digits = 1), round(helical_inputs[1] / p; digits = 2),
-     round(rotations; digits = 1), round(rotations * helical_inputs[3]; digits = 1))
+    (p, round(feed; digits = 1), round(HELICAL_INPUTS[1] / p; digits = 2),
+     round(rotations; digits = 1), round(rotations * HELICAL_INPUTS[3]; digits = 1))
 end;
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000005
@@ -569,6 +575,7 @@ md"""
 # ╟─11000006-0000-4000-8000-000000000004
 # ╟─1100000b-0000-4000-8000-000000000001
 # ╟─1100000b-0000-4000-8000-000000000002
+# ╟─1100000b-0000-4000-8000-000000000006
 # ╠═1100000b-0000-4000-8000-000000000003
 # ╟─1100000b-0000-4000-8000-000000000004
 # ╟─1100000b-0000-4000-8000-000000000005
