@@ -15,7 +15,7 @@ AcceleratedKernels.jl; the package never loads a GPU backend itself.
 
 The public API is five structs — `EICTScanner` / `PCCTScanner` (over `ScannerGeometry`),
 `CTProtocol`, `SimOptions`, `ReconOptions`, `Phantom` — and the functions around them:
-`create_eict_workspace` / `create_workspace` (photon counting), `simulate!`, `reconstruct!`,
+`create_workspace` (either scanner family), `simulate!`, `reconstruct!`,
 `dose_report`, `spectral_basis*`, `vmi_pipeline`.
 
 ## Layout
@@ -109,10 +109,12 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 - **Notebook rules:** use the package, never a re-implementation of a package stage; keep seeds
   fixed; print no machine paths (the verifier rejects `/home/…`, `/Users/…`, `/tmp/…`); state only
   numbers the notebook computes; pick the GPU with `GPUSelect.Storage()`.
-- **VMI in notebooks and examples** is `vmi_pipeline` as the sister repositories run it
-  (`../basis-vmi`, `../basis-spectral-denoising`): the n-channel decomposition, `SpectralHYPR` in
-  the projection and image domains (`SpectralHYPR()`'s defaults are their published chain), and
-  ACNR (`use_acnr = true`).
+- **VMI in notebooks and examples** follows basis-spectral-denoising's final version: view
+  integration on every scanner (`SimOptions(; view_samples = 5)`, `view_arc` the duty cycle for
+  rapid kVp switching), one projection per exposure shared by its draws (`keep_projection` /
+  `projection`), and `vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = PairFilter(…),
+  pair_basis, composite_energy)` with the scanner's fitted window pair and the pair's basis fixed
+  from a separate calibration draw.
 
 ## CI and deployment (`.github/workflows/`)
 

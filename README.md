@@ -46,7 +46,7 @@ protocol = BS.CTProtocol(kVp = 120, mA = 200.0, views = 500, collimation_mm = 5.
 sim_opts = BS.SimOptions(seed = 42)
 rec_opts = BS.ReconOptions(matrix_size = (512, 512, 4), fov_cm = 35.0, z_cm = 0.5)
 
-ws     = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
+ws     = BS.create_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 result = BS.simulate!(ws, phantom, protocol, sim_opts)
 result.dose                   # CTDIvol and DLP of this acquisition, from the simulated beam
 
@@ -67,7 +67,7 @@ volume walk does not depend on the spectrum, so a study at several tube voltages
 paths = BS.material_paths(ws, phantom)          # one walk, reused by every voltage below
 for kvp in (80, 100, 120, 140)
     p = BS.CTProtocol(kVp = kvp, mA = 200.0, views = 500, collimation_mm = 5.0)
-    w = BS.create_eict_workspace(scanner, p, sim_opts, rec_opts, phantom)
+    w = BS.create_workspace(scanner, p, sim_opts, rec_opts, phantom)
     BS.simulate!(w, phantom, p, sim_opts; paths)
 end
 ```
@@ -97,7 +97,7 @@ vmi.vmis                      # (512, 512, 4, 4) in HU at 40, 70, 100 and 140 ke
 # with the SpectralHYPR denoiser, on the counts and on the reconstructed basis pair
 vmi_denoised = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
                                matrix_size = rec_opts.matrix_size,
-                               denoiser = BS.SpectralHYPR(), use_acnr = true)
+                               denoiser = BS.SpectralHYPR())
 ```
 
 The same `vmi_pipeline` takes rapid kVp-switching and dual-source pairs through

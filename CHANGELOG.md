@@ -78,29 +78,48 @@ relative to 0.14.0 where it says so.
   from every push to `main`; CI checks that `version` is the last registered version or a valid
   next one.
 
-### After stage 0.18.0
+### After stage 0.18.0: the spectral denoising chain and view integration
 
-#### Changed
-- **`ImageHYPR` defaults are the published chain's:** a 1 × 1 × 7 composite window (across slices
-  only, keeping the in-plane texture) and a 15 × 15 × 7 complement window (were 3 × 3 × 7 and
-  5 × 5 × 7), so `SpectralHYPR()` is the chain of basis-vmi and basis-spectral-denoising. The
-  complement is pooled with weights from the pooled composite at its measured noise (weights from
-  the unpooled composite printed the FBP streaks near an object's rim onto the complement);
-  `sigma_Mp` is returned and recorded in `vmi_pipeline`'s settings.
+The chain of basis-spectral-denoising (its final version), in the package.
 
 #### Added
-- `image_hypr` / `vmi_pipeline` take one FDK window or a window per basis image,
-  `(water = …, iodine = …)`, through `basis_filter`: a VMI weights the two by energy, so their
-  windows set how its resolution changes with energy.
-- **`SpectralHYPR`, a generalized HYPR-LR denoiser for `vmi_pipeline`.** Count-domain HYPR-LR within
-  each detector row (total-count likelihood weights, a local linear split, dispersion from the air
-  rays), and its image-domain instance on the basis pair (the minimum-noise VMI and its
-  noise-independent complement, noise covariance from the odd/even half-view difference). Window
-  profiles are specified like FBP apodization: `BoxProfile`, `TriangleProfile`,
-  `CustomProfile(control_x, control_y)` in `HYPRKernel`. `vmi_pipeline(; denoiser = SpectralHYPR())`
-  runs the projection instance before the decomposition and the image instance in place of the
-  plain FDK; ACNR defaults off when a denoiser is given. Additive: every existing call is unchanged.
-  Ported bit-for-bit from basis-spectral-denoising. Test: `test/hypr.jl`.
+- **`SpectralHYPR`, generalized HYPR-LR in both domains, for `vmi_pipeline(; denoiser)`.**
+  `ProjectionHYPR(; kernel = HYPRKernel((3, 3)), dispersion = :measured, view_stride = 2)` pools
+  each ray's split of its total count over its (column × view) neighbours within a detector row,
+  with total-count likelihood weights and the dispersion measured from the air rays
+  (`estimate_dispersion`); `view_stride = 2` pools views of one parity, so the odd/even halves the
+  image-domain noise estimates rely on stay independent. `ImageHYPR(; candidates, noise_window)`
+  keeps the composite (the minimum-noise VMI) as reconstructed and pools its noise-independent
+  complement in plane at a local noise map, over the window among `candidates` with the least
+  estimated full-data risk (an unbiased half-view estimate). Window profiles are specified like FBP
+  apodization: `BoxProfile`, `TriangleProfile`, `CustomProfile` in `HYPRKernel`. Also exported:
+  `hypr_lr`, `image_hypr`, `guided_pool`, `local_noise`.
+- **`PairFilter(composite, complement)`, `spectral_pair`, `acnr_complement!`.** The FDK windows go on
+  the composite and its complement, whose noise is uncorrelated (a window per water / iodine image
+  would stop their anti-correlated noise cancelling). `spectral_pair` reconstructs the pair and its
+  odd/even halves; ACNR acts on the complement only (the composite restored), before the
+  image-domain instance. `vmi_pipeline(; fbp_filter = PairFilter(…), pair_basis, composite_energy)`
+  fixes the pair and the composite's energy for a scanner and protocol; the order is FDK → ACNR
+  (complement) → image HYPR. basis-vmi's single-window chain is unchanged.
+- **View integration, for every detector family.** `SimOptions(; view_samples, view_arc)`: each view
+  reads the intensity averaged over the arc the gantry turns while it integrates (`view_samples`
+  sub-views, the midpoint rule; `view_arc` the fraction of the view spacing — the duty cycle of one
+  energy for rapid kVp switching), a blur of the signal the noise does not share. Default 1 = point
+  views, unchanged. `rotate_geometry`, `view_sample_offsets`.
+- **A projection shared by noise draws:** `simulate!(…; keep_projection = true)` returns everything
+  before the noise (`projection`), and `simulate!(…; projection)` re-uses it — skipping the forward
+  projection, view integration, focal spot and scatter — bit-identically to simulating again with
+  that call's seed, on both detector families.
+- `create_workspace(::EICTScanner, …)` forwards to `create_eict_workspace`, so every scanner is built
+  the same way.
+
+#### Changed
+- `vmi_pipeline`'s `use_acnr` defaults to `true` (with or without a denoiser).
+- `material_paths` caches point views only; passing a cache with `view_samples > 1` is an error that
+  points to the shared projection.
+- `estimate_dispersion` takes the air rays as those below 5 % attenuation, each estimating the
+  dispersion from successive views, and their median (it fell back to 1.0 on some
+  energy-integrating channels whose phantom volume is air); the fallback now warns.
 
 ### Stage 0.18.0 (branch fix/scanner-fidelity, #72)
 

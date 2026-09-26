@@ -124,7 +124,7 @@ protocol = BS.CTProtocol(kVp = 120, mA = 200.0, views = 500, collimation_mm = 5.
 sim_opts = BS.SimOptions()
 rec_opts = BS.ReconOptions(matrix_size = (512, 512, 4), fov_cm = 35.0, z_cm = 0.5)
 
-ws   = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
+ws   = BS.create_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 dose = BS.simulate!(ws, phantom, protocol, sim_opts).dose        # CTDIvol, DLP
 bhc  = BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = ws.geom)
 sino = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc))

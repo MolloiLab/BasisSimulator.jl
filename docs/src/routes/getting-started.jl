@@ -90,12 +90,12 @@ protocol = BS.CTProtocol(kVp = 120, mA = 200.0, views = 500, collimation_mm = 5.
 sim_opts = BS.SimOptions(seed = 42)
 rec_opts = BS.ReconOptions(matrix_size = (512, 512, 4), fov_cm = 35.0, z_cm = 0.5)
 
-ws     = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
+ws     = BS.create_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 result = BS.simulate!(ws, phantom, protocol, sim_opts)"""),
             P(:class => small,
                 "The phantom's mask lives on the device and its materials on the host. Quantum and electronic ",
                 "noise are drawn in the counts domain, before the log, where a real detector produces them. ",
-                "A photon-counting scanner's workspace comes from ", c("create_workspace"), " (below)."),
+                "A photon-counting scanner's workspace comes from the same ", c("create_workspace"), " (below)."),
 
             # ── Reconstruct ────────────────────────────────────────────────────
             H2(:id => "reconstruct", :class => h2_cls, "Reconstruct"),
@@ -143,7 +143,7 @@ spiral = BS.CTProtocol(kVp = 120, mA = 200.0, views = 360,
             CodeBlock("""paths = BS.material_paths(ws, phantom)
 for kvp in (80, 100, 120, 140)
     p = BS.CTProtocol(kVp = kvp, mA = 200.0, views = 500, collimation_mm = 5.0)
-    w = BS.create_eict_workspace(scanner, p, sim_opts, rec_opts, phantom)
+    w = BS.create_workspace(scanner, p, sim_opts, rec_opts, phantom)
     BS.simulate!(w, phantom, p, sim_opts; paths)
 end"""),
 
@@ -194,7 +194,7 @@ vmi.images      # the reconstructed (water, iodine) basis pair"""),
                 "model applied; ", c("spectral_basis_from_acquisitions"), " assembles them on the union of their ",
                 "energy grids."),
             CodeBlock("""function acquire(protocol)
-    w = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
+    w = BS.create_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
     BS.simulate!(w, phantom, protocol, sim_opts)
     air = w.bowtie_air_reference === nothing ? ones(w.geom.n_cols, w.geom.n_rows) :
           Array(w.bowtie_air_reference)
@@ -218,16 +218,19 @@ vmi_de = BS.vmi_pipeline(; channels = [low.sino, high.sino], basis = basis_de, g
             P(:class => prose,
                 c("SpectralHYPR"), " is a generalized HYPR-LR denoiser with two instances: one on the counts of ",
                 "each detector row before the decomposition, one on the reconstructed basis pair. Pass it as ",
-                c("denoiser"), " to either call above. Its defaults are the published chain of basis-vmi and ",
-                "basis-spectral-denoising: a 3 × 3 (column × view) window on the counts, and a 1 × 1 × 7 composite and ",
-                "a 15 × 15 × 7 complement window on the basis pair:"),
-            CodeBlock("""vmi_denoised = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
+                c("denoiser"), " to either call above. With a ", c("PairFilter"), " — an FDK window for the ",
+                "composite (the minimum-noise VMI) and one for its noise-independent complement — this is the chain of ",
+                "basis-spectral-denoising:"),
+            CodeBlock("""pair = BS.PairFilter(BS.SoftFilter(), BS.SoftFilter())   # the composite's window, the complement's
+vmi_denoised = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
                                matrix_size = rec_opts.matrix_size,
-                               denoiser = BS.SpectralHYPR(), use_acnr = true)"""),
+                               denoiser = BS.SpectralHYPR(), fbp_filter = pair)"""),
             P(:class => small,
-                "Every window is a ", c("BS.HYPRKernel"), " you can set (", c("BS.ProjectionHYPR(; kernel)"), ", ",
-                c("BS.ImageHYPR(; composite, complement)"), "). ACNR (anti-correlated noise reduction) is on by ",
-                "default only when there is no denoiser, so ", c("use_acnr = true"), " asks for both."),
+                c("SpectralHYPR()"), " pools each ray's count split over its 3 × 3 (column × view) neighbours in ",
+                "one view parity, and on the image the complement over the window the data's own risk estimate ",
+                "selects; ACNR (on by default) acts on the complement. The worked VMI examples use each scanner's ",
+                "fitted pair of windows and fix the pair's basis from a calibration draw (",
+                c("pair_basis"), ", ", c("composite_energy"), ")."),
 
             # ── Next ───────────────────────────────────────────────────────────
             H2(:id => "whats-next", :class => h2_cls, "What's next"),
