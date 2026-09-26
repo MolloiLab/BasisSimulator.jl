@@ -31,7 +31,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
         PageWithTOC(sections, Div(:class => "max-w-3xl mx-auto space-y-8",
             Div(:class => "space-y-4",
                 Div(:class => "text-[10px] tracking-[0.2em] uppercase font-mono text-warm-500",
-                    RawHtml("""<span style="color:var(--color-accent-500)">●</span>&nbsp; Julia 1.12 · BasisSimulator 0.15""")),
+                    RawHtml("""<span style="color:var(--color-accent-500)">●</span>&nbsp; Julia 1.12+ · BasisSimulator 0.15""")),
                 H1(:class => "no-rule font-serif font-medium text-warm-900 dark:text-warm-100 text-4xl md:text-5xl leading-[1.05] tracking-tight",
                     "Getting started"),
                 P(:class => prose,
@@ -42,7 +42,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
             # ── Install ────────────────────────────────────────────────────────
             H2(:id => "install", :class => h2_cls, "Install"),
-            P(:class => prose, "BasisSimulator.jl requires Julia 1.12. From the REPL:"),
+            P(:class => prose, "BasisSimulator.jl requires Julia 1.12 or later. From the REPL:"),
             CodeBlock("""using Pkg
 Pkg.add("BasisSimulator")
 Pkg.add("GPUSelect")   # picks the device array type for you"""),

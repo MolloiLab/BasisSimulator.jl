@@ -63,8 +63,10 @@ the General registry has accepted it.
    ```
 
    The registry opens a pull request against General (AutoMerge takes about 15 minutes when the
-   version and compat bounds are valid; it installs the package on the lowest and highest Julia the
-   `julia` compat allows). When it merges, TagBot creates the `v<version>` tag and a GitHub Release
+   version and compat bounds are valid). AutoMerge installs and loads the package on the newest
+   released Julia whatever the `julia` compat says, so every dependency must resolve there: 0.15.0's
+   first attempt failed because XrayAttenuation still capped Julia at 1.12 (fixed by releasing
+   XrayAttenuation 0.3.3). Check `julia +<newest> --project=. -e 'using Pkg; Pkg.test()'` first. When it merges, TagBot creates the `v<version>` tag and a GitHub Release
    from those release notes, and the docs workflows deploy that tag.
 
 ## If something goes wrong

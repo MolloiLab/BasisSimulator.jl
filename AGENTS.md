@@ -39,8 +39,8 @@ docs/                   the documentation site (below)
 
 ## Working on the code
 
-- **Julia 1.12 only** (`julia = "~1.12"`: XrayAttenuation does not resolve on 1.13, and the bundled
-  MC response is in 1.12's serialization format).
+- **Julia 1.12 or later** (`julia = "1.12"`; the bundled MC response is in 1.12's serialization
+  format, which 1.11 cannot read). The suite passes on 1.12 and 1.13.
   `julia --project=. -e 'using Pkg; Pkg.instantiate()'`.
 - **Tests:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'` (about 6 minutes on 8 CPU threads).
   Tests that need a GPU skip without one ("Skipping … no GPU backend"); run the ones your change

@@ -16,7 +16,7 @@ Metal, ROCm, oneAPI or the CPU.
 
 ## Install
 
-BasisSimulator.jl requires Julia 1.12.
+BasisSimulator.jl requires Julia 1.12 or later.
 
 ```julia
 using Pkg
