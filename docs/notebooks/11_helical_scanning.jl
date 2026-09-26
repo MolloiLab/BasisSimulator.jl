@@ -71,7 +71,9 @@ deliver the same total beam-width × current × time:
 
 The forward projection is the anti-aliased `:dd_fast` projector — helical
 costs it nothing (the projectors consume per-view source/detector arrays; a
-helix is just a z-ramp in those arrays). Helical reconstruction is
+helix is just a z-ramp in those arrays). Both scans integrate each view over the arc the gantry
+turns while the detector reads it (`view_samples = 5`, notebook 01); on the helix each sub-view
+is also advanced along ``z`` by its share of the table feed. Helical reconstruction is
 **rebinned WFBP** (Stierstorfer *et al.* 2004 — the production spiral
 algorithm family), dispatched automatically whenever the geometry is
 helical. Both pipelines use the reconstruction chain of notebook 01:
@@ -212,7 +214,9 @@ begin
     # every voxel, which a real scanner handles with a per-row water
     # calibration. `calibrate_bhc_water` is per column, so the heel is switched
     # off here and the comparison isolates the geometry.
-    sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast,
+    # view_samples = 5: each view integrates over the arc the gantry turns while the detector
+    # reads it (notebook 01); on a helix every sub-view also advances by its share of the feed.
+    sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast, view_samples = 5,
         use_heel_effect = false)
     recon_opts = BS.ReconOptions(matrix_size = (160, 160, 150), fov_cm = 30.0, z_cm = 30.0)
     # A 16 cm *physical* detector cannot reconstruct a full 16 cm axial
@@ -258,7 +262,7 @@ station is centred on the isocentre; the three slabs are then stitched at ``z = 
 
 # ╔═╡ 11000006-0000-4000-8000-000000000002
 helical_result = let
-    ws = BS.create_eict_workspace(scanner, protocol_helical, sim_opts, recon_opts, phantom)
+    ws = BS.create_workspace(scanner, protocol_helical, sim_opts, recon_opts, phantom)
     t = @elapsed (sim = BS.simulate!(ws, phantom, protocol_helical, sim_opts))
     bhc = BS.calibrate_bhc_water(sim_opts, protocol_helical; scanner, geom = ws.geom)
     t += @elapsed (hu = corrected_recon(ws.sinogram, ws.geom, recon_opts.matrix_size, bhc))
@@ -294,7 +298,7 @@ sns_result = let
             phantom_materials,
             (phantom_data.vox, phantom_data.vox, phantom_data.voxz),
         )
-        ws = BS.create_eict_workspace(scanner, protocol_axial, sim_opts, recon_opts_station, ph_st)
+        ws = BS.create_workspace(scanner, protocol_axial, sim_opts, recon_opts_station, ph_st)
         t_total += @elapsed (sim = BS.simulate!(ws, ph_st, protocol_axial, sim_opts;
             dose_kwargs = (; table_increment_mm = 100.0)))
         push!(doses, sim.dose)
@@ -501,7 +505,8 @@ Markdown.parse("""
 - **`:dd_fast` needed zero changes for helical.** The projectors consume
   per-view geometry arrays (the same representation as ASTRA's `cone_vec`
   and CatSim's internal trajectory); the helix lives entirely in those
-  arrays.
+  arrays, and so do the sub-views of the view integration, each rotated and advanced along
+  ``z`` with the table.
 - **Helical reconstruction is rebinned WFBP** (Stierstorfer *et al.*, Phys
   Med Biol 49:2209, 2004): row-wise fan→parallel rebinning, parallel ramp
   filtering, and aperture-weighted (cos², plateau ``Q = 0.7``) wedge

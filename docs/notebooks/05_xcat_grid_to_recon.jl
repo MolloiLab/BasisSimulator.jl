@@ -500,7 +500,8 @@ scanner = BS.EICTScanner(
 md"""
 #### `CTProtocol`: an axial cardiac CTA
 
-120 kVp / 250 mA, a 1 s rotation of 500 views, 5 mm of collimation.
+120 kVp / 250 mA, a 1 s rotation of 500 views, 5 mm of collimation. `SimOptions` models the
+detector integrating each view while the gantry turns (`view_samples = 5`, notebook 01).
 """
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000030
@@ -514,7 +515,7 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000040
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast);
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
@@ -593,13 +594,13 @@ end
 md"""
 ### 4. Simulate and reconstruct
 
-The chain of notebook 01: `create_eict_workspace` → `simulate!`, then the knobless water
+The chain of notebook 01: `create_workspace` → `simulate!`, then the knobless water
 beam-hardening correction → FDK → HU with the correction's own μ_water.
 """
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000010
 sim = phantom === nothing ? nothing : let
-    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     t = @elapsed result = BS.simulate!(ws, phantom, protocol, sim_opts)
     out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
     ws = nothing
@@ -861,8 +862,9 @@ md"""
 
 `pitch` and `n_rotations` make the protocol helical: 10 mm of collimation at pitch 1.0 over 8
 rotations is 8 cm of table travel, centred on the isocentre. The geometry becomes a z-ramped
-trajectory, `:dd_fast` projects it unchanged, and `reconstruct!` recognises the helical geometry
-and runs rebinned weighted FBP. The reconstruction grid is still a centred stack of axial
+trajectory, `:dd_fast` projects it unchanged (the sub-views of the view integration follow the
+helix, each advanced along z by its share of the table feed), and `reconstruct!` recognises the
+helical geometry and runs rebinned weighted FBP. The reconstruction grid is still a centred stack of axial
 slices, so the affines apply as before.
 """
 
@@ -875,7 +877,7 @@ protocol_helical = BS.CTProtocol(
 
 # ╔═╡ 05000012-0000-4000-8000-000000000010
 sim_helical = phantom_helical === nothing ? nothing : let
-    ws = BS.create_eict_workspace(scanner, protocol_helical, sim_opts, recon_opts_helical, phantom_helical)
+    ws = BS.create_workspace(scanner, protocol_helical, sim_opts, recon_opts_helical, phantom_helical)
     t = @elapsed result = BS.simulate!(ws, phantom_helical, protocol_helical, sim_opts)
     out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
     ws = nothing

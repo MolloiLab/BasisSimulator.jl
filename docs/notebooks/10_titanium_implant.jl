@@ -63,7 +63,7 @@ the notebook measures how much artifact is left.
 
 ```
 define titanium → water cylinder with two Ti rods, and the same cylinder without them
-   → simulate both (:dd_fast) → water BHC → FDK → HU
+   → simulate both (:dd_fast, view-integrated) → water BHC → FDK → HU
    → images, a profile through the rods, and the artifact measured against the metal-free scan
 ```
 """
@@ -146,7 +146,8 @@ md"""
 ## 3. Scan and reconstruct
 
 A 120 kVp / 200 mA axial acquisition (360 views, 0.5 s) on a generic 16-row scanner with the
-default large-body bowtie, then the standard chain: `calibrate_bhc_water` → `apply_bhc_water` →
+default large-body bowtie, each view integrated over the arc the gantry turns through while the
+detector reads it (`view_samples = 5`, notebook 01), then the standard chain: `calibrate_bhc_water` → `apply_bhc_water` →
 FDK → HU. The function runs it for either phantom and also returns the largest line integral in
 the sinogram.
 """
@@ -167,7 +168,7 @@ scanner = BS.EICTScanner(
 protocol = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.5);
 
 # ╔═╡ 10000005-0000-4000-8000-000000000004
-sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast);
+sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast, view_samples = 5);
 
 # ╔═╡ 10000005-0000-4000-8000-000000000005
 recon_opts = BS.ReconOptions(matrix_size = (256, 256, 8), fov_cm = 30.0);
@@ -176,10 +177,10 @@ recon_opts = BS.ReconOptions(matrix_size = (256, 256, 8), fov_cm = 30.0);
 """
     scan_hu(phantom) -> (; hu, max_line_integral)
 
-`create_eict_workspace` → `simulate!` → water BHC → FDK → HU, returning a CPU volume.
+`create_workspace` → `simulate!` → water BHC → FDK → HU, returning a CPU volume.
 """
 function scan_hu(phantom)
-    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol, sim_opts; report_dose = false)
     bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = ws.geom)
     sino = BS.apply_bhc_water(ws.sinogram, bhc)
@@ -262,7 +263,7 @@ let
 
     The water BHC holds the metal-free cylinder at water ($(round(away(ref); digits = 1)) HU far
     from the rods). With titanium present, the region between the rods drops by
-    $(round(band(ref) - band(ti); digits = 0)) HU: the beam-hardening dark band that a water
+    $(round(Int, band(ref) - band(ti))) HU: the beam-hardening dark band that a water
     correction cannot remove. The σ beside the rods rises from $(round(ring(ref); digits = 1)) to
     $(round(ring(ti); digits = 1)) HU, the streaks. A line integral of
     $(round(scan_ti.max_line_integral; digits = 1)) means the rays through both rods keep about

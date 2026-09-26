@@ -309,7 +309,9 @@ md"""
 ### 1. Scanner, protocol, sim & recon options
 
 The GE Revolution Apex Elite of notebook 01. The protocol is a body CTA: 120 kVp / 250 mA,
-5 mm collimation, 500 views in 1 s. Reconstruction: 512 × 512 over 35 cm, eight 0.625 mm slices.
+5 mm collimation, 500 views in 1 s, each view integrated over the arc the gantry turns through
+while the detector reads it (`view_samples = 5`). Reconstruction: 512 × 512 over 35 cm, eight
+0.625 mm slices.
 """
 
 # ╔═╡ 07000002-0000-4000-8000-000000000001
@@ -351,7 +353,8 @@ protocol = BS.CTProtocol(
 # anti-aliased, and walks the volume once for the whole spectrum; :siddon point-samples
 # the volume and can alias in strongly beam-hardened regions. The Hybrid-IR cell reads
 # `sim_opts.projector`, so its system matrix always matches the operator that made the data.
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast);
+# `view_samples = 5`: the detector integrates each view while the gantry turns (notebook 01).
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
@@ -364,14 +367,14 @@ recon_opts = BS.ReconOptions(
 md"""
 ### 2. Forward project
 
-The notebook 01 pattern: workspace, `simulate!`, copy the sinogram off the device, release the
+The notebook 01 pattern: `create_workspace`, `simulate!`, copy the sinogram off the device, release the
 device buffers. `simulate!` returns the acquisition's dose report.
 """
 
 # ╔═╡ 08000002-0000-4000-8000-000000000001
 sim = phantom === nothing ? nothing : let
         @info "Simulating XCAT body CTA: 120 kVp / 250 mA…"
-        ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+        ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
         out = BS.simulate!(ws, phantom, protocol, sim_opts)
 
         result = (sino = Array(ws.sinogram), geom = ws.geom, dose = out.dose)

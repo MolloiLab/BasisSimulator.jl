@@ -260,6 +260,13 @@ the filters and bowtie, energy-dependent detector efficiency, fill factor and fo
 Noise, scatter, detector lag and the heel effect are switched off in BasisSimulator because the
 CatSim defaults have them off (CatSim leaves its scatter, lag and crosstalk callbacks empty). The
 reconstruction is 256 × 256 over 35 cm, 0.625 mm slices.
+
+!!! info "Point views on both sides"
+    The other notebooks model a clinical scanner's detector integrating each view while the
+    gantry turns (`SimOptions(; view_samples = 5)`, notebook 01). This one does not: it is a
+    like-for-like check of the projector and the reconstruction, so both simulators sample each
+    view at a single angle. BasisSimulator keeps its default `view_samples = 1`, and the wrapper
+    sets CatSim's `physics.viewSampleCount` (2 by default) to 1.
 """
 
 # ╔═╡ 06000003-0000-4000-8000-000000000010
@@ -299,6 +306,8 @@ CatSim's configuration:
 - **Beam.** CatSim's 120 kVp tungsten spectrum for a 10° target (the protocol's anode angle),
   the scanner's flat filter plus the protocol's filters, the same `large.txt` bowtie, the same
   target angle and focal spot, and no graphite detector prefilter (BasisSimulator models none).
+- **Views.** One angular sample per view (`physics.viewSampleCount = 1`), the point views of
+  BasisSimulator's `view_samples = 1`.
 - **Preprocessing.** CatSim's own water BHC, `Prep_BHC_Accurate`: a degree-5 polynomial per
   detector cell fitted to air scans through 1–50 cm of water, mapped to the same monoenergetic
   water μ that BasisSimulator's `calibrate_bhc_water` uses. HU conversion uses that water μ too.
@@ -377,6 +386,7 @@ function catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm)
     end
     ct.protocol.flatFilter = PC.pylist(filters)
 
+    ct.physics.viewSampleCount = 1      # point views, like BasisSimulator's view_samples = 1
     ct.physics.enableQuantumNoise = 0
     ct.physics.enableElectronicNoise = 0
     ct.physics.callback_post_log = "Prep_BHC_Accurate"   # CatSim's water BHC
@@ -589,10 +599,10 @@ One function, two phantoms: `phantom_cpu.mask` is an `Array`, so the first run s
 """
     basissim_pipeline(phantom) -> HU volume
 
-`create_eict_workspace` → `simulate!` → water BHC → FDK → HU, on the phantom's backend.
+`create_workspace` → `simulate!` → water BHC → FDK → HU, on the phantom's backend.
 """
 function basissim_pipeline(phantom)
-    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol, sim_opts; report_dose = false)
     sino = BS.apply_bhc_water(ws.sinogram, bhc)
     ws_fdk = BS.create_fdk_recon_workspace(sino, ws.geom, recon_opts.matrix_size; filter = :standard)
