@@ -1,47 +1,77 @@
 # Releasing BasisSimulator.jl
 
-Releases are cut by hand. Nothing in this repository picks a version number, writes a changelog
-entry, or opens a release pull request on its own; the only automation left is
-`.github/workflows/TagBot.yml`, which creates the git tag and the GitHub Release *after* the
-Julia registry has accepted a registration request.
+A release is one pull request and one registry comment. Nothing picks a version, writes the
+changelog or opens a release on its own; `.github/workflows/TagBot.yml` only tags a version after
+the General registry has accepted it.
 
-## Steps
+## The rules that keep `main` releasable
 
-1. **Decide the version.** While the package is below 1.0, a breaking change bumps the minor
-   version (0.14 → 0.15) and everything else bumps the patch version. A change is breaking if it
-   removes or renames something exported, changes the meaning of an argument, or changes the
-   numbers a caller gets back without them asking for it.
+- **`version` in `Project.toml` is the last registered version until the release pull request
+  changes it.** A feature pull request never touches it. (0.15.0 exists because this rule was not
+  kept: `main` walked from 0.14.0 to 0.18.0 without registering anything, and the registry only
+  accepts the version that follows the last registered one.) The `version` job in
+  `.github/workflows/CI.yml` catches a skipped number: it fails any commit whose `version` is
+  neither the last registered version nor a valid next one. It cannot tell a release pull request
+  from a feature pull request; keeping feature pull requests off `version` is the reviewer's job.
+- **Every user-visible change adds a line under `## [Unreleased]` at the top of `CHANGELOG.md`**
+  in the same pull request: what a reader has to do differently, with the measured number for
+  anything claimed to be faster or more accurate (and the hardware it was measured on).
+- **The published docs describe the latest release.** They are deployed from the newest `v*` tag
+  after TagBot creates it (`docs.yml`, and Snapshot via `snapshot.yml`), never from `main`, so a
+  code change on `main` cannot break the site. The notebook exports are re-rendered once, in the
+  release pull request.
 
-2. **Run the tests.** `julia --project=. -e 'using Pkg; Pkg.test()'`, and say in the pull
-   request what passed and on what hardware. The GPU paths are not exercised by CI, so run
-   anything that touches them yourself and report the numbers.
+## Cutting a release
 
-3. **Write the changelog entry.** A new section at the top of `CHANGELOG.md`, dated, with the
-   version compared against the previous tag. Group by `Breaking` / `Added` / `Changed` /
-   `Fixed` / `Performance` / `Documented`, in that order, skipping the groups with nothing in
-   them. Say what a reader has to do differently, and give the measured number for anything
-   claimed to be faster or more accurate — and say what hardware measured it, because a CPU
-   test count and a GPU timing are not the same claim. One line per change is enough if the
-   line is specific; "various improvements" is not an entry.
-
-4. **Bump `version` in `Project.toml`** to match.
-
-5. **Merge to `main`.**
-
-6. **Register.** Comment on the release commit:
+1. **Choose the version.** Below 1.0, a breaking change bumps the minor version (0.15 → 0.16)
+   and anything else bumps the patch (0.15.0 → 0.15.1). A change is breaking if it removes or
+   renames something exported, changes the meaning of an argument, or changes the numbers a
+   caller gets back without asking for it. The `version` check accepts exactly the last
+   registered version, its next patch, its next minor, and the next major.
+2. **Branch** `release/<version>` from an up-to-date `main` (`git fetch`; merge `origin/main` again
+   right before step 6 if it moved — a render against stale source is wasted).
+3. **Bump `version`** in `Project.toml` and `version:` in `CITATION.cff`.
+4. **Date the changelog.** Rename `## [Unreleased]` to
+   `## [<version>](https://github.com/MolloiLab/BasisSimulator.jl/compare/v<previous>...v<version>) (<YYYY-MM-DD>)`
+   and add a fresh, empty `## [Unreleased]` above it. Group the entries as `Breaking` / `Added` /
+   `Changed` / `Fixed` / `Performance` / `Documented`, skipping empty groups.
+5. **Run the tests:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'`. CI has no GPU, so run
+   anything that touches a GPU path on one and say in the pull request what passed on what
+   hardware.
+6. **Re-render the notebook exports** on a GPU machine (see `AGENTS.md`, "The documentation site"):
+   `docs/render_notebooks.sh` renders every stale notebook, split across the machine's GPUs, and
+   `python3 docs/verify_notebook_exports.py` must end with `verified <n> notebook source/export
+   pairs`. Commit `docs/notebooks-static/`. The export fingerprint covers all of `src/`,
+   `Project.toml` (not its `version` line), the docs lockfiles and the exporter, so any code change
+   since the last render makes every export stale; that is by design.
+7. **Check the site locally:** `docs/build.sh`, then serve `docs/dist/` (for example
+   `python3 -m http.server -d docs/dist`) and open the landing page, the API reference and a
+   notebook.
+8. **Open the pull request, merge it, then register** by commenting on the merge commit on GitHub.
+   A breaking release (a minor bump below 1.0) must carry release notes that say so, or General's
+   AutoMerge blocks it:
 
    ```
    @JuliaRegistrator register
+
+   Release notes:
+
+   ## Breaking changes
+   - <the Breaking entries of the changelog section, one line each>
+
+   See CHANGELOG.md for the full entry.
    ```
 
-   The registry opens a pull request against `General`. When it merges, TagBot tags this
-   repository and publishes the GitHub Release from the changelog section.
+   The registry opens a pull request against General (AutoMerge takes about 15 minutes when the
+   version and compat bounds are valid; it installs the package on the lowest and highest Julia the
+   `julia` compat allows). When it merges, TagBot creates the `v<version>` tag and a GitHub Release
+   from those release notes, and the docs workflows deploy that tag.
 
-## What was removed, and why it is not coming back by accident
+## If something goes wrong
 
-`release-please` used to read Conventional Commit subjects, choose the next version, write the
-changelog, open a release pull request, tag, and post the registration comment. It has been
-removed: `.github/workflows/release-please.yml`, `.release-please-config.json` and
-`.release-please-manifest.json` are gone. Commit subjects no longer decide anything, so the
-`feat:` / `fix:` / `perf:` prefixes are now a convention for readers rather than an instruction
-to a robot. Keep using them; they make the history easy to scan.
+- **Registration refused as "not a valid version increment":** `version` skipped a number. Set it
+  to the next valid version (the `version` CI job prints the allowed set) and comment again.
+- **`docs.yml` / `snapshot.yml` fail with `stale export`:** the tag's exports were not re-rendered
+  after its last code change. Re-render them on a GPU machine (step 6), release a patch version,
+  and the docs deploy from that tag.
+- **TagBot did not tag:** run it by hand from the Actions tab (`TagBot`, "Run workflow").

@@ -99,12 +99,11 @@ include("projection/dd.jl")
 include("projection/dd_transpose.jl")
 
 # :dd_fast — same DD3 model, single-pass per-material path-length fused kernels
-# (results ≡ :dd to float ordering; full spectrum in ONE volume walk).
+# (agree with the per-energy DD kernels to float ordering; full spectrum in ONE volume walk).
 include("projection/dd_fast.jl")
 
-# Projector selection (:dd_fast default / :dd DEPRECATED / :siddon) — shared by the
-# forward sim, the IR system matrix, and the BHC correction so the model stays
-# consistent.
+# Projector selection (:dd_fast default / :siddon) — shared by the forward sim, the IR
+# system matrix, and the BHC correction so the model stays consistent.
 include("projection/select_projector.jl")
 
 # =============================================================================
@@ -227,9 +226,6 @@ include("detector/pcct/mc_response.jl")
 # MC-based pulse pileup model (replaces analytical Taguchi model)
 include("detector/pcct/mc_pileup.jl")
 
-# PCCT spectral imaging: K-edge, effective Z, multi-material decomposition
-include("spectral/pcct_spectral.jl")
-
 # =============================================================================
 # API (top-level orchestration)
 # =============================================================================
@@ -240,17 +236,13 @@ include("api/view_integration.jl")
 include("api/driver.jl")
 
 # =============================================================================
-# Dual-Energy VMI Pipeline
-# Photo/Compton basis decomp → PWLS restoration → ACNR → capping → VMI → Mono+
-#
-# Each stage is a `BS.apply_*!` entry point with every hyperparameter as a
-# kwarg.  See `verification/notebooks/00_example_ge_gammex_phantom_dual.jl`
-# for a reference wiring across §5-§6.
+# Spectral VMI building blocks
+# Cong 2022 per-ray decomposition, two-basis VMI synthesis and Mono+; the chain that
+# wires them together is `vmi_pipeline` (reconstruction/vmi/nchannel.jl, below).
 # =============================================================================
 
-# Memory-budget probe + tile-loop helpers for VMI workspaces.
-# Free utility functions (suggest_tile_size, tile_ranges, with_oom_retry)
-# consumed by RwlsWorkspace / PwlsWorkspace / CongWorkspace / MonoPlusWorkspace.
+# Memory probes, GPU release and tile helpers (backend_memory_snapshot, release_backend!,
+# the PCCT workspace budget check, tile_ranges, with_oom_retry).
 include("reconstruction/workspace/memory_budget.jl")
 export backend_memory_snapshot, release_backend!
 export estimate_pcct_workspace_bytes, check_pcct_workspace_budget
@@ -258,31 +250,11 @@ export estimate_pcct_workspace_bytes, check_pcct_workspace_budget
 # Photoelectric + Compton physical basis tables (Cong 2022 Eqs 3a-3e, 4)
 include("reconstruction/vmi/basis.jl")
 
-# GPU-safe 1:1 port of Roots.jl Brent + helper kernels (consumed by Cong).
-# Parity against Roots.jl verified in test/vmi/test_brent_parity.jl.
+# GPU-safe port of Roots.jl's Brent root finder + helper kernels (consumed by Cong).
 include("reconstruction/vmi/roots_kernels.jl")
-
-# Linear 2×2 DE (Constant Material Value) decomposition — cheap baseline
-include("reconstruction/vmi/cmv.jl")
 
 # Per-ray Cong 2022 analytic dual-energy decomposition
 include("reconstruction/vmi/cong.jl")
-
-# Ducros 2017 RWLS-GN DE decomp (count-domain GN + FFT proximal prior)
-include("reconstruction/vmi/rwls.jl")
-
-# Noh/Fessler 2009 + Long/Fessler 2014 PWLS-L₂ 2×2-curvature SQS
-include("reconstruction/vmi/pwls.jl")
-
-# PCCT per-bin basis + count-combine helpers (shared by CMV/RWLS/PWLS).
-include("reconstruction/vmi/pcct_basis.jl")
-
-# PCCT polynomial calibration: (p_low, p_high) → (t_water, t_iodine)
-# Alvarez/Macovski 1976 sinogram-domain decomposition.
-include("reconstruction/vmi/pcct_calibration.jl")
-
-# VMI synthesis — μ(E) = p(E)·a + q(E)·c → HU
-include("reconstruction/vmi/vmi_synth.jl")
 
 # Mono+ frequency-split — Grant 2014 1:1 parity (FFT Gaussian LP).
 # Optional `phantom_mask` kwarg masks the phantom-air ring artifact.
@@ -292,19 +264,14 @@ include("reconstruction/vmi/mono_plus.jl")
 # Denoising — sinogram-domain and image-domain noise reduction
 # =============================================================================
 #
-# Live in the current notebooks:
+#   - median_z.jl   : z-direction median filter
+#   - rskr.jl       : Rank-Sparse Kernel Regression, joint multi-channel image-domain
+#                     denoiser (Clark/Badea 2023), 2- and 4-channel
+#   - acnr.jl       : Anti-Correlated Noise Reduction (Kalender/Klotz/Kostaridou 1988)
+#   - sino_svd.jl   : N-channel projection-domain SVD joint denoiser
 #   - sino_sfjsd.jl : two-channel projection-domain SF-JSD (Black, in prep.)
-#                     used by nb03/04/07
-#   - median_z.jl   : z-direction median filter (BasisSim-original)
-#                     used by nb03/04/07
-#
-# Kept as advertised tools (not in current notebooks, but exported + tested):
-#   - sino_svd.jl : N-channel projection-domain SVD joint denoiser
-#                   (predecessor of SF-JSD)
-#   - rskr.jl     : Rank-Sparse Kernel Regression — joint multi-channel
-#                   image-domain denoiser (Clark/Badea 2023).  2-/4-ch.
-#   - acnr.jl     : Anti-Correlated Noise Reduction sinogram-domain
-#                   (Kalender/Klotz/Kostaridou 1988)
+#   - tlbf.jl       : total-likelihood bilateral filter (Lee 2025), photon-counting
+#   - hypr.jl       : generalized HYPR-LR (`SpectralHYPR`, the `vmi_pipeline` denoiser)
 
 # Z-direction median filter — edge-preserving impulse-noise removal that
 # exploits z-axis correlation in z-invariant phantoms (Gammex 472).
@@ -343,18 +310,11 @@ include("denoising/tlbf.jl")
 # for `vmi_pipeline(; denoiser = SpectralHYPR())`, for any spectral technology.
 include("denoising/hypr.jl")
 
-# Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
-# Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
+# Phantom-mask helpers — FFT-Gaussian mask erosion (e.g. for the Mono+ phantom_mask kwarg).
 include("reconstruction/vmi/phantom_mask.jl")
 
-# Image-domain Ding 2012 DE decomp — fit (a₀, a₁, a₂) coeffs from rod
-# HUs, apply to (HU_low, HU_high) → c_iodine, synth per-energy VMI.
+# Two-basis (water + iodine) VMI synthesis from basis images: synth_vmi_2basis(!).
 include("reconstruction/vmi/image_domain_decomp.jl")
-
-# Clinical rod-HU calibration constants (image-domain Ding fits).  Per-
-# scanner Dicts of measured rod HUs at relevant kVp / VMI energies, plus
-# iodine_calibration_rods / calcium_calibration_rods helpers.
-include("reconstruction/vmi/clinical_calibrations.jl")
 
 # K-channel projection-domain profile-likelihood decomposition (iodine, water) and the VMI
 # chain built on it: count-domain row/channel reduction → decomposition → T-LBF → anti-aliased

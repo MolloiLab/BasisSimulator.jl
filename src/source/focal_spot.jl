@@ -254,7 +254,7 @@ formula is mathematically equivalent to averaging rays from a finite source.
 # Example
 ```julia
 fs = FocalSpot(1.0, 1.0, :gaussian, 3)  # 1 mm focal spot
-geom = create_aquilion_one(n_angles=360, n_rows=64, n_cols=512, fov_cm=35.0)
+geom = CTGeometry(EICTScanner(detector_rows=64, detector_cols=512); n_angles=360, fov_cm=35.0)
 
 # Blur at isocenter
 blur_iso = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD)
@@ -471,7 +471,14 @@ function apply_focal_spot_blur!(
     return sinogram
 end
 
-# Convenience wrapper that allocates (for backward compatibility)
+"""
+    apply_focal_spot_blur(sinogram, fs::FocalSpot, geom::CTGeometry;
+                          object_distance = nothing) -> blurred sinogram
+
+Allocating form of [`apply_focal_spot_blur!`](@ref). It blurs a copy of `sinogram`
+(`[n_cols, n_rows, n_angles]`) and leaves the input unchanged. `object_distance` is the
+source-to-object distance in cm, `geom.SAD` (the isocenter) by default.
+"""
 function apply_focal_spot_blur(
         sinogram::AbstractArray{T, 3},
         fs::FocalSpot,

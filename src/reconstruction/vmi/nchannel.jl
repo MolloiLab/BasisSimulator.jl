@@ -16,11 +16,10 @@
 # re-profile of water; and quality flags. The kernel is one `AK.foreachindex` body, so it runs
 # unchanged on CPU, CUDA, Metal, ROCm and oneAPI arrays.
 #
-# Ported from the published worked examples (`docs/notebooks/03_dual_kvp_switching_vmi.jl`,
-# `04_pcct_vmi.jl`) in the form hardened in MolloiLab/basis-vmi. Two things differ from notebook
-# 04 on purpose: detector rows are combined by summing COUNTS, not transmission (the two agree
-# only when `I0` is constant across rows, which a bowtie breaks), and channel groups are merged
-# the same way.
+# The estimator of MolloiLab/basis-vmi, first published in this repository's notebooks 03 and 04
+# (their cells are frozen in test/nchannel_nb04_reference.jl, the parity oracle). One thing differs
+# from those cells on purpose: detector rows and channel groups are combined by summing COUNTS,
+# not transmission (the two agree only when `I0` is constant across rows, which a bowtie breaks).
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 # Controls

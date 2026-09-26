@@ -266,7 +266,7 @@ end
 
 # -----------------------------------------------------------------------------
 # dd_fast fused projectors — per-material path-length variant of the DD fused
-# kernels.  The contract is EQUIVALENCE to legacy :dd (same footprint/overlap
+# kernels.  The contract is EQUIVALENCE to the dd.jl kernels (same footprint/overlap
 # weights, accumulation reassociated by linearity → floating-point-ordering
 # differences only), plus agreement with Siddon within the usual DD tolerance.
 # -----------------------------------------------------------------------------
@@ -421,7 +421,7 @@ end
 end
 
 # -----------------------------------------------------------------------------
-# Projector selection — :dd / :siddon dispatch shims must route to the exact
+# Projector selection — :dd_fast / :siddon dispatch shims must route to the exact
 # underlying projector (bit-identical), and validate the symbol.
 # -----------------------------------------------------------------------------
 @testset "projector selection (_project_mono / _validate_projector)" begin
@@ -429,20 +429,21 @@ end
     vol = fill(Float32(0.15), 32, 32, 4)
 
     @testset "_validate_projector" begin
-        @test BS._validate_projector(:dd) === :dd
+        @test BS._validate_projector(:dd_fast) === :dd_fast
         @test BS._validate_projector(:siddon) === :siddon
         @test_throws ArgumentError BS._validate_projector(:bogus)
+        @test_throws ArgumentError BS._validate_projector(:dd)     # removed option
     end
 
     @testset "allocating shim routes to the exact projector" begin
-        @test BS._project_mono(:dd, vol, geom) == BS.dd_forward_project(vol, geom)
+        @test BS._project_mono(:dd_fast, vol, geom) == BS.dd_forward_project(vol, geom)
         @test BS._project_mono(:siddon, vol, geom) == BS.siddon_forward_project(vol, geom)
     end
 
     @testset "in-place shim routes to the exact projector" begin
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         ref_dd = BS.dd_forward_project(vol, geom)
-        BS._project_mono!(:dd, sino, vol, geom)
+        BS._project_mono!(:dd_fast, sino, vol, geom)
         @test sino == ref_dd
 
         ref_si = BS.siddon_forward_project(vol, geom)
@@ -451,9 +452,9 @@ end
         @test sino == ref_si
     end
 
-    @testset ":dd and :siddon are genuinely different code paths" begin
+    @testset ":dd_fast and :siddon are genuinely different code paths" begin
         # Same line integral (both discretise ∫μ·dl) but not byte-identical.
-        s_dd = BS._project_mono(:dd, vol, geom)
+        s_dd = BS._project_mono(:dd_fast, vol, geom)
         s_si = BS._project_mono(:siddon, vol, geom)
         @test s_dd != s_si                       # different projectors
         mid = geom.n_cols ÷ 2 + 1

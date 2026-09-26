@@ -206,7 +206,15 @@ for (fn, sym) in (
         (:download_xcat_female_slab, :female_slab), (:download_xcat_female_chest, :female_chest),
         (:download_xcat_male_slab, :male_slab), (:download_xcat_male_chest, :male_chest),
     )
-    @eval $fn(; kwargs...) = download_xcat_phantom($(QuoteNode(sym)); kwargs...)
+    local entry = XCAT_REGISTRY[sym]
+    local doc = """
+        $(fn)(; path = nothing, quiet = false) -> String
+
+    Shorthand for [`download_xcat_phantom`](@ref)`(:$(sym); kwargs...)`: $(entry.desc)
+    ($(join(entry.matrix, " × ")) voxels). Returns the directory of the XCIST voxelized files.
+    The phantom is downloaded into Julia's artifact store only when it isn't already there.
+    """
+    @eval @doc $doc $fn(; kwargs...) = download_xcat_phantom($(QuoteNode(sym)); kwargs...)
 end
 
 # =============================================================================
@@ -382,7 +390,18 @@ function load_xcat_phantom(
 end
 
 for sym in (:female_slab, :female_chest, :male_slab, :male_chest)
-    @eval $(Symbol(:load_xcat_, sym))(; kwargs...) = load_xcat_phantom($(QuoteNode(sym)); kwargs...)
+    local fn = Symbol(:load_xcat_, sym)
+    local entry = XCAT_REGISTRY[sym]
+    local doc = """
+        $(fn)(; path = nothing, materials = nothing, voxel_size_cm = nothing,
+              downsample = 1, quiet = false) -> (; mask, materials, label_names, voxel_size_cm)
+
+    Shorthand for [`load_xcat_phantom`](@ref)`(:$(sym); kwargs...)`: $(entry.desc)
+    ($(join(entry.matrix, " × ")) voxels before `downsample`). Downloads the phantom first if
+    needed. Returns the labeled pieces; build the [`Phantom`](@ref) with
+    `Phantom(p.mask, p.materials, p.voxel_size_cm)`.
+    """
+    @eval @doc $doc $fn(; kwargs...) = load_xcat_phantom($(QuoteNode(sym)); kwargs...)
 end
 
 # =============================================================================

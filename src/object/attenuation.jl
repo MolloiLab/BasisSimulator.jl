@@ -124,7 +124,7 @@ end
 
 Get linear attenuation coefficient of water at specified energy from XrayAttenuation.jl.
 
-For polychromatic spectra, use `compute_effective_μ_material(water, energies, weights)` instead.
+For polychromatic spectra, use [`compute_polychromatic_μ_water`](@ref) instead.
 
 Default energy is 60 keV (approximate effective energy for 100 kVp spectrum).
 """
@@ -163,17 +163,16 @@ This is the recommended way to convert reconstruction results to HU.
 recon = fdk_reconstruct(sinogram, geom, matrix_size)
 
 # Create water mask from phantom
-water_mask = phantom.mask .== REGION_SOLID_WATER
+water_mask = phantom.mask .== UInt8(REGION_SOLID_WATER)
 
 # Convert to HU with empirical calibration
-recon_hu = to_hounsfield(result.reconstruction; water_mask=water_mask)
+recon_hu = to_hounsfield(recon; water_mask=water_mask)
 # Water region will be ~0 HU by construction
 ```
 
 **Option 2: Manual μ_water specification**
 ```julia
 # Measure μ_water from reconstruction
-recon = result.reconstruction
 cx, cy, cz = size(recon) .÷ 2
 μ_water_measured = mean(recon[cx-5:cx+5, cy-5:cy+5, cz])
 
@@ -185,14 +184,14 @@ recon_hu = to_hounsfield(recon; μ_water=μ_water_measured)
 ```julia
 # Uses NIST water at 70 keV (~0.193 cm⁻¹)
 # May have offset due to reconstruction scaling
-recon_hu = to_hounsfield(result.reconstruction)
+recon_hu = to_hounsfield(recon)
 ```
 
 # Notes
 - For polychromatic CT, empirical calibration is preferred because
   the effective attenuation depends on spectrum, filtration, and patient size.
-- For VMI from dual-energy, use `vmi_to_hu()` instead which accounts for
-  the VMI synthesis process.
+- VMI synthesis ([`vmi_pipeline`](@ref), [`synthesize_vmi_stack`](@ref)) already returns HU,
+  referenced to water at each target energy; it needs no `to_hounsfield`.
 """
 function to_hounsfield(
         reconstruction::AbstractArray{T};

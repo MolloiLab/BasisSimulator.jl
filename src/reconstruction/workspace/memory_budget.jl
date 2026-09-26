@@ -1,31 +1,9 @@
-"""
-Memory-budget probe + tile-loop helpers shared by the VMI workspaces
-(`RwlsWorkspace`, `PwlsWorkspace`, `CongWorkspace`, `MonoPlusWorkspace`).
+# Memory probes, deterministic GPU release and tile helpers for the spectral workspaces.
+#
+# `Sys.free_memory()` is the right probe on the CPU and on unified-memory devices (Apple
+# Silicon Metal, integrated GPUs); it over-reports on discrete GPUs, whose VRAM it cannot see —
+# there, pass `mem_budget_GB = ...` where a workspace accepts it.
 
-Free utility functions only — no traits, no abstract types.  Concrete
-workspaces consume these in their `create_*_workspace(...)` factories and
-in their `apply_*!(...)` tile loops.  Once we have four data points we'll
-extract a proper abstract contract (post-VMI follow-up).
-
-# Backend-agnostic by design
-The probe queries `Sys.free_memory()`, which is correct on:
-  • CPU (`Array`)
-  • Apple Silicon Metal (unified memory — CPU and GPU share the pool)
-  • Integrated GPUs
-
-For **discrete GPUs** (CUDA / ROCm / Intel Arc), the probe over-reports —
-discrete VRAM is not visible to `Sys.free_memory`.  Discrete-GPU users
-must pass `mem_budget_GB = ...` explicitly to override.  This caveat is
-documented per-workspace.
-
-# Failure semantics
-`suggest_tile_size` returns the largest tile that fits given a per-view
-byte cost and budget × safety factor (0.6).  Allocation can still fail —
-workspace constructors wrap the alloc in `with_oom_retry` which halves
-the tile on `OutOfMemoryError` / `OutOfGPUMemoryError` up to 4 times.
-"""
-
-const _DEFAULT_SAFETY_FACTOR = 0.6
 const _OOM_MAX_RETRIES       = 4
 const _PCCT_DEVICE_SAFETY_FACTOR = 0.5
 
@@ -72,9 +50,8 @@ end
 
 Reject a PCCT workspace allocation before it begins when the backend reports
 a recommended device working set and the estimated workspace would consume
-more than half of the currently unallocated portion. This permits one exact
-04d workspace on a 16 GiB Apple-Silicon Mac but prevents a second retained
-workspace from being created alongside it.
+more than half of the currently unallocated portion, so a second retained
+workspace is refused instead of exhausting device memory.
 """
 function check_pcct_workspace_budget(template, estimate)
     snap = backend_memory_snapshot(template)
@@ -179,32 +156,6 @@ function release_backend!(object; collect::Bool = true)
     released = _release_backend_arrays!(object, IdSet{Any}())
     collect && GC.gc(true)
     released
-end
-
-# ─────────────────────────────────────────────────────────────────────
-"""
-    suggest_tile_size(per_view_bytes, n_view; mem_budget_GB = nothing) -> Int
-
-Largest tile size (clamped to `[1, n_view]`) such that
-`per_view_bytes × tile_size ≤ budget`, where `budget` is either the user's
-`mem_budget_GB · 2³⁰` override, or `Sys.free_memory() · 0.6`.
-
-Hint, not a guarantee — the workspace constructor wraps allocation in
-`with_oom_retry` because `Sys.free_memory()` and Metal's
-`recommendedMaxWorkingSetSize` are both hints, not contracts.
-"""
-function suggest_tile_size(per_view_bytes::Integer,
-                            n_view::Integer;
-                            mem_budget_GB::Union{Nothing, Real} = nothing) :: Int
-    per_view_bytes > 0 || error("suggest_tile_size: per_view_bytes must be > 0.")
-    n_view > 0         || error("suggest_tile_size: n_view must be > 0.")
-    avail = if mem_budget_GB === nothing
-        floor(Int, Float64(Sys.free_memory()) * _DEFAULT_SAFETY_FACTOR)
-    else
-        floor(Int, Float64(mem_budget_GB) * 2^30)
-    end
-    avail > 0 || error("suggest_tile_size: zero available memory; pass `mem_budget_GB` to override.")
-    clamp(avail ÷ Int(per_view_bytes), 1, Int(n_view))
 end
 
 # ─────────────────────────────────────────────────────────────────────

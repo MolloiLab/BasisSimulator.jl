@@ -9,6 +9,30 @@ the official Gammex 472 CT phantom specifications.
 
 import XrayAttenuation as XA
 
+# `@doc` on a name bound to a module files the docstring inside that module (XrayAttenuation),
+# which BasisSimulator's precompile cache cannot keep; so the docstring is filed under
+# BasisSimulator's own `XA` binding directly. Documentation metadata only.
+let text = """
+    XA
+
+The [XrayAttenuation.jl](https://github.com/Dale-Black/XrayAttenuation.jl) module, re-exported
+as `XA`. It supplies every material the simulator attenuates with: `XA.Material`,
+`XA.Materials.*` (water, air, tissues, the Gammex 472 inserts, the XCAT `ncat_*` tissues) and
+`XA.Elements.*`. A [`Phantom`](@ref) holds a vector of `XA.Material`s, one per mask label, and
+[`compute_μ_at_energy`](@ref) / [`compute_mass_μ_at_energy`](@ref) evaluate them.
+""",
+    b = Base.Docs.Binding(@__MODULE__, :XA)
+    # Base.Docs internals: never let documentation metadata break loading the package
+    try
+        multidoc = get!(Base.Docs.meta(@__MODULE__), b, Base.Docs.MultiDoc())
+        haskey(multidoc.docs, Union{}) || push!(multidoc.order, Union{})
+        multidoc.docs[Union{}] = Base.Docs.docstr(text, Dict{Symbol, Any}(:path => @__FILE__,
+            :linenumber => @__LINE__, :module => @__MODULE__, :binding => b, :typesig => Union{}))
+    catch err
+        @debug "could not attach the XA docstring" err
+    end
+end
+
 # =============================================================================
 # Gammex 472 Calcium Inserts (from XrayAttenuation.jl)
 # =============================================================================

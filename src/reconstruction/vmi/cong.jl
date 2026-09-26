@@ -144,7 +144,9 @@ Per-ray Cong 2022 decomposition, writing results into `sino_y` and
   `sino_high`  : measured low- / high-kVp sinograms (log line integrals).
 
 # Keyword arguments
-- `water_basis`        : NamedTuple from `water_basis_constants()`.
+- `water_basis`        : `Float32` NamedTuple `(a, c)`, water's coefficients in the (p, q)
+  basis the workspace was built with — `(a = 0f0, c = 1f0)` for the material basis
+  (p = iodine, q = water) that [`decompose_cong`](@ref) passes.
 - `newton_max_iter`    : inner Newton iterations on the Eq 8 quintic.
 - `newton_tol`         : `|Δ|` break tolerance for the Newton inner loop.
 - `y_max_factor`       : safety factor on the outer Brent upper bound
@@ -165,7 +167,7 @@ function apply_cong!(
     )
     (water_basis.a isa Float32 && water_basis.c isa Float32) || error(
         "apply_cong!: water_basis has $(typeof(water_basis.a))/$(typeof(water_basis.c)); " *
-        "Float32/Float32 required.  Call BS.water_basis_constants() (returns Float32)."
+        "Float32/Float32 required, e.g. water_basis = (a = 0f0, c = 1f0)."
     )
     size(sino_y) == size(sino_c) == size(sino_low) == size(sino_high) ||
         error("apply_cong!: sino_y / sino_c / sino_low / sino_high must share shape.")

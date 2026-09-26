@@ -23,10 +23,8 @@
 #
 # `simulate!(::PCCTWorkspace)` (see `src/api/driver.jl`) caches S in the
 # workspace at construction time and applies it as `recorded = S × counts`,
-# combined with a renormalized I0 baseline `I0_recorded = S × I0_truth`.  No
-# analytical count-factor / Taguchi fallback is used on the live path —
-# `seminonparalyzable_count_factor` and `mc_pileup_count_factor` remain only
-# as dose-diagnostic helpers (the former emits a deprecation warning).
+# combined with a renormalized I0 baseline `I0_recorded = S × I0_truth`.  There is
+# no analytical count-factor / Taguchi model.
 #
 # References:
 # - Taguchi 2010, Med Phys 37:3957-3969 (analytical pileup model — superseded)

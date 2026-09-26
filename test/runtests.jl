@@ -22,6 +22,9 @@ const BS = BasisSimulator
         include("detector.jl")
         include("detector_offset.jl")
     end
+    @testset "docs/" begin
+        include("docs.jl")
+    end
     @testset "dose/" begin
         include("dose.jl")
     end

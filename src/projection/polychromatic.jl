@@ -453,7 +453,7 @@ function _forward_project_poly!(
         # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
         # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
         fused::Bool = false,
-        # Ray tracer: :dd_fast (default/fastest general path), :dd (DEPRECATED), or :siddon (compatibility, aliases).
+        # Ray tracer: :dd_fast (default/fastest general path) or :siddon (compatibility, aliases).
         projector::Symbol = :dd_fast,
         # Cached per-material path lengths from `material_paths` / `dd_fast_material_paths!`.
         # When given, the volume walk is skipped and only the spectral conversion runs — the
@@ -528,8 +528,8 @@ function _forward_project_poly!(
         # accumulates per-MATERIAL path lengths (energy-independent registers),
         # so all n_energies convert once per cell — ONE volume walk instead of
         # n_tiles.  Identical DD footprint/weights; float ordering only.
-        # :dd and :siddon keep the tiled path below (their kernels hold
-        # per-energy registers → K=16 required).
+        # :siddon (and :dd_fast above 64 materials) keep the tiled path below
+        # (those kernels hold per-energy registers → K=16 required).
         # ---------------------------------------------------------------------
         if paths !== nothing
             @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1

@@ -17,13 +17,14 @@ repository-code: https://github.com/MolloiLab/BasisSimulator.jl
 url: https://github.com/MolloiLab/BasisSimulator.jl
 abstract: >-
   GPU-native Julia framework for CT and photon-counting CT simulation,
-  reconstruction, and quantitative spectral imaging. Provides exact Siddon
-  ray-tracing forward projection, polychromatic Beer-Lambert physics with
-  vendor-realistic detector response (MC-derived LUTs for GE Gemstone
-  scintillator and Siemens NAEOTOM Alpha CdTe), FDK and hybrid iterative
-  reconstruction, sinogram and image-domain beam- hardening correction, dual-kVp
-  and PCCT material decomposition (Cong 2022, Alvarez-Macovski, PWLS), and
-  virtual monoenergetic imaging (VMI + Grant 2014 Mono+) — all dispatching
+  reconstruction, and quantitative spectral imaging. Provides distance-driven
+  forward projection (with Siddon ray tracing as an alternative), polychromatic
+  Beer-Lambert physics with vendor-realistic detector response (MC-derived LUTs
+  for GE Gemstone scintillator and Siemens NAEOTOM Alpha CdTe), FDK, helical
+  WFBP and hybrid iterative reconstruction, sinogram and image-domain
+  beam-hardening correction, projection-domain dual-kVp and PCCT material
+  decomposition (K-channel profile likelihood, Cong 2022), spectral denoising,
+  and virtual monoenergetic imaging (VMI + Grant 2014 Mono+) — all dispatching
   transparently across CPU, Metal, CUDA, and ROCm via AcceleratedKernels.jl.
 keywords:
   - computed tomography
@@ -39,7 +40,7 @@ keywords:
   - Julia
   - scientific computing
 license: MIT
-version: 0.14.0
+version: 0.15.0
 preferred-citation:
   type: article
   title: >-

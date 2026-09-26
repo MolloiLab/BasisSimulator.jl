@@ -33,22 +33,14 @@ BAD_TEXT_PATTERNS = {
     "mounted volume path": re.compile(r"/Volumes/[^\s<\"']+", re.I),
 }
 BAD_REPORT_REASONS = ("failed to parse", "package ", "not found in current path")
+# The notebooks whose volume slider is forced to a static fallback (FORCE_FALLBACK_BONDS in
+# extract_all.jl): the bond, and the one fallback group its report must contain. The group's cells
+# must be cells of the notebook (checked against the source), so editing a notebook never needs
+# a cell id here.
 FORCED_FALLBACKS = {
-    "01_five_struct_api": (
-        "z_slice",
-        {"12000001-0000-4000-8000-000000000004"},
-    ),
-    "05_xcat_grid_to_recon": (
-        "z_helical",
-        {
-            "05000012-0000-4000-8000-000000000040",
-            "05000016-0000-4000-8000-000000000020",
-        },
-    ),
-    "11_helical_scanning": (
-        "z_idx",
-        {"11000007-0000-4000-8000-000000000003"},
-    ),
+    "01_five_struct_api": "z_slice",
+    "05_xcat_grid_to_recon": "z_helical",
+    "11_helical_scanning": "z_idx",
 }
 
 
@@ -120,6 +112,71 @@ def recorded_hash(path: Path, fragment: bool) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def check_islands(source: Path, assets: Path, forced: Optional[str]) -> List[str]:
+    """A notebook's `.islands/` must hold only compiled islands (every cell verified) and, for a
+    notebook in FORCED_FALLBACKS, exactly the one configured fallback group of that bond; the
+    runtime manifest and the coverage summary must agree with the report."""
+    where = assets.relative_to(ROOT)
+    failures: List[str] = []
+    required = {"report.json", "coverage.json", "islands.json", "shim.js"}
+    missing = sorted(name for name in required if not (assets / name).is_file())
+    if missing:
+        return [f"{where}/{name}: missing island asset" for name in missing]
+    try:
+        groups = json.loads((assets / "report.json").read_text(encoding="utf-8"))
+        manifest = json.loads((assets / "islands.json").read_text(encoding="utf-8"))
+        coverage = json.loads((assets / "coverage.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [f"{where}: invalid island JSON"]
+    notebook_cells = set(
+        re.findall(r"^# ╔═╡ ([0-9a-f-]{36})\s*$", source.read_text(encoding="utf-8"), re.M)
+    )
+    islands = [g for g in groups if g.get("judgement") == "island"]
+    fallbacks = [g for g in groups if g.get("judgement") == "fallback"]
+    if len(islands) + len(fallbacks) != len(groups):
+        failures.append(f"{where}/report.json: a group that is neither an island nor the configured fallback")
+    for g in islands:
+        cells = g.get("cells", [])
+        ids = {str(c.get("id")) for c in cells}
+        if not cells or not ids <= notebook_cells or any(c.get("ok") is not True for c in cells):
+            failures.append(f"{where}/report.json: island {g.get('bonds')} has an unverified or unknown cell")
+    fallback_cells = set()
+    if forced is None:
+        if fallbacks:
+            failures.append(f"{where}/report.json: unexpected fallback {[g.get('bonds') for g in fallbacks]}")
+        expected_runtime = []
+    else:
+        reason = f"configured fallback (matched @bind {forced}); island inference intentionally skipped"
+        if len(fallbacks) != 1:
+            failures.append(f"{where}/report.json: expected exactly the configured fallback of {forced}")
+        else:
+            g = fallbacks[0]
+            cells = g.get("cells", [])
+            fallback_cells = {str(c.get("id")) for c in cells}
+            if (
+                g.get("bonds") != [forced]
+                or g.get("fallback_kind") != "configured"
+                or g.get("reasons") != [reason]
+                or not fallback_cells
+                or not fallback_cells <= notebook_cells
+                or any(c.get("ok") is not False for c in cells)
+                or any(c.get("reasons") != [reason] for c in cells)
+            ):
+                failures.append(f"{where}/report.json: configured fallback contract mismatch")
+        expected_runtime = [{"bonds": [forced], "judgement": "fallback", "fallback_kind": "configured"}]
+    if len(manifest.get("groups", [])) != len(islands) or manifest.get("fallback_groups") != expected_runtime:
+        failures.append(f"{where}/islands.json: runtime index does not match the report")
+    n_island_cells = sum(len(g.get("cells", [])) for g in islands)
+    expected_coverage = {
+        "groups": {"island": len(islands), "partial": 0, "fallback": len(fallbacks), "total": len(groups)},
+        "cells": {"interactive": n_island_cells, "fallback": len(fallback_cells),
+                  "total": n_island_cells + len(fallback_cells)},
+    }
+    if coverage != expected_coverage:
+        failures.append(f"{where}/coverage.json: coverage does not match the report")
+    return failures
+
+
 def main() -> int:
     sources = sorted(SOURCES.glob("*.jl"))
     if not sources:
@@ -154,86 +211,11 @@ def main() -> int:
             if fragment and "localstorage.getitem('snap-theme')" in text:
                 failures.append(f"{page.name}: embedded fragment overrides host theme")
 
-        report = ROOT / f"{slug}.islands" / "report.json"
         assets = ROOT / f"{slug}.islands"
-        expected_fallback = FORCED_FALLBACKS.get(slug)
-        if expected_fallback is None:
-            if assets.exists():
-                failures.append(
-                    f"{assets.relative_to(ROOT)}: unexpected island/fallback assets"
-                )
-        else:
-            bond, expected_cells = expected_fallback
-            required = {
-                "report.json", "coverage.json", "islands.json", "shim.js"
-            }
-            missing = sorted(name for name in required if not (assets / name).is_file())
-            for name in missing:
-                failures.append(
-                    f"{assets.relative_to(ROOT)}/{name}: missing configured-fallback asset"
-                )
-            if not missing:
-                reason = (
-                    f"configured fallback (matched @bind {bond}); "
-                    "island inference intentionally skipped"
-                )
-                try:
-                    groups = json.loads((assets / "report.json").read_text(encoding="utf-8"))
-                    manifest = json.loads((assets / "islands.json").read_text(encoding="utf-8"))
-                    coverage = json.loads((assets / "coverage.json").read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    failures.append(
-                        f"{assets.relative_to(ROOT)}: invalid configured-fallback JSON"
-                    )
-                else:
-                    if len(groups) != 1:
-                        failures.append(
-                            f"{assets.relative_to(ROOT)}/report.json: expected one group"
-                        )
-                    else:
-                        group = groups[0]
-                        cells = group.get("cells", [])
-                        actual_cells = {str(cell.get("id")) for cell in cells}
-                        if (
-                            group.get("bonds") != [bond]
-                            or group.get("judgement") != "fallback"
-                            or group.get("fallback_kind") != "configured"
-                            or group.get("reasons") != [reason]
-                            or actual_cells != expected_cells
-                            or any(cell.get("ok") is not False for cell in cells)
-                            or any(cell.get("reasons") != [reason] for cell in cells)
-                        ):
-                            failures.append(
-                                f"{assets.relative_to(ROOT)}/report.json: "
-                                "configured fallback contract mismatch"
-                            )
-                    expected_runtime = [{
-                        "bonds": [bond],
-                        "judgement": "fallback",
-                        "fallback_kind": "configured",
-                    }]
-                    if (
-                        manifest.get("groups") != []
-                        or manifest.get("fallback_groups") != expected_runtime
-                    ):
-                        failures.append(
-                            f"{assets.relative_to(ROOT)}/islands.json: "
-                            "runtime fallback index mismatch"
-                        )
-                    count = len(expected_cells)
-                    expected_coverage = {
-                        "groups": {
-                            "island": 0, "partial": 0, "fallback": 1, "total": 1
-                        },
-                        "cells": {
-                            "interactive": 0, "fallback": count, "total": count
-                        },
-                    }
-                    if coverage != expected_coverage:
-                        failures.append(
-                            f"{assets.relative_to(ROOT)}/coverage.json: "
-                            "configured fallback coverage mismatch"
-                        )
+        report = assets / "report.json"
+        forced = FORCED_FALLBACKS.get(slug)
+        if assets.exists() or forced is not None:
+            failures.extend(check_islands(source, assets, forced))
 
         if report.is_file():
             try:

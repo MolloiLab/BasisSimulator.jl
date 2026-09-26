@@ -270,11 +270,9 @@ Flash — the dual-source sister of [`UFC_MC_EFFICIENCY_LUT`] (SOMATOM Force).
 
 Computed from a full Monte-Carlo transport simulation of the Definition Flash
 detector by Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
-Laboratory), `flash_efficiency_results.csv`, 2026-08-26 (CRSP lab share;
-archived locally with provenance notes as
-`docs/notebooks/data/ufc_flash_mc_efficiency_v1.csv` — that directory is
-gitignored, so this LUT is the canonical tracked copy).  Values are verbatim
-from that dataset on a 1-keV grid (1–140 keV).
+Laboratory), `flash_efficiency_results.csv`, 2026-08-26 (CRSP lab share).  This
+LUT is the tracked copy; values are verbatim from that dataset on a 1-keV grid
+(1–140 keV).
 
 # Key features captured by MC (not in Beer-Lambert)
 
@@ -353,6 +351,25 @@ Selector for how detector efficiency is computed.
     BEER_LAMBERT
     MC_LUT
 end
+
+@doc """
+    BEER_LAMBERT::DetectorEfficiencyMode
+
+Analytic scintillator absorption, `η(E) = 1 − exp(−μ(E)·d)`, with `μ(E)` from
+[`get_scintillator_mu`](@ref) and `d` the crystal thickness. It can't model the K-edge
+fluorescence escape that [`MC_LUT`](@ref) captures. Select it for an `EICTScanner` with
+`SimOptions(detector_efficiency_mode = :beer_lambert)`, e.g. to compare against the LUT.
+""" BEER_LAMBERT
+
+@doc """
+    MC_LUT::DetectorEfficiencyMode
+
+Monte Carlo–derived per-energy absorption efficiency: [`GEMSTONE_MC_EFFICIENCY_LUT`](@ref)
+(GE Gemstone / LUMEX), [`UFC_MC_EFFICIENCY_LUT`](@ref) (Siemens Force UFC) and
+[`UFC_FLASH_MC_EFFICIENCY_LUT`](@ref) (Siemens Definition Flash UFC). It captures the
+fluorescence escape at the scintillator's K-edges. For a scintillator without a LUT,
+[`compute_eid_efficiency_vector`](@ref) falls back to [`BEER_LAMBERT`](@ref).
+""" MC_LUT
 
 """
     DetectorEfficiency

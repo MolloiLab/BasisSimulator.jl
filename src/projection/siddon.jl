@@ -451,7 +451,7 @@ siddon_forward_project!(sinogram_gpu, phantom_gpu, geom)
 # See Also
 
 - [`siddon_forward_project`](@ref): Allocating version (creates sinogram)
-- [`polychromatic_forward_project`](@ref): Spectral projection with energy dependence
+- [`siddon_fused_poly_project!`](@ref): Spectral projection with energy dependence
 - [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
 """
 function siddon_forward_project!(
@@ -672,7 +672,7 @@ version [`siddon_forward_project!`](@ref) to avoid repeated allocations.
 # See Also
 
 - [`siddon_forward_project!`](@ref): In-place version (avoids allocation)
-- [`polychromatic_forward_project`](@ref): Spectral projection with energy dependence
+- [`siddon_fused_poly_project!`](@ref): Spectral projection with energy dependence
 - [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
 """
 function siddon_forward_project(

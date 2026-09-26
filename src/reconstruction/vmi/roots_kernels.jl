@@ -20,9 +20,6 @@ changes from the upstream source are:
      Brent's bisection fallback guarantees convergence in ≤ 64 steps
      on Float64, so 100 is a safety margin.
   3. Returns `(root, converged)` tuple instead of raising on failure.
-
-Bit-for-bit parity against Roots.jl is verified in
-`test/vmi/test_brent_parity.jl` on randomised inputs.
 """
 
 # ─────────────────────────────────────────────────────────────────────

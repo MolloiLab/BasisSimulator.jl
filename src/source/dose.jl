@@ -30,7 +30,6 @@
 # CTDIvol; the uncalibrated beam quantities are reported alongside.
 
 const _KEV_PER_G_TO_MGY = 1.602176634e-10      # 1 keV/g = 1.602e-13 Gy
-const _CTDI_CHAMBER_MM = 100.0                 # the pencil ionisation chamber's active length
 const _ELECTRON_REST_KEV = 510.99895
 
 # NIST NISTIR-5632 (Hubbell & Seltzer) mass energy-absorption coefficient of dry air, cm²/g.

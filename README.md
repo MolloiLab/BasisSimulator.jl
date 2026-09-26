@@ -5,117 +5,113 @@
 [![SoftwareX DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.softx.2026.102910-blue)](https://doi.org/10.1016/j.softx.2026.102910)
 [![Zenodo archive](https://zenodo.org/badge/DOI/10.5281/zenodo.20262003.svg)](https://doi.org/10.5281/zenodo.20262003)
 
+Polychromatic CT simulation and reconstruction in Julia, on any GPU or the CPU.
 
-GPU-portable polychromatic CT simulator in Julia. Runs on Metal, CUDA, ROCm,
-oneAPI, or CPU
-via [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl).
-Models energy-integrating and photon-counting detectors, single- and dual-kVp
-acquisitions, and reconstructs with FBP (FDK), OS-PWLS iterative reconstruction, and material-basis VMI.
+BasisSimulator.jl models energy-integrating and photon-counting scanners from the source spectrum
+to the detector counts, and reconstructs what they measure: cone-beam FDK, helical WFBP, hybrid
+iterative reconstruction, and virtual monoenergetic images from dual-kVp, dual-source and
+photon-counting acquisitions, with the CTDIvol and DLP of every scan. The kernels are written once
+against [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl) and run on CUDA,
+Metal, ROCm, oneAPI or the CPU.
 
 ## Install
+
+BasisSimulator.jl requires Julia 1.12.
 
 ```julia
 using Pkg
 Pkg.add("BasisSimulator")
-```
-
-For portable device selection, add `GPUSelect` plus your backend:
-
-```julia
-Pkg.add("GPUSelect")
-Pkg.add("Metal")     # Apple Silicon
-Pkg.add("CUDA")      # NVIDIA
-Pkg.add("AMDGPU")    # AMD
-Pkg.add("oneAPI")    # Intel
+Pkg.add("GPUSelect")   # picks the device array type
+Pkg.add("CUDA")        # or Metal, AMDGPU, oneAPI; nothing for the CPU
 ```
 
 ## Quick example
+
+A Gammex 472 phantom on a model of the GE Revolution Apex Elite, reconstructed to Hounsfield units:
 
 ```julia
 import BasisSimulator as BS
 import GPUSelect
 
-AT = GPUSelect.Storage()  # MtlArray / CuArray / ROCArray / oneArray / Array
+AT = GPUSelect.Storage()      # CuArray, MtlArray, ROCArray or oneArray; Array on the CPU
 to_gpu(x) = AT(x)
 
-phantom_cpu = BS.create_gammex_472(n_voxels=256)
-phantom = BS.Phantom(to_gpu(phantom_cpu.mask),     # mask on the device, materials stay on the host
-                     phantom_cpu.materials,
-                     phantom_cpu.voxel_size,
-                     phantom_cpu.origin,
-                     phantom_cpu.extent)
+cpu = BS.create_gammex_472(n_voxels = 256, n_slices = 4, z_cm = 1.0)
+phantom = BS.Phantom(to_gpu(cpu.mask), cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)
 
-scanner = BS.EICTScanner(
-    source_to_isocenter = 626.0,   # mm
-    source_to_detector  = 1097.0,
-    detector_rows       = 64,
-    detector_cols       = 832,
-    detector_row_size   = 0.625,
-    detector_col_size   = 1.053,
-)
-protocol = BS.CTProtocol(kVp=120.0, mA=200.0, views=984)
-sim_opts = BS.SimOptions()
-rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)
+scanner  = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0,
+                          detector_rows = 32, detector_cols = 834,
+                          detector_row_size = 0.625, detector_col_size = 0.6)
+protocol = BS.CTProtocol(kVp = 120, mA = 200.0, views = 500, collimation_mm = 5.0)
+sim_opts = BS.SimOptions(seed = 42)
+rec_opts = BS.ReconOptions(matrix_size = (512, 512, 4), fov_cm = 35.0, z_cm = 0.5)
 
-ws = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
+ws     = BS.create_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 result = BS.simulate!(ws, phantom, protocol, sim_opts)
-result.dose            # CTDIvol and DLP of this acquisition, from the simulated beam
+result.dose                   # CTDIvol and DLP of this acquisition, from the simulated beam
 
-bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner=scanner, geom=ws.geom)
-sino_bhc = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc))
-ws_fdk = BS.create_fdk_recon_workspace(sino_bhc, ws.geom, rec_opts.matrix_size)
-hu = BS.to_hounsfield(
-    Array(BS.reconstruct!(ws_fdk, sino_bhc, ws.geom));
-    μ_water = bhc.μ_water_ref,
-)
+bhc  = BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = ws.geom)
+sino = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc))
+fdk  = BS.create_fdk_recon_workspace(sino, ws.geom, rec_opts.matrix_size)
+hu   = BS.to_hounsfield(Array(BS.reconstruct!(fdk, sino, ws.geom)); μ_water = bhc.μ_water_ref)
+
+# hybrid iterative reconstruction: one strength dial, 0 (FBP) to 100
+hir    = BS.create_hir_recon_workspace(sino, ws.geom, rec_opts.matrix_size; strength = 60)
+hu_hir = BS.to_hounsfield(Array(BS.reconstruct!(hir, sino, ws.geom)); μ_water = bhc.μ_water_ref)
 ```
 
-Scanning one phantom at several tube voltages? The volume walk does not depend on the spectrum,
-so walk once and reuse it — bit-identically, and 2 to 3 times faster over four voltages:
+A protocol with a `pitch` is helical, and `reconstruct!` switches to rebinned WFBP by itself. The
+volume walk does not depend on the spectrum, so a study at several tube voltages walks once:
 
 ```julia
 paths = BS.material_paths(ws, phantom)          # one walk, reused by every voltage below
-for kvp in (80.0, 100.0, 120.0, 140.0)
-    protocol_kvp = BS.CTProtocol(kVp=kvp, mA=200.0, views=984)
-    ws_kvp = BS.create_eict_workspace(scanner, protocol_kvp, sim_opts, rec_opts, phantom)
-    BS.simulate!(ws_kvp, phantom, protocol_kvp, sim_opts; paths)
+for kvp in (80, 100, 120, 140)
+    p = BS.CTProtocol(kVp = kvp, mA = 200.0, views = 500, collimation_mm = 5.0)
+    w = BS.create_workspace(scanner, p, sim_opts, rec_opts, phantom)
+    BS.simulate!(w, phantom, p, sim_opts; paths)
 end
 ```
 
-Photon-counting bins to virtual monoenergetic images, the estimator of notebooks 03/04/12:
+## Photon counting to virtual monoenergetic images
 
 ```julia
-scanner_pcct = BS.PCCTScanner(
-    source_to_isocenter = 626.0, source_to_detector = 1097.0,
-    detector_rows       = 64,    detector_cols      = 832,
-    detector_row_size   = 0.625, detector_col_size  = 1.053,
-    energy_thresholds   = [20.0, 35.0, 55.0, 70.0],
-    dead_time_ns        = 5.0,                 # pile-up is modelled only once there is a dead time
-    pileup_correction   = true,                # the decomposition wants corrected counts
+scanner_pc = BS.PCCTScanner(
+    source_to_isocenter = 610.0, source_to_detector = 1113.0,
+    detector_rows = 32, detector_cols = 1200,          # 1200 × 0.3 mm covers the 33 cm phantom
+    detector_row_size = 0.35, detector_col_size = 0.3,
+    energy_thresholds = [20.0, 35.0, 55.0, 70.0],     # four counting bins, keV
+    energy_resolution = 10.0, charge_sharing_fwhm = 0.08,
+    dead_time_ns = 5.0,                               # pile-up is modelled once there is a dead time
+    pileup_correction = true, scatter_correction = true,
 )
-ws_pcct = BS.create_workspace(scanner_pcct, protocol, sim_opts, rec_opts, phantom)
-result = BS.simulate!(ws_pcct, phantom, protocol, sim_opts)
-basis = BS.spectral_basis(ws_pcct; I0 = result.I0_bins)     # I0 per ray: [n_cols, n_rows, n_bins]
-vmi = BS.vmi_pipeline(;
-    channels = [Array(b) for b in result.pcct_sino.bins], basis, geom = ws_pcct.geom,
-    to_backend = to_gpu, reduce_rows = true, use_tlbf = true,
-    matrix_size = (512, 512, 1),           # it never sees rec_opts, so say the grid here
-)                      # vmi.vmis at 40/70/100/140 keV, in HU
+ws_pc  = BS.create_workspace(scanner_pc, protocol, sim_opts, rec_opts, phantom)
+res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 
-# the same acquisition through the iterative reconstructor: each basis material weighted by its
-# own inverse variance, in μ-equivalent units — T-LBF, ACNR and the synthesis unchanged
-vmi_hir = BS.vmi_pipeline(;
-    channels = [Array(b) for b in result.pcct_sino.bins], basis, geom = ws_pcct.geom,
-    to_backend = to_gpu, reduce_rows = true, use_tlbf = true,
-    matrix_size = (512, 512, 1), recon_method = :hir, hir_strength = 60,
-)
+channels = [Array(b) for b in res_pc.pcct_sino.bins]    # one corrected log sinogram per bin
+basis    = BS.spectral_basis(ws_pc; I0 = res_pc.I0_bins) # the response the simulation applied
+
+vmi = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
+                      matrix_size = rec_opts.matrix_size)
+vmi.vmis                      # (512, 512, 4, 4) in HU at 40, 70, 100 and 140 keV
+
+# with the SpectralHYPR denoiser, on the counts and on the reconstructed basis pair
+vmi_denoised = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
+                               matrix_size = rec_opts.matrix_size,
+                               denoiser = BS.SpectralHYPR())
 ```
+
+The same `vmi_pipeline` takes rapid kVp-switching and dual-source pairs through
+`BS.spectral_basis_from_acquisitions`; the
+[getting-started guide](https://molloilab.github.io/BasisSimulator.jl/getting-started/#dual-energy)
+shows it.
 
 ## Documentation
 
-Full API reference, getting-started guide, and eleven worked-example notebooks:
-**<https://molloilab.github.io/BasisSimulator.jl/>**. Docstrings are also
-available via `?Function` in the Julia REPL.
+**<https://molloilab.github.io/BasisSimulator.jl/>**: a getting-started guide, twelve worked-example
+notebooks (the five-struct API, XCAT anatomy, dual-kVp and photon-counting VMI, the Siemens SOMATOM
+Force and Definition Flash, helical scanning, metal artifacts, a CatSim comparison), the
+[scanner parameter sets](https://molloilab.github.io/BasisSimulator.jl/scanners/), and the API
+reference. Docstrings are also available via `?BS.simulate!` in the REPL.
 
 ## Citation
 
