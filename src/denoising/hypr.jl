@@ -379,29 +379,39 @@ function hypr_lr(channels::AbstractVector, I0::AbstractArray{<:Real, 3};
 end
 
 """
-    estimate_dispersion(channels, I0) -> Vector{Float64}
+    estimate_dispersion(channels, I0; max_attenuation = 0.05) -> Vector{Float64}
 
-`D_k = var / mean` of each channel's photon-equivalent counts over the acquisition's air rays:
-the (column, row) positions whose attenuation, averaged over the rotation, is statistically
-indistinguishable from zero (within three standard errors). The variance is over views at a fixed
-ray, so object structure cannot enter. 1.0 when no air ray or no noise is present — a
-photon-counting acquisition should return values near one.
+`D_k`, the variance-to-mean ratio of each channel's photon-equivalent counts, read off the
+acquisition's air rays: the (column, row) positions whose attenuation, averaged over the rotation, is
+below `max_attenuation` (95 % transmission; a centimetre of water attenuates by 0.2), which miss the
+object in every view. At such a ray the expected signal is the same, or changes only slowly, from view
+to view, while its noise is independent from view to view, so half the mean square difference of
+successive views is the noise variance, free of the ray's residual attenuation (the air of a phantom's
+volume, a bowtie edge) and of any structure that changes slowly with the view. Each air ray gives one
+estimate; `D_k` is their median, which a few rays grazing the object cannot move. 1.0, with a
+warning, when the acquisition has no air ray; a photon-counting acquisition should return values
+near one.
 """
-function estimate_dispersion(channels::AbstractVector, I0::AbstractArray{<:Real, 3})
+function estimate_dispersion(channels::AbstractVector, I0::AbstractArray{<:Real, 3};
+        max_attenuation::Real = 0.05)
     n_col, n_row, n_view = size(first(channels))
+    n_view >= 3 || throw(ArgumentError("the dispersion needs at least 3 views, got $(n_view)"))
     constant = size(I0, 1) == 1 && size(I0, 2) == 1
     return map(eachindex(channels)) do k
-        num = 0.0
-        den = 0.0
+        D = Float64[]
         for r in 1:n_row, i in 1:n_col
             h = Float64.(view(channels[k], i, r, :))
-            m, s = mean(h), std(h)
-            (s > 0 && abs(m) < 3 * s / sqrt(n_view)) || continue
+            mean(h) < max_attenuation || continue
             N = Float64(constant ? I0[1, 1, k] : I0[i, r, k]) .* exp.(-h)
-            num += var(N)
-            den += mean(N)
+            m = mean(N)
+            v = sum(abs2, diff(N)) / (2 * (n_view - 1))
+            m > 0 && v > 0 && push!(D, v / m)
         end
-        den > 0 && num > 0 ? num / den : 1.0
+        if isempty(D)
+            @warn "estimate_dispersion: channel $(k) has no air ray (no ray below $(max_attenuation) attenuation); using 1.0"
+            return 1.0
+        end
+        median(D)
     end
 end
 

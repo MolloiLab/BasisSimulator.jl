@@ -100,6 +100,30 @@ end
     @test est[2] ≈ 3.0 rtol = 0.08
 end
 
+@testset "estimate_dispersion: air rays with residual attenuation, and rays grazing the object" begin
+    # the air of a phantom's volume: every ray that misses the object still crosses a few mm of
+    # attenuating air, which changes slowly with the view (a square volume), and two columns graze the
+    # object in part of the rotation
+    rng = Random.MersenneTwister(11)
+    nc, nr, nv = 40, 2, 600
+    I0 = fill(8.0e4, nc, nr, 2)
+    D = (1.3, 1.25)
+    channels = map(1:2) do k
+        h = Array{Float32}(undef, nc, nr, nv)
+        for idx in CartesianIndices(h)
+            c, v = idx[1], idx[3]
+            air = 0.006 + 0.002 * abs(sin(2π * v / nv))
+            att = 10 < c <= nc - 10 ? 1.5 : (c in (10, nc - 9) && v <= nv ÷ 3 ? 0.02 : 0.0)
+            s = D[k] * BS._poisson_sample(rng, 8.0e4 * exp(-(air + att)) / D[k])
+            h[idx] = Float32(-log(max(s, 1) / 8.0e4))
+        end
+        h
+    end
+    est = BS.estimate_dispersion(channels, I0)
+    @test est[1] ≈ 1.3 rtol = 0.03
+    @test est[2] ≈ 1.25 rtol = 0.03
+end
+
 @testset "guided_pool stops at structure" begin
     rng = Random.MersenneTwister(7)
     nx, nz = 32, 5
