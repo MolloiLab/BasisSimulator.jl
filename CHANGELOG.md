@@ -18,8 +18,9 @@ onward they are written by hand, and releases are cut by hand — see
 Everything since 0.14.0, the last registered release. The work landed on `main` in stages whose
 headings below carry the version numbers `Project.toml` held at the time (0.15.0 to 0.18.0);
 none of those was registered or tagged, so they ship together as 0.15.0, the next version the
-General registry accepts after 0.14.0. The stages are newest first, and each one is breaking
-relative to 0.14.0 where it says so.
+General registry accepts after 0.14.0. The stages are newest first. Each stage's Breaking items are
+breaking relative to the stage before it; those on API added since 0.14.0 (the VMI chain,
+`vmi_pipeline`) do not affect a 0.14.0 user.
 
 ### The release pull request: clean-up, documentation, release process
 
@@ -55,8 +56,6 @@ relative to 0.14.0 where it says so.
 - **`projector = :dd` is removed** (it was deprecated): `SimOptions`, the HIR workspace and the BHC
   functions throw an `ArgumentError` naming `:dd_fast` and `:siddon`. The distance-driven kernel
   itself stays; `:dd_fast` uses it.
-- The package no longer declares CUDA and Metal as weak dependencies (it had no extensions); load
-  either yourself, or use GPUSelect.
 - Also removed (not API): the XCIST converter scripts that produced the bundled spectrum tables
   (`src/spectrum/convert.py`, `XCISTspectrum.m`; the tables stay), two Metal-only soak tests that
   were not part of the suite, and figures of notebooks that no longer exist.
@@ -74,6 +73,8 @@ relative to 0.14.0 where it says so.
 - `RELEASING.md` is a runbook, and `AGENTS.md` describes the repository for contributors and agents.
 
 #### Changed
+- The package no longer declares CUDA and Metal as weak dependencies (it had no extensions); load
+  either yourself, or use GPUSelect.
 - The docs site and the Snapshot site are deployed from the newest release tag (after TagBot), not
   from every push to `main`; CI checks that `version` is the last registered version or a valid
   next one.

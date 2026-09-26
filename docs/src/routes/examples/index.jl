@@ -20,7 +20,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
     NOTEBOOK_META = Dict(
         "01_five_struct_api" => (
             title     = "The Five-Struct API",
-            summary   = "Five structs, then create_eict_workspace, simulate! and reconstruct!: a Gammex 472 " *
+            summary   = "Five structs, then create_workspace, simulate! and reconstruct!: a Gammex 472 " *
                         "scan on a GE Revolution Apex Elite model at 200 and 50 mA, the dose report of each, " *
                         "FBP against hybrid IR, and checks of water, noise scaling and every rod against theory.",
             thumbnail = "recon_compare_4panel.png",
@@ -86,7 +86,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             title     = "Siemens SOMATOM Definition Flash",
             summary   = "The second-generation dual-source Flash with its own, thinner UFC crystal table. Regular " *
                         "dual-power scanning at 120 kV (water accuracy and the √2 noise gain of two tubes) and " *
-                        "the clinical 100/Sn140 kV pair to a mixed image and BS.vmi_pipeline VMIs, closed by a " *
+                        "the clinical 80/Sn140 kV pair to a mixed image and BS.vmi_pipeline VMIs, closed by a " *
                         "21-check verification gate.",
             thumbnail = "flash_ufc_lut_comparison.png",
             tags      = ["Dual-source", "UFC Flash", "VMI"],

@@ -113,8 +113,9 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   integration on every scanner (`SimOptions(; view_samples = 5)`, `view_arc` the duty cycle for
   rapid kVp switching), one projection per exposure shared by its draws (`keep_projection` /
   `projection`), and `vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = PairFilter(…),
-  pair_basis, composite_energy)` with the scanner's fitted window pair and the pair's basis fixed
-  from a separate calibration draw.
+  pair_basis, composite_energy)` with the scanner's fitted window pair (one window where no pair
+  was fitted, as for the Force in notebook 09) and the pair's basis fixed from a separate
+  calibration draw.
 
 ## CI and deployment (`.github/workflows/`)
 

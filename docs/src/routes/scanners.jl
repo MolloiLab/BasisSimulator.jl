@@ -195,6 +195,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
     source_to_isocenter = 625.6,  source_to_detector = 1100.0,
     detector_rows = 256,          detector_cols = 834,
     detector_row_size = 0.625,    detector_col_size = 0.6,
+    detector_col_offset = 0.25,   detector_shape = :arc,     # the defaults, written out
     focal_spot_width = 1.0,       focal_spot_length = 1.0,   target_angle = 10.0,
     flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
     bowtie_filter = :ge_revolution_large,
@@ -205,9 +206,14 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 )"""; title = "Notebooks 01 · 02 · 03 · 05 · 06 · 07"),
             table(["Protocol (as run)", "kVp", "mA", "Views / rotation", "Collimation", "Added filter"], [
                 ["Single energy (01, 05)", "120", "200 / 250", "500 / 1.0 s", "5 mm", "Al 4.5 mm"],
-                ["Rapid kVp switching (03)", "80 / 140", "407 / 405", "984 / 0.5 s", "5 mm", "Al 4.5 mm"],
-                ["Rapid kVp switching, duty-weighted (07)", "80 / 140", "407 × 0.65 / 405 × 0.35", "984 / 0.5 s", "2.5 mm", "Al 4.5 mm"],
+                ["Rapid kVp switching (03, 07)", "80 / 140", "(407 × 0.65 / 405 × 0.35) × DOSE_SCALE", "984 / 0.5 s", "5 mm", "Al 4.5 mm"],
             ]),
+            P(:class => small,
+                "Rapid kVp switching is each energy's duty cycle of the view: 0.65 of the view period at 80 kVp and ",
+                "0.35 at 140 kVp, for the tube current and for the arc the view integrates over (",
+                c("view_arc"), "). ", c("DOSE_SCALE"), " scales both to the physical scan's CTDIvol of 10.07 mGy. ",
+                "Every notebook integrates each view over its arc with ", c("SimOptions(; view_samples = 5)"),
+                " (CatSim's comparison in 06 uses point views on both sides)."),
 
             # ── Naeotom Alpha ──────────────────────────────────────────────────
             H2(:id => "siemens-naeotom-alpha", :class => h2_cls, "Siemens NAEOTOM Alpha"),
@@ -215,8 +221,8 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             P(:class => prose,
                 "The photon-counting system. Native CdTe dexels of 0.275 × 0.322 mm at the detector face are ",
                 "binned 2 × 2, which at the 1113/610 magnification gives 0.301 × 0.353 mm pixels at the ",
-                "isocentre and 144 rows. Notebook 04 spans the 50 cm scan field (1659 columns), notebook 08 a ",
-                "36 cm field (1195 columns). Four thresholds at 20, 35, 55 and ",
+                "isocentre and 144 rows; notebooks 04 and 08 both span the 50 cm scan field (1659 columns). ",
+                "Four thresholds at 20, 35, 55 and ",
                 "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV."),
             CodeBlock("""scanner = let native_col = 0.275, native_row = 0.322,   # mm at the detector face
                sid = 610.0, sdd = 1113.0, bf = 2
@@ -224,8 +230,9 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
     row_iso = native_row * bf / (sdd / sid)                # 0.353 mm
     BS.PCCTScanner(
         source_to_isocenter = sid, source_to_detector = sdd,
-        detector_rows = 144, detector_cols = ceil(Int, 500.0 / col_iso),   # 50 cm field (notebook 08: 360)
+        detector_rows = 144, detector_cols = ceil(Int, 500.0 / col_iso),   # the 50 cm scan field
         detector_row_size = row_iso, detector_col_size = col_iso,
+        detector_shape = :arc, detector_col_offset = 0.25,
         focal_spot_width = 0.4, focal_spot_length = 0.5, target_angle = 7.0,
         gantry_rotation_time = 0.5, scan_diameter = 500.0, gantry_aperture = 820.0,
         flat_filter_material = :aluminum, flat_filter_thickness = 3.0,
@@ -234,14 +241,16 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
         fill_factor_row = 0.95, fill_factor_col = 0.95,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         energy_resolution = 10.0, charge_sharing_fwhm = 0.08, dead_time_ns = 5.0,
+        pixel_mode = :standard,
         native_dexel_col_mm = native_col, native_dexel_row_mm = native_row, binning_factor = bf,
-        pileup = true, pileup_correction = true, scatter_correction = true,
+        pileup_correction = true, scatter_correction = true, noise_reduction = 0.0,
     )
 end"""; title = "Notebooks 04 · 08"),
             P(:class => small,
-                "Both notebooks scan at 140 kVp / 174 mA, 1200 views in 0.5 s, 5 mm collimation, with the tube's ",
-                "0.9 mm titanium window as ", c("additional_filters = [(\"Ti\", 0.9)]"), " on top of the 3 mm ",
-                "aluminium. Notebook 08 also sets ", c("noise_reduction = 0.7"), "."),
+                "Both notebooks scan at 140 kVp and 174 mA × ", c("DOSE_SCALE"), " (the physical CTDIvol of 10.12 mGy), ",
+                "1200 views in 0.5 s, 5 mm collimation, with the tube's 0.9 mm titanium window as ",
+                c("additional_filters = [(\"Ti\", 0.9)]"), " on top of the 3 mm aluminium, exact Poisson counts, ",
+                "and view integration on the photon-counting path (", c("view_samples = 5"), ")."),
 
             # ── Force ──────────────────────────────────────────────────────────
             H2(:id => "somatom-force", :class => h2_cls, "Siemens SOMATOM Force"),
@@ -330,7 +339,9 @@ protocol_high = BS.CTProtocol(kVp = 140, mA = 190.0, views = 1160, rotation_time
     source_to_isocenter = 595.0, source_to_detector = 1085.6,
     detector_rows = 64,          detector_cols = 736,
     detector_row_size = 0.6,     detector_col_size = 0.70473,
+    detector_shape = :arc,
     focal_spot_width = 0.7,      focal_spot_length = 0.7,  target_angle = 7.0,
+    gantry_rotation_time = 0.5,  scan_diameter = 500.0,    gantry_aperture = 780.0,
     flat_filter_material = :aluminum, flat_filter_thickness = 8.4,
     bowtie_filter = :large_body,                 # assumption: profile unpublished
     detector_material = :ufc_flash,              # the Flash table, never :ufc
@@ -339,14 +350,16 @@ protocol_high = BS.CTProtocol(kVp = 140, mA = 190.0, views = 1160, rotation_time
     electronic_noise = 1500,     # e⁻, Stellar DAS floor (pre-2011 builds ≈ 3500)
     detection_gain = 10.0,
 )
-# dual energy: 100 kV on tube A, Sn140 on tube B; a full 1152-view rotation each
-protocol_low  = BS.CTProtocol(kVp = 100, mA = 460.0, views = 1152, rotation_time = 0.5,
+# dual energy: 80 kV on tube A, Sn140 on tube B; a full 1152-view rotation each, both currents
+# scaled by DOSE_SCALE to the physical scan's CTDIvol (10.01 mGy)
+protocol_low  = BS.CTProtocol(kVp = 80, mA = 470.0 * DOSE_SCALE, views = 1152, rotation_time = 0.5,
                               collimation_mm = 4.8, anode_angle = 8)
-protocol_high = BS.CTProtocol(kVp = 140, mA = 356.0, views = 1152, rotation_time = 0.5,
+protocol_high = BS.CTProtocol(kVp = 140, mA = 182.0 * DOSE_SCALE, views = 1152, rotation_time = 0.5,
                               collimation_mm = 4.8, anode_angle = 8,
                               additional_filters = [("Sn", 0.4)])"""; title = "Notebook 12"),
             P(:class => small,
-                "Notebook 12 also runs the regular dual-power mode, 120 kV on both tubes at 420 mA each, whose two ",
+                "The heel effect is off and every view integrates over its arc (", c("view_samples = 5"), "). ",
+                "Notebook 12 also runs the regular dual-power mode, 120 kV on both tubes at 420 mA × ", c("DOSE_SCALE"), " each, whose two ",
                 "independent chains reduce noise by √2. The bundled spectra reach 140 kVp, the Flash's top kV, so ",
                 "the clinical pair runs without substitution; they come at 8° and 10° anodes, so the published 7° ",
                 "is run as 8°."),
