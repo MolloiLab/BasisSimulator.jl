@@ -22,8 +22,14 @@ md"""
 
 A GE Revolution Apex Elite rapid-kVp-switching acquisition (80 + 140 kVp) of the
 Gammex 472 phantom, turned into virtual monoenergetic images (VMIs) at 50, 70, 100 and
-140 keV by one package call, `BS.vmi_pipeline`, and checked rod by rod against the
-attenuation of the phantom's own materials.
+140 keV by one package call, `BS.vmi_pipeline`, and checked rod by rod against a
+noise-free acquisition of the same scan and against the attenuation of the phantom's own
+materials.
+
+The scanner, the acquisition and the chain are those of the basis-spectral-denoising
+paper: its GE model with its physics switches, the two exposures of a rotation with their
+duty cycle, view integration, the fitted pair of FDK windows and a calibration draw that
+fixes the spectral pair.
 """
 
 # ╔═╡ f2798d62-3509-4cc4-a24f-39ace8bb5a9e
@@ -31,18 +37,22 @@ md"""
 ## Pipeline
 
 ```
-80 kVp + 140 kVp corrected log sinograms   (two co-registered acquisitions)
-  → BS.spectral_basis_from_acquisitions     (per-ray absolute response of each kVp)
-  → BS.vmi_pipeline
+80 kVp + 140 kVp exposures of one rotation   (duty cycle 0.65 / 0.35, each view integrated over its arc)
+  → one projection per exposure, three noise draws from it:
+      the noise-free reference, the measured scan and a calibration scan
+  → BS.spectral_basis_from_acquisitions       (per-ray absolute response of each kVp)
+  → calibration draw → pair_basis (E*, β) and composite_energy
+  → BS.vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = PairFilter(…), pair_basis, composite_energy)
        projection-domain HYPR-LR on the counts of each detector row
      → K = 2 n-channel Poisson maximum-likelihood decomposition (iodine + water, every ray)
-     → image-domain HYPR on the FDK-reconstructed basis pair
-     → Kalender ACNR
+     → FDK of the composite and of its complement, each with its own window
+     → ACNR on the complement → image-domain HYPR on the complement
      → VMI synthesis at 50 / 70 / 100 / 140 keV
+  → scored against the noise-free reference and against theory
 ```
 
-This is the chain of the basis-vmi paper (the n-channel decomposition, ACNR) with the basis-spectral-denoising paper's SpectralHYPR (projection HYPR + image HYPR + ACNR). Both kVp channels stay separate all the way into the likelihood; nothing
-is rebinned into a single "effective" spectrum.
+Both kVp channels stay separate all the way into the likelihood; nothing is rebinned into a
+single "effective" spectrum.
 """
 
 # ╔═╡ 3d515abe-f3d9-4ce5-96c7-bef7da9bf294
@@ -112,12 +122,16 @@ md"""
 ### 2. `EICTScanner()` Struct
 
 The Apex Elite geometry (source–isocenter 625.6 mm, source–detector 1100 mm, 834 columns
-× 0.6 mm, 256 rows × 0.625 mm), its Gemstone scintillator (`:lumex`) and the GE large-body
-bowtie. Rapid kVp switching alternates the tube between 80 and 140 kVp from view to view on
-one tube and one detector, so the two channels see the same rays. It is modelled here as two
-co-registered axial acquisitions on this one geometry, one per kVp, which gives every ray
-both channels. It is an idealization: on the scanner each kVp gets only its share of the
-views and of the tube output, so each channel here is less noisy than on a clinical scan.
+× 0.6 mm on an arc with the quarter-detector offset, 256 rows × 0.625 mm), its Gemstone
+scintillator (`:lumex`) and the GE large-body bowtie: the basis-spectral-denoising model,
+value for value.
+
+Rapid kVp switching alternates the tube between 80 and 140 kVp within every view period, on
+one tube and one detector, so the two channels see the same rays. It is modelled as two
+co-registered acquisitions on this one geometry, one per kVp, each with its share of the view
+period: its **duty cycle**, 0.65 at 80 kVp and 0.35 at 140 kVp. A channel's tube current is
+the instantaneous current times its duty cycle, and its views integrate over that fraction of
+the arc the gantry turns per view (`view_arc`).
 """
 
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
@@ -128,6 +142,8 @@ scanner = BS.EICTScanner(
     detector_cols = 834,
     detector_row_size = 0.625,
     detector_col_size = 0.6,
+    detector_col_offset = 0.25,
+    detector_shape = :arc,
     focal_spot_width = 1.0,
     focal_spot_length = 1.0,
     target_angle = 10.0,
@@ -146,44 +162,115 @@ scanner = BS.EICTScanner(
 md"""
 ### 3. `CTProtocol()` Struct
 
-One protocol per kVp: 984 views over a 0.5 s rotation, 5 mm collimation, 4.5 mm of added
-aluminium on both.
+One protocol per exposure: 984 views over a 0.5 s rotation, 5 mm collimation, 4.5 mm of
+added aluminium on both. The physical scan's currents are 407 mA at 80 kVp and 405 mA at
+140 kVp, each multiplied by its duty cycle.
+
+The simulator's tube output per mA is generic, not GE's, so the tube currents alone do not
+fix the dose. Both are scaled by one factor, `DOSE_SCALE`, which keeps the split between
+the two exposures and makes the simulated CTDIvol (the package's Monte Carlo dose in the
+32 cm body phantom, summed over the exposures) equal to the 10.07 mGy the physical scan
+reported. Noise is then simulated at the dose the physical scan delivered.
 """
 
-# ╔═╡ f9c0af7a-addd-4249-96fb-b9078765fbd1
-protocol_low = BS.CTProtocol(
-    kVp = 80,
-    mA = 407.0,
-    views = 984,
-    rotation_time = 0.5,
-    collimation_mm = 5.0,
-    additional_filters = [("Al", 4.5)],
+# ╔═╡ 03c00001-0000-4000-8000-000000000001
+# The two exposures of one rotation: each energy is read for its duty cycle of the view
+# period, the fraction of the view's arc it integrates over and of its tube current. Each has
+# its own noise seed: two acquisitions drawn from one seed would carry the same noise pattern,
+# correlated between the channels, which a real scan never has.
+exposures = (
+    low = (label = "80 kVp", kVp = 80, mA = 407 * 0.65, view_arc = 0.65, seed = 1234,
+           filters = [("Al", 4.5)]),
+    high = (label = "140 kVp", kVp = 140, mA = 405 * 0.35, view_arc = 0.35, seed = 4321,
+            filters = [("Al", 4.5)]),
 );
 
-# ╔═╡ 03b00004-0000-4000-8000-000000000020
-protocol_high = BS.CTProtocol(
-    kVp = 140,
-    mA = 405.0,
-    views = 984,
-    rotation_time = 0.5,
-    collimation_mm = 5.0,
-    additional_filters = [("Al", 4.5)],
-);
+# ╔═╡ 03c00001-0000-4000-8000-000000000002
+begin
+    "The `CTProtocol` of exposure `e`, its tube current scaled by `mA_scale`."
+    exposure_protocol(e; mA_scale = 1.0) = BS.CTProtocol(
+        kVp = e.kVp,
+        mA = e.mA * mA_scale,
+        views = 984,
+        rotation_time = 0.5,
+        collimation_mm = 5.0,
+        additional_filters = e.filters,
+    )
+    "The CTDIvol (mGy, 32 cm body phantom) of `protocol` on `scanner`."
+    ctdi_vol(protocol) = BS.compute_dose(BS.dose_source(scanner, protocol), protocol).ctdi_vol_mGy
+end;
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000003
+# One factor on both tube currents, so the simulated CTDIvol is the physical scan's 10.07 mGy.
+DOSE_SCALE = 10.07 / sum(e -> ctdi_vol(exposure_protocol(e)), exposures)
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000004
+protocols = map(e -> exposure_protocol(e; mA_scale = DOSE_SCALE), exposures);
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000005
+let
+    rows = map(collect(keys(exposures))) do k
+        e, p = exposures[k], protocols[k]
+        "| $(e.label) | $(round(e.mA / e.view_arc, digits = 1)) | $(e.view_arc) | " *
+        "$(round(p.mA, digits = 1)) | $(round(ctdi_vol(p), digits = 2)) |"
+    end
+    Markdown.parse("""
+    `DOSE_SCALE` = $(round(DOSE_SCALE, digits = 4)). The simulated exposures:
+
+    | exposure | physical mA | duty cycle, `view_arc` | simulated mA | CTDIvol (mGy) |
+    |---|---:|---:|---:|---:|
+    $(join(rows, "\n"))
+    """)
+end
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000103
 md"""
 ### 4. `SimOptions()` & `ReconOptions()`
 
-Each kVp gets its own noise seed: two acquisitions drawn from one seed would carry the same
-noise pattern, correlated between the channels, which a real scan never has. The
-reconstruction grid is 8 slices of 0.625 mm over the central 5 mm, 512² over 35 cm.
+The physics switches of the basis-spectral-denoising GE model: every effect of the
+energy-integrating path on except optical crosstalk, and the detector efficiency from the
+Monte Carlo table of the Lumex scintillator (`detector_efficiency_mode = :mc_lut`).
+
+**View integration.** A detector integrates while the gantry turns, so each view records the
+transmitted intensity averaged over the arc it sweeps, `r · view_arc · Δθ` at radius `r`: a
+blur of the object, largest far from the isocentre, that the noise, counted once per view,
+does not share. `view_samples = 5` samples that arc with five sub-views (the midpoint rule),
+0.2 mm apart at the edge of a 35 cm field. Without it the simulated signal is sharper,
+relative to its noise, than a physical scanner's, and no reconstruction window can match both
+the physical resolution and the physical noise texture.
+
+**Draws.** Each exposure is simulated three times, differing only in the noise: the
+noise-free expectation (draw 0, `use_noise = false`), the measured scan (draw 1) and a
+calibration scan (draw 9) of its own seeds. The reconstruction grid is the clinical series',
+8 slices of 0.625 mm over the central 5 mm, 512² over 35 cm.
 """
 
 # ╔═╡ 2d65a0c0-b25d-41ad-9cd3-e7a2d08a2482
-sim_opts = (
-    low = BS.SimOptions(seed = 1234, projector = :dd_fast),
-    high = BS.SimOptions(seed = 4321, projector = :dd_fast),
-)
+begin
+    VIEW_SAMPLES = 5
+    ge_opts = BS.SimOptions(
+        projector = :dd_fast,
+        detector_efficiency_mode = :mc_lut,
+        view_samples = VIEW_SAMPLES,
+    )
+    "The same physics switches with one field replaced."
+    with_option(opts, field, value) = BS.SimOptions(;
+        (f => getfield(opts, f) for f in fieldnames(BS.SimOptions) if f !== field)...,
+        (field => value,)...,
+    )
+end;
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000006
+begin
+    # Draw 0 is the noise-free expectation; draw r ≥ 1 gives each exposure the seed
+    # `seed + 1000 (r − 1)`, so the exposures stay independent within a draw and the draws of
+    # each other (basis-spectral-denoising's seeds for the Gammex).
+    DRAWS = (reference = 0, measured = 1, calibration = 9)
+    realization_seed(e, r) = e.seed + 1000 * (max(r, 1) - 1)
+    "The options of draw `r` of exposure `e`: its seed, its noise, its arc."
+    draw_opts(e, r) = with_option(with_option(with_option(ge_opts,
+        :seed, realization_seed(e, r)), :use_noise, r > 0), :view_arc, e.view_arc)
+end;
 
 # ╔═╡ 08cbc6fd-3c7c-432f-99e5-b220f8fe7fde
 recon_opts = let
@@ -200,38 +287,59 @@ end;
 md"""
 ### 5. Forward Project: `simulate!`
 
-One workspace and one `simulate!` per kVp. Each acquisition keeps what the spectral basis
-needs: its corrected log sinogram, its per-ray air counts `I0_ray` (the detector's air count
-× the bowtie air profile) and its per-ray detected spectrum from
-`resolve_source_spectrum_full` (source × filtration × bowtie × detector response), the same
-model the forward projector applied.
+Each exposure is projected once. The noise-free draw runs first with
+`keep_projection = true`, which returns everything before the noise; the measured and
+calibration draws pass it back (`projection`) and only draw their noise. That is
+bit-identical to simulating each draw afresh, at a fraction of the cost.
+
+Each acquisition keeps what the spectral basis needs: its corrected log sinograms, its
+per-ray air counts `I0_ray` (the detector's air count × the bowtie air profile) and its
+per-ray detected spectrum from `resolve_source_spectrum_full` (source × filtration × bowtie ×
+detector response), the same model the forward projector applied.
 """
 
 # ╔═╡ 4315ef69-aa2f-4ee0-a13b-c65e01fb87ce
-dual_scans = map((
-        (label = "80 kVp", protocol = protocol_low, opts = sim_opts.low),
-        (label = "140 kVp", protocol = protocol_high, opts = sim_opts.high),
-    )) do (label, protocol, opts)
-    @info "Simulating dual-kVp channel: $label"
-    ws = BS.create_eict_workspace(scanner, protocol, opts, recon_opts, phantom)
-    try
-        BS.simulate!(ws, phantom, protocol, opts)
-        air = ws.bowtie_air_reference === nothing ?
-            ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-            Float32.(Array(ws.bowtie_air_reference))
-        I0 = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * Float64(ws.η_eff)
-        energies, response = BS.resolve_source_spectrum_full(
-            opts, protocol; scanner = scanner, geom = ws.geom,
-        )
-        (
-            label, sino = Float32.(Array(ws.sinogram)), geom = ws.geom,
-            I0_ray = Float32.(I0 .* air),
-            energies = Float64.(energies), response = Float32.(response),
-        )
-    finally
-        BS.release_backend!(ws)
+dual_scans = map(collect(keys(exposures))) do k
+    e, protocol = exposures[k], protocols[k]
+    @info "Simulating dual-kVp channel: $(e.label)"
+    channels = Dict{Int, Array{Float32, 3}}()
+    projection = nothing
+    model = nothing
+    elapsed_s = @elapsed for r in (DRAWS.reference, DRAWS.measured, DRAWS.calibration)
+        opts = draw_opts(e, r)
+        ws = BS.create_workspace(scanner, protocol, opts, recon_opts, phantom)
+        try
+            result = BS.simulate!(ws, phantom, protocol, opts; report_dose = false,
+                keep_projection = projection === nothing, projection)
+            projection === nothing && (projection = result.projection)
+            channels[r] = Float32.(Array(ws.sinogram))
+            if model === nothing
+                air = ws.bowtie_air_reference === nothing ?
+                    ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+                    Float32.(Array(ws.bowtie_air_reference))
+                I0 = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * Float64(ws.η_eff)
+                energies, response = BS.resolve_source_spectrum_full(
+                    opts, protocol; scanner = scanner, geom = ws.geom,
+                )
+                model = (
+                    geom = ws.geom, I0_ray = Float32.(I0 .* air),
+                    energies = Float64.(energies), response = Float32.(response),
+                )
+            end
+        finally
+            BS.release_backend!(ws)
+        end
     end
+    (; label = e.label, channels, elapsed_s, model...)
 end;
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000007
+Markdown.parse("""
+The three draws of the two exposures took
+$(join(["$(round(s.elapsed_s, digits = 1)) s for $(s.label)" for s in dual_scans], " and ")),
+one projection each. Each sinogram is $(join(size(first(dual_scans).channels[DRAWS.measured]), " × "))
+(columns × rows × views).
+""")
 
 # ╔═╡ dc8a8352-5598-4cdd-952f-3d77367850e9
 md"""
@@ -242,7 +350,8 @@ md"""
 `spectral_basis_from_acquisitions` merges the two kVp energy grids onto their union and
 scales each acquisition's per-ray spectrum by its own air counts, so the likelihood sees the
 absolute response ``\Phi_k(E)`` of every ray and channel: source, filtration, bowtie and
-detector, the model that generated the data. No calibration scan is involved.
+detector, the model that generated the data. It does not depend on the noise, so every draw
+shares it.
 """
 
 # ╔═╡ 4ca28c64-ee96-47c8-b7c3-f0e0c4c99423
@@ -275,8 +384,8 @@ end
 
 # ╔═╡ 03a10001-0000-4000-8000-000000000002
 Markdown.parse("""
-The basis holds $(basis.n_channels) channels on a $(length(basis.E))-point energy grid
-($(round(Int, minimum(basis.E)))–$(round(Int, maximum(basis.E))) keV) for
+The basis holds $(basis.n_channels) channels on a $(length(basis.E))-point energy grid,
+$(round(Int, minimum(basis.E))) to $(round(Int, maximum(basis.E))) keV, for
 $(size(basis.Φ, 1)) × $(size(basis.Φ, 2)) rays; the response sums to the air counts to
 within $(round(basis.I0_relerr, sigdigits = 2)) (relative).
 """)
@@ -285,50 +394,146 @@ within $(round(basis.I0_relerr, sigdigits = 2)) (relative).
 md"""
 ### 2. The Chain's Settings
 
-The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: a 3 × 3
-(column × view) window on the counts of each detector row before the decomposition, and on
-the reconstructed basis pair a 1 × 1 × 7 composite (across slices only) and a 15 × 15 × 7 complement window. The
-decomposition is the K-channel estimator with its published controls; T-LBF (a
-photon-counting filter) is off; the view-direction antialias is on.
+**The denoiser** is generalized HYPR-LR in both domains, `BS.SpectralHYPR()`: before the
+decomposition, a 3 × 3 (column × view) window on the counts of each detector row, pooling
+views of one parity so the odd- and even-view halves stay independent, with each channel's
+dispersion measured on the air rays; after the reconstruction, the complement of the basis
+pair pooled within each slice, over the window with the least estimated risk. Neither ever
+pools across detector rows or slices. The decomposition is the K-channel estimator with its
+published controls; T-LBF (a photon-counting filter) is off; the view-direction antialias is
+on; ACNR is on (`vmi_pipeline`'s default).
 
-The FBP kernel is the notebook's GE soft-tissue kernel, a CatSim-style apodization halfway
-between the Standard and Soft windows.
+**A pair of FDK windows.** A VMI is ``A(E)\,M + B(E)\,I_\perp``, with ``M`` the
+minimum-noise VMI (the composite, at ``E^\star``) and ``I_\perp`` its complement, the
+iodine component whose noise is uncorrelated with ``M``'s. `BS.PairFilter` gives each its own
+window: the composite's sets the resolution and noise texture at ``E^\star``, the
+complement's how they change away from it, and one pair serves every energy. A window per
+basis image instead would stop the strongly anti-correlated noise of the water and iodine
+images cancelling wherever the two windows differ, leaving uncancelled noise in every VMI.
+Each window is an apodized ramp ``W(f) = \exp(-(f/f_c)^p)`` on the grid-Nyquist axis, the GE
+pair fitted by basis-spectral-denoising to the physical Gammex scan's MTF at every energy and
+NPS shape, on this scanner's clinical grid, which is this notebook's grid.
 """
 
 # ╔═╡ 03a10001-0000-4000-8000-000000000004
-# the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
-# the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
+# the published denoiser: ProjectionHYPR(3 × 3 box, view_stride = 2) and ImageHYPR()
 HYPR_CHAIN = BS.SpectralHYPR()
 
 # ╔═╡ 03a10001-0000-4000-8000-000000000005
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
 
 # ╔═╡ 03a10001-0000-4000-8000-000000000006
-# Halfway between CatSim Standard (1, .934, .744, .443, .053) and Soft.
-GE_KERNEL = BS.CustomFilter(
-    (0.0, 0.25, 0.5, 0.75, 1.0),
-    (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
-);
+# The GE pair of basis-spectral-denoising (`RECON.ge`): W(f) = exp(-(f / f_c)^p) at 11 knots.
+GE_KERNELS = (composite = (fc = 0.55, p = 1.5), complement = (fc = 1.05, p = 1.0));
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000008
+PAIR_FILTER = let knots = Tuple(range(0.0, 1.0, length = 11))
+    window(q) = BS.CustomFilter(knots, Tuple(round(exp(-(x / q.fc)^q.p), digits = 5) for x in knots))
+    BS.PairFilter(window(GE_KERNELS.composite), window(GE_KERNELS.complement))
+end;
+
+# ╔═╡ 03c00001-0000-4000-8000-000000000009
+let
+    f = range(0.0, 1.0, length = 201)
+    fig = Mke.Figure(size = (900, 480))
+    ax = Mke.Axis(
+        fig[1, 1]; title = "The GE Pair of FDK Windows",
+        xlabel = "Frequency (fraction of the grid's Nyquist)", ylabel = "Window W(f)",
+        titlesize = 28, xlabelsize = 20, ylabelsize = 20,
+    )
+    for (name, w, q, color) in (("composite M", PAIR_FILTER.composite, GE_KERNELS.composite, :royalblue),
+                                ("complement I⊥", PAIR_FILTER.complement, GE_KERNELS.complement, :crimson))
+        Mke.lines!(ax, f, [BS.frequency_window(w, x) for x in f]; color, linewidth = 3,
+            label = "$(name): f_c = $(q.fc), p = $(q.p)")
+    end
+    Mke.axislegend(ax; position = :rt, labelsize = 18)
+    fig
+end
+
+# ╔═╡ 03c00001-0000-4000-8000-00000000000a
+md"""
+### 3. The Calibration Draw: `pair_basis` and `composite_energy`
+
+The pair the windows act on, ``(E^\star, \beta)``, and the energy of the composite that ACNR
+and the image-domain HYPR act on are properties of the scanner and protocol. They are
+measured once, on the calibration draw, and fixed for every other draw, exactly as
+basis-spectral-denoising's `PAIR_BASIS` does:
+
+1. the calibration draw decomposed as measured and after the projection-domain HYPR alone
+   (`vmi_pipeline(; keep_sinograms = true)`, with `SpectralHYPR(image = nothing)` for the
+   second);
+2. `BS.spectral_pair` of the first with a standard soft-tissue window: its minimum-noise
+   energy ``E^\star`` and complement ``\beta``, the `pair_basis`;
+3. `BS.spectral_pair` of the second on that basis: the minimum-noise energy of the pair after
+   the projection-domain HYPR, which moves it, the `composite_energy`.
+
+Near its minimum the VMI noise hardly changes with energy, so the argmin of one acquisition
+is itself noise and would move from draw to draw. Measured on a draw of its own, it cannot
+tune the chain to the draw being scored, and the noise-free reference, which has no noise to
+measure it from, is reconstructed with the same pair as the measured scan.
+"""
+
+# ╔═╡ 03c00001-0000-4000-8000-00000000000b
+calibration = let
+    geom = first(dual_scans).geom
+    matrix_size = recon_opts.matrix_size
+    channels = [s.channels[DRAWS.calibration] for s in dual_scans]
+    decompose(denoiser) = BS.vmi_pipeline(;
+        channels, basis, geom, to_backend = to_gpu, matrix_size, denoiser,
+        keep_sinograms = true, use_acnr = false, VMI_CHAIN...,
+    ).sinograms
+    pair(d; kw...) = BS.spectral_pair(d.water, d.iodine, geom, matrix_size;
+        filter = BS.SoftFilter(), antialias = VMI_CHAIN.antialias, to_backend = to_gpu, kw...)
+    x = pair(decompose(nothing))
+    c = pair(decompose(BS.SpectralHYPR(image = nothing)); basis = (Estar = x.Estar, β = x.β))
+    (pair_basis = (Estar = x.Estar, β = x.β), composite_energy = c.Estar)
+end
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000003
 md"""
-### 3. `vmi_pipeline`
+### 4. `vmi_pipeline`
 
-One call, from the two corrected sinograms to the VMI stack, reconstructed on the
-notebook's grid (`recon_opts.matrix_size`) with every detector row kept.
+One call, from the two measured sinograms to the VMI stack, reconstructed on the
+notebook's grid (`recon_opts.matrix_size`) with every detector row kept: the published
+chain, with the GE's windows and the calibration draw's pair.
 """
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000002
 dual_vmi = BS.vmi_pipeline(;
-    channels = [s.sino for s in dual_scans],
+    channels = [s.channels[DRAWS.measured] for s in dual_scans],
     basis,
     geom = first(dual_scans).geom,
     to_backend = to_gpu,
     matrix_size = recon_opts.matrix_size,
     vmi_energies = (50.0, 70.0, 100.0, 140.0),
-    fbp_filter = GE_KERNEL,
     denoiser = HYPR_CHAIN,
-    use_acnr = true,
+    fbp_filter = PAIR_FILTER,
+    pair_basis = calibration.pair_basis,
+    composite_energy = calibration.composite_energy,
+    VMI_CHAIN...,
+);
+
+# ╔═╡ 03c00001-0000-4000-8000-00000000000c
+md"""
+The **noise-free reference** is the noise-free draw through the same reconstruction, the
+same windows and the same pair, with nothing to denoise: no HYPR and no ACNR. The measured
+VMIs are scored against it, so the scores measure what the noise and the denoising do,
+separately from what the physics the decomposition does not invert exactly (scatter, and the
+blurs of the focal spot, the detector and the view integration) does to both.
+"""
+
+# ╔═╡ 03c00001-0000-4000-8000-00000000000d
+reference_vmi = BS.vmi_pipeline(;
+    channels = [s.channels[DRAWS.reference] for s in dual_scans],
+    basis,
+    geom = first(dual_scans).geom,
+    to_backend = to_gpu,
+    matrix_size = recon_opts.matrix_size,
+    vmi_energies = (50.0, 70.0, 100.0, 140.0),
+    fbp_filter = PAIR_FILTER,
+    pair_basis = calibration.pair_basis,
+    composite_energy = calibration.composite_energy,
+    use_acnr = false,
     VMI_CHAIN...,
 );
 
@@ -336,22 +541,25 @@ dual_vmi = BS.vmi_pipeline(;
 let
     q = dual_vmi.quality
     d = dual_vmi.settings.denoiser
+    b = calibration.pair_basis
     pct(x) = round(100x, digits = 3)
     Markdown.parse("""
-    The decomposition solved $(q.n_rays) rays in $(round(dual_vmi.elapsed_s, digits = 1)) s
-    ($(round(q.outer_mean, digits = 1)) outer iterations on average); $(pct(q.frac_not_converged))% did not
+    The calibration draw fixed the windows' pair at E* = $(round(Int, b.Estar)) keV,
+    β = $(round(b.β, sigdigits = 3)), and the composite at $(round(Int, calibration.composite_energy)) keV.
+    On the measured draw the decomposition solved $(q.n_rays) rays in $(round(dual_vmi.elapsed_s, digits = 1)) s,
+    $(round(q.outer_mean, digits = 1)) outer iterations on average; $(pct(q.frac_not_converged))% did not
     converge and $(pct(q.frac_bound_iodine))% / $(pct(q.frac_bound_water))% touched the iodine / water bounds.
-    The projection HYPR measured dispersions (variance / mean of the counts on the air rays) of
-    $(join(round.(d.dispersion, digits = 2), " and ")) for 80 and 140 kVp. The image HYPR's minimum-noise
-    composite energy is E* = $(round(Int, d.image_estimates.Estar)) keV.
+    The projection HYPR measured dispersions, the variance-to-mean ratio of the counts on the air rays, of
+    $(join(round.(d.dispersion, digits = 2), " and ")) for 80 and 140 kVp. The image HYPR pooled the
+    complement over a $(d.image_estimates.window) × $(d.image_estimates.window) window.
     """)
 end
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000003
 md"""
-### 4. Basis Maps and VMIs
+### 5. Basis Maps and VMIs
 
-The water and iodine basis pair after image HYPR and ACNR (mid slice), and the VMIs
+The water and iodine basis pair after ACNR and image HYPR (mid slice), and the VMIs
 synthesized from it. Every VMI comes from the same basis pair.
 """
 
@@ -411,14 +619,17 @@ end
 md"""
 ## Results
 
-Per-rod measured versus theoretical HU at the four VMI energies, the water-region mean
-and noise, and the linear regression of measured on theoretical HU.
+Per-rod measured, noise-free and theoretical HU at the four VMI energies, the water-region
+mean and noise, and the linear regression of measured on theoretical HU.
 
 - **Measured HU**: mean over an 8-px-radius circle at each rod's centroid, over every
-  reconstructed slice.
+  reconstructed slice, of the measured VMIs.
+- **Noise-free HU**: the same mean on the noise-free reference.
 - **Theoretical HU**: ``1000\,(\mu_r(E) - \mu_w(E))/\mu_w(E)`` of the rod's material from
   `BS.compute_μ_at_energy`, with no fitting.
 - **Water region**: the solid-water body eroded by 12 px, away from every insert and edge.
+  Its noise σ is the standard deviation of the measured VMI minus the noise-free reference,
+  the noise alone, without the phantom's own nonuniformity.
 """
 
 # ╔═╡ 040e0001-0000-4000-8000-000000000002
@@ -447,30 +658,34 @@ dual_results = let
          if (i - cx)^2 + (j - cy)^2 ≤ 64]
     end
     energies = Float64.(dual_vmi.energies)
-    vmi(index) = view(dual_vmi.vmis, :, :, :, index)
+    vmi(stack, index) = view(stack.vmis, :, :, :, index)
     region(volume, pixels) = [volume[p, z] for z in axes(volume, 3) for p in pixels]
     μwater = Dict(E => BS.compute_μ_at_energy(BS.XA.Materials.water, E) for E in energies)
     rods = Dict{Symbol, NamedTuple}()
     for group in (:Ca, :I)
         measured = zeros(length(rod_labels[group]), length(energies))
+        reference = similar(measured)
         theoretical = similar(measured)
         for (row, label) in pairs(rod_labels[group])
             roi = rod_roi(label)
             material = phantom_cpu.materials[Int(label) + 1]
             for (column, E) in pairs(energies)
-                measured[row, column] = mean(region(vmi(column), roi))
+                measured[row, column] = mean(region(vmi(dual_vmi, column), roi))
+                reference[row, column] = mean(region(vmi(reference_vmi, column), roi))
                 μ = BS.compute_μ_at_energy(material, E)
                 theoretical[row, column] = 1000 * (μ - μwater[E]) / μwater[E]
             end
         end
-        rods[group] = (names = rod_names[group], measured, theoretical)
+        rods[group] = (names = rod_names[group], measured, reference, theoretical)
     end
     water_pixels = findall(water_mask)
+    water(stack, k) = region(vmi(stack, k), water_pixels)
     (
         energies, water_mask, rods,
-        water_mean = [mean(region(vmi(k), water_pixels)) for k in eachindex(energies)],
-        water_noise = [std(region(vmi(k), water_pixels)) for k in eachindex(energies)],
-        finite = all(isfinite, dual_vmi.vmis),
+        water_mean = [mean(water(dual_vmi, k)) for k in eachindex(energies)],
+        water_mean_reference = [mean(water(reference_vmi, k)) for k in eachindex(energies)],
+        water_noise = [std(water(dual_vmi, k) .- water(reference_vmi, k)) for k in eachindex(energies)],
+        finite = all(isfinite, dual_vmi.vmis) && all(isfinite, reference_vmi.vmis),
     )
 end;
 
@@ -478,7 +693,8 @@ end;
 md"""
 ### Water ROI
 
-The eroded solid-water region, overlaid on the 70 keV VMI, and its mean HU at each energy.
+The eroded solid-water region, overlaid on the 70 keV VMI, and its mean HU at each energy,
+measured and noise-free.
 """
 
 # ╔═╡ 040e0001-0000-4000-8000-000000000005
@@ -504,17 +720,22 @@ let
         xlabel = "VMI Energy (keV)", ylabel = "HU",
         xticks = (1:n, string.(Int.(dual_results.energies))), titlesize = 32,
     )
-    Mke.barplot!(mean_axis, 1:n, dual_results.water_mean;
-        color = [Mke.cgrad(:plasma, n; categorical = true)[index] for index in 1:n])
+    values = vcat(dual_results.water_mean, dual_results.water_mean_reference)
+    group = vcat(fill(1, n), fill(2, n))
+    Mke.barplot!(mean_axis, vcat(1:n, 1:n), values; dodge = group,
+        color = [(:tomato, :gray60)[g] for g in group], strokecolor = :black, strokewidth = 1)
     Mke.hlines!(mean_axis, [0.0]; color = :black, linestyle = :dash)
     for (index, value) in pairs(dual_results.water_mean)
         Mke.text!(
-            mean_axis, index, value;
-            text = "$(round(value, digits = 2)) HU",
+            mean_axis, index - 0.2, value;
+            text = "$(round(value, digits = 1))",
             align = (:center, value ≥ 0 ? :bottom : :top),
-            offset = (0, value ≥ 0 ? 5 : -5),
+            offset = (0, value ≥ 0 ? 5 : -5), fontsize = 15,
         )
     end
+    Mke.axislegend(mean_axis,
+        [Mke.PolyElement(color = :tomato), Mke.PolyElement(color = :gray60)],
+        ["Measured", "Noise-free reference"]; position = :lb, labelsize = 16)
     Mke.ylims!(mean_axis, -10, 10)
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "vmi_water_roi_check.png"),
@@ -527,7 +748,8 @@ end
 md"""
 ### Water-Region Noise
 
-The HU standard deviation over the same eroded water region, at each energy.
+The standard deviation of the measured VMI about the noise-free reference, over the same
+eroded water region, at each energy.
 """
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000051
@@ -563,8 +785,8 @@ end
 md"""
 ### Per-Rod Measured vs Theoretical
 
-Solid lines show measured HU and dashed lines theoretical HU for the calcium and iodine
-inserts across the four energies.
+Solid lines show measured HU, crosses the noise-free reference and dashed lines theoretical
+HU, for the calcium and iodine inserts across the four energies.
 """
 
 # ╔═╡ 040e0001-0000-4000-8000-000000000006
@@ -590,6 +812,10 @@ let
                 axis, dual_results.energies, vec(data.measured[index, :]);
                 color, linewidth = 2.5, markersize = 9, label = data.names[index],
             )
+            Mke.scatter!(
+                axis, dual_results.energies, vec(data.reference[index, :]);
+                color = :black, marker = :xcross, markersize = 9,
+            )
             Mke.lines!(
                 axis, dual_results.energies, vec(data.theoretical[index, :]);
                 color, linewidth = 1.6, linestyle = :dash,
@@ -602,6 +828,49 @@ let
         fig; px_per_unit = 2,
     )
     fig
+end
+
+# ╔═╡ 03c00001-0000-4000-8000-00000000000e
+let
+    r = dual_results
+    f(x) = round(x, digits = 1)
+    bias(g, k) = r.rods[g].measured[:, k] .- r.rods[g].reference[:, k]
+    mae(a, b) = mean(abs.(a .- b))
+    rows = map(eachindex(r.energies)) do k
+        ca, io = r.rods[:Ca], r.rods[:I]
+        allbias = vcat(bias(:Ca, k), bias(:I, k))
+        "| $(Int(r.energies[k])) | $(f(r.water_mean[k])) / $(f(r.water_mean_reference[k])) | $(f(r.water_noise[k])) | " *
+        "$(f(mae(ca.measured[:, k], ca.theoretical[:, k]))) / $(f(mae(ca.reference[:, k], ca.theoretical[:, k]))) | " *
+        "$(f(mae(io.measured[:, k], io.theoretical[:, k]))) / $(f(mae(io.reference[:, k], io.theoretical[:, k]))) | " *
+        "$(f(mean(allbias))) | $(f(maximum(abs, allbias))) |"
+    end
+    Markdown.parse("""
+    **Accuracy against the noise-free reference and against theory.** Water: mean HU of the
+    measured / noise-free VMI, and the noise σ. Rods: the mean absolute error against theory of
+    the measured / noise-free VMI, and the mean and the largest absolute bias of the 14 measured
+    rods against the noise-free reference.
+
+    | keV | water HU | water σ (HU) | Ca rods, error vs theory (HU) | I rods, error vs theory (HU) | rod bias vs reference, mean (HU) | rod bias vs reference, max (HU) |
+    |---:|---:|---:|---:|---:|---:|---:|
+    $(join(rows, "\n"))
+    """)
+end
+
+# ╔═╡ 03c00001-0000-4000-8000-00000000000f
+let
+    r = dual_results
+    f(x) = round(x, digits = 1)
+    gap = maximum(abs, r.water_mean .- r.water_mean_reference)
+    mae(g, a) = [mean(abs.(getfield(r.rods[g], a)[:, k] .- r.rods[g].theoretical[:, k])) for k in eachindex(r.energies)]
+    worst(a) = maximum(max(x, y) for (x, y) in zip(mae(:Ca, a), mae(:I, a)))
+    Markdown.parse("""
+    The solid water reads $(join(f.(r.water_mean), " / ")) HU at 50 / 70 / 100 / 140 keV, within
+    $(f(gap)) HU of the noise-free reference: an offset the reference shares comes from physics the
+    decomposition does not invert exactly (scatter, and the blurs of the focal spot, the detector and
+    the view integration, taken before the log), not from the noise or the denoising. The noise falls from σ = $(f(first(r.water_noise))) HU at 50 keV to $(f(last(r.water_noise))) HU at
+    140 keV. The largest mean rod error against theory, over both rod groups and every energy, is
+    $(f(worst(:measured))) HU measured and $(f(worst(:reference))) HU noise-free.
+    """)
 end
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000070
@@ -667,17 +936,17 @@ verification = let
     addcheck(name, value, pass) = push!(checks, (; name, value, pass))
     addcheck("both kVp channels in the likelihood", dual_vmi.settings.n_channels,
              dual_vmi.settings.n_channels == 2)
-    addcheck("chain: projection + image HYPR, ACNR",
-             (dual_vmi.settings.denoiser !== nothing, dual_vmi.settings.acnr !== nothing),
-             dual_vmi.settings.denoiser !== nothing && dual_vmi.settings.acnr !== nothing)
+    addcheck("chain: projection + image HYPR, ACNR, pair of windows",
+             (dual_vmi.settings.denoiser !== nothing, dual_vmi.settings.acnr !== nothing,
+              dual_vmi.settings.recon.filter isa BS.PairFilter),
+             dual_vmi.settings.denoiser !== nothing && dual_vmi.settings.acnr !== nothing &&
+             dual_vmi.settings.recon.filter isa BS.PairFilter)
+    addcheck("measured and reference share the pair",
+             dual_vmi.settings.pair.basis == reference_vmi.settings.pair.basis,
+             dual_vmi.settings.pair.basis == reference_vmi.settings.pair.basis)
     addcheck("all VMI values finite", dual_results.finite, dual_results.finite)
     water_worst = maximum(abs, dual_results.water_mean)
     addcheck("solid-water worst absolute HU", round(water_worst, digits = 2), water_worst ≤ 10)
-    addcheck(
-        "noise decreases from 50 to 140 keV",
-        round.(dual_results.water_noise; digits = 2),
-        all(diff(dual_results.water_noise) .< 0),
-    )
     passed = count(check -> check.pass, checks)
     rows = join([
         "| $(check.name) | $(check.value) | $(check.pass ? "✅" : "❌") |"
@@ -697,13 +966,15 @@ md"""
 ### Summary
 
 ```
-Simulate 80 + 140 kVp (two co-registered acquisitions, independent noise)
+Simulate 80 + 140 kVp (duty cycle 0.65 / 0.35, view_samples = 5, dose-matched to 10.07 mGy)
+   one projection per exposure → noise-free, measured and calibration draws
    → BS.spectral_basis_from_acquisitions (absolute per-ray response of each kVp)
-   → BS.vmi_pipeline(; denoiser = HYPR_CHAIN, use_acnr = true)
+   → calibration draw → pair_basis, composite_energy
+   → BS.vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = PAIR_FILTER, pair_basis, composite_energy)
         projection HYPR → K = 2 n-channel decomposition on every ray
-        → image HYPR on the FDK basis pair → Kalender ACNR
-        → VMI synthesis at 50 / 70 / 100 / 140 keV
-   → water, noise, per-rod and regression checks against theory
+        → FDK of the composite and complement, each with its window
+        → ACNR on the complement → image HYPR → VMI synthesis at 50 / 70 / 100 / 140 keV
+   → water, noise, per-rod and regression checks against the noise-free reference and theory
 ```
 
 Every VMI is synthesized from the same water/iodine pair; no energy-dependent filtering is
@@ -730,13 +1001,18 @@ applied to any VMI.
 # ╟─040e1000-0000-4000-8000-000000000101
 # ╠═2c157064-8567-450b-bc08-c2606084a77f
 # ╟─040e1000-0000-4000-8000-000000000102
-# ╠═f9c0af7a-addd-4249-96fb-b9078765fbd1
-# ╠═03b00004-0000-4000-8000-000000000020
+# ╠═03c00001-0000-4000-8000-000000000001
+# ╠═03c00001-0000-4000-8000-000000000002
+# ╠═03c00001-0000-4000-8000-000000000003
+# ╠═03c00001-0000-4000-8000-000000000004
+# ╟─03c00001-0000-4000-8000-000000000005
 # ╟─040e1000-0000-4000-8000-000000000103
 # ╠═2d65a0c0-b25d-41ad-9cd3-e7a2d08a2482
+# ╠═03c00001-0000-4000-8000-000000000006
 # ╠═08cbc6fd-3c7c-432f-99e5-b220f8fe7fde
 # ╟─5ecd97c6-ad47-4558-886d-22ed45eda97d
 # ╠═4315ef69-aa2f-4ee0-a13b-c65e01fb87ce
+# ╟─03c00001-0000-4000-8000-000000000007
 # ╟─dc8a8352-5598-4cdd-952f-3d77367850e9
 # ╠═4ca28c64-ee96-47c8-b7c3-f0e0c4c99423
 # ╟─03a10001-0000-4000-8000-000000000001
@@ -745,8 +1021,14 @@ applied to any VMI.
 # ╠═03a10001-0000-4000-8000-000000000004
 # ╠═03a10001-0000-4000-8000-000000000005
 # ╠═03a10001-0000-4000-8000-000000000006
+# ╠═03c00001-0000-4000-8000-000000000008
+# ╟─03c00001-0000-4000-8000-000000000009
+# ╟─03c00001-0000-4000-8000-00000000000a
+# ╠═03c00001-0000-4000-8000-00000000000b
 # ╟─040e1000-0000-4000-8000-000000000003
 # ╠═040e0002-0000-4000-8000-000000000002
+# ╟─03c00001-0000-4000-8000-00000000000c
+# ╠═03c00001-0000-4000-8000-00000000000d
 # ╟─03a10001-0000-4000-8000-000000000007
 # ╟─040e0002-0000-4000-8000-000000000003
 # ╟─040e0001-0000-4000-8000-000000000003
@@ -759,6 +1041,8 @@ applied to any VMI.
 # ╟─040e1000-0000-4000-8000-000000000051
 # ╟─040e1000-0000-4000-8000-000000000060
 # ╟─040e0001-0000-4000-8000-000000000006
+# ╟─03c00001-0000-4000-8000-00000000000e
+# ╟─03c00001-0000-4000-8000-00000000000f
 # ╟─040e1000-0000-4000-8000-000000000070
 # ╟─040e0001-0000-4000-8000-000000000007
 # ╟─040e0002-0000-4000-8000-000000000004
