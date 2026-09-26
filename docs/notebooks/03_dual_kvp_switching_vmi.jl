@@ -870,6 +870,13 @@ let
     the view integration, taken before the log), not from the noise or the denoising. The noise falls from σ = $(f(first(r.water_noise))) HU at 50 keV to $(f(last(r.water_noise))) HU at
     140 keV. The largest mean rod error against theory, over both rod groups and every energy, is
     $(f(worst(:measured))) HU measured and $(f(worst(:reference))) HU noise-free.
+
+    That largest error is the calcium rods at 50 keV, $(f(first(mae(:Ca, :measured)))) HU measured and
+    $(f(first(mae(:Ca, :reference)))) HU noise-free — the noise-free reference has it too, so it is the
+    basis, not the noise or the denoiser: the decomposition writes every material as water plus
+    iodine, which spans calcium's energy dependence only approximately, and least well at low energy,
+    where the photoelectric term dominates. From 70 keV up the calcium error is
+    $(f(minimum(mae(:Ca, :measured)[2:end]))) to $(f(maximum(mae(:Ca, :measured)[2:end]))) HU.
     """)
 end
 
