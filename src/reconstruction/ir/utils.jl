@@ -55,7 +55,7 @@ function compute_huber_gradient!(
     nx, ny, nz = size(x)
     backend = AK.get_backend(x)
 
-    AK.foreachindex(grad, backend) do linear_idx
+    _foreachindex(grad, backend) do linear_idx
         i = mod1(linear_idx, nx)
         j = mod1(div(linear_idx - 1, nx) + 1, ny)
         k = div(linear_idx - 1, nx * ny) + 1
@@ -130,7 +130,7 @@ function compute_projection_weights(
     circular_support && apply_fov_mask!(ones_volume, geom; sentinel_μ = zero(T))
     ray_sums = _project_mono(projector, ones_volume, geom)
     eps = T(1e-8)
-    AK.foreachindex(ray_sums, AK.get_backend(ray_sums)) do idx
+    _foreachindex(ray_sums, AK.get_backend(ray_sums)) do idx
         val = ray_sums[idx]
         ray_sums[idx] = val > eps ? one(T) / val : zero(T)
     end
@@ -164,7 +164,7 @@ function compute_image_weights(
                            active_z, circular_support)
     end
     eps = T(1e-8)
-    AK.foreachindex(voxel_sums, AK.get_backend(voxel_sums)) do idx
+    _foreachindex(voxel_sums, AK.get_backend(voxel_sums)) do idx
         val = voxel_sums[idx]
         voxel_sums[idx] = val > eps ? one(T) / val : zero(T)
     end

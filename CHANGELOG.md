@@ -13,6 +13,15 @@ onward they are written by hand, and releases are cut by hand — see
 ## [Unreleased]
 
 
+## [0.15.1](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.0...v0.15.1) (2026-10-27)
+
+### Changed
+- **AcceleratedKernels 0.5 is allowed alongside 0.4:** `AcceleratedKernels = "0.4, 0.5"`, so BasisSimulator installs in
+  the same environment as packages that need 0.5 (Vasculature.jl). AK 0.5 takes `foreachindex`'s backend only as a
+  keyword and 0.4 only positionally; a small internal shim passes it the way the loaded version expects, so every call
+  keeps its explicit backend. Nothing changes for a caller. The suite passes on both: 3046/3046 with AK 0.4.4, 0.5.9 and
+  0.5.11.
+
 ## [0.15.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.14.0...v0.15.0) (2026-09-24)
 
 Everything since 0.14.0, the last registered release. The work landed on `main` in stages whose

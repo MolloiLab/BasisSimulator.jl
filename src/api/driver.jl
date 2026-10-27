@@ -1390,7 +1390,7 @@ function _hir_continue_z!(work::AbstractArray{T, 3}, output_z) where {T}
     zlo = Int32(first(output_z))
     zhi = Int32(last(output_z))
     backend = AK.get_backend(work)
-    AK.foreachindex(work, backend) do idx
+    _foreachindex(work, backend) do idx
         idx0 = Int32(idx - 1)
         i = (idx0 % nx) + Int32(1)
         j = ((idx0 ÷ nx) % ny) + Int32(1)
@@ -1411,7 +1411,7 @@ function _hir_seed_work!(work::AbstractArray{T, 3}, init::AbstractArray{T, 3}, o
     ny = Int32(size(init, 2))
     x0 = Int32(first(output_x)); y0 = Int32(first(output_y)); z0 = Int32(first(output_z))
     backend = AK.get_backend(work)
-    AK.foreachindex(init, backend) do idx
+    _foreachindex(init, backend) do idx
         idx0 = Int32(idx - 1)
         i = (idx0 % nx) + Int32(1)
         j = ((idx0 ÷ nx) % ny) + Int32(1)
@@ -1428,7 +1428,7 @@ function _hir_extract_output!(output::AbstractArray{T, 3}, work::AbstractArray{T
     ny = Int32(size(output, 2))
     x0 = Int32(first(output_x)); y0 = Int32(first(output_y)); z0 = Int32(first(output_z))
     backend = AK.get_backend(output)
-    AK.foreachindex(output, backend) do idx
+    _foreachindex(output, backend) do idx
         idx0 = Int32(idx - 1)
         i = (idx0 % nx) + Int32(1)
         j = ((idx0 ÷ nx) % ny) + Int32(1)
@@ -1659,7 +1659,7 @@ function reconstruct!(
     if weights isa AbstractArray
         let sw = ws.data_weights, ε = T(1.0e-6)
             copyto!(sw, weights)
-            AK.foreachindex(sw, backend) do idx
+            _foreachindex(sw, backend) do idx
                 w = sw[idx]
                 sw[idx] = (isfinite(w) && w > zero(T)) ? w + ε : ε
             end
@@ -1669,7 +1669,7 @@ function reconstruct!(
     elseif air_reference !== nothing
         let sw = ws.data_weights, ε = T(1.0e-6), aref = air_reference,
                 nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
-            AK.foreachindex(sw, backend) do idx
+            _foreachindex(sw, backend) do idx
                 idx_0 = Int32(idx - 1)
                 col = (idx_0 % nc) + Int32(1)
                 row = ((idx_0 ÷ nc) % nr) + Int32(1)
@@ -1683,7 +1683,7 @@ function reconstruct!(
         end
     else
         let sw = ws.data_weights, ε = T(1.0e-6)
-            AK.foreachindex(sw, backend) do idx
+            _foreachindex(sw, backend) do idx
                 y_val = sinogram[idx]
                 # clamp below at 0: a noisy negative-y air ray would get weight
                 # exp(+|y|) and dominate the subset update (audit A4)
@@ -1698,7 +1698,7 @@ function reconstruct!(
     # so pre-multiplying `W_proj ⊙ stat_w` reproduces the same roundings while
     # letting each subset read a single array.
     let dw = ws.data_weights, wp = ws.W_proj
-        AK.foreachindex(dw, backend) do idx
+        _foreachindex(dw, backend) do idx
             dw[idx] = wp[idx] * dw[idx]
         end
     end
@@ -1743,7 +1743,7 @@ function reconstruct!(
                     aidx = ws.subset_angle_idx[s],
                     nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
 
-                AK.foreachindex(ax, backend) do idx
+                _foreachindex(ax, backend) do idx
                     idx_0 = Int32(idx - 1)
                     col = (idx_0 % nc) + Int32(1)
                     row = ((idx_0 ÷ nc) % nr) + Int32(1)
@@ -1791,7 +1791,7 @@ function reconstruct!(
                     radius_sq = T(min(model_geom.fov[1], model_geom.fov[2]) / 2)^2,
                     half = T(0.5)
 
-                AK.foreachindex(vol, backend) do idx
+                _foreachindex(vol, backend) do idx
                     idx0 = Int32(idx - 1)
                     ix = (idx0 % nx) + Int32(1)
                     iy = ((idx0 ÷ nx) % ny) + Int32(1)
