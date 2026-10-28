@@ -26,6 +26,14 @@ function _notebook_display_title(slug::AbstractString)
     get(overrides, slug, replace(slug, "_" => " "))
 end
 
+"""The notebook's sections, `(id, label)` for every second-level heading, for the page's table of contents."""
+function _notebook_sections(html::AbstractString)
+    unescape(s) = replace(s, r"&#(\d+);" => m -> string(Char(parse(Int, m[3:end-1]))),
+        "&amp;" => "&", "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"")
+    return [(unescape(m[1]), unescape(strip(replace(m[2], r"<[^>]+>" => ""))))
+            for m in eachmatch(r"<h2\b[^>]*\bid=\"([^\"]+)\"[^>]*>(.*?)</h2>"s, html)]
+end
+
 const _NOTEBOOK_GITHUB_BASE =
     "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/docs/notebooks"
 
@@ -42,7 +50,9 @@ function NotebookPage(slug::AbstractString)
         "__BASISSIM_NOTEBOOKS_BASE__" => "$(BASE)/notebooks-static",
     )
 
-    Div(:class => "max-w-3xl mx-auto px-0 sm:px-6 py-4 sm:py-6 space-y-5",
+    # The notebook takes the page's full width beside its table of contents (see `PageWithTOC`); its prose keeps a
+    # readable measure while figures and code use the width (input.css, "Notebook pages").
+    PageWithTOC(_notebook_sections(notebook_html), Div(:class => "py-4 sm:py-6 space-y-5",
         # Breadcrumb (left) + GitHub source link (right) — single flex row.
         Div(:class => "flex items-center justify-between gap-3 text-[10px] tracking-[0.2em] uppercase font-mono text-warm-500 dark:text-warm-500",
             # Left: breadcrumb back-link
@@ -67,7 +77,7 @@ function NotebookPage(slug::AbstractString)
         # Same native reading surface used by Snapshot.jl's docs: the fragment
         # remains real DOM and theme-aware, while the soft boundary makes its
         # own Pluto typography/layout feel intentional inside Therapy.
-        Div(:class => "bg-white dark:bg-[#20212b] rounded-box sn-bubble px-5 sm:px-8 py-7 overflow-hidden transition-colors",
+        Div(:class => "bg-white dark:bg-[#20212b] rounded-box sn-bubble px-4 sm:px-8 lg:px-10 py-6 sm:py-8 overflow-hidden transition-colors",
             RawHtml(notebook_html)),
-    )
+    ))
 end

@@ -137,6 +137,10 @@ html {
   }
 
   html {
+    /* The page grows with the screen: 16px type up to a 1280px window, 19px at 2560px, so a large monitor shows a
+       proportionally larger page instead of a narrow column in empty space. Media queries keep the browser's own
+       16px rem, so the breakpoints do not move. */
+    font-size: clamp(100%, 0.234vw + 13px, 118.75%);
     scroll-behavior: smooth;
     /* Sticky navbar is `h-16` (4rem); add ~1rem breathing room above the
        targeted heading so ToC anchor clicks don't land flush under the bar. */
@@ -281,3 +285,20 @@ html {
 @media (min-width: 768px) {
   [data-codeblock] pre[class*="language-"] { padding: 1.5rem; }
 }
+
+/* Notebook pages. The card takes the page's width; prose keeps a readable measure of about 80 characters while
+   figures, tables and code use the full width. Markdown tables read as text (Pluto styles every table as data:
+   monospace, right-aligned). Snapshot's floating table of contents gives way to the page's own, which sits beside
+   the card instead of over it. Unlayered, to outrank the fragment's own (unlayered) styles. */
+.snap-notebook pluto-output { font-size: 0.95rem; }
+.snap-notebook .markdown > :is(p, ul, ol, blockquote, details, .admonition) { max-width: 46rem; }
+.snap-notebook .markdown > p:has(> img:only-child) { max-width: none; }
+.snap-notebook .snap-cells > .pl-cell:first-child { margin-top: 0; }
+.snap-notebook .snap-cells > .pl-cell:first-child .markdown > h1:first-child { margin-top: 0; padding-top: 0; }
+.snap-notebook .markdown :is(table, th, td) { font-family: inherit; }
+.snap-notebook .markdown table { margin-left: 0; margin-right: auto; font-size: 0.95em; }
+.snap-notebook .markdown :is(th, td) { text-align: left; font-size: inherit; }
+.snap-notebook nav.plutoui-toc { display: none; }
+
+/* Long identifiers in running text break instead of running past a phone's edge. */
+#page-content :not(pre) > code { overflow-wrap: anywhere; }
