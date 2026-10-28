@@ -12,8 +12,6 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
-## [0.15.2](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.1...v0.15.2) (2026-10-27)
-
 ### Documented
 - **Getting Started rewritten as the package's guide**, for readers from a first-time user to a contributor:
   install, a first scan, then the phantom, the scan, reconstruction and spectral imaging in order, with the why of
@@ -26,6 +24,8 @@ onward they are written by hand, and releases are cut by hand — see
 - **The README** points to the guide instead of repeating its code.
 - The page background no longer turns white (or a lighter shade) when scrolling past either end of a page, and
   code-block copy buttons are visible on touch screens.
+- **The site deploys from `main`** whenever a merge changes the docs, the code or `Project.toml`, instead of only
+  after a registered release. RELEASING.md is shorter and no longer covers the docs.
 
 ## [0.15.1](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.0...v0.15.1) (2026-10-27)
 

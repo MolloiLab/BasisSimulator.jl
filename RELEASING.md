@@ -1,55 +1,41 @@
 # Releasing BasisSimulator.jl
 
-A release is one pull request and one registry comment. Nothing picks a version, writes the
-changelog or opens a release on its own; `.github/workflows/TagBot.yml` only tags a version after
-the General registry has accepted it.
+A release is one pull request and one registry comment. The docs are not part of it: the site
+deploys from `main` on its own (see the end of this file).
 
-## The rules that keep `main` releasable
+## Rules that keep `main` releasable
 
-- **`version` in `Project.toml` is the last registered version until the release pull request
-  changes it.** A feature pull request never touches it. (0.15.0 exists because this rule was not
-  kept: `main` walked from 0.14.0 to 0.18.0 without registering anything, and the registry only
-  accepts the version that follows the last registered one.) The `version` job in
-  `.github/workflows/CI.yml` catches a skipped number: it fails any commit whose `version` is
-  neither the last registered version nor a valid next one. It cannot tell a release pull request
-  from a feature pull request; keeping feature pull requests off `version` is the reviewer's job.
-- **Every user-visible change adds a line under `## [Unreleased]` at the top of `CHANGELOG.md`**
-  in the same pull request: what a reader has to do differently, with the measured number for
-  anything claimed to be faster or more accurate (and the hardware it was measured on).
-- **The published docs describe the latest release.** They are deployed from the newest `v*` tag
-  after TagBot creates it (`docs.yml`, and Snapshot via `snapshot.yml`), never from `main`, so a
-  code change on `main` cannot break the site. The notebook exports are re-rendered once, in the
-  release pull request.
+- **`version` in `Project.toml` stays at the last registered version** until a release pull request
+  changes it. Feature pull requests never touch it. The registry only accepts the next version
+  after the last registered one, and the `version` job in `.github/workflows/CI.yml` fails any
+  commit whose `version` is neither that nor a valid next one.
+- **Every user-visible change adds a line under `## [Unreleased]`** in `CHANGELOG.md`, in the same
+  pull request: what a reader has to do differently, with the measured number (and hardware) for
+  anything claimed to be faster or more accurate.
 
 ## Cutting a release
 
-1. **Choose the version.** Below 1.0, a breaking change bumps the minor version (0.15 → 0.16)
-   and anything else bumps the patch (0.15.0 → 0.15.1). A change is breaking if it removes or
-   renames something exported, changes the meaning of an argument, or changes the numbers a
-   caller gets back without asking for it. The `version` check accepts exactly the last
-   registered version, its next patch, its next minor, and the next major.
-2. **Branch** `release/<version>` from an up-to-date `main` (`git fetch`; merge `origin/main` again
-   right before step 6 if it moved — a render against stale source is wasted).
-3. **Bump `version`** in `Project.toml` and `version:` in `CITATION.cff`.
-4. **Date the changelog.** Rename `## [Unreleased]` to
+1. **Choose the version.** Below 1.0, a breaking change bumps the minor version (0.15 → 0.16) and
+   anything else the patch (0.15.0 → 0.15.1). Breaking means removing or renaming an export,
+   changing what an argument means, or changing the numbers a caller gets back unasked.
+2. **Branch** `release/<version>` from an up-to-date `main`.
+3. **Bump** `version` in `Project.toml` and `version:` in `CITATION.cff`.
+4. **Date the changelog:** rename `## [Unreleased]` to
    `## [<version>](https://github.com/MolloiLab/BasisSimulator.jl/compare/v<previous>...v<version>) (<YYYY-MM-DD>)`
-   and add a fresh, empty `## [Unreleased]` above it. Group the entries as `Breaking` / `Added` /
-   `Changed` / `Fixed` / `Performance` / `Documented`, skipping empty groups.
-5. **Run the tests:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'`. CI has no GPU, so run
-   anything that touches a GPU path on one and say in the pull request what passed on what
-   hardware.
-6. **Re-render the notebook exports** on a GPU machine (see `AGENTS.md`, "The documentation site"):
-   `docs/render_notebooks.sh` renders every stale notebook, split across the machine's GPUs, and
-   `python3 docs/verify_notebook_exports.py` must end with `verified <n> notebook source/export
-   pairs`. Commit `docs/notebooks-static/`. The export fingerprint covers all of `src/`,
-   `Project.toml` (not its `version` line), the docs lockfiles and the exporter, so any code change
-   since the last render makes every export stale; that is by design.
-7. **Check the site locally:** `docs/build.sh`, then serve `docs/dist/` (for example
-   `python3 -m http.server -d docs/dist`) and open the landing page, the API reference and a
-   notebook.
-8. **Open the pull request, merge it, then register** by commenting on the merge commit on GitHub.
-   A breaking release (a minor bump below 1.0) must carry release notes that say so, or General's
-   AutoMerge blocks it:
+   and add an empty `## [Unreleased]` above it. Group entries as `Breaking` / `Added` / `Changed` /
+   `Fixed` / `Performance` / `Documented`, skipping empty groups.
+5. **Test:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'`, the GPU paths on a GPU (CI has
+   none; the recipe is in the guide's Contributing section), and loading on the newest released
+   Julia (`julia +<newest> --project=. -e 'using Pkg; Pkg.test()'`), because the registry's
+   AutoMerge loads the package there whatever the `julia` compat says. Say in the pull request what
+   passed on which hardware.
+6. **Merge the pull request, then comment on its merge commit** on GitHub:
+
+   ```
+   @JuliaRegistrator register
+   ```
+
+   A breaking release must add release notes, or AutoMerge blocks it:
 
    ```
    @JuliaRegistrator register
@@ -58,22 +44,28 @@ the General registry has accepted it.
 
    ## Breaking changes
    - <the Breaking entries of the changelog section, one line each>
-
-   See CHANGELOG.md for the full entry.
    ```
 
-   The registry opens a pull request against General (AutoMerge takes about 15 minutes when the
-   version and compat bounds are valid). AutoMerge installs and loads the package on the newest
-   released Julia whatever the `julia` compat says, so every dependency must resolve there: 0.15.0's
-   first attempt failed because XrayAttenuation still capped Julia at 1.12 (fixed by releasing
-   XrayAttenuation 0.3.3). Check `julia +<newest> --project=. -e 'using Pkg; Pkg.test()'` first. When it merges, TagBot creates the `v<version>` tag and a GitHub Release
-   from those release notes, and the docs workflows deploy that tag.
+   AutoMerge takes about 15 minutes. When it merges, TagBot creates the `v<version>` tag and the
+   GitHub Release.
 
 ## If something goes wrong
 
-- **Registration refused as "not a valid version increment":** `version` skipped a number. Set it
-  to the next valid version (the `version` CI job prints the allowed set) and comment again.
-- **`docs.yml` / `snapshot.yml` fail with `stale export`:** the tag's exports were not re-rendered
-  after its last code change. Re-render them on a GPU machine (step 6), release a patch version,
-  and the docs deploy from that tag.
-- **TagBot did not tag:** run it by hand from the Actions tab (`TagBot`, "Run workflow").
+- **"Not a valid version increment":** `version` skipped a number. Set it to the next valid one
+  (the `version` CI job prints the allowed set) and comment again.
+- **AutoMerge fails to load the package:** a dependency does not resolve on the newest Julia. Fix
+  the compat bound (or release the dependency) and comment again.
+- **TagBot did not tag:** run it from the Actions tab (`TagBot`, "Run workflow").
+
+## The docs site
+
+`docs.yml` (GitHub Pages) and `snapshot.yml` (Snapshot) build `main` whenever a push changes
+`docs/`, `src/` or `Project.toml`, and can be run from the Actions tab for any commit. A docs-only
+change is live a few minutes after it merges.
+
+The build refuses notebook pages whose fingerprint is stale. The fingerprint covers the notebook,
+all of `src/`, `Project.toml` (not its `version` line) and the docs lockfiles, so after a code
+change the deploy fails until the notebooks are re-rendered on a GPU machine
+(`docs/render_notebooks.sh`, then `python3 docs/verify_notebook_exports.py`) and the new
+`docs/notebooks-static/` is merged. Re-render in the pull request that changes the code, or in a
+follow-up one.

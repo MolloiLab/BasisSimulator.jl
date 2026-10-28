@@ -83,8 +83,8 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 - **Why an export goes stale:** its fingerprint hashes the notebook, all of `src/`, `Project.toml`
   (not its `version` line), both docs lockfiles, `docs/extract_all.jl` and
   `docs/notebooks/DATA_PROVENANCE.sha256`. Any code change makes every export stale; that is by
-  design, and the exports are re-rendered once per release (RELEASING.md, step 6), because the
-  published site is built from the release tag.
+  design: the docs deploy refuses stale exports, so re-render after a code change (in that pull
+  request or a follow-up). The site deploys from `main`; no release is needed.
 - **Data:** notebook 05 reads the XCAT male chest export from `BASISSIM_XCAT_DIR`
   (the lab's copy: `/share/crsp/lab/symolloi/share/XCAT Anatomies/vmale_50/vmale_50_chest_with_plaque`);
   without it the notebook renders its no-data notice. `DATA_PROVENANCE.sha256` holds the checksum
@@ -123,7 +123,8 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 - `TagBot.yml`: tags `v<version>` and writes the GitHub Release after the General registry merges a
   registration.
 - `docs.yml` (GitHub Pages) and `snapshot.yml` (Snapshot, managed by Snapshot with a marked local
-  edit) build the newest `v*` tag when TagBot completes, or by hand from the Actions tab.
+  edit) build `main` on every push that changes `docs/`, `src/` or `Project.toml`, or any commit by
+  hand from the Actions tab.
 
 ## Around this repository
 
