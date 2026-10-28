@@ -231,8 +231,8 @@ html {
   .bs-note-body { padding: 0 1.1rem 1rem 2.45rem; }
   .bs-edge { border-left: 3px solid var(--color-accent-500); }
 
-  .bs-table-wrap { overflow-x: auto; border: 1px solid var(--color-warm-200); border-radius: 0.75rem; }
-  .dark .bs-table-wrap { border-color: var(--color-warm-800); }
+  .bs-table-wrap { overflow-x: auto; border: 1px solid var(--color-warm-200); border-radius: 0.75rem; background: var(--color-warm-50); }
+  .dark .bs-table-wrap { border-color: var(--color-warm-800); background: color-mix(in oklab, var(--color-warm-900) 40%, transparent); }
   .bs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   .bs-table th {
     text-align: left;
@@ -267,4 +267,17 @@ html {
   .dark .bs-figure img { border-color: var(--color-warm-800); filter: brightness(0.9); }
   .bs-figure figcaption { margin-top: 0.6rem; font-size: 0.875rem; color: var(--color-warm-600); line-height: 1.6; }
   .dark .bs-figure figcaption { color: var(--color-warm-400); }
+}
+
+/* Prism's theme gives every `pre[class*="language-"]` its own margin, grey background, radius and
+   padding, which showed as a darker band above and below the listing inside a CodeBlock. The block
+   owns those; this stays unlayered so it outranks the (unlayered) Prism stylesheet. */
+[data-codeblock] pre[class*="language-"] {
+  margin: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 1.25rem;
+}
+@media (min-width: 768px) {
+  [data-codeblock] pre[class*="language-"] { padding: 1.5rem; }
 }
