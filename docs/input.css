@@ -268,3 +268,16 @@ html {
   .bs-figure figcaption { margin-top: 0.6rem; font-size: 0.875rem; color: var(--color-warm-600); line-height: 1.6; }
   .dark .bs-figure figcaption { color: var(--color-warm-400); }
 }
+
+/* Prism's theme gives every `pre[class*="language-"]` its own margin, grey background, radius and
+   padding, which showed as a darker band above and below the listing inside a CodeBlock. The block
+   owns those; this stays unlayered so it outranks the (unlayered) Prism stylesheet. */
+[data-codeblock] pre[class*="language-"] {
+  margin: 0;
+  background: transparent;
+  border-radius: 0;
+  padding: 1.25rem;
+}
+@media (min-width: 768px) {
+  [data-codeblock] pre[class*="language-"] { padding: 1.5rem; }
+}

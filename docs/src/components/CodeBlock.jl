@@ -12,7 +12,7 @@ A dark listing with a copy button; `title` adds a small caption bar (e.g. the no
 parameter set comes from). `language = "bash"` for shell commands, `"text"` for plain text (wrapped).
 """
 function CodeBlock(code::AbstractString; title = nothing, language = "julia")
-    Div(Symbol("data-codeblock") => "", :class => "group relative rounded-xl border border-warm-800 bg-warm-900 dark:bg-warm-950 shadow-sm overflow-hidden",
+    Div(Symbol("data-codeblock") => "", :class => "group relative rounded-xl border border-warm-800 bg-warm-900 shadow-sm overflow-hidden",
         title === nothing ? Fragment() :
             Div(:class => "px-5 py-2 border-b border-warm-800 text-[10px] tracking-[0.2em] uppercase font-mono text-warm-400", title),
         RawHtml(_COPY_BUTTON),
