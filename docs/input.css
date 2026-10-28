@@ -141,8 +141,24 @@ html {
     /* Sticky navbar is `h-16` (4rem); add ~1rem breathing room above the
        targeted heading so ToC anchor clicks don't land flush under the bar. */
     scroll-padding-top: 5rem;
-    background-color: var(--bg-primary);
   }
+
+  /* The page root paints the layout's own background (warm-100 / warm-950), so scrolling past either
+     end never shows DaisyUI's [data-theme] background or white. */
+  html,
+  html[data-theme],
+  body {
+    background-color: var(--color-warm-100) !important;
+    overscroll-behavior: none;
+    min-height: 100%;
+  }
+  html.dark,
+  html.dark[data-theme],
+  html.dark body {
+    background-color: var(--color-warm-950) !important;
+  }
+  html.dark { color-scheme: dark; }
+  html:not(.dark) { color-scheme: light; }
 
   pre code {
     font-family: 'JuliaMono', 'Fira Code', 'JetBrains Mono', monospace;
@@ -182,4 +198,73 @@ html {
     filter: brightness(0.88) contrast(1.05);
     border-radius: 0.5rem;
   }
+}
+
+/* Getting Started guide: collapsible notes and rough-edge cards, tables, numbered steps, figures. */
+@layer components {
+  .bs-note {
+    border: 1px solid var(--color-warm-200);
+    border-radius: 0.75rem;
+    background: var(--color-warm-50);
+  }
+  .dark .bs-note { border-color: var(--color-warm-800); background: color-mix(in oklab, var(--color-warm-900) 40%, transparent); }
+  .bs-note > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 0.85rem 1.1rem;
+    font-weight: 600;
+    color: var(--color-warm-900);
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+  .dark .bs-note > summary { color: var(--color-warm-100); }
+  .bs-note > summary::-webkit-details-marker { display: none; }
+  .bs-note > summary::before {
+    content: "+";
+    font-family: var(--font-mono);
+    color: var(--color-accent-500);
+    width: 0.75rem;
+    flex-shrink: 0;
+  }
+  .bs-note[open] > summary::before { content: "−"; }
+  .bs-note-body { padding: 0 1.1rem 1rem 2.45rem; }
+  .bs-edge { border-left: 3px solid var(--color-accent-500); }
+
+  .bs-table-wrap { overflow-x: auto; border: 1px solid var(--color-warm-200); border-radius: 0.75rem; }
+  .dark .bs-table-wrap { border-color: var(--color-warm-800); }
+  .bs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  .bs-table th {
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--color-warm-500);
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--color-warm-200);
+  }
+  .bs-table td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--color-warm-200); vertical-align: top; color: var(--color-warm-700); }
+  .bs-table tr:last-child td { border-bottom: 0; }
+  .bs-table td code { white-space: nowrap; }
+  .dark .bs-table th, .dark .bs-table td { border-color: var(--color-warm-800); }
+  .dark .bs-table td { color: var(--color-warm-300); }
+
+  .bs-steps { counter-reset: bs-step; list-style: none; padding-left: 0; }
+  .bs-steps > li { counter-increment: bs-step; position: relative; padding-left: 2.4rem; }
+  .bs-steps > li::before {
+    content: counter(bs-step);
+    position: absolute;
+    left: 0;
+    top: -0.1rem;
+    font-family: var(--font-serif);
+    font-size: 1.5rem;
+    line-height: 1;
+    color: var(--color-accent-500);
+  }
+
+  .bs-figure img { width: 100%; border-radius: 0.75rem; border: 1px solid var(--color-warm-200); background: #fff; }
+  .dark .bs-figure img { border-color: var(--color-warm-800); filter: brightness(0.9); }
+  .bs-figure figcaption { margin-top: 0.6rem; font-size: 0.875rem; color: var(--color-warm-600); line-height: 1.6; }
+  .dark .bs-figure figcaption { color: var(--color-warm-400); }
 }
