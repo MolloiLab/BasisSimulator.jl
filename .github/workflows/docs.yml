@@ -1,18 +1,18 @@
 name: Build and Deploy Docs
 
-# The site describes the latest release: it is built from the newest `v*` tag, after TagBot has
-# created it (or by hand from the Actions tab), never from `main`. The notebook pages are the
-# committed, GPU-rendered exports in docs/notebooks-static/, re-rendered in each release pull
-# request (RELEASING.md); `docs/build.sh` refuses a tag whose exports are stale.
+# The site is built from `main` whenever a push changes the docs, the code or Project.toml (or by
+# hand from the Actions tab, for any commit). No release is needed. The notebook pages are the
+# committed, GPU-rendered exports in docs/notebooks-static/; `docs/build.sh` refuses exports that
+# are stale against the code being built (RELEASING.md, "The docs site").
 
 on:
-  workflow_run:
-    workflows: [TagBot]
-    types: [completed]
+  push:
+    branches: [main]
+    paths: ["docs/**", "src/**", "Project.toml", ".github/workflows/docs.yml"]
   workflow_dispatch:
     inputs:
       ref:
-        description: "Tag or commit to build (default: the newest v* tag)"
+        description: "Branch, tag or commit to build (default: main)"
         required: false
         default: ""
 
@@ -27,17 +27,16 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check out the release to document
+      - name: Check out the commit to document
         run: |
           ref="${{ github.event.inputs.ref }}"
-          [ -n "$ref" ] || ref="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+          [ -n "$ref" ] || ref="${{ github.sha }}"
           echo "Building the docs of $ref"
           git checkout --quiet "$ref"
 
