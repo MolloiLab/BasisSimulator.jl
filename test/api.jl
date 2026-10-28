@@ -395,7 +395,7 @@ end
             s.ws, s.phantom, s.protocol, s.sim_opts;
             capture_raw_counts = false,
         )
-        @test propertynames(trimmed) == (:pcct_sino, :I0_bins, :pileup_S)
+        @test propertynames(trimmed) == (:pcct_sino, :I0_bins, :pileup_S, :dose)
 
         # Model-matched config (noise on, pile-up off, nr = 0): raw counts
         # are BIT-EXACT integer Poisson realizations captured at the
@@ -431,7 +431,7 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         @test on.ws.pileup === true
         @test off.ws.pileup === false
         @test on.ws.pileup_S isa Array{Float64, 3}
-        @test size(on.ws.pileup_S) == (4, 4)
+        @test size(on.ws.pileup_S)[1:2] == (4, 4) # one 4 × 4 matrix per count rate
         @test off.ws.pileup_S === nothing
 
         _ts("  simulate! ON")
@@ -1535,14 +1535,14 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 
         # Spectral arrays sized to bin / energy counts.
         @test size(ws.I0, 3) == s.scanner.n_energy_bins
-        @test length(ws.I0) == s.scanner.n_energy_bins
+        @test ndims(ws.I0) == 3 # per ray: (columns, rows, bins)
         @test length(ws.thresholds_T) == s.scanner.n_energy_bins
         @test length(ws.η) == length(ws.energies)
 
         # Pile-up wiring (PCCTScanner.pileup default = true).
         @test ws.pileup === true
         @test ws.pileup_S isa Array{Float64, 3}
-        @test size(ws.pileup_S) == (s.scanner.n_energy_bins, s.scanner.n_energy_bins)
+        @test size(ws.pileup_S)[1:2] == (s.scanner.n_energy_bins, s.scanner.n_energy_bins) # per count rate
 
         # Native-res buffers are nothing when binning_factor == 1 (toy default).
         @test s.scanner.binning_factor == 1   # toy uses default
