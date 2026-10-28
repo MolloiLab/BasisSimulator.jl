@@ -1,10 +1,11 @@
-# TableOfContents.jl — floating right-hand TOC, same pattern as Therapy.jl docs.
+# TableOfContents.jl — right-hand TOC beside the page's content.
 #
-# Fixed to the right side at xl+ breakpoints; hidden on smaller viewports.
-# Each entry is an anchor link to a section `id` within the current page.
+# A column of its own at xl+ breakpoints, sticky under the nav bar, so it stays next to the text at every width
+# instead of pinned to the window's edge; hidden on smaller viewports. Each entry is an anchor link to a section `id`
+# within the current page.
 
 function TableOfContents(sections::Vector{Tuple{String,String}})
-    Nav(:class => "hidden xl:block fixed right-8 top-24 w-44",
+    Nav(:class => "hidden xl:block sticky top-24 self-start max-h-[calc(100vh-7rem)] overflow-y-auto",
         Div(:class => "space-y-1.5 border-l border-warm-200 dark:border-warm-800 pl-3",
             P(:class => "text-[11px] font-semibold text-warm-400 dark:text-warm-500 uppercase tracking-wider mb-3", "On this page"),
             For(sections) do (id, label)
@@ -17,8 +18,8 @@ function TableOfContents(sections::Vector{Tuple{String,String}})
 end
 
 function PageWithTOC(sections::Vector{Tuple{String,String}}, content)
-    Fragment(
-        content,
+    Div(:class => "xl:grid xl:grid-cols-[minmax(0,1fr)_11rem] xl:gap-12",
+        Div(:class => "min-w-0", content),
         TableOfContents(sections),
     )
 end

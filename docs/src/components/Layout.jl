@@ -28,7 +28,7 @@ function Layout(content)
         RawHtml("""<script>(function(){var h=document.documentElement;h.setAttribute('data-theme',h.classList.contains('dark')?'fun-dark':'fun-light');})();</script>"""),
         # Sticky top nav — always visible while content scrolls underneath.
         Header(:class => "sticky top-0 z-40 border-b border-warm-200 dark:border-warm-800 h-16 px-6 bg-warm-100/80 dark:bg-warm-950/80 backdrop-blur supports-[backdrop-filter]:bg-warm-100/60 supports-[backdrop-filter]:dark:bg-warm-950/60",
-            Div(:class => "max-w-5xl mx-auto h-full flex items-center justify-between",
+            Div(:class => "max-w-7xl mx-auto h-full flex items-center justify-between",
                 BasisSimulatorWordmark(),
                 Nav(Symbol("aria-label") => "Primary navigation", :class => "flex items-center gap-3 sm:gap-6",
                     Div(:class => "hidden sm:flex items-center gap-6",
@@ -60,12 +60,12 @@ function Layout(content)
             )
         ),
         # Main content — id="page-content" enables SPA navigation (router swaps this)
-        MainEl(:id => "page-content", :class => "flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-8 sm:py-12",
+        MainEl(:id => "page-content", :class => "flex-1 w-full max-w-7xl mx-auto px-3 sm:px-6 py-8 sm:py-12",
             content
         ),
         # Footer — MolloiLab | MIT | Built with Therapy.jl
         Footer(:class => "border-t border-warm-200 dark:border-warm-800 px-6 py-6",
-            Div(:class => "max-w-5xl mx-auto flex flex-wrap gap-x-6 gap-y-2 items-center justify-center sm:justify-between",
+            Div(:class => "max-w-7xl mx-auto flex flex-wrap gap-x-6 gap-y-2 items-center justify-center sm:justify-between",
                 A(:href => "https://github.com/MolloiLab", :target => "_blank",
                     :class => "text-sm text-warm-600 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 transition-colors no-underline",
                     "MolloiLab"
