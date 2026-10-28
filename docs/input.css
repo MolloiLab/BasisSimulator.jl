@@ -231,8 +231,8 @@ html {
   .bs-note-body { padding: 0 1.1rem 1rem 2.45rem; }
   .bs-edge { border-left: 3px solid var(--color-accent-500); }
 
-  .bs-table-wrap { overflow-x: auto; border: 1px solid var(--color-warm-200); border-radius: 0.75rem; }
-  .dark .bs-table-wrap { border-color: var(--color-warm-800); }
+  .bs-table-wrap { overflow-x: auto; border: 1px solid var(--color-warm-200); border-radius: 0.75rem; background: var(--color-warm-50); }
+  .dark .bs-table-wrap { border-color: var(--color-warm-800); background: color-mix(in oklab, var(--color-warm-900) 40%, transparent); }
   .bs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   .bs-table th {
     text-align: left;
