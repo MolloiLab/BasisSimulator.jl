@@ -12,6 +12,18 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+### Documented
+- **Getting Started rewritten as the package's guide**, for readers from a first-time user to a contributor:
+  install, a first scan, then the phantom, the scan, reconstruction and spectral imaging in order, with the why of
+  each setting, a units table, an anatomical chest scanned with and without iodine contrast, memory, notebooks and
+  cluster runs, every rough edge users have reported (what you see, why, what to do), how to contribute, and a
+  context block for coding agents. Every listing was run as written (Apple M4, Metal). The dual-kVp listing that
+  gave both tubes one seed is gone; acquisitions now each get their own.
+- **A shorter home page**: what the package does, two showcase figures and the four steps of a scan, each linking
+  into the guide. The version chips are read from `Project.toml`.
+- **The README** points to the guide instead of repeating its code.
+- The page background no longer turns white (or a lighter shade) when scrolling past either end of a page, and
+  code-block copy buttons are visible on touch screens.
 
 ## [0.15.1](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.0...v0.15.1) (2026-10-27)
 
