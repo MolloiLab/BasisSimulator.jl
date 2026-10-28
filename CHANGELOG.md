@@ -12,6 +12,8 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.15.2](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.1...v0.15.2) (2026-10-27)
+
 ### Documented
 - **Getting Started rewritten as the package's guide**, for readers from a first-time user to a contributor:
   install, a first scan, then the phantom, the scan, reconstruction and spectral imaging in order, with the why of
