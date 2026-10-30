@@ -120,6 +120,25 @@ function CTProtocol(;
     )
 end
 
+"""
+    CTProtocol(p::CTProtocol; kwargs...)
+
+A variant of `p`: every parameter copied from it, the keywords given replaced, and the
+constructor's checks run on the result, e.g. `CTProtocol(protocol_low; kVp = 120, mA = 300.0)`.
+A new `mAs` sets the tube current afresh (`mAs / rotation_time`) unless `mA` is given too.
+"""
+function CTProtocol(p::CTProtocol; kwargs...)
+    base = (; (f => _copied(getfield(p, f)) for f in fieldnames(CTProtocol))...)
+    if haskey(kwargs, :mAs) && !haskey(kwargs, :mA)
+        base = Base.structdiff(base, NamedTuple{(:mA,)})
+    end
+    return CTProtocol(; merge(base, values(kwargs))...)
+end
+
+# Two protocols are equal when every parameter is (the added filters compare by value).
+Base.:(==)(a::CTProtocol, b::CTProtocol) = all(f -> getfield(a, f) == getfield(b, f), fieldnames(CTProtocol))
+Base.hash(p::CTProtocol, h::UInt) = foldl((acc, f) -> hash(getfield(p, f), acc), fieldnames(CTProtocol); init = hash(CTProtocol, h))
+
 export CTProtocol
 
 # =============================================================================

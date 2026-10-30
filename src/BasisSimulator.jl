@@ -82,6 +82,9 @@ include("object/phantom.jl")
 # CT scanner geometry
 include("geometry/scanner.jl")
 
+# The clinical scanners the documentation models, as documented constants
+include("geometry/clinical_scanners.jl")
+
 # Affine transforms: phantom ↔ world ↔ recon coordinate mapping
 include("geometry/affine.jl")
 

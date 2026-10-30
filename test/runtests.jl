@@ -62,6 +62,7 @@ const BS = BasisSimulator
     end
     @testset "scanner families/" begin
         include("scanner_split.jl")
+        include("clinical_scanners.jl")
     end
     @testset "source/" begin
         include("source.jl")

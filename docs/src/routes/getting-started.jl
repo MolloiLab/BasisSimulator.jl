@@ -144,17 +144,7 @@ gammex = BS.create_gammex_472(n_voxels = 512, n_slices = 4, z_cm = 1.0)
 mask = device(gammex.mask) # the label map, on the GPU
 phantom = BS.Phantom(mask, gammex.materials, gammex.voxel_size, gammex.origin, gammex.extent)
 
-# GE Revolution Apex Elite, copied from the Scanners page
-scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6, source_to_detector = 1100.0,
-    detector_rows = 256, detector_cols = 834,
-    detector_row_size = 0.625, detector_col_size = 0.6,
-    target_angle = 10.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex, detector_depth = 3.0,
-    electronic_noise = 3500.0, detection_gain = 10.0,
-)
+scanner = BS.REVOLUTION_APEX # the GE Revolution Apex Elite, a documented constant
 protocol = BS.CTProtocol(
     kVp = 120, mA = 200.0, views = 500, rotation_time = 1.0,
     collimation_mm = 5.0, additional_filters = [("Al", 4.5)],
@@ -325,9 +315,13 @@ enhancement = after .- before"""),
 
             # ── 2 · The scan ─────────────────────────────────────────────────
             H2(:id => "scan", :class => h2_cls, "2 · The Scan"),
-            p("A scanner is a struct, not a name: there are no presets to look up. The ", link("$(BASE)/scanners/", "Scanners"),
-              " page has the parameter sets of the GE Revolution Apex Elite, the Siemens NAEOTOM Alpha, SOMATOM Force and ",
-              "SOMATOM Definition Flash as the examples run them. Copy them; do not retype them from a datasheet."),
+            p("A scanner is a struct. The clinical scanners the examples run are documented constants of it: ",
+              c("REVOLUTION_APEX"), ", ", c("NAEOTOM_ALPHA"), ", ", c("SOMATOM_FORCE"), " and ", c("SOMATOM_DEFINITION_FLASH"),
+              ", each with its sources in its docstring and on the ", link("$(BASE)/scanners/", "Scanners"), " page. ",
+              "A different scan of one is a variant, made with the same constructor: ",
+              c("BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48)"), " copies every parameter and replaces the ",
+              "keywords given (", c("CTProtocol"), " works the same way). There are no preset functions and no mode ",
+              "keywords. Start from a constant; do not retype a scanner from a datasheet."),
             p("The one trap in a datasheet is the detector size. ", c("detector_col_size"), " and ", c("detector_row_size"),
               " are millimetres at the isocentre, the size a detector element projects to at the centre of rotation. A ",
               "vendor's detector pitch is at the detector face, larger by the magnification (about 1.8). A quick check: ",
@@ -450,7 +444,10 @@ vmi.vmis   # (512, 512, 4, 4): 40, 70, 100 and 140 keV
 vmi.images # the water and iodine images"""),
             p("Dual-energy acquisitions, rapid kVp switching and two tubes, go through the same estimator with ",
               c("spectral_basis_from_acquisitions"), ": one acquisition per tube voltage, ", b("each with its own seed"),
-              ". The ", link("$(BASE)/examples/03_dual_kvp_switching_vmi/", "dual-kVp"), " and ",
+              ". Both are ordinary acquisitions, never a special mode: rapid kVp switching is two protocols on one ",
+              "scanner, and a dual-source scan is one protocol on each of the scanner's two constants, ",
+              c("SOMATOM_FORCE"), " and ", c("SOMATOM_FORCE_B"), " (or ", c("SOMATOM_DEFINITION_FLASH"), " and ",
+              c("SOMATOM_DEFINITION_FLASH_B"), "). The ", link("$(BASE)/examples/03_dual_kvp_switching_vmi/", "dual-kVp"), " and ",
               link("$(BASE)/examples/09_siemens_force_ufc_dual_source_vmi/", "dual-source"), " examples build them in full, ",
               "with the SpectralHYPR denoiser and each scanner's reconstruction windows."),
             note("What the photon-counting model covers",
@@ -586,8 +583,8 @@ julia --project=docs -t auto -e 'using Pluto; Pluto.run()'"""),
             edges(
                 edge("The fan is 80° wide, or the scan field is 80 cm",
                     ("Detector element sizes were entered at the detector face. BasisSimulator takes them at the isocentre."),
-                    ("Divide the face pitch by the magnification (", c("source_to_detector / source_to_isocenter"), "), or copy ",
-                     "the scanner from the Scanners page.")),
+                    ("Divide the face pitch by the magnification (", c("source_to_detector / source_to_isocenter"), "), or start ",
+                     "from the scanner's constant (", c("BS.SOMATOM_FORCE"), ", …).")),
                 edge("\"kVp must be one of (80, 100, 120, 140)\"",
                     ("Spectra exist for those four tube voltages."),
                     ("Use the nearest of them; 150 kVp is not available, so Sn150 protocols use Sn140.")),
@@ -781,7 +778,8 @@ SETUP
 
 THE CHAIN
 - phantom = BS.Phantom(device(labels), Dict(label => BS.XA.Materials.x, ...), (dx_cm, dy_cm, dz_cm))
-- scanner = BS.EICTScanner(...) or BS.PCCTScanner(...; energy_thresholds) — copy parameter sets from the docs Scanners page; there are no presets.
+- scanner = a documented constant (BS.REVOLUTION_APEX, BS.NAEOTOM_ALPHA, BS.SOMATOM_FORCE / BS.SOMATOM_FORCE_B, BS.SOMATOM_DEFINITION_FLASH / BS.SOMATOM_DEFINITION_FLASH_B) or BS.EICTScanner(...) / BS.PCCTScanner(...; energy_thresholds). A variant copies a scanner and replaces keywords: BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48); CTProtocol(protocol; kVp = 140) likewise. NEVER write or ask for a preset function or a mode keyword; a different mode is a different constant.
+- Dual source = one acquisition per tube/detector chain (SOMATOM_FORCE + SOMATOM_FORCE_B), each with its own protocol and seed; rapid kVp switching = two protocols on one scanner. Combine them with spectral_basis_from_acquisitions.
 - protocol = BS.CTProtocol(kVp = 80|100|120|140, mA, views, rotation_time, collimation_mm, additional_filters = [("Al", 4.5)], pitch)
 - sim_opts = BS.SimOptions(seed = k, view_samples = 1|5); recon = BS.ReconOptions(matrix_size, fov_cm, z_cm)
 - ws = BS.create_workspace(scanner, protocol, sim_opts, recon, phantom); result = BS.simulate!(ws, phantom, protocol, sim_opts) -> ws.sinogram (cols, rows, views), result.dose.ctdi_vol_mGy

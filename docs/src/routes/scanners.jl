@@ -1,7 +1,10 @@
-# Scanner models — the constructor defaults, the detector/filter catalog, and the documented
-# parameter set of every clinical scanner the example notebooks model. Every number here is read
-# from src/geometry/scanner.jl, src/api/driver.jl or the notebooks' own constructor calls.
-# (Absorbs the former SCANNERS.md and docs/scanner_dossiers/somatom_definition_flash.md.)
+# Scanner models — the constructor defaults, the detector/filter catalog, and the clinical scanners
+# BasisSimulator documents. Each clinical scanner is a documented constant
+# (src/geometry/clinical_scanners.jl); its parameter tables below are read from the constant itself,
+# so the page and the package cannot disagree. (Absorbs the former SCANNERS.md and
+# docs/scanner_dossiers/somatom_definition_flash.md.)
+
+import BasisSimulator
 
 let BASE = get(ENV, "BASISSIM_BASE", "")
     () -> begin
@@ -35,6 +38,14 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
         notebook(slug, label) = A(:href => "$(BASE)/examples/$(slug)/", :class => link, label)
 
+        # A clinical scanner's parameters, read from its constant (the one source of truth)
+        shown(x) = sprint(show, x)
+        param_table(s) = table(["Keyword", "Value"], [[String(f), shown(getproperty(s, f))] for f in propertynames(s)]; mono = [1, 2])
+        # A dual-source scanner's two chains side by side, and the keywords in which B differs from A
+        pair_table(a, b) = table(["Keyword", "Tube/detector A", "Tube/detector B"],
+            [[String(f), shown(getproperty(a, f)), shown(getproperty(b, f))] for f in propertynames(a)]; mono = [1, 2, 3])
+        differing(a, b) = join([String(f) for f in propertynames(a) if getproperty(a, f) != getproperty(b, f)], ", ")
+
         callout(title, body...) = Div(:class => "rounded-xl border border-accent-200 dark:border-accent-900 bg-accent-50/60 dark:bg-accent-950/30 px-5 py-4 space-y-2",
             Div(:class => eyebrow, title), Div(:class => small, body...))
 
@@ -67,29 +78,36 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
             H2(:id => "overview", :class => h2_cls, "Overview"),
             P(:class => prose,
-                "There are no preset factory functions in the package. The clinical systems below are the ",
-                "documented parameter sets that the example notebooks pass to the constructors, reproduced ",
-                "keyword for keyword, so any of them can be pasted into a session. Parameters a vendor does ",
-                "not publish are marked as modelling assumptions, as the notebooks mark them."),
-            table(["System", "Constructor", "Detector", "Notebooks"], [
-                ["GE Revolution Apex Elite", "EICTScanner", "Gemstone garnet, MC LUT (:lumex)",
+                "Each clinical scanner below is a documented constant: an ", c("EICTScanner"), " or ",
+                c("PCCTScanner"), " like any other, whose docstring gives every value's source and marks the ",
+                "values a vendor does not publish as assumptions. There are no preset functions and no mode ",
+                "keywords. A different scan of a scanner is a variant, made with the same constructor from the ",
+                "constant: every parameter copied, the keywords given replaced."),
+            CodeBlock("""scanner = BS.SOMATOM_FORCE                                      # a clinical scanner
+scanner = BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48)   # a variant of it
+scanner = BS.PCCTScanner(BS.NAEOTOM_ALPHA; pileup_correction = false)
+protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols vary the same way"""),
+            table(["System", "Constant", "Detector", "Notebooks"], [
+                ["GE Revolution Apex Elite", "REVOLUTION_APEX", "Gemstone garnet, MC LUT (:lumex)",
                     Span(notebook("01_five_struct_api", "01"), ", ", notebook("02_xcat_custom_materials", "02"), ", ",
                          notebook("03_dual_kvp_switching_vmi", "03"), ", ", notebook("05_xcat_grid_to_recon", "05"), ", ",
                          notebook("06_catsim_vs_basissim", "06"), ", ", notebook("07_qrm_thorax_pure_material_vmi", "07"))],
-                ["Siemens NAEOTOM Alpha", "PCCTScanner", "CdTe 1.6 mm, 4 thresholds",
+                ["Siemens NAEOTOM Alpha", "NAEOTOM_ALPHA", "CdTe 1.6 mm, 4 thresholds",
                     Span(notebook("04_pcct_vmi", "04"), ", ", notebook("08_qrm_thorax_pure_material_pcct", "08"))],
-                ["Siemens SOMATOM Force", "EICTScanner", "UFC Gd₂O₂S, MC LUT (:ufc)",
+                ["Siemens SOMATOM Force", "SOMATOM_FORCE, SOMATOM_FORCE_B", "UFC Gd₂O₂S, MC LUT (:ufc)",
                     notebook("09_siemens_force_ufc_dual_source_vmi", "09")],
-                ["Siemens SOMATOM Definition Flash", "EICTScanner", "UFC Gd₂O₂S, Flash MC LUT (:ufc_flash)",
+                ["Siemens SOMATOM Definition Flash", "SOMATOM_DEFINITION_FLASH, …_B", "UFC Gd₂O₂S, Flash MC LUT (:ufc_flash)",
                     notebook("12_siemens_flash_ufc", "12")],
-                ["Research geometries", "EICTScanner", "Gemstone (:lumex)",
+                ["Research geometries", "plain EICTScanner calls", "Gemstone (:lumex)",
                     Span(notebook("10_titanium_implant", "10"), ", ", notebook("11_helical_scanning", "11"))],
             ]),
             P(:class => small,
                 "Anything that changes between scans (kVp, mA, views, rotation time, collimation, pitch, ",
                 "added filters such as a tin shield) belongs in ", c("CTProtocol"), ", not in the scanner. A ",
-                "dual-source system is modelled as two acquisitions: one scanner per tube/detector chain, each ",
-                "with its own protocol."),
+                "dual-source scanner is two constants, one per tube/detector chain (",
+                c("SOMATOM_FORCE"), " and ", c("SOMATOM_FORCE_B"), "; ", c("SOMATOM_DEFINITION_FLASH"), " and ",
+                c("SOMATOM_DEFINITION_FLASH_B"), "), and a dual-source scan is two ordinary acquisitions, each ",
+                "with its own protocol. Rapid kVp switching is two acquisitions on one scanner, one protocol per kVp."),
 
             # ── Defaults ───────────────────────────────────────────────────────
             H2(:id => "defaults", :class => h2_cls, "Constructor defaults"),
@@ -191,19 +209,9 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 "A 256-row wide-cone system with 0.625 mm rows and a curved Gemstone (Lumex) garnet array. ",
                 "Notebooks 01, 02 and 05 add clinical DAS noise (3500 e⁻); the VMI and CatSim notebooks ",
                 "(03, 06, 07) set ", c("electronic_noise = 0"), "."),
-            CodeBlock("""scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6,  source_to_detector = 1100.0,
-    detector_rows = 256,          detector_cols = 834,
-    detector_row_size = 0.625,    detector_col_size = 0.6,
-    detector_col_offset = 0.25,   detector_shape = :arc,     # the defaults, written out
-    focal_spot_width = 1.0,       focal_spot_length = 1.0,   target_angle = 10.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex,   detector_depth = 3.0,
-    fill_factor_row = 0.9,        fill_factor_col = 0.9,
-    electronic_noise = 3500.0,    # e⁻, clinical DAS readout (0 in the VMI notebooks)
-    detection_gain = 10.0,        # e⁻/keV
-)"""; title = "Notebooks 01 · 02 · 03 · 05 · 06 · 07"),
+            CodeBlock("""scanner = BS.REVOLUTION_APEX                                       # notebooks 01 · 02 · 05
+scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)   # notebooks 03 · 06 · 07 (VMI, CatSim)"""),
+            param_table(BasisSimulator.REVOLUTION_APEX),
             table(["Protocol (as run)", "kVp", "mA", "Views / rotation", "Collimation", "Added filter"], [
                 ["Single energy (01, 05)", "120", "200 / 250", "500 / 1.0 s", "5 mm", "Al 4.5 mm"],
                 ["Rapid kVp switching (03, 07)", "80 / 140", "(407 × 0.65 / 405 × 0.35) × DOSE_SCALE", "984 / 0.5 s", "5 mm", "Al 4.5 mm"],
@@ -224,28 +232,11 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 "isocentre and 144 rows; notebooks 04 and 08 both span the 50 cm scan field (1659 columns). ",
                 "Four thresholds at 20, 35, 55 and ",
                 "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV."),
-            CodeBlock("""scanner = let native_col = 0.275, native_row = 0.322,   # mm at the detector face
-               sid = 610.0, sdd = 1113.0, bf = 2
-    col_iso = native_col * bf / (sdd / sid)                # 0.301 mm
-    row_iso = native_row * bf / (sdd / sid)                # 0.353 mm
-    BS.PCCTScanner(
-        source_to_isocenter = sid, source_to_detector = sdd,
-        detector_rows = 144, detector_cols = ceil(Int, 500.0 / col_iso),   # the 50 cm scan field
-        detector_row_size = row_iso, detector_col_size = col_iso,
-        detector_shape = :arc, detector_col_offset = 0.25,
-        focal_spot_width = 0.4, focal_spot_length = 0.5, target_angle = 7.0,
-        gantry_rotation_time = 0.5, scan_diameter = 500.0, gantry_aperture = 820.0,
-        flat_filter_material = :aluminum, flat_filter_thickness = 3.0,
-        bowtie_filter = :large_body,                        # both notebooks
-        detector_material = :cdte, detector_depth = 1.6,
-        fill_factor_row = 0.95, fill_factor_col = 0.95,
-        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution = 10.0, charge_sharing_fwhm = 0.08, dead_time_ns = 5.0,
-        pixel_mode = :standard,
-        native_dexel_col_mm = native_col, native_dexel_row_mm = native_row, binning_factor = bf,
-        pileup_correction = true, scatter_correction = true, noise_reduction = 0.0,
-    )
-end"""; title = "Notebooks 04 · 08"),
+            CodeBlock("""scanner = BS.NAEOTOM_ALPHA                                         # notebooks 04 · 08"""),
+            param_table(BasisSimulator.NAEOTOM_ALPHA),
+            P(:class => small,
+                "Its ultra-high-resolution mode (native dexels, 120 × 0.2 mm) is planned as its own constant, ",
+                c("NAEOTOM_ALPHA_UHR"), ", once the photon-counting model reads both modes; a mode is never a keyword."),
             P(:class => small,
                 "Both notebooks scan at 140 kVp and 174 mA × ", c("DOSE_SCALE"), " (the physical CTDIvol of 10.12 mGy), ",
                 "1200 views in 0.5 s, 5 mm collimation, with the tube's 0.9 mm titanium window as ",
@@ -260,28 +251,25 @@ end"""; title = "Notebooks 04 · 08"),
                 "(0.561 mm at the isocentre). Both tubes use tube A's geometry so the low/high sinogram pair is ",
                 "co-registered ray by ray; the Gammex body fits inside detector B's real 35.5 cm field, so no ",
                 "ray used would be missing on the real detector."),
-            CodeBlock("""scanner = BS.EICTScanner(
-    source_to_isocenter = 595.0, source_to_detector = 1085.6,
-    detector_rows = 96,          detector_cols = 920,
-    detector_row_size = 0.6,     detector_col_size = 0.561,
-    focal_spot_width = 0.8,      focal_spot_length = 1.2,  target_angle = 8.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 3.0,
-    bowtie_filter = :large_body,                 # assumption: Siemens profile unpublished
-    detector_material = :ufc,    detector_depth = 1.4,
-    fill_factor_row = 0.9,       fill_factor_col = 0.9,
-    electronic_noise = 0,        detection_gain = 10.0,
-)
+            CodeBlock("""# one dual-energy scan: two acquisitions, one per tube/detector chain
+scanner_a = BS.SOMATOM_FORCE      # tube/detector A, low kV
+scanner_b = BS.SOMATOM_FORCE_B    # tube/detector B (640 channels, 35.5 cm field), Sn-filtered high kV
 protocol_low  = BS.CTProtocol(kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5,
                               collimation_mm = 4.8, anode_angle = 8,
                               additional_filters = [("Ti", 0.9)])
-protocol_high = BS.CTProtocol(kVp = 140, mA = 190.0, views = 1160, rotation_time = 0.5,
-                              collimation_mm = 4.8, anode_angle = 8,
-                              additional_filters = [("Ti", 0.9), ("Sn", 0.6)])"""; title = "Notebook 09"),
+protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0,
+                              additional_filters = [("Ti", 0.9), ("Sn", 0.6)])
+# notebook 09 co-registers the pair ray by ray: tube B runs on tube A's arc (scanner_b = scanner_a),
+# with the phantom inside detector B's real 35.5 cm field"""; title = "Notebook 09"),
+            pair_table(BasisSimulator.SOMATOM_FORCE, BasisSimulator.SOMATOM_FORCE_B),
+            P(:class => small, "Tube/detector B differs from A only in: ", c(differing(BasisSimulator.SOMATOM_FORCE, BasisSimulator.SOMATOM_FORCE_B)), "."),
             P(:class => small,
                 "The clinical abdomen pairs are x/Sn150; the bundled spectra stop at 140 kVp, so the notebook runs ",
                 "100/Sn140 at the published 2:1 current ratio. Assumptions: 8° anode, 3.0 mm Al + 0.9 mm Ti flat ",
                 "filtration (the Vectron-family stack), the CatSim large-body bowtie, 1.4 mm crystal and zero ",
-                "electronic noise. The 0.88 mm tube-B z-offset is applied by shifting the phantom."),
+                "electronic noise. Tube B sits 95° from tube A and detector B 0.88 mm from A along z; neither is a ",
+                "scanner parameter, since each tube's scan is its own full acquisition, and the z offset is applied ",
+                "by shifting tube B's phantom."),
 
             # ── Definition Flash (the former dossier) ──────────────────────────
             H2(:id => "somatom-definition-flash", :class => h2_cls, "Siemens SOMATOM Definition Flash"),
@@ -335,28 +323,19 @@ protocol_high = BS.CTProtocol(kVp = 140, mA = 190.0, views = 1160, rotation_time
                 ["Vendor reconstruction", "SAFIRE, later ADMIRE; iMAR; 512² matrix"],
             ]),
             H3(:class => h3_cls, "The model"),
-            CodeBlock("""scanner = BS.EICTScanner(                     # tube/detector A, used for both tubes
-    source_to_isocenter = 595.0, source_to_detector = 1085.6,
-    detector_rows = 64,          detector_cols = 736,
-    detector_row_size = 0.6,     detector_col_size = 0.70473,
-    detector_shape = :arc,
-    focal_spot_width = 0.7,      focal_spot_length = 0.7,  target_angle = 7.0,
-    gantry_rotation_time = 0.5,  scan_diameter = 500.0,    gantry_aperture = 780.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 8.4,
-    bowtie_filter = :large_body,                 # assumption: profile unpublished
-    detector_material = :ufc_flash,              # the Flash table, never :ufc
-    detector_depth = 1.0,
-    fill_factor_row = 0.9,       fill_factor_col = 0.9,
-    electronic_noise = 1500,     # e⁻, Stellar DAS floor (pre-2011 builds ≈ 3500)
-    detection_gain = 10.0,
-)
-# dual energy: 80 kV on tube A, Sn140 on tube B; a full 1152-view rotation each, both currents
+            CodeBlock("""# one dual-energy scan: two acquisitions, one per tube/detector chain
+scanner_a = BS.SOMATOM_DEFINITION_FLASH      # tube/detector A: 80 kV
+scanner_b = BS.SOMATOM_DEFINITION_FLASH_B    # tube/detector B (480 channels, 33.4 cm field): Sn140
 # scaled by DOSE_SCALE to the physical scan's CTDIvol (10.01 mGy)
 protocol_low  = BS.CTProtocol(kVp = 80, mA = 470.0 * DOSE_SCALE, views = 1152, rotation_time = 0.5,
                               collimation_mm = 4.8, anode_angle = 8)
-protocol_high = BS.CTProtocol(kVp = 140, mA = 182.0 * DOSE_SCALE, views = 1152, rotation_time = 0.5,
-                              collimation_mm = 4.8, anode_angle = 8,
-                              additional_filters = [("Sn", 0.4)])"""; title = "Notebook 12"),
+protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 182.0 * DOSE_SCALE,
+                              additional_filters = [("Sn", 0.4)])
+# notebook 12 co-registers the pair ray by ray: tube B runs on tube A's arc (scanner_b = scanner_a),
+# with the phantom inside detector B's 33.4 cm field"""; title = "Notebook 12"),
+            pair_table(BasisSimulator.SOMATOM_DEFINITION_FLASH, BasisSimulator.SOMATOM_DEFINITION_FLASH_B),
+            P(:class => small, "Tube/detector B differs from A only in: ",
+                c(differing(BasisSimulator.SOMATOM_DEFINITION_FLASH, BasisSimulator.SOMATOM_DEFINITION_FLASH_B)), "."),
             P(:class => small,
                 "The heel effect is off and every view integrates over its arc (", c("view_samples = 5"), "). ",
                 "Notebook 12 also runs the regular dual-power mode, 120 kV on both tubes at 420 mA × ", c("DOSE_SCALE"), " each, whose two ",
@@ -405,12 +384,12 @@ helical = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.
             H2(:id => "new-scanner", :class => h2_cls, "Modelling a new scanner"),
             P(:class => prose, "What a new system needs, in three tiers."),
             table(["Tier", "Where", "What"], [
-                ["A — required", "EICTScanner / PCCTScanner",
+                ["A — required", "a documented constant of EICTScanner / PCCTScanner",
                     "SID and SDD; physical rows × columns and element size at the isocentre (column size at iso = pitch at the detector ÷ magnification); detector shape; focal spot and anode angle; rotation time, scan field, bore; flat filter and bowtie; the detector material, which must map to an existing η(E) table (or a new Monte Carlo run); fill factors; for photon counting, the thresholds, resolution, charge sharing, dead time, native dexel and binning."],
                 ["B — protocol", "CTProtocol",
                     "kVp list; mA range; rotation time; views per rotation; collimation options; mode-dependent added filters (e.g. tin); pitch range."],
                 ["C — unpublished", "documented assumptions",
-                    "bowtie profile, scintillator depth, fill factor, absolute electronic noise, exact filter stack, tube-B z-offset. State each one in the notebook, as notebooks 09 and 12 do."],
+                    "bowtie profile, scintillator depth, fill factor, absolute electronic noise, exact filter stack, tube-B z-offset. State each one in the constant's docstring and the notebook, as notebooks 09 and 12 do."],
             ]),
             P(:class => small,
                 "Check a protocol against the hardware with ", c("validate_protocol(protocol, scanner)"),

@@ -297,6 +297,47 @@ function PCCTScanner(; detector_material::Symbol = :CdTe, detector_depth::Real =
         pileup, pileup_correction, scatter_correction, T(noise_reduction))
 end
 
+# Every parameter of a scanner as the constructor's keywords: the geometry's fields and the detector's
+# (each stored field is a keyword of its family's constructor, under the same name).
+_scanner_keywords(s::Scanner) = merge(
+    (; (f => getfield(s.geometry, f) for f in fieldnames(ScannerGeometry))...),
+    (; (f => _copied(getfield(s, f)) for f in fieldnames(typeof(s)) if f !== :geometry)...),
+)
+
+# A variant never shares a mutable parameter (the thresholds, the added filters) with its original.
+_copied(x) = x isa AbstractArray ? copy(x) : x
+
+"""
+    EICTScanner(s::EICTScanner; kwargs...)
+
+A variant of `s`: every parameter copied from it, the keywords given replaced, and the
+constructor's checks run on the result. A clinical scanner is a documented constant
+([`SOMATOM_FORCE`](@ref), [`REVOLUTION_APEX`](@ref), …); a different scan of it is a variant,
+e.g. `EICTScanner(SOMATOM_FORCE; detector_rows = 48)`.
+"""
+EICTScanner(s::EICTScanner; kwargs...) = EICTScanner(; merge(_scanner_keywords(s), values(kwargs))...)
+
+"""
+    PCCTScanner(s::PCCTScanner; kwargs...)
+
+A variant of `s`, as [`EICTScanner(s; kwargs...)`](@ref): e.g.
+`PCCTScanner(NAEOTOM_ALPHA; energy_thresholds = [20.0, 70.0])`. New `energy_thresholds` set
+`n_energy_bins` afresh unless it is given too. The native dexel is copied as stored (it is the
+sensor's physical electrode pitch), so a new pixel size or binning keeps it unless
+`native_dexel_col_mm` / `native_dexel_row_mm` are given as well.
+"""
+function PCCTScanner(s::PCCTScanner; kwargs...)
+    base = _scanner_keywords(s)
+    if haskey(kwargs, :energy_thresholds) && !haskey(kwargs, :n_energy_bins)
+        base = Base.structdiff(base, NamedTuple{(:n_energy_bins,)})
+    end
+    return PCCTScanner(; merge(base, values(kwargs))...)
+end
+
+# Two scanners are equal when every parameter is (the thresholds compare by value).
+Base.:(==)(a::S, b::S) where {S <: Scanner} = all(f -> getfield(a, f) == getfield(b, f), fieldnames(S))
+Base.hash(s::Scanner, h::UInt) = foldl((acc, f) -> hash(getfield(s, f), acc), fieldnames(typeof(s)); init = hash(typeof(s), h))
+
 # =============================================================================
 # CTGeometry - Pre-computed Trajectory Positions
 # =============================================================================
