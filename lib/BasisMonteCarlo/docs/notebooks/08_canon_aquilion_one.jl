@@ -3682,7 +3682,8 @@ by_depth = reshape(
 )
 
 # ╔═╡ 1549c982-b5aa-54ba-80c0-000deeceece7
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ 95459b06-583d-5fe0-bf96-830980415543
 saved = let
@@ -3743,7 +3744,7 @@ saved = let
         push!(paths, path)
     end
     paths
-end
+end;
 
 # ╔═╡ 09fd9bf9-da85-5488-ac38-c1bd9bf15da8
 # Read them back in BasisSimulator's layout

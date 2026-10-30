@@ -3831,7 +3831,8 @@ by_depth = reshape(
 )
 
 # ╔═╡ 970dda9d-fd51-5930-a052-107a1b262d3e
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ d27ebbe8-bb50-510d-9fa6-c530fea36d3e
 saved = let
@@ -3865,7 +3866,7 @@ saved = let
     )
     Serialization.serialize(path, contents)
     path
-end
+end;
 
 # ╔═╡ c98272cf-d431-5930-b4d9-4821b38d9bcc
 # Read it back in BasisSimulator's layout

@@ -3411,7 +3411,8 @@ provenance alongside. Two tables:
 """
 
 # ╔═╡ fd10aa2e-f7ac-5b15-b095-6f2ead637241
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ d090515d-ebde-502a-88ff-a1801857dd84
 provenance = Dict(
@@ -3457,7 +3458,7 @@ saved = let
     Serialization.serialize(paths[1], alpha_table)
     Serialization.serialize(paths[2], grid_table)
     basename.(paths)
-end
+end;
 
 # ╔═╡ b5b66b9b-9dd8-58c6-967a-3571f17ffd31
 # BasisSimulator reads the new table with the same loader it uses for cdte_response_v4
