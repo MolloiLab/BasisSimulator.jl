@@ -1,8 +1,17 @@
 ### A Pluto.jl notebook ###
-# v0.2.6
+# v1.0.3
 
 using Markdown
 using InteractiveUtils
+
+# ╔═╡ 09d7b527-61f3-5c01-a16a-d4178d4d985a
+begin
+    import Pkg
+    Pkg.activate(joinpath(@__DIR__, ".."))
+end
+
+# ╔═╡ db1d8de8-d6dc-5361-bce7-7948e59da8bc
+using Markdown: @md_str, Markdown
 
 # ╔═╡ 8296a665-0099-56bd-85fd-89eba76fb807
 md"""
@@ -39,164 +48,14 @@ md"""
 
 Every number in the notebook comes from Geant4. NIST XCOM (through XrayAttenuation.jl, the
 attenuation data BasisSimulator uses) appears only as a comparison, so the size of the
-difference between the two standard data sets is visible wherever it matters.
+difference between the two standard data sets is visible wherever it matters. The figure below
+is the whole experiment: what happens to the photons, what Geant4 follows, and what it records.
 """
-
-# ╔═╡ dfc666d5-5ff2-502e-aeb0-49439685ac86
-let
-    Mke.set_theme!(THEME)
-
-    fig = Mke.Figure(size = (1200, 400))
-    ax = Mke.Axis(
-        fig[1, 1];
-        limits = ((0, 104), (0, 40)),
-    )
-    Mke.hidedecorations!(ax)
-    Mke.hidespines!(ax)
-
-    # A rounded box, drawn as one polygon
-    function box!(x, y, w, h; fill, stroke, dashed = false)
-        r = 1.6
-        θ = range(0, π / 2; length = 10)
-        corners = vcat(
-            [Mke.Point2f(x + w - r + r * cos(t), y + h - r + r * sin(t)) for t in θ],
-            [Mke.Point2f(x + r - r * sin(t), y + h - r + r * cos(t)) for t in θ],
-            [Mke.Point2f(x + r - r * cos(t), y + r - r * sin(t)) for t in θ],
-            [Mke.Point2f(x + w - r + r * sin(t), y + r - r * cos(t)) for t in θ],
-        )
-        return Mke.poly!(
-            ax, corners;
-            color = fill,
-            strokecolor = stroke,
-            strokewidth = 2,
-            linestyle = dashed ? :dash : nothing,
-        )
-    end
-
-    # The four steps, left to right
-    steps = (
-        (
-            title = "1  Describe",
-            body = "the crystal (material,\ndensity, size) and the\nbeam (energy, position)",
-            api = "SlabDetector\nPencilBeam",
-            color = PALETTE.slab_edge,
-        ),
-        (
-            title = "2  Simulate",
-            body = "Geant4 follows each photon\nand every x ray and electron\nit creates, one at a time",
-            api = "simulate_monoenergetic",
-            color = PALETTE.photon,
-        ),
-        (
-            title = "3  Record",
-            body = "for every photon: the energy\nleft in the crystal, whether\nit interacted, what escaped",
-            api = "MonoenergeticRun",
-            color = PALETTE.xray,
-        ),
-        (
-            title = "4  Measure",
-            body = "efficiencies, spectra and\nthe energy budget, checked\nagainst Beer-Lambert",
-            api = "quantum_efficiency\nswank_factor",
-            color = PALETTE.kept,
-        ),
-    )
-    w, h, gap, y = 23.0, 23.0, 3.0, 15.5
-    for (i, step) in enumerate(steps)
-        x = 1 + (i - 1) * (w + gap)
-        box!(x, y, w, h; fill = (step.color, 0.1), stroke = step.color)
-        Mke.text!(
-            ax, x + 1.6, y + h - 2.0;
-            text = step.title,
-            font = :bold,
-            fontsize = 21,
-            color = step.color,
-            align = (:left, :top),
-        )
-        Mke.text!(
-            ax, x + 1.6, y + h - 7.0;
-            text = step.body,
-            fontsize = 16,
-            color = PALETTE.ink,
-            align = (:left, :top),
-        )
-        Mke.text!(
-            ax, x + 1.6, y + 2.0;
-            text = step.api,
-            fontsize = 14,
-            font = "DejaVu Sans Mono",
-            color = step.color,
-            align = (:left, :bottom),
-        )
-        if i < length(steps)
-            Mke.arrows2d!(
-                ax,
-                [Mke.Point2f(x + w + 0.3, y + h / 2)],
-                [Mke.Vec2f(gap - 0.6, 0)];
-                color = PALETTE.muted,
-                shaftwidth = 3,
-                tipwidth = 12,
-                tiplength = 10,
-            )
-        end
-    end
-
-    # The comparison data, off to the side of the main path
-    box!(
-        1,
-        1.5,
-        49,
-        10;
-        fill = (PALETTE.muted, 0.06),
-        stroke = PALETTE.muted,
-        dashed = true,
-    )
-    Mke.text!(
-        ax, 2.6, 9.8;
-        text = "Comparison only:  NIST XCOM attenuation",
-        font = :bold,
-        fontsize = 17,
-        color = PALETTE.muted,
-        align = (:left, :top),
-    )
-    Mke.text!(
-        ax, 2.6, 3.0;
-        text = "XrayAttenuation.jl, the data BasisSimulator uses",
-        fontsize = 15,
-        color = PALETTE.muted,
-        align = (:left, :bottom),
-    )
-    Mke.lines!(
-        ax, [50.5, 92.0, 92.0], [6.5, 6.5, 15.0];
-        color = PALETTE.muted,
-        linestyle = :dash,
-        linewidth = 2,
-    )
-    Mke.arrows2d!(
-        ax,
-        [Mke.Point2f(92.0, 13.0)],
-        [Mke.Vec2f(0, 2.2)];
-        color = PALETTE.muted,
-        shaftwidth = 2,
-        tipwidth = 11,
-        tiplength = 9,
-    )
-
-    fig
-end
 
 # ╔═╡ 41e976eb-d5a6-5afd-9c35-4670601ce1ec
 md"""
 ## Notebook Setup
 """
-
-# ╔═╡ 09d7b527-61f3-5c01-a16a-d4178d4d985a
-begin
-    import Pkg
-    Pkg.activate(joinpath(@__DIR__, ".."))
-end
-
-# ╔═╡ db1d8de8-d6dc-5361-bce7-7948e59da8bc
-using Markdown: @md_str, Markdown
 
 # ╔═╡ 3895df79-1afe-5296-b04c-a0995fb14057
 import PlutoUI
@@ -294,6 +153,314 @@ function note!(
     )
 end
 
+# ╔═╡ 3af2ff68-c9d8-4cf6-bfc5-bf391296da68
+md"""
+### Drawing the Detector
+
+The illustrations are drawn from the same numbers the simulation uses, with a small kit: blocks
+in 3-D seen from any direction (shaded by one light, drawn back to front), photons as waves, and
+labels on translucent backgrounds. Their colours are the plots' colours: blue for the incoming
+photon, orange for characteristic x rays, dark red for electrons, green for the energy that stays.
+"""
+
+# ╔═╡ 822095ae-24c5-40b5-a2f6-e25dfb90a015
+# The crystal and the beam, as the illustrations draw them: the same colours as the plots
+MATERIALS = (
+    cdte = Mke.RGBf(0.8, 0.83, 0.89),  # the CdTe crystal
+    beam = PALETTE.photon,  # the incoming photons
+    star = Mke.RGBf(0.98, 0.95, 0.6),  # where a photon is absorbed
+)
+
+# ╔═╡ e9cc638b-caf5-48a4-bd2c-b0fe0e1e2195
+begin
+    """A block in 3-D (axis-aligned, `lo` to `hi` in mm), and how to draw it."""
+    Base.@kwdef struct Block
+        lo::NTuple{3, Float64}
+        hi::NTuple{3, Float64}
+        color::Mke.RGBf
+        alpha::Float64 = 1.0
+        stroke::Float64 = 0.6
+    end
+
+    Block(lo, hi, color; kw...) = Block(; lo = Float64.(Tuple(lo)), hi = Float64.(Tuple(hi)), color, kw...)
+end
+
+# ╔═╡ 87e524c6-a58c-4c90-918d-1e929e0e5f6a
+"""
+An orthographic camera: seen from `azimuth` (degrees, about the vertical axis z) and `elevation`
+(degrees above the horizontal). Returns the screen's right and up and the direction toward the viewer.
+"""
+function camera(azimuth, elevation)
+    θ, φ = deg2rad(azimuth), deg2rad(elevation)
+    toward = (cos(φ) * cos(θ), cos(φ) * sin(θ), sin(φ))
+    right = (-sin(θ), cos(θ), 0.0)
+    up = (
+        toward[2] * right[3] - toward[3] * right[2],
+        toward[3] * right[1] - toward[1] * right[3],
+        toward[1] * right[2] - toward[2] * right[1],
+    )
+    return (; right, up, toward)
+end
+
+# ╔═╡ 09afc8c3-67f0-4506-8242-a569104d1515
+dot3(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+# ╔═╡ 443b26b9-5365-4eb1-b73d-4228fd3ceb37
+"""Where a point in 3-D lands on the drawing."""
+project(cam, p) = Mke.Point2f(dot3(p, cam.right), dot3(p, cam.up))
+
+# ╔═╡ 49342efd-5bbd-41e6-b871-e992c910404a
+"""The six faces of a block: outward normal and corners."""
+function faces(b::Block)
+    (x0, y0, z0), (x1, y1, z1) = b.lo, b.hi
+    return (
+        ((0, 0, 1), ((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1))),
+        ((0, 0, -1), ((x0, y0, z0), (x0, y1, z0), (x1, y1, z0), (x1, y0, z0))),
+        ((1, 0, 0), ((x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1))),
+        ((-1, 0, 0), ((x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0))),
+        ((0, 1, 0), ((x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0))),
+        ((0, -1, 0), ((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1))),
+    )
+end
+
+# ╔═╡ cfba4ed7-6c5e-429d-8361-aa2acb343b1d
+"""Shade a face by one light from the upper left, front, as illustrators do."""
+function shade(color, normal, cam; light = (-0.35, -0.45, 0.82))
+    n = sqrt(dot3(light, light))
+    lambert = max(0.0, dot3(normal, light) / n)
+    k = 0.62 + 0.42 * lambert
+    return Mke.RGBf(min(1, color.r * k), min(1, color.g * k), min(1, color.b * k))
+end
+
+# ╔═╡ bdb6e526-af68-4675-b232-2d2d75de03c8
+"""
+Draw `blocks` back to front (the painter's way), each with its visible faces shaded, and any
+`extras` (functions drawing lines or arrows, with their depth) in their place among them.
+Blocks should be of similar size (split long walls into pieces) for the order to be right.
+"""
+function draw_blocks!(ax, cam, blocks; extras = [], edge = Mke.RGBf(0.1, 0.12, 0.16), edge_alpha = 0.35)
+    items = Any[(dot3(map(+, b.lo, b.hi) ./ 2, cam.toward), b) for b in blocks]
+    append!(items, extras)
+    sort!(items; by = first)
+    polygons = Vector{Mke.Point2f}[]
+    colors = Mke.RGBAf[]
+    strokes = Mke.RGBAf[]
+    function flush!()
+        isempty(polygons) && return
+        Mke.poly!(
+            ax,
+            copy(polygons);
+            color = copy(colors),
+            strokecolor = copy(strokes),
+            strokewidth = 0.7,
+        )
+        empty!(polygons)
+        empty!(colors)
+        return empty!(strokes)
+    end
+    for (_, item) in items
+        if item isa Block
+            for (normal, corners) in faces(item)
+                dot3(normal, cam.toward) > 1.0e-9 || continue
+                push!(polygons, [project(cam, c) for c in corners])
+                c = shade(item.color, normal, cam)
+                push!(colors, Mke.RGBAf(c.r, c.g, c.b, item.alpha))
+                # a seam between tiles of one layer is drawn in the face's own colour
+                push!(
+                    strokes,
+                    item.stroke > 0 ? Mke.RGBAf(edge.r, edge.g, edge.b, edge_alpha * item.alpha) :
+                        Mke.RGBAf(c.r, c.g, c.b, item.alpha),
+                )
+            end
+        else
+            flush!()
+            item(ax)
+        end
+    end
+    flush!()
+    return ax
+end
+
+# ╔═╡ 3bcdc764-6d39-4d03-9095-029419302112
+"""A blank canvas for an illustration: equal scales, no axes."""
+function canvas(position; background = :white, title = "", kw...)
+    ax = Mke.Axis(
+        position;
+        aspect = Mke.DataAspect(),
+        backgroundcolor = background,
+        title,
+        kw...,
+    )
+    Mke.hidedecorations!(ax)
+    Mke.hidespines!(ax)
+    return ax
+end
+
+# ╔═╡ baaf379b-4d53-49a5-87d5-28b7cb166e85
+"""
+A photon drawn as a wave from `a` to `b` (2-D), with `cycles` oscillations (more for a higher
+energy) and an arrowhead at `b`.
+"""
+function photon!(ax, a, b; color = MATERIALS.beam, cycles = 6, amplitude = 0.06, linewidth = 3, head = 14)
+    a, b = Mke.Point2f(a), Mke.Point2f(b)
+    d = b - a
+    L = sqrt(d[1]^2 + d[2]^2)
+    t = d / L
+    n = Mke.Point2f(-t[2], t[1])
+    s = range(0, 1; length = 240)
+    ramp(u) = min(1, 8u, 8(1 - u))  # the wave starts and ends on the line
+    points = Mke.Point2f[a + u * d + amplitude * L * ramp(u) * sin(2π * cycles * u) * n for u in s]
+    Mke.lines!(ax, points[1:(end - 6)]; color, linewidth)
+    Mke.scatter!(
+        ax,
+        [b];
+        marker = :utriangle,
+        markersize = head,
+        rotation = atan(t[2], t[1]) - π / 2,
+        color,
+    )
+    return nothing
+end
+
+# ╔═╡ 50a0f3b5-d39f-4e9c-8161-01961a98fee3
+"""A straight arrow from `a` to `b` (2-D)."""
+function arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 14, linestyle = :solid)
+    a, b = Mke.Point2f(a), Mke.Point2f(b)
+    t = (b - a) / sqrt(sum(abs2, b - a))
+    Mke.lines!(ax, Mke.Point2f[a, b - 0.5 * head / 100 * t]; color, linewidth, linestyle)
+    Mke.scatter!(ax, [b]; marker = :utriangle, markersize = head, rotation = atan(t[2], t[1]) - π / 2, color)
+    return nothing
+end
+
+# ╔═╡ 7c861316-ce0b-4f55-93a1-e41b8980cd71
+"""A rectangle (2-D) from its lower-left corner, width and height."""
+rect!(ax, x, y, w, h, color; kw...) = Mke.poly!(ax, Mke.Rect2f(x, y, w, h); color, kw...)
+
+# ╔═╡ 3333fc70-8b77-4c2b-b8e8-ee6b8baff691
+"""
+A label with a leader line: a dot at `anchor`, a line to `at`, and the text there, on a
+translucent rounded background.
+"""
+function callout!(
+        ax,
+        anchor,
+        at,
+        text;
+        color = Mke.RGBf(0.13, 0.13, 0.16),
+        align = (:left, :center),
+        fontsize = 17,
+        background = (:white, 0.9),
+        line = (Mke.RGBf(0.3, 0.3, 0.35), 0.8),
+        font = :regular,
+    )
+    Mke.lines!(ax, Mke.Point2f[anchor, at]; color = line, linewidth = 1.3)
+    Mke.scatter!(ax, [anchor]; color = line, markersize = 7)
+    return Mke.textlabel!(
+        ax,
+        at;
+        text,
+        text_align = align,
+        text_color = color,
+        fontsize,
+        font,
+        background_color = background,
+        strokewidth = 0,
+        padding = (8, 8, 5, 5),
+        cornerradius = 6,
+    )
+end
+
+# ╔═╡ cdbf1522-f34f-4563-80b8-ce2cae20c67f
+"""A small rounded tag ("In Geant4" / "Not Simulated")."""
+function tag!(ax, at, text, color; align = (:left, :center), fontsize = 14, offset = (0, 0))
+    return Mke.textlabel!(
+        ax,
+        at;
+        text,
+        text_align = align,
+        text_color = :white,
+        font = :bold,
+        fontsize,
+        offset,
+        background_color = color,
+        strokewidth = 0,
+        padding = (8, 8, 3, 3),
+        cornerradius = 9,
+    )
+end
+
+# ╔═╡ c7b30aa6-8a09-4b4d-ac6b-1ea4bce5a6f1
+TAGS = (geant4 = Mke.RGBf(0.2, 0.55, 0.32), not_simulated = Mke.RGBf(0.52, 0.52, 0.57))
+
+# ╔═╡ dfc666d5-5ff2-502e-aeb0-49439685ac86
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1500, 600))
+
+    # (a) The slab from the side (not to scale): four photons, four fates
+    ax = canvas(fig[1, 1]; title = "What Geant4 Follows: Every Photon, X Ray and Electron", titlesize = 20)
+    rect!(ax, 0, -2.2, 2.0, 4.4, MATERIALS.cdte; strokecolor = PALETTE.slab_edge, strokewidth = 2)
+    Mke.text!(ax, 1.0, 2.3; text = "CdTe", align = (:center, :bottom), fontsize = 19, font = :bold, color = PALETTE.slab_edge)
+    star!(p) = Mke.scatter!(ax, [Mke.Point2f(p)]; marker = :star5, markersize = 24, color = MATERIALS.star, strokecolor = PALETTE.photon, strokewidth = 1.2)
+
+    # 1: absorbed; its x ray is absorbed again inside: all the energy stays
+    photon!(ax, (-2.4, 1.5), (0.55, 1.5); cycles = 7, amplitude = 0.018)
+    photon!(ax, (0.55, 1.5), (1.35, 0.95); cycles = 2, amplitude = 0.06, color = PALETTE.xray, head = 10)
+    Mke.scatter!(ax, [Mke.Point2f(1.38, 0.93)]; color = PALETTE.electron, markersize = 10)
+    star!((0.55, 1.5))
+    # 2: absorbed near the front; its x ray escapes back out
+    photon!(ax, (-2.4, 0.5), (0.3, 0.5); cycles = 7, amplitude = 0.018)
+    photon!(ax, (0.3, 0.5), (-1.6, 1.0); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 11)
+    star!((0.3, 0.5))
+    # 3: Compton scatter: the photon leaves through the back, weaker, and frees an electron
+    photon!(ax, (-2.4, -0.5), (0.9, -0.5); cycles = 7, amplitude = 0.018)
+    photon!(ax, (0.9, -0.5), (3.7, -1.25); cycles = 4, amplitude = 0.04, head = 11)
+    Mke.lines!(ax, Mke.Point2f[(0.9, -0.5), (1.0, -0.33)]; color = PALETTE.electron, linewidth = 3)
+    Mke.scatter!(ax, [Mke.Point2f(0.9, -0.5)]; marker = :diamond, markersize = 14, color = PALETTE.photon, strokecolor = :white, strokewidth = 1.5)
+    # 4: no interaction at all
+    photon!(ax, (-2.4, -1.6), (3.7, -1.6); cycles = 12, amplitude = 0.012)
+
+    labels = (
+        ((-2.45, 1.5), "Absorbed; Its X Ray Too: All of It Stays", PALETTE.kept),
+        ((-2.45, 0.5), "Its X Ray Escapes Back Out", PALETTE.xray),
+        ((-2.45, -0.5), "Bounces Off, Leaves Through the Back", PALETTE.photon),
+        ((-2.45, -1.6), "Passes Straight Through", PALETTE.muted),
+    )
+    for (at, text, color) in labels
+        Mke.text!(ax, at; text, color, fontsize = 16, font = :bold, align = (:right, :center))
+    end
+    Mke.limits!(ax, -7.4, 4.0, -2.6, 2.9)
+
+    # (b) What the simulation records for every photon, and what it leaves out
+    axb = canvas(fig[1, 2]; title = "What Is Recorded, Photon by Photon", titlesize = 20)
+    rows = (
+        ("Energy Left in the Crystal", "The Signal: What a Detector Can Read Out", true),
+        ("Every Particle That Leaves", "What It Is, Its Energy, Front or Back Face", true),
+        ("Whether It Interacted at All", "For the Check Against Beer–Lambert", true),
+        ("Pixels, Charge, Thresholds", "A Bare Crystal Here: the Electronics\nCome in Notebook 03", false),
+    )
+    for (k, (title, detail, simulated)) in enumerate(rows)
+        y = 10 - 2.4k
+        tag!(axb, Mke.Point2f(0, y), simulated ? "Recorded" : "Not Simulated", simulated ? TAGS.geant4 : TAGS.not_simulated)
+        Mke.text!(axb, 2.6, y; text = title, font = :bold, fontsize = 18, color = PALETTE.ink, align = (:left, :bottom), offset = (0, 1))
+        Mke.text!(axb, 2.6, y; text = detail, fontsize = 15.5, color = PALETTE.muted, align = (:left, :top), offset = (0, -3))
+    end
+    Mke.limits!(axb, -0.2, 11, -0.6, 9.4)
+    Mke.colsize!(fig.layout, 1, Mke.Relative(0.6))
+    fig
+end
+
+# ╔═╡ cd987c45-a0c4-47d9-ae2b-d263299c8a93
+"""A Gd atom: nucleus and two shells, at `c` with outer radius `r`."""
+function atom!(ax, c, r; color = Mke.RGBf(0.45, 0.47, 0.55))
+    θ = range(0, 2π; length = 100)
+    for (k, rr) in enumerate((0.55r, r))
+        Mke.lines!(ax, c[1] .+ rr .* cos.(θ), c[2] .+ rr .* sin.(θ); color = (color, 0.55), linewidth = 1.5)
+    end
+    Mke.scatter!(ax, [Mke.Point2f(c)]; color, markersize = 18)
+    return nothing
+end
+
 # ╔═╡ 9930db7b-c02f-5cce-8043-57033d7852f6
 md"""
 ## 1. The Detector and the Beam
@@ -301,6 +468,12 @@ md"""
 The detector is one block of cadmium telluride, the crystal photon-counting CT scanners use,
 1 mm deep along the beam and 50 mm square across it, in vacuum. A narrow ("pencil") beam of
 photons, all of the same energy, hits the centre of its front face head on.
+
+**Which beam, and why.** A pencil beam is enough here, and exact: the slab is uniform and 50 mm
+wide, and nothing travels more than a few millimetres in CdTe, so a photon landing anywhere on
+the face sees the same crystal around it. A pencil beam into the centre gives what a uniform beam
+over the whole face would, for the slab as one detector. Pixels, their edges and their neighbours
+are not part of this notebook; notebook 03 builds them, and there the beam matters.
 
 The coordinates used by every figure and every number below: **z** runs along the beam and
 photons travel toward +z; the front (entrance) face is at **z = 0** and the back face at
@@ -338,147 +511,39 @@ let
 
     d = detector.thickness_mm
     w = detector.width_mm
-    fig = Mke.Figure(size = (1200, 640))
+    fig = Mke.Figure(size = (1300, 640))
 
-    # (a) The whole slab, to scale, with the beam axis drawn left to right
-    ax3 = Mke.Axis3(
-        fig[1, 1];
-        title = "(a) The whole detector, to scale",
-        aspect = :data,
-        xlabel = "z (mm)",
-        ylabel = "x (mm)",
-        zlabel = "y (mm)",
-        azimuth = 1.65π,
-        elevation = 0.12π,
-        protrusions = (40, 40, 40, 70),
-        xticks = [-40, -20, 0],
-        yticks = [-25, 0, 25],
-        zticks = [-25, 0, 25],
-    )
-    slab = Mke.Rect3f(Mke.Vec3f(0, -w / 2, -w / 2), Mke.Vec3f(d, w, w))
-    Mke.mesh!(ax3, slab; color = PALETTE.slab)
-    Mke.wireframe!(ax3, slab; color = PALETTE.slab_edge, linewidth = 1.2)
-    Mke.arrows3d!(
-        ax3,
-        [Mke.Point3f(-40, 0, 0)],
-        [Mke.Vec3f(40, 0, 0)];
-        color = PALETTE.photon,
-        markerscale = 0.3,
-    )
-    Mke.text!(
-        ax3, Mke.Point3f(-40, 0, 0);
-        text = "photons",
-        align = (:center, :bottom),
-        offset = (0, 12),
-        color = PALETTE.photon,
-        fontsize = 18,
-        font = :bold,
-    )
-    Mke.text!(
-        ax3, Mke.Point3f(d, 0, w / 2);
-        text = "CdTe crystal: $(round(Int, w)) × $(round(Int, w)) mm, $(d) mm deep",
-        align = (:center, :bottom),
-        offset = (0, 12),
-        fontsize = 16,
-        color = PALETTE.slab_edge,
-    )
+    # (a) The whole slab, to scale, the beam arriving along z from the left
+    ax3 = canvas(fig[1, 1]; title = "(a) The Whole Detector, to Scale", titlesize = 21)
+    cam = camera(-148, 20)
+    slab = Block((0, -w / 2, -w / 2), (d, w / 2, w / 2), MATERIALS.cdte)
+    start, face = (-45.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+    draw_blocks!(ax3, cam, [slab]; extras = [(1.0e4, a -> arrow!(a, project(cam, start), project(cam, face); color = PALETTE.photon, linewidth = 4, head = 16))])
+    callout!(ax3, project(cam, (d, w / 2, w / 2)), project(cam, (d, w / 2, w / 2)) + Mke.Point2f(6, 8), "CdTe Crystal: $(round(Int, w)) × $(round(Int, w)) mm,\n$(d) mm Deep, in Vacuum"; color = PALETTE.slab_edge, fontsize = 16)
+    callout!(ax3, project(cam, (-30.0, 0.0, 0.0)), project(cam, (-30.0, 0.0, 0.0)) + Mke.Point2f(10, -12), "Pencil Beam: Every Photon\nHas the Same Energy"; color = PALETTE.photon, fontsize = 16, align = (:left, :center))
 
     # (b) A cut through the beam axis, zoomed onto the crystal's depth
     ax = Mke.Axis(
         fig[1, 2];
-        title = "(b) Side view through the beam, zoomed in",
-        xlabel = "depth along the beam, z (mm)",
-        ylabel = "position across the face, x (mm)",
+        title = "(b) Side View Through the Beam, Zoomed In",
+        xlabel = "Depth Along the Beam, z (mm)",
+        ylabel = "Position Across the Face, x (mm)",
         aspect = Mke.DataAspect(),
         limits = ((-1.7, d + 1.7), (-1.6, 1.5)),
     )
-    Mke.poly!(
-        ax, Mke.Rect2f(0, -1.6, d, 3.1);
-        color = PALETTE.slab,
-        strokecolor = PALETTE.slab_edge,
-        strokewidth = 2,
-    )
-    Mke.arrows2d!(
-        ax,
-        [Mke.Point2f(-1.6, 0)],
-        [Mke.Vec2f(1.56, 0)];
-        color = PALETTE.photon,
-        shaftwidth = 5,
-        tipwidth = 18,
-        tiplength = 18,
-    )
-    Mke.bracket!(
-        ax, 0, -1.0, d, -1.0;
-        text = "d = $(d) mm",
-        orientation = :down,
-        fontsize = 17,
-        color = PALETTE.ink,
-        textcolor = PALETTE.ink,
-    )
-    note!(
-        ax,
-        -0.82,
-        0.4,
-        "pencil beam\nevery photon\nhas the same energy";
-        align = (:center, :center),
-        color = PALETTE.photon,
-    )
-    note!(
-        ax,
-        d / 2,
-        1.15,
-        "CdTe";
-        align = (:center, :center),
-        fontsize = 20,
-        color = PALETTE.slab_edge,
-        alpha = 0.0,
-    )
-    note!(
-        ax,
-        0,
-        -0.35,
-        "front face\nz = 0";
-        align = (:right, :center),
-        offset = (-8, 0),
-        fontsize = 15,
-    )
-    note!(
-        ax,
-        d,
-        -0.35,
-        "back face\nz = d";
-        align = (:left, :center),
-        offset = (8, 0),
-        fontsize = 15,
-    )
-    note!(
-        ax,
-        -1.65,
-        -1.55,
-        "vacuum";
-        align = (:left, :bottom),
-        color = PALETTE.muted,
-        fontsize = 15,
-    )
-    note!(
-        ax,
-        d + 1.65,
-        -1.55,
-        "vacuum";
-        align = (:right, :bottom),
-        color = PALETTE.muted,
-        fontsize = 15,
-    )
-    note!(
-        ax, d / 2, 0.55, "crystal goes on\nto x = ±$(round(Int, w / 2)) mm";
-        align = (:center, :center),
-        color = PALETTE.muted,
-        fontsize = 14,
-        alpha = 0.0,
-    )
+    Mke.poly!(ax, Mke.Rect2f(0, -1.6, d, 3.1); color = MATERIALS.cdte, strokecolor = PALETTE.slab_edge, strokewidth = 2)
+    Mke.arrows2d!(ax, [Mke.Point2f(-1.6, 0)], [Mke.Vec2f(1.56, 0)]; color = PALETTE.photon, shaftwidth = 5, tipwidth = 18, tiplength = 18)
+    Mke.bracket!(ax, 0, -1.0, d, -1.0; text = "d = $(d) mm", orientation = :down, fontsize = 17, color = PALETTE.ink, textcolor = PALETTE.ink)
+    note!(ax, -0.82, 0.4, "Pencil Beam"; align = (:center, :center), color = PALETTE.photon)
+    note!(ax, d / 2, 1.15, "CdTe"; align = (:center, :center), fontsize = 20, color = PALETTE.slab_edge, alpha = 0.0)
+    note!(ax, 0, -0.35, "Front Face\nz = 0"; align = (:right, :center), offset = (-8, 0), fontsize = 15)
+    note!(ax, d, -0.35, "Back Face\nz = d"; align = (:left, :center), offset = (8, 0), fontsize = 15)
+    note!(ax, -1.65, -1.55, "Vacuum"; align = (:left, :bottom), color = PALETTE.muted, fontsize = 15)
+    note!(ax, d + 1.65, -1.55, "Vacuum"; align = (:right, :bottom), color = PALETTE.muted, fontsize = 15)
+    note!(ax, d / 2, 0.55, "The Crystal Goes On\nto x = ±$(round(Int, w / 2)) mm"; align = (:center, :center), color = PALETTE.muted, fontsize = 14, alpha = 0.0)
 
-    Mke.colsize!(fig.layout, 1, Mke.Relative(0.46))
-    Mke.colgap!(fig.layout, 50)
+    Mke.colsize!(fig.layout, 1, Mke.Relative(0.5))
+    Mke.colgap!(fig.layout, 40)
     fig
 end
 
@@ -523,26 +588,84 @@ mu_xcom = Dict(
         for kind in (:total, :photoelectric, :compton, :rayleigh)
 )
 
+# ╔═╡ 96b43d9c-786f-4379-a7fc-18bcca4238ea
+let
+    Mke.set_theme!(THEME)
+    μ_per_mm(E) = MC.interpolate_linear(collect(fine_energies), mu_geant4[:total], E)
+    edges = MC.k_edges(detector.material)
+    lines = join(["$(round(e.kalpha_keV; digits = 1))" for e in edges], " and ")
+    fig = Mke.Figure(size = (1700, 500))
+    panels = (
+        ("Photon Absorbed", "Photoelectric: It Vanishes; an Electron Leaves,\nand Often a Cd or Te X Ray ($(lines) keV)", PALETTE.electron),
+        ("Bounces Off, Loses Energy", "Compton: a Weaker Photon Leaves,\nan Electron Recoils", PALETTE.photon),
+        ("Bounces Off, Keeps Energy", "Rayleigh: Same Energy,\na Small Change of Direction", PALETTE.muted),
+    )
+    for (k, (title, detail, color)) in enumerate(panels)
+        ax = canvas(fig[1, k]; title, titlecolor = color, titlesize = 21)
+        Mke.limits!(ax, -1.25, 1.25, -1.05, 0.95)
+        atom!(ax, (0, 0), 0.32)
+        photon!(ax, (-1.2, 0.0), (-0.36, 0.0); cycles = 6, amplitude = 0.07)
+        if k == 1
+            arrow!(ax, (0.12, 0.1), (0.62, 0.55); color = PALETTE.electron, linewidth = 3)
+            Mke.text!(ax, 0.66, 0.6; text = "Electron", color = PALETTE.electron, fontsize = 16, align = (:left, :bottom))
+            photon!(ax, (0.2, -0.24), (1.0, -0.62); cycles = 4, amplitude = 0.07, color = PALETTE.xray)
+            Mke.text!(ax, 0.98, -0.75; text = "Cd or Te X Ray", color = PALETTE.xray, fontsize = 16, align = (:right, :top))
+        elseif k == 2
+            photon!(ax, (0.3, -0.18), (1.1, -0.72); cycles = 3.5, amplitude = 0.07)
+            Mke.text!(ax, 1.05, -0.86; text = "Weaker Photon", color = PALETTE.photon, fontsize = 16, align = (:right, :top))
+            arrow!(ax, (0.2, 0.2), (0.62, 0.55); color = PALETTE.electron, linewidth = 2.5)
+            Mke.text!(ax, 0.66, 0.6; text = "Electron", color = PALETTE.electron, fontsize = 16, align = (:left, :bottom))
+        else
+            photon!(ax, (0.35, 0.05), (1.2, 0.28); cycles = 6, amplitude = 0.07)
+            Mke.text!(ax, 1.2, 0.42; text = "Same Energy", color = PALETTE.muted, fontsize = 16, align = (:right, :bottom))
+        end
+        Mke.text!(ax, 0, -0.42; text = "Cd or Te Atom", color = Mke.RGBf(0.4, 0.42, 0.5), fontsize = 15, align = (:center, :top))
+        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    end
+
+    # How far a photon goes, on average, before it interacts: 1/μ, against the 1 mm crystal
+    d = detector.thickness_mm
+    ax = Mke.Axis(
+        fig[1:2, 4];
+        title = "How Far a Photon Goes in CdTe",
+        xlabel = "Mean Distance Before Interacting (mm)",
+        yticks = (1:4, ["30 keV", "60 keV", "100 keV", "140 keV"]),
+        yreversed = true,
+        limits = ((0, 1.3 * maximum(1 / μ_per_mm(E) for E in (30.0, 60.0, 100.0, 140.0))), (0.4, 4.6)),
+        titlesize = 19,
+        xlabelsize = 16,
+    )
+    Mke.vspan!(ax, 0, d; color = (MATERIALS.cdte, 0.8))
+    Mke.text!(ax, 0.03, 4.5; text = "The $(d) mm Crystal", align = (:left, :bottom), fontsize = 15, color = PALETTE.slab_edge)
+    for (k, E) in enumerate((30.0, 60.0, 100.0, 140.0))
+        L = 1 / μ_per_mm(E)
+        Mke.barplot!(ax, [k], [L]; direction = :x, color = PALETTE.photon, width = 0.5)
+        Mke.text!(ax, L, k; text = " $(round(L; digits = 2)) mm", align = (:left, :center), fontsize = 15)
+    end
+    Mke.colsize!(fig.layout, 4, Mke.Relative(0.24))
+    fig
+end
+
 # ╔═╡ 9d277927-0f8a-52c6-82e9-e41826865c35
 let
     Mke.set_theme!(THEME)
 
     E = collect(fine_energies)
     processes = (
-        (kind = :total, label = "all processes together (total)", color = PALETTE.ink),
+        (kind = :total, label = "All Processes Together (Total)", color = PALETTE.ink),
         (
             kind = :photoelectric,
-            label = "photon absorbed (photoelectric)",
+            label = "Photon Absorbed (Photoelectric)",
             color = PALETTE.electron,
         ),
         (
             kind = :compton,
-            label = "bounces off, loses energy (Compton)",
+            label = "Bounces Off, Loses Energy (Compton)",
             color = PALETTE.photon,
         ),
         (
             kind = :rayleigh,
-            label = "bounces off, keeps energy (Rayleigh)",
+            label = "Bounces Off, Keeps Energy (Rayleigh)",
             color = PALETTE.muted,
         ),
     )
@@ -552,8 +675,8 @@ let
     ax = Mke.Axis(
         fig[1, 1];
         yscale = log10,
-        ylabel = "chance of interacting per mm, μ (1/mm)",
-        title = "How strongly CdTe stops x rays",
+        ylabel = "Chance of Interacting per mm, μ (1/mm)",
+        title = "How Strongly CdTe Stops X Rays",
         xticks = 10:10:150,
         limits = ((10, 150), (8.0e-3, 150)),
     )
@@ -581,7 +704,7 @@ let
         )
         note!(
             ax, e.edge_keV, i == 1 ? 0.035 : 0.014,
-            "$(e.element) K-edge, $(round(e.edge_keV; digits = 1)) keV";
+            "$(e.element) K-Edge, $(round(e.edge_keV; digits = 1)) keV";
             offset = (8, 0),
             color = PALETTE.xray,
         )
@@ -597,7 +720,7 @@ let
         ),
         vcat(
             [p.label for p in processes],
-            ["solid: Geant4 (what the simulation uses)", "dashed: NIST XCOM (comparison)"],
+            ["Solid: Geant4 (What the Simulation Uses)", "Dashed: NIST XCOM (Comparison)"],
         );
         valign = :top,
     )
@@ -605,7 +728,7 @@ let
     # Bottom: how far apart the two data sets are
     axr = Mke.Axis(
         fig[2, 1];
-        xlabel = "photon energy (keV)",
+        xlabel = "Photon Energy (keV)",
         ylabel = "Geant4 ÷ XCOM",
         xticks = 10:10:150,
         limits = ((10, 150), (0.7, 1.15)),
@@ -663,8 +786,8 @@ let
     # (a) Every photon and x ray, side view
     ax = Mke.Axis(
         fig[1, 1:2];
-        title = "(a) $(nphotons) photons of $(round(Int, t.energy_keV)) keV entering $(d) mm of CdTe (side view)",
-        xlabel = "depth along the beam, z (mm)",
+        title = "(a) $(nphotons) Photons of $(round(Int, t.energy_keV)) keV Entering $(d) mm of CdTe (Side View)",
+        xlabel = "Depth Along the Beam, z (mm)",
         ylabel = "x (mm)",
         aspect = Mke.DataAspect(),
         limits = ((-1.0, d + 1.0), (-0.6, 0.6)),
@@ -717,7 +840,7 @@ let
         ax,
         -0.97,
         0.56,
-        "← escapes out the front";
+        "← Escapes Out the Front";
         align = (:left, :top),
         color = PALETTE.muted,
         fontsize = 15,
@@ -726,7 +849,7 @@ let
         ax,
         d + 0.97,
         0.56,
-        "escapes out the back →";
+        "Escapes Out the Back →";
         align = (:right, :top),
         color = PALETTE.muted,
         fontsize = 15,
@@ -746,12 +869,12 @@ let
             Mke.MarkerElement(; marker = :xcross, color = PALETTE.photon, markersize = 14),
         ],
         [
-            "incoming photon",
-            "characteristic x ray",
-            "electron (panel b)",
-            "photon absorbed",
-            "bounced, lost energy\n(Compton)",
-            "bounced, kept energy\n(Rayleigh)",
+            "Incoming Photon",
+            "Characteristic X Ray",
+            "Electron (Panel b)",
+            "Photon Absorbed",
+            "Bounced, Lost Energy\n(Compton)",
+            "Bounced, Kept Energy\n(Rayleigh)",
         ];
         valign = :center,
     )
@@ -768,7 +891,7 @@ let
     µm(v, i) = 1000 * (v[i] - c[i])
     axz = Mke.Axis(
         fig[2, 1];
-        title = "(b) One absorption, magnified",
+        title = "(b) One Absorption, Magnified",
         xlabel = "z − z₀ (µm)",
         ylabel = "x − x₀ (µm)",
         aspect = Mke.DataAspect(),
@@ -788,17 +911,17 @@ let
     Mke.Label(
         fig[2, 2:3],
         """
-        The photon is absorbed at the dot,
-        $(round(Int, 1000 * c[3])) µm inside the crystal.
+        The Photon Is Absorbed at the Dot,
+        $(round(Int, 1000 * c[3])) µm Inside the Crystal.
 
-        The electron it frees ($(round(ekin; digits = 1)) keV) stops
-        within about a micrometre: its energy is
-        deposited on the spot.
+        The Electron It Frees ($(round(ekin; digits = 1)) keV) Stops
+        Within About a Micrometre: Its Energy Is
+        Deposited on the Spot.
 
-        When the atom emits a characteristic x ray
-        instead (orange in panel a), that x ray travels
-        hundreds of µm before it is absorbed, or it
-        escapes the crystal.
+        When the Atom Emits a Characteristic X Ray
+        Instead (Orange in Panel a), That X Ray Travels
+        Hundreds of µm Before It Is Absorbed, or It
+        Escapes the Crystal.
         """;
         justification = :left,
         halign = :left,
@@ -885,6 +1008,41 @@ beer_lambert_xcom = [
         for E in energies
 ]
 
+# ╔═╡ 99963866-c3af-4456-b196-7bf6bfa8a488
+let
+    Mke.set_theme!(THEME)
+    μ_per_mm(E) = MC.interpolate_linear(collect(fine_energies), mu_geant4[:total], E)
+    d = detector.thickness_mm
+    fig = Mke.Figure(size = (1500, 500))
+    N = 24
+    for (k, E) in enumerate((25.0, 60.0, 140.0))
+        μ = μ_per_mm(E)
+        interacts = 1 - exp(-μ * d)
+        ax = canvas(fig[1, k]; title = "$(Int(E)) keV: $(round(Int, 100interacts)) % Interact", titlesize = 21)
+        rect!(ax, 0, 0, d, 1.6, MATERIALS.cdte; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+        # photon i interacts at the depth the i-th of N spread-out quantiles of exp(−μz) gives
+        for i in 1:N
+            y = 1.6 * (i - 0.5) / N
+            z = -log(1 - mod(i * 0.618034, 1.0)) / μ
+            if z < d
+                Mke.lines!(ax, [-0.55, z], [y, y]; color = PALETTE.photon, linewidth = 2)
+                Mke.scatter!(ax, [z], [y]; color = PALETTE.electron, markersize = 9)
+            else
+                arrow!(ax, (-0.55, y), (d + 0.5, y); color = (PALETTE.photon, 0.55), linewidth = 2, head = 10)
+            end
+        end
+        Mke.text!(ax, d / 2, -0.05; text = "$(d) mm of CdTe", align = (:center, :top), fontsize = 15, color = PALETTE.slab_edge)
+        Mke.limits!(ax, -0.65, d + 0.6, -0.35, 1.7)
+    end
+    Mke.Label(
+        fig[2, 1:3],
+        "Each Line Is a Photon from the Left: It Interacts at the Red Dot, or Passes Straight Through.\nThe Fraction That Interacts Is 1 − exp(−μ d): the Black Line Below, Which the Blue Dots (Counted) Must Follow.";
+        fontsize = 16,
+        color = PALETTE.muted,
+    )
+    fig
+end
+
 # ╔═╡ 7bfbd9e9-b203-5781-a28b-d3dcf06d765d
 let
     Mke.set_theme!(THEME)
@@ -899,8 +1057,8 @@ let
     # Top: the fractions themselves
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Monte Carlo against Beer-Lambert, $(detector.material.name) $(detector.thickness_mm) mm",
-        ylabel = "fraction of photons\nthat interact",
+        title = "Monte Carlo Against Beer–Lambert, $(detector.material.name) $(detector.thickness_mm) mm",
+        ylabel = "Fraction of Photons\nThat Interact",
         xticks = 10:10:140,
         limits = ((8, 142), nothing),
     )
@@ -908,27 +1066,27 @@ let
         ax, E, beer_lambert_geant4;
         color = PALETTE.ink,
         linewidth = 3,
-        label = "Beer-Lambert, Geant4's μ",
+        label = "Beer–Lambert, Geant4's μ",
     )
     Mke.lines!(
         ax, E, beer_lambert_xcom;
         color = PALETTE.muted,
         linewidth = 2,
         linestyle = :dash,
-        label = "Beer-Lambert, XCOM's μ (comparison)",
+        label = "Beer–Lambert, XCOM's μ (Comparison)",
     )
     Mke.scatter!(
         ax, E, p;
         color = PALETTE.photon,
         markersize = 7,
-        label = "Monte Carlo: photons that interacted",
+        label = "Monte Carlo: Photons That Interacted",
     )
     Mke.axislegend(ax; position = :lb)
 
     # Middle: the difference in units of counting noise
     axr = Mke.Axis(
         fig[2, 1];
-        ylabel = "difference ÷\ncounting noise",
+        ylabel = "Difference ÷\nCounting Noise",
         xticks = 10:10:140,
         limits = ((8, 142), (-4.5, 4.5)),
         yticks = -4:2:4,
@@ -943,7 +1101,7 @@ let
         markersize = 7,
     )
     note!(
-        axr, 140, 2.0, "green band: within ±2 × the counting noise";
+        axr, 140, 2.0, "Green Band: Within ±2 × the Counting Noise";
         align = (:right, :bottom),
         color = PALETTE.kept,
         fontsize = 15,
@@ -953,8 +1111,8 @@ let
     xcom_minus_geant4 = 100 .* (beer_lambert_xcom .- beer_lambert_geant4)
     axx = Mke.Axis(
         fig[3, 1];
-        xlabel = "photon energy (keV)",
-        ylabel = "XCOM − Geant4\n(percentage points)",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "XCOM − Geant4\n(Percentage Points)",
         xticks = 10:10:140,
         limits = ((8, 142), nothing),
     )
@@ -962,7 +1120,7 @@ let
     Mke.lines!(axx, E, xcom_minus_geant4; color = PALETTE.muted, linewidth = 2.5)
     note!(
         axx, 10, maximum(xcom_minus_geant4),
-        "how much BasisSimulator's Beer-Lambert (XCOM) differs";
+        "How Much Beer–Lambert with XCOM (BasisSimulator's Data) Differs";
         align = (:left, :top),
         color = PALETTE.muted,
         fontsize = 15,
@@ -1006,6 +1164,39 @@ the crystal or carried out by something that escaped. The budget below adds thos
 photons at each energy. The top of the stack must be exactly 1.
 """
 
+# ╔═╡ 2cdb7c64-a9f9-43e6-a637-512f70bb88b0
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1500, 520))
+    ax = canvas(fig[1, 1])
+    rect!(ax, 0, -3.0, 2.0, 6.0, MATERIALS.cdte; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+    Mke.text!(ax, 1.0, -3.15; text = "The CdTe Slab (Depth Exaggerated)", align = (:center, :top), fontsize = 15, color = PALETTE.slab_edge)
+    star!(p) = Mke.scatter!(ax, [Mke.Point2f(p)]; marker = :star5, markersize = 24, color = MATERIALS.star, strokecolor = PALETTE.photon, strokewidth = 1.2)
+    ys = (2.2, 1.0, -0.2, -1.4, -2.6)
+    for (k, y) in enumerate(ys)
+        photon!(ax, (-3.0, y), k == 5 ? (5.6, y) : (k == 4 ? 1.7 : 0.6, y); cycles = k == 5 ? 13 : 6, amplitude = 0.015)
+    end
+    star!((0.6, 2.2))
+    star!((0.6, 1.0))
+    photon!(ax, (0.6, 1.0), (-1.9, 1.75); cycles = 3, amplitude = 0.05, color = PALETTE.xray)
+    star!((0.6, -0.2))
+    photon!(ax, (0.6, -0.2), (5.3, -0.75); cycles = 4, amplitude = 0.04)
+    Mke.scatter!(ax, [Mke.Point2f(1.7, -1.4)]; marker = :star5, markersize = 24, color = MATERIALS.star, strokecolor = PALETTE.photon, strokewidth = 1.2)
+    arrow!(ax, (1.7, -1.4), (2.45, -1.3); color = PALETTE.electron, linewidth = 3, head = 12)
+    labels = (
+        (2.2, "Stays in the Crystal (the Signal)", PALETTE.kept),
+        (1.0, "Carried Out by a Characteristic X Ray", PALETTE.xray),
+        (-0.2, "Carried Out by a Scattered Photon", PALETTE.photon),
+        (-1.4, "Carried Out by an Electron (Freed Right at the Back Face)", PALETTE.electron),
+        (-2.6, "Passes Straight Through", Mke.RGBf(0.55, 0.55, 0.6)),
+    )
+    for (y, text, color) in labels
+        Mke.text!(ax, -3.1, y; text, color, fontsize = 17, font = :bold, align = (:right, :center))
+    end
+    Mke.limits!(ax, -12.5, 6.0, -3.6, 2.7)
+    fig
+end
+
 # ╔═╡ 21575ae6-eade-5f3f-af5e-d8b536251282
 let
     Mke.set_theme!(THEME)
@@ -1015,32 +1206,32 @@ let
     layers = (
         (
             part = :absorbed,
-            label = "stays in the crystal (the signal)",
+            label = "Stays in the Crystal (the Signal)",
             color = PALETTE.kept,
         ),
         (
             part = :fluorescence,
-            label = "carried out by a characteristic x ray",
+            label = "Carried Out by a Characteristic X Ray",
             color = PALETTE.xray,
         ),
         (
             part = :scattered,
-            label = "carried out by a scattered photon",
+            label = "Carried Out by a Scattered Photon",
             color = PALETTE.photon,
         ),
-        (part = :electron, label = "carried out by an electron", color = PALETTE.electron),
+        (part = :electron, label = "Carried Out by an Electron", color = PALETTE.electron),
         (
             part = :transmitted,
-            label = "passes straight through",
+            label = "Passes Straight Through",
             color = Mke.RGBf(0.85, 0.85, 0.87),
         ),
     )
     fig = Mke.Figure(size = (1200, 600))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Where each photon's energy goes, $(detector.material.name) $(detector.thickness_mm) mm",
-        xlabel = "photon energy (keV)",
-        ylabel = "fraction of the photon's energy",
+        title = "Where Each Photon's Energy Goes, $(detector.material.name) $(detector.thickness_mm) mm",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Fraction of the Photon's Energy",
         xticks = 10:10:140,
         limits = ((10, 140), (0, 1.0)),
     )
@@ -1058,7 +1249,7 @@ let
     escape_peak = round(Int, 100 * maximum(b.fluorescence for b in budgets))
     note!(
         ax, 33, 0.7,
-        "just above the K-edges,\nup to $(escape_peak) % of the energy\nleaves as x rays";
+        "Just Above the K-Edges,\nUp to $(escape_peak) % of the Energy\nLeaves as X Rays";
         align = (:left, :center),
         fontsize = 15,
     )
@@ -1104,6 +1295,37 @@ escaped_lines = MC.fluorescence_lines(
     min_fraction = 0.05,
 )
 
+# ╔═╡ 718fd5fc-af35-4451-b25e-75571d21f3ec
+let
+    Mke.set_theme!(THEME)
+    E0 = round(Int, spectrum_run.energy_keV)
+    fig = Mke.Figure(size = (1500, 470))
+    cases = (
+        ("All of It Stays", "The Photon and Its X Ray Are Both\nAbsorbed: the Full-Energy Peak at $(E0) keV", PALETTE.kept),
+        ("Its X Ray Escapes", "A Cd or Te X Ray Leaves Through the Front:\nan Escape Peak at $(E0) keV Minus the X Ray", PALETTE.xray),
+        ("A Scattered Photon Leaves", "Only the Electron's Energy Stays:\nthe Low Tail", PALETTE.photon),
+    )
+    star!(ax, p) = Mke.scatter!(ax, [Mke.Point2f(p)]; marker = :star5, markersize = 24, color = MATERIALS.star, strokecolor = PALETTE.photon, strokewidth = 1.2)
+    for (k, (title, detail, color)) in enumerate(cases)
+        ax = canvas(fig[1, k]; title, titlecolor = color, titlesize = 21)
+        rect!(ax, 0, -1.2, 1.6, 2.4, MATERIALS.cdte; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+        hit = Mke.Point2f(0.45, 0.0)
+        photon!(ax, (-1.6, 0.0), hit; cycles = 6, amplitude = 0.03)
+        if k == 1
+            photon!(ax, hit, (1.2, -0.7); cycles = 2, amplitude = 0.06, color = PALETTE.xray, head = 10)
+            Mke.scatter!(ax, [Mke.Point2f(1.23, -0.72)]; color = PALETTE.electron, markersize = 10)
+        elseif k == 2
+            photon!(ax, hit, (-1.3, 0.95); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 12)
+        else
+            photon!(ax, hit, (2.9, -0.9); cycles = 3, amplitude = 0.05, head = 12)
+        end
+        star!(ax, hit)
+        Mke.limits!(ax, -1.7, 3.0, -1.3, 1.2)
+        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    end
+    fig
+end
+
 # ╔═╡ 2cd36cc8-7384-5e22-8d2d-b4acf3adbb0d
 let
     Mke.set_theme!(THEME)
@@ -1115,9 +1337,9 @@ let
     # Top: the characteristic x rays that escaped
     axe = Mke.Axis(
         fig[1, 1];
-        title = "What escaped: characteristic x rays leaving the crystal ($(round(Int, E0)) keV photons)",
+        title = "What Escaped: Characteristic X Rays Leaving the Crystal ($(round(Int, E0)) keV Photons)",
         yscale = log10,
-        ylabel = "per keV, per\nincoming photon",
+        ylabel = "Per keV, per\nIncoming Photon",
         limits = ((0, E0 + 3), (1.0e-4, 3)),
     )
     escaped = MC.escape_spectrum(r; kind = :fluorescence, bin_keV = 0.25)
@@ -1143,10 +1365,10 @@ let
     # Bottom: the energy each photon left in the crystal
     ax = Mke.Axis(
         fig[2, 1];
-        title = "What stayed: energy left in the crystal by each photon",
+        title = "What Stayed: Energy Left in the Crystal by Each Photon",
         yscale = log10,
-        xlabel = "energy (keV)",
-        ylabel = "per keV, per\nincoming photon",
+        xlabel = "Energy (keV)",
+        ylabel = "Per keV, per\nIncoming Photon",
         limits = ((0, E0 + 3), (1.0e-4, 30)),
     )
     kept = MC.absorbed_energy_spectrum(r; bin_keV = 0.25)
@@ -1157,7 +1379,7 @@ let
         linewidth = 2,
     )
     note!(
-        ax, E0, 8, "full-energy peak:\nall $(round(Int, E0)) keV stayed";
+        ax, E0, 8, "Full-Energy Peak:\nAll $(round(Int, E0)) keV Stayed";
         align = (:right, :center),
         offset = (-14, 0),
         fontsize = 15,
@@ -1179,7 +1401,7 @@ let
         ax,
         1,
         3.0e-4,
-        "scattered photons that escaped";
+        "Scattered Photons That Escaped";
         align = (:left, :bottom),
         color = PALETTE.muted,
         fontsize = 15,
@@ -1187,8 +1409,8 @@ let
 
     # The key that matches each escaped line to its escape peak
     key_row(i, line) = string(
-        "$(i)   $(line.element) $(line.line) x ray, $(round(line.energy_keV; digits = 1)) keV\n",
-        "     escape peak at $(round(E0 - line.energy_keV; digits = 1)) keV",
+        "$(i)   $(line.element) $(line.line) X Ray, $(round(line.energy_keV; digits = 1)) keV\n",
+        "     Escape Peak at $(round(E0 - line.energy_keV; digits = 1)) keV",
     )
     key = join([key_row(i, line) for (i, line) in enumerate(escaped_lines)], "\n")
     Mke.Label(
@@ -1218,7 +1440,8 @@ Three numbers summarise a detector at each energy:
   photon-counting detector with a low threshold counts these.
 - **Energy-absorption efficiency:** the average energy a photon leaves, as a fraction of its
   energy. An energy-integrating (scintillator) detector's signal is proportional to it; it is
-  the quantity in BasisSimulator's Monte Carlo lookup tables.
+  the quantity in the Monte Carlo tables BasisSimulator v0.15.1 used, and in the Geant4 tables
+  of notebooks 04–08 that replace them.
 - **Swank factor:** how alike the energies left by the detected photons are. It is 1 when every
   detected photon leaves the same energy, and it falls as they spread out (escape peaks,
   scatter). The zero-frequency DQE of an energy-integrating detector is the quantum efficiency
@@ -1230,6 +1453,41 @@ predict the energy-absorption efficiency at all: just above each K-edge absorpti
 likely, yet the energy kept *drops*, because every characteristic x ray that escapes takes its
 energy with it.
 """
+
+# ╔═╡ 717fa436-6ead-47d3-85aa-b3b64c2c0bbd
+let
+    Mke.set_theme!(THEME)
+    # Ten photons of 60 keV, and the energy each leaves in the crystal (an illustration, not data):
+    # most leave all of it, two lose a Te or Cd x ray, one only bounces off (Rayleigh), one Compton
+    E0 = 60.0
+    kept = [60.0, 60.0, 32.5, 60.0, 36.8, 60.0, 0.0, 60.0, 60.0, 4.0]
+    colors = [v == E0 ? PALETTE.kept : v > 20 ? PALETTE.xray : v > 0 ? PALETTE.photon : Mke.RGBf(0.8, 0.8, 0.83) for v in kept]
+    detected = count(>(0), kept)
+    M0, M1, M2 = detected / 10, sum(kept) / 10, sum(abs2, kept) / 10
+    fig = Mke.Figure(size = (1500, 480))
+    panels = (
+        ("Quantum Efficiency", "Did It Leave Any Energy?\n$(detected) of 10 Did: $(detected / 10)", PALETTE.photon),
+        ("Energy-Absorption Efficiency", "What Share of the Energy Stayed?\n$(round(Int, sum(kept))) of $(round(Int, 10 * E0)) keV: $(round(sum(kept) / (10 * E0); digits = 2))", PALETTE.xray),
+        ("Swank Factor", "How Alike Are the Amounts?\nI = M₁² / (M₀ M₂) = $(round(M1^2 / (M0 * M2); digits = 2))", PALETTE.electron),
+    )
+    for (k, (title, detail, color)) in enumerate(panels)
+        ax = Mke.Axis(
+            fig[1, k];
+            title,
+            titlecolor = color,
+            xlabel = "Ten $(round(Int, E0)) keV Photons",
+            ylabel = k == 1 ? "Energy Left (keV)" : "",
+            xticks = 1:10,
+            limits = ((0.3, 10.7), (0, 68)),
+        )
+        Mke.barplot!(ax, 1:10, kept; color = colors)
+        k == 2 && Mke.hlines!(ax, sum(kept) / 10; color = PALETTE.xray, linewidth = 2.5, linestyle = :dash)
+        k == 2 && note!(ax, 10.6, sum(kept) / 10, "Average Kept"; align = (:right, :bottom), color = PALETTE.xray, fontsize = 14, offset = (0, 4))
+        k == 1 && note!(ax, 7, 3, "Left Nothing"; align = (:center, :bottom), color = PALETTE.muted, fontsize = 14)
+        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.ink, tellwidth = false)
+    end
+    fig
+end
 
 # ╔═╡ 6c94d133-46f8-5406-bc79-1cc8106a1c4b
 let
@@ -1243,8 +1501,8 @@ let
     # Top: Beer-Lambert against the two Monte Carlo efficiencies
     ax = Mke.Axis(
         fig[1, 1];
-        title = "What Beer-Lambert predicts and what the crystal keeps, $(detector.material.name) $(detector.thickness_mm) mm",
-        ylabel = "efficiency",
+        title = "What Beer–Lambert Predicts and What the Crystal Keeps, $(detector.material.name) $(detector.thickness_mm) mm",
+        ylabel = "Efficiency",
         xticks = 10:10:140,
         limits = ((8, 142), (0.25, 1.04)),
     )
@@ -1252,27 +1510,27 @@ let
         ax, E, beer_lambert_geant4;
         color = PALETTE.ink,
         linewidth = 3,
-        label = "Beer-Lambert: photons that interact",
+        label = "Beer–Lambert: Photons That Interact",
     )
     Mke.lines!(
         ax, E, MC.quantum_efficiency.(sweep);
         color = PALETTE.photon,
         linewidth = 3,
-        label = "quantum efficiency: photons that leave any energy",
+        label = "Quantum Efficiency: Photons That Leave Any Energy",
     )
     Mke.lines!(
         ax, E, MC.energy_absorption_efficiency.(sweep);
         color = PALETTE.xray,
         linewidth = 3,
-        label = "energy-absorption efficiency: share of energy kept",
+        label = "Energy-Absorption Efficiency: Share of Energy Kept",
     )
     Mke.axislegend(ax; position = :lb)
 
     # Bottom: the Swank factor
     axs = Mke.Axis(
         fig[2, 1];
-        xlabel = "photon energy (keV)",
-        ylabel = "Swank factor",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Swank Factor",
         xticks = 10:10:140,
         limits = ((8, 142), nothing),
     )
@@ -1291,13 +1549,13 @@ let
         ax,
         edges[end].edge_keV,
         0.7,
-        "K-edges of Cd and Te";
+        "K-Edges of Cd and Te";
         offset = (10, 0),
         color = PALETTE.muted,
         fontsize = 15,
     )
     note!(
-        axs, 141, minimum(swank), "1 = every detected photon leaves the same energy";
+        axs, 141, minimum(swank), "1 = Every Detected Photon Leaves the Same Energy";
         align = (:right, :bottom),
         color = PALETTE.muted,
         fontsize = 15,
@@ -1332,7 +1590,7 @@ photon, and shows the K-escape that Beer-Lambert cannot.
 - **Notebook 02** compares it with published Monte Carlo work: the Swank factors of four
   detector materials from Hajdok, Battista & Cunningham (Med Phys 2008, EGSnrc).
 - **Notebook 03** builds the Siemens NAEOTOM Alpha's CdTe detector dexel by dexel and compares
-  its response with the Monte Carlo table BasisSimulator uses today.
+  its response with the one BasisSimulator v0.15.1 used.
 """
 
 # ╔═╡ Cell order:
@@ -1350,6 +1608,23 @@ photon, and shows the K-escape that Beer-Lambert cannot.
 # ╠═74dc1d9e-d900-5f7c-8825-1d332f6a89b3
 # ╠═3b6e9621-cbce-56e9-949f-dd3562147bff
 # ╠═5254847b-5c45-5e0c-ab5f-2b6872c13c47
+# ╟─3af2ff68-c9d8-4cf6-bfc5-bf391296da68
+# ╠═822095ae-24c5-40b5-a2f6-e25dfb90a015
+# ╠═e9cc638b-caf5-48a4-bd2c-b0fe0e1e2195
+# ╠═87e524c6-a58c-4c90-918d-1e929e0e5f6a
+# ╠═09afc8c3-67f0-4506-8242-a569104d1515
+# ╠═443b26b9-5365-4eb1-b73d-4228fd3ceb37
+# ╠═49342efd-5bbd-41e6-b871-e992c910404a
+# ╠═cfba4ed7-6c5e-429d-8361-aa2acb343b1d
+# ╠═bdb6e526-af68-4675-b232-2d2d75de03c8
+# ╠═3bcdc764-6d39-4d03-9095-029419302112
+# ╠═baaf379b-4d53-49a5-87d5-28b7cb166e85
+# ╠═50a0f3b5-d39f-4e9c-8161-01961a98fee3
+# ╠═7c861316-ce0b-4f55-93a1-e41b8980cd71
+# ╠═3333fc70-8b77-4c2b-b8e8-ee6b8baff691
+# ╠═cdbf1522-f34f-4563-80b8-ce2cae20c67f
+# ╠═c7b30aa6-8a09-4b4d-ac6b-1ea4bce5a6f1
+# ╠═cd987c45-a0c4-47d9-ae2b-d263299c8a93
 # ╟─9930db7b-c02f-5cce-8043-57033d7852f6
 # ╠═1778e101-f9ac-579b-9782-dc12f803a8d9
 # ╠═9fb6be41-9274-55b0-a8dc-193e709361fc
@@ -1359,6 +1634,7 @@ photon, and shows the K-escape that Beer-Lambert cannot.
 # ╠═4807e458-f107-5647-bc1a-1bf891280843
 # ╠═befb271a-8286-565b-8512-c80c1aef4eed
 # ╠═cd2de766-2eac-5fc7-9b9a-8764e0e80e07
+# ╟─96b43d9c-786f-4379-a7fc-18bcca4238ea
 # ╟─9d277927-0f8a-52c6-82e9-e41826865c35
 # ╟─26891d21-f1b5-5660-8c3c-b4547fcd0771
 # ╠═c3606d49-a795-57c0-aab2-898e83adf9ea
@@ -1369,17 +1645,21 @@ photon, and shows the K-escape that Beer-Lambert cannot.
 # ╠═3baf0b3a-d671-5561-83ae-9691038f4481
 # ╠═c7c8e6e4-5dbc-5325-bbe6-b215ed7c8c3f
 # ╠═c13e2c0a-19ec-53e0-ba89-094251e99e2c
+# ╟─99963866-c3af-4456-b196-7bf6bfa8a488
 # ╟─7bfbd9e9-b203-5781-a28b-d3dcf06d765d
 # ╟─2dcf44e4-8d50-50e0-8e0e-3fefca54e825
 # ╟─0d9b0e7c-7ff4-5632-a7ed-9231f0b0f09a
+# ╟─2cdb7c64-a9f9-43e6-a637-512f70bb88b0
 # ╟─21575ae6-eade-5f3f-af5e-d8b536251282
 # ╟─265a57e2-edba-5765-b933-976cc027eb82
 # ╟─beafa265-f6ce-55b2-abfd-b194220ceed5
 # ╠═7b6c3fe9-caa4-5d4b-a1b7-6038524e2b43
 # ╠═184a9cef-ecb7-5563-bcc9-dbc8af750c2d
 # ╠═8fce8f9a-8b98-5a61-9459-6ab5c3b9fb74
+# ╟─718fd5fc-af35-4451-b25e-75571d21f3ec
 # ╟─2cd36cc8-7384-5e22-8d2d-b4acf3adbb0d
 # ╟─a2f74850-388c-5e6c-a526-757f0dd79798
+# ╟─717fa436-6ead-47d3-85aa-b3b64c2c0bbd
 # ╟─6c94d133-46f8-5406-bc79-1cc8106a1c4b
 # ╟─68872016-40db-5305-ad2a-8ca120226c43
 # ╠═b27b88bd-16e8-5270-acc0-16c74c129393

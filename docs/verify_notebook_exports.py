@@ -1,22 +1,38 @@
 #!/usr/bin/env python3
-"""Reject broken, stale, or machine-specific committed notebook exports."""
+"""Reject broken, stale, or machine-specific committed notebook exports.
+
+Covers the BasisSimulator notebooks (docs/notebooks/<slug>.jl, rendered by docs/extract_all.jl)
+and the BasisMonteCarlo notebooks (lib/BasisMonteCarlo/docs/notebooks/<stem>.jl, rendered by
+docs/extract_montecarlo.jl as `mc-<stem>`). `BASISSIM_SKIP_NOTEBOOKS` (comma-separated slugs; a
+trailing `*` matches a prefix, so `mc-*` skips every BasisMonteCarlo notebook) leaves notebooks
+out, as it leaves them out of the site."""
 
 from pathlib import Path
 import hashlib
 import json
 import re
 import sys
+import os
 from functools import lru_cache
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 DOCS = Path(__file__).resolve().parent
 ROOT = DOCS / "notebooks-static"
 SOURCES = DOCS / "notebooks"
 DATA_PROVENANCE = SOURCES / "DATA_PROVENANCE.sha256"
+MC_ROOT = DOCS.parent / "lib" / "BasisMonteCarlo"
+MC_DOCS = MC_ROOT / "docs"
+MC_SOURCES = MC_DOCS / "notebooks"
+MC_PREFIX = "mc-"
 HASH_META = "basissim-export-fingerprint"
 EXPORT_CONTRACT = (
     "basissim-lean-v4|therapy=true|fragment=true|islands=true|verify=true|"
     "optimize=size|forced-fallback=01:z_slice,05:z_helical,11:z_idx"
+)
+# MC_EXPORT_CONTRACT in docs/extract_montecarlo.jl
+MC_EXPORT_CONTRACT = (
+    "basismc-lean-v1|therapy=true|fragment=true|islands=true|verify=true|"
+    "optimize=size|cpu|forced-fallback=04,05,06,07,08:kvp|card=first-figure-webp"
 )
 BAD_HTML = {
     "rendered Pluto error": "<jlerror",
@@ -41,6 +57,12 @@ FORCED_FALLBACKS = {
     "01_five_struct_api": "z_slice",
     "05_xcat_grid_to_recon": "z_helical",
     "11_helical_scanning": "z_idx",
+    # MC_FORCE_FALLBACK_BONDS in docs/extract_montecarlo.jl
+    "mc-04_siemens_force": "kvp",
+    "mc-05_siemens_flash": "kvp",
+    "mc-06_ge_revolution_apex": "kvp",
+    "mc-07_philips_brilliance_ict": "kvp",
+    "mc-08_canon_aquilion_one": "kvp",
 }
 
 
@@ -76,6 +98,24 @@ def simulator_input_hash() -> str:
     return hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def mc_input_hash() -> str:
+    """mc_input_hash in docs/extract_montecarlo.jl."""
+    root = DOCS.parent
+    # every lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
+    files = [MC_DOCS / "Project.toml"] + sorted(
+        path for path in MC_DOCS.iterdir() if re.fullmatch(r"Manifest(-v[0-9.]+)?\.toml", path.name)
+    )
+    for directory in (MC_ROOT / "src", MC_DOCS / "reference_data"):
+        if directory.is_dir():
+            files.extend(path for path in directory.rglob("*") if path.is_file())
+    entries = [f"{path.relative_to(root).as_posix()}:{source_hash(path)}" for path in files]
+    project = MC_ROOT / "Project.toml"
+    entries.append(f"{project.relative_to(root).as_posix()}:{project_input_hash(project)}")
+    entries.sort()
+    return hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
+
+
 def snapshot_tree_hash() -> str:
     manifest = (DOCS / "build_env" / "Manifest.toml").read_text(encoding="utf-8")
     section = re.search(
@@ -99,6 +139,23 @@ def export_fingerprint(path: Path, snapshot_tree: str) -> str:
          docs_lock, driver, EXPORT_CONTRACT)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def mc_export_fingerprint(path: Path, snapshot_tree: str) -> str:
+    """mc_export_fingerprint in docs/extract_montecarlo.jl."""
+    build_lock = source_hash(DOCS / "build_env" / "Manifest.toml")
+    exporter = source_hash(DOCS / "extract_all.jl")
+    driver = source_hash(DOCS / "extract_montecarlo.jl")
+    payload = "\0".join(
+        (source_hash(path), mc_input_hash(), snapshot_tree, build_lock, exporter,
+         driver, MC_EXPORT_CONTRACT)
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def skipped(slug: str) -> bool:
+    patterns = [p.strip() for p in os.environ.get("BASISSIM_SKIP_NOTEBOOKS", "").split(",") if p.strip()]
+    return any(slug.startswith(p[:-1]) if p.endswith("*") else slug == p for p in patterns)
 
 
 def recorded_hash(path: Path, fragment: bool) -> Optional[str]:
@@ -190,9 +247,27 @@ def main() -> int:
     except (OSError, ValueError):
         print("invalid Snapshot export lock in docs/build_env/Manifest.toml", file=sys.stderr)
         return 1
-    for source in sources:
-        slug = source.stem
-        digest = export_fingerprint(source, snapshot_tree)
+    notebooks: List[Tuple[str, Path, str]] = [
+        (source.stem, source, export_fingerprint(source, snapshot_tree)) for source in sources
+    ]
+    for source in sorted(MC_SOURCES.glob("*.jl")):
+        slug = MC_PREFIX + source.stem
+        if skipped(slug):
+            notebooks.append((slug, source, ""))
+            continue
+        try:
+            digest = mc_export_fingerprint(source, snapshot_tree)
+        except OSError as error:
+            print(f"cannot fingerprint {slug}: {error}", file=sys.stderr)
+            return 1
+        notebooks.append((slug, source, digest))
+    checked = 0
+    for slug, source, digest in notebooks:
+        if skipped(slug):
+            # Left out of the site: neither checked nor an orphan.
+            expected_pages.update(ROOT / f"{slug}{suffix}" for suffix in (".html", ".fragment.html"))
+            continue
+        checked += 1
         for suffix, fragment in ((".html", False), (".fragment.html", True)):
             page = ROOT / f"{slug}{suffix}"
             expected_pages.add(page)
@@ -266,7 +341,7 @@ def main() -> int:
         print("\n".join(f"  - {failure}" for failure in failures), file=sys.stderr)
         return 1
 
-    print(f"verified {len(sources)} notebook source/export pairs")
+    print(f"verified {checked} notebook source/export pairs")
     return 0
 
 

@@ -2,14 +2,14 @@
 # snapshot-workflow-version: snapshot-v0.2.1-node24
 #
 # LOCAL EDIT (BasisSimulator.jl): like docs.yml, this runs on pushes to `main` that change the
-# docs, the code or Project.toml (or by hand for any commit), and `discover` resolves the commit
+# docs, the code, Project.toml or lib/BasisMonteCarlo (or by hand for any commit), and `discover` resolves the commit
 # once (`ref`) for every checkout of the repo. Keep this edit when adopting a newer managed
 # workflow. See RELEASING.md, "The docs site".
 name: Snapshot — build & publish
 on:
   push:
     branches: [main]
-    paths: ["docs/**", "src/**", "Project.toml", ".github/workflows/snapshot.yml"]
+    paths: ["docs/**", "src/**", "Project.toml", "lib/BasisMonteCarlo/**", ".github/workflows/snapshot.yml"]
   workflow_dispatch:
     inputs:
       force:

@@ -17,8 +17,9 @@ The detector efficiency tables BasisSimulator used up to and including v0.15.1, 
 - `ufc`: `UFC_MC_EFFICIENCY_LUT`, the Siemens SOMATOM Force (UFC, Gd₂O₂S), MCNP by Hamidreza
   Khodajou-Chokami (`efficiency_results.csv`, 2026-06-08);
 - `ufc_flash`: `UFC_FLASH_MC_EFFICIENCY_LUT`, the SOMATOM Definition Flash, the same author
-  (`flash_efficiency_results.csv`, 2026-08-26); BasisSimulator v0.15.1 also used it for the
-  Philips Brilliance iCT and the Canon Aquilion ONE;
+  (`flash_efficiency_results.csv`, 2026-08-26). BasisSimulator v0.15.1 modelled no Philips or
+  Canon scanner; the Brilliance iCT and Aquilion ONE notebooks compare against this table as
+  v0.15.1's nearest;
 - `gemstone`: `GEMSTONE_MC_EFFICIENCY_LUT`, the GE Revolution Apex (Gemstone garnet), MCNP
   (BasisSimulator PR #5).
 
@@ -156,4 +157,19 @@ const BASISSIMULATOR_V0_15_1_EFFICIENCY = (
             0.793, 0.789, 0.785, 0.781, 0.777, 0.773, 0.768, 0.763, 0.758, 0.754,
         ],
     ),
+)
+
+"""
+    basissimulator_v0_15_1_response() -> Dict{String, Any}
+
+BasisSimulator v0.15.1's Monte Carlo response of the NAEOTOM Alpha's CdTe dexels
+(`src/detector/pcct/cdte_response_v4.jls` at commit 79be452, MCNP by Hamidreza
+Khodajou-Chokami, BasisSimulator PR #10), copied byte for byte into
+`src/data/basissimulator_v0_15_1_cdte_response_v4.jls`. A plain dictionary of arrays:
+`energies_keV`, `thresholds_keV`, `R_total`, `R_perpixel`, `Var_total`, `Cov_total`,
+`Cov_pixpair`, `sigma_cloud_um`, `sigma_elec_keV`. Kept for comparison only, like
+[`BASISSIMULATOR_V0_15_1_EFFICIENCY`](@ref).
+"""
+basissimulator_v0_15_1_response() = Serialization.deserialize(
+    joinpath(@__DIR__, "data", "basissimulator_v0_15_1_cdte_response_v4.jls"),
 )

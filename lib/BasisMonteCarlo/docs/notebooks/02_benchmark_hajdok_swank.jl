@@ -56,7 +56,87 @@ with the thickness set by η, every length in the problem scales with 1/density,
 factor is the same at any density except through the fixed 10 cm disc. The comparison values are
 read off their figure (the solid "0 cy/mm" curve, digitized at 300 dpi, uncertainty about
 ±0.005); the file `reference_data/hajdok2008_swank_vs_energy.csv` records how.
+
+**Which beam, and why.** A pencil beam on the disc's axis, head on, because that is what Hajdok
+et al. simulated, and the Swank factor they report is that of the whole layer: one tally, the
+energy left anywhere in the disc. There are no pixels here, so where the photon lands does not
+matter; what matters is that the disc is wide (10 cm) and, at high energy, not wide enough.
 """
+
+# ╔═╡ ed187164-fabb-4dd3-bdab-96a140a9809a
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1700, 600))
+    disc_colour = PALETTE.materials["CsI"]
+    star!(ax, p) = Mke.scatter!(ax, [Mke.Point2f(p)]; marker = :star5, markersize = 24, color = MATERIALS.star, strokecolor = MATERIALS.beam, strokewidth = 1.2)
+
+    # (a) The disc and the beam (the thickness drawn at 20 mm; it changes with energy)
+    ax = canvas(fig[1, 1]; title = "(a) The Detector: a Disc, 10 cm Across", titlesize = 20)
+    cam = camera(-150, 18)
+    R = disc_diameter_mm / 2
+    disc!(ax, cam, R, 20.0, Mke.RGBf(0.75, 0.82, 0.92))
+    arrow!(ax, project(cam, (-70.0, 0.0, 0.0)), project(cam, (0.0, 0.0, 0.0)); color = MATERIALS.beam, linewidth = 4, head = 16)
+    top = project(cam, (0.0, 0.0, R))
+    rim = project(cam, (20.0, R * cos(0.6), -R * sin(0.6)))
+    tail = project(cam, (-55.0, 0.0, 0.0))
+    callout!(ax, top, top + Mke.Point2f(12, 16), "10 cm Across, in Vacuum"; fontsize = 15)
+    callout!(ax, rim, rim + Mke.Point2f(14, -14), "Thickness t: Stops 99 %\nof the Photons (Drawn 2 cm)"; fontsize = 15)
+    callout!(ax, tail, tail + Mke.Point2f(-8, -30), "Pencil Beam on the Axis,\nHead On, One Energy"; fontsize = 15, align = (:center, :top))
+    outline = [project(cam, p) for p in ((0.0, R, 0.0), (0.0, -R, 0.0), (0.0, 0.0, R), (0.0, 0.0, -R), (20.0, R, 0.0), (20.0, -R, 0.0), (-70.0, 0.0, 0.0))]
+    Mke.limits!(
+        ax,
+        minimum(first.(outline)) - 30,
+        maximum(first.(outline)) + 110,
+        minimum(last.(outline)) - 55,
+        maximum(last.(outline)) + 35,
+    )
+
+    # (b) What happens in it, and the one tally (side view, not to scale)
+    axb = canvas(fig[1, 2]; title = "(b) The Tally: Energy Left in the Whole Disc", titlesize = 20)
+    rect!(axb, 0, -2.0, 1.6, 4.0, Mke.RGBf(0.75, 0.82, 0.92); strokecolor = (:black, 0.4), strokewidth = 1.5)
+    photon!(axb, (-2.2, 1.2), (0.5, 1.2); color = MATERIALS.beam, cycles = 6, amplitude = 0.02)
+    photon!(axb, (0.5, 1.2), (1.2, 0.6); color = MATERIALS.xray, cycles = 2, amplitude = 0.06, head = 10)
+    star!(axb, (0.5, 1.2))
+    photon!(axb, (-2.2, 0.0), (0.25, 0.0); color = MATERIALS.beam, cycles = 6, amplitude = 0.02)
+    photon!(axb, (0.25, 0.0), (-1.7, 0.7); color = MATERIALS.xray, cycles = 3, amplitude = 0.05, head = 11)
+    star!(axb, (0.25, 0.0))
+    photon!(axb, (-2.2, -1.2), (0.8, -1.2); color = MATERIALS.beam, cycles = 6, amplitude = 0.02)
+    photon!(axb, (0.8, -1.2), (3.2, -1.9); color = MATERIALS.scatter, cycles = 3, amplitude = 0.05, head = 11)
+    star!(axb, (0.8, -1.2))
+    for (y, text, colour) in ((1.2, "All of It Stays", PALETTE.ink), (0.0, "A K X Ray Escapes", MATERIALS.xray), (-1.2, "A Photon Scatters Out", MATERIALS.scatter))
+        Mke.text!(axb, -2.3, y; text, color = colour, fontsize = 16, font = :bold, align = (:right, :center))
+    end
+    Mke.limits!(axb, -5.6, 3.4, -2.4, 2.0)
+
+    # (c) From that tally to the Swank factor (a sketch of the distribution)
+    axc = Mke.Axis(
+        fig[1, 3];
+        title = "(c) From the Tally to the Swank Factor",
+        titlesize = 20,
+        xlabel = "Energy Left by One Photon",
+        ylabel = "How Often",
+        xticks = ([0.0, 0.7, 1.0], ["0", "E − K X Ray", "E"]),
+        yticksvisible = false,
+        yticklabelsvisible = false,
+        limits = ((-0.03, 1.08), (0, 1.15)),
+    )
+    E = range(0, 1.05; length = 400)
+    shape = [0.08 * (0.05 < e < 0.65) + 0.35 * exp(-((e - 0.7) / 0.012)^2) + 1.0 * exp(-((e - 1.0) / 0.012)^2) for e in E]
+    Mke.band!(axc, E, zero(shape), shape; color = (PALETTE.materials["CsI"], 0.35))
+    Mke.lines!(axc, E, shape; color = PALETTE.materials["CsI"], linewidth = 2.5)
+    note!(axc, 1.0, 1.02, "All of It"; align = (:right, :bottom), fontsize = 14)
+    note!(axc, 0.7, 0.4, "K X Ray Lost"; align = (:center, :bottom), fontsize = 14, color = MATERIALS.xray)
+    note!(axc, 0.32, 0.12, "Scattered Out"; align = (:center, :bottom), fontsize = 14, color = MATERIALS.scatter)
+    Mke.Label(
+        fig[2, 3],
+        "I = M₁² / (M₀ M₂), Mₖ the Average of (Energy Left)ᵏ\nover All Photons: I = 1 When Every Detected\nPhoton Leaves the Same Energy";
+        fontsize = 15,
+        color = PALETTE.ink,
+        tellwidth = false,
+    )
+    Mke.colsize!(fig.layout, 1, Mke.Relative(0.34))
+    fig
+end
 
 # ╔═╡ 099436f2-777c-56a3-a8d2-4511d5ec98c3
 md"""
@@ -162,6 +242,178 @@ function note!(
     )
 end
 
+# ╔═╡ 046ba1cb-724c-43a5-8d17-ff7d23c7ee7d
+md"""
+### Drawing the Setup
+
+The illustrations are drawn from the same numbers the simulation uses (the disc's 10 cm, each
+layer's thickness), with a small kit: shapes in 3-D seen from any direction, photons as waves,
+labels on translucent backgrounds. Each disc takes its material's colour from the plots; dark
+photons arrive, violet K x rays and teal scattered photons leave.
+"""
+
+# ╔═╡ 4516c81c-0e57-4778-a067-29c851c7871e
+# The beam and what leaves, as the illustrations draw them (the discs take their material's colour)
+MATERIALS = (
+    beam = Mke.RGBf(0.25, 0.25, 0.3),  # the incoming photons
+    xray = Mke.RGBf(0.6, 0.35, 0.8),  # characteristic (K) x rays
+    scatter = Mke.RGBf(0.1, 0.55, 0.6),  # scattered photons
+    star = Mke.RGBf(0.98, 0.95, 0.6),  # where a photon is absorbed
+)
+
+# ╔═╡ c04bf056-9767-4761-9b9c-18e682c5b46d
+"""
+An orthographic camera: seen from `azimuth` (degrees, about the vertical axis z) and `elevation`
+(degrees above the horizontal). Returns the screen's right and up and the direction toward the viewer.
+"""
+function camera(azimuth, elevation)
+    θ, φ = deg2rad(azimuth), deg2rad(elevation)
+    toward = (cos(φ) * cos(θ), cos(φ) * sin(θ), sin(φ))
+    right = (-sin(θ), cos(θ), 0.0)
+    up = (
+        toward[2] * right[3] - toward[3] * right[2],
+        toward[3] * right[1] - toward[1] * right[3],
+        toward[1] * right[2] - toward[2] * right[1],
+    )
+    return (; right, up, toward)
+end
+
+# ╔═╡ 715ddc64-8098-4d69-acc8-3cc2953e7d73
+dot3(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+# ╔═╡ efebaaf3-9efa-432b-83f0-e1f1c0cbcf2f
+"""Where a point in 3-D lands on the drawing."""
+project(cam, p) = Mke.Point2f(dot3(p, cam.right), dot3(p, cam.up))
+
+# ╔═╡ 62815d50-61f6-4fc5-8006-a73ed4f7fa9a
+"""Shade a face by one light from the upper left, front, as illustrators do."""
+function shade(color, normal, cam; light = (-0.35, -0.45, 0.82))
+    n = sqrt(dot3(light, light))
+    lambert = max(0.0, dot3(normal, light) / n)
+    k = 0.62 + 0.42 * lambert
+    return Mke.RGBf(min(1, color.r * k), min(1, color.g * k), min(1, color.b * k))
+end
+
+# ╔═╡ b91c5895-b2fd-41e1-af99-eb84a759da42
+"""A blank canvas for an illustration: equal scales, no axes."""
+function canvas(position; background = :white, title = "", kw...)
+    ax = Mke.Axis(
+        position;
+        aspect = Mke.DataAspect(),
+        backgroundcolor = background,
+        title,
+        kw...,
+    )
+    Mke.hidedecorations!(ax)
+    Mke.hidespines!(ax)
+    return ax
+end
+
+# ╔═╡ 258a3933-470c-41a6-b28b-277a0d444288
+"""
+A photon drawn as a wave from `a` to `b` (2-D), with `cycles` oscillations (more for a higher
+energy) and an arrowhead at `b`.
+"""
+function photon!(ax, a, b; color = MATERIALS.beam, cycles = 6, amplitude = 0.06, linewidth = 3, head = 14)
+    a, b = Mke.Point2f(a), Mke.Point2f(b)
+    d = b - a
+    L = sqrt(d[1]^2 + d[2]^2)
+    t = d / L
+    n = Mke.Point2f(-t[2], t[1])
+    s = range(0, 1; length = 240)
+    ramp(u) = min(1, 8u, 8(1 - u))  # the wave starts and ends on the line
+    points = Mke.Point2f[a + u * d + amplitude * L * ramp(u) * sin(2π * cycles * u) * n for u in s]
+    Mke.lines!(ax, points[1:(end - 6)]; color, linewidth)
+    Mke.scatter!(
+        ax,
+        [b];
+        marker = :utriangle,
+        markersize = head,
+        rotation = atan(t[2], t[1]) - π / 2,
+        color,
+    )
+    return nothing
+end
+
+# ╔═╡ d1b38f5a-90b4-448c-b3f0-cdd92a32b9a0
+"""A straight arrow from `a` to `b` (2-D)."""
+function arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 14, linestyle = :solid)
+    a, b = Mke.Point2f(a), Mke.Point2f(b)
+    t = (b - a) / sqrt(sum(abs2, b - a))
+    Mke.lines!(ax, Mke.Point2f[a, b - 0.5 * head / 100 * t]; color, linewidth, linestyle)
+    Mke.scatter!(ax, [b]; marker = :utriangle, markersize = head, rotation = atan(t[2], t[1]) - π / 2, color)
+    return nothing
+end
+
+# ╔═╡ 6b5cf920-6655-43a7-b5b1-4eb462fad642
+"""A rectangle (2-D) from its lower-left corner, width and height."""
+rect!(ax, x, y, w, h, color; kw...) = Mke.poly!(ax, Mke.Rect2f(x, y, w, h); color, kw...)
+
+# ╔═╡ 3babb8aa-623e-4feb-8be7-7689375efa67
+"""
+A label with a leader line: a dot at `anchor`, a line to `at`, and the text there, on a
+translucent rounded background.
+"""
+function callout!(
+        ax,
+        anchor,
+        at,
+        text;
+        color = Mke.RGBf(0.13, 0.13, 0.16),
+        align = (:left, :center),
+        fontsize = 17,
+        background = (:white, 0.9),
+        line = (Mke.RGBf(0.3, 0.3, 0.35), 0.8),
+        font = :regular,
+    )
+    Mke.lines!(ax, Mke.Point2f[anchor, at]; color = line, linewidth = 1.3)
+    Mke.scatter!(ax, [anchor]; color = line, markersize = 7)
+    return Mke.textlabel!(
+        ax,
+        at;
+        text,
+        text_align = align,
+        text_color = color,
+        fontsize,
+        font,
+        background_color = background,
+        strokewidth = 0,
+        padding = (8, 8, 5, 5),
+        cornerradius = 6,
+    )
+end
+
+# ╔═╡ 84bb0e96-c9ab-47ea-99fd-b8f039910045
+"""
+A disc (a short cylinder) along the beam, which runs along x: `radius` and `thickness` in mm,
+its front face at x = 0. Drawn shaded, back to front, as `cam` sees it.
+"""
+function disc!(ax, cam, radius, thickness, color; segments = 72)
+    φ = range(0, 2π; length = segments + 1)
+    ring(x) = [(x, radius * cos(t), radius * sin(t)) for t in φ]
+    front, back = ring(0.0), ring(thickness)
+    quads = Any[]
+    for k in 1:segments
+        corners = (front[k], front[k + 1], back[k + 1], back[k])
+        mid = (φ[k] + φ[k + 1]) / 2
+        normal = (0.0, cos(mid), sin(mid))
+        dot3(normal, cam.toward) > 0 || continue
+        depth = dot3(map(+, corners[1], corners[3]) ./ 2, cam.toward)
+        push!(quads, (depth, corners, normal))
+    end
+    sort!(quads; by = first)
+    for (_, corners, normal) in quads
+        c = shade(color, normal, cam)
+        Mke.poly!(ax, [project(cam, p) for p in corners]; color = c, strokecolor = c, strokewidth = 0.5)
+    end
+    # the face toward the viewer
+    cap = cam.toward[1] < 0 ? front : back
+    normal = cam.toward[1] < 0 ? (-1.0, 0.0, 0.0) : (1.0, 0.0, 0.0)
+    c = shade(color, normal, cam)
+    Mke.poly!(ax, [project(cam, p) for p in cap]; color = c, strokecolor = (:black, 0.35), strokewidth = 1)
+    return nothing
+end
+
 # ╔═╡ 4d005a0b-2dea-5ef5-ad79-7549e327d67d
 md"""
 ## 1. The Materials and the Thickness Rule
@@ -233,15 +485,41 @@ thicknesses = Dict(
         for m in materials
 )
 
+# ╔═╡ 01fd1a99-0195-4f10-9942-3875c3faf157
+let
+    Mke.set_theme!(THEME)
+    cases = (("a-Se", 13.0), ("CsI", 60.0), ("a-Si", 150.0))
+    fig = Mke.Figure(size = (1600, 470))
+    R = disc_diameter_mm / 2
+    for (k, (name, E)) in enumerate(cases)
+        t = thicknesses[name][findfirst(==(E), energies)]
+        label = t < 1 ? "$(round(t * 1000; digits = 1)) µm" : t < 10 ? "$(round(t; digits = 2)) mm" : "$(round(t / 10; digits = 1)) cm"
+        colour = PALETTE.materials[name]
+        ax = canvas(fig[1, k]; title = "$(name) at $(round(Int, E)) keV: $(label)", titlecolor = colour, titlesize = 21)
+        # the disc from the side, to scale: 10 cm tall, t thick
+        Mke.poly!(ax, Mke.Rect2f(0, -R, max(t, 0.6), 2R); color = (colour, 0.45), strokecolor = colour, strokewidth = 2)
+        arrow!(ax, (-45.0, 0.0), (0.0, 0.0); color = MATERIALS.beam, linewidth = 3, head = 13)
+        if t > disc_diameter_mm
+            photon!(ax, (70.0, 0.0), (130.0, R + 12); color = MATERIALS.scatter, cycles = 4, amplitude = 0.04, head = 12)
+            Mke.text!(ax, 128.0, R + 14; text = "Scattered Photons Leave\nThrough the Sides", color = MATERIALS.scatter, fontsize = 15, align = (:right, :bottom))
+        end
+        t < 1 && Mke.text!(ax, 4.0, -R + 4; text = "Thinner Than Paper:\nDrawn as a Line", color = PALETTE.muted, fontsize = 15, align = (:left, :bottom))
+        Mke.text!(ax, -3.0, R; text = "10 cm", color = PALETTE.muted, fontsize = 14, align = (:right, :top))
+        Mke.limits!(ax, -50, 215, -R - 8, R + 40)
+    end
+    Mke.Label(fig[2, 1:3], "Each Disc Is Drawn to Scale, Seen from the Side: the Same 99 % of the Photons Stopped, in Layers More Than a Thousand Times Apart in Thickness"; fontsize = 16, color = PALETTE.muted)
+    fig
+end
+
 # ╔═╡ 662e16e5-544c-5943-bc65-a9d61891471f
 let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1200, 620))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "How thick each layer must be to stop 99 % of the photons",
-        xlabel = "photon energy (keV)",
-        ylabel = "layer thickness (mm)",
+        title = "How Thick Each Layer Must Be to Stop 99 % of the Photons",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Layer Thickness (mm)",
         yscale = log10,
         xticks = 10:10:150,
         yticks = (
@@ -266,14 +544,14 @@ let
         linewidth = 2,
     )
     note!(
-        ax, 12, disc_diameter_mm, "width of the disc (10 cm)";
+        ax, 12, disc_diameter_mm, "Width of the Disc (10 cm)";
         align = (:left, :bottom),
         offset = (0, 4),
         color = PALETTE.muted,
         fontsize = 15,
     )
     note!(
-        ax, 148, 0.04, "each drop is a K-edge: absorption jumps,\nso a thinner layer stops the same 99 %";
+        ax, 148, 0.04, "Each Drop Is a K-Edge: Absorption Jumps,\nSo a Thinner Layer Stops the Same 99 %";
         align = (:right, :bottom),
         fontsize = 15,
     )
@@ -357,6 +635,42 @@ reference = let
     )
 end
 
+# ╔═╡ ab3c32f1-6fd7-4bf5-b436-88a46a81de63
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 520))
+    star!(ax, p) = Mke.scatter!(ax, [Mke.Point2f(p)]; marker = :star5, markersize = 24, color = MATERIALS.star, strokecolor = MATERIALS.beam, strokewidth = 1.2)
+    cases = (
+        ("K X Rays Escape Through the Front", "a-Se, CsI, PbI₂, Just Above Each K-Edge:\nThe Photon Stops Near the Surface", "CsI"),
+        ("Compton Photons Escape", "a-Si at Every Energy, the Others\nat High Energy", "a-Si"),
+        ("Out Through the Sides", "a-Si Above About 100 keV, When the\nLayer Is Thicker Than the Disc Is Wide", "a-Si"),
+    )
+    for (k, (title, detail, name)) in enumerate(cases)
+        colour = PALETTE.materials[name]
+        ax = canvas(fig[1, k]; title, titlesize = 20)
+        width = k == 3 ? 4.0 : 1.4
+        Mke.poly!(ax, Mke.Rect2f(0, -1.0, width, 2.0); color = (colour, 0.45), strokecolor = colour, strokewidth = 2)
+        if k == 1
+            photon!(ax, (-1.8, 0.0), (0.15, 0.0); color = MATERIALS.beam, cycles = 6, amplitude = 0.025)
+            photon!(ax, (0.15, 0.0), (-1.5, 0.85); color = MATERIALS.xray, cycles = 3, amplitude = 0.05, head = 11)
+            star!(ax, (0.15, 0.0))
+        elseif k == 2
+            photon!(ax, (-1.8, 0.0), (0.7, 0.0); color = MATERIALS.beam, cycles = 6, amplitude = 0.025)
+            photon!(ax, (0.7, 0.0), (2.4, -0.9); color = MATERIALS.scatter, cycles = 3, amplitude = 0.05, head = 11)
+            star!(ax, (0.7, 0.0))
+        else
+            photon!(ax, (-1.8, 0.0), (1.6, 0.0); color = MATERIALS.beam, cycles = 7, amplitude = 0.02)
+            photon!(ax, (1.6, 0.0), (2.6, 1.45); color = MATERIALS.scatter, cycles = 3, amplitude = 0.05, head = 11)
+            star!(ax, (1.6, 0.0))
+        end
+        Mke.text!(ax, width / 2, -1.08; text = name, color = colour, fontsize = 16, font = :bold, align = (:center, :top))
+        Mke.limits!(ax, -1.9, 4.3, -1.5, 1.6)
+        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    end
+    Mke.Label(fig[3, 1:3], "Every Escape Leaves Less Than the Full Energy: the Amounts Spread Out, and the Swank Factor Falls Below 1"; fontsize = 17, color = PALETTE.ink)
+    fig
+end
+
 # ╔═╡ 7e09656c-77d4-5969-8a70-1ab5b01ea84e
 let
     Mke.set_theme!(THEME)
@@ -367,8 +681,8 @@ let
         ax = Mke.Axis(
             fig[row, col];
             title = m.name,
-            xlabel = row == 2 ? "photon energy (keV)" : "",
-            ylabel = col == 1 ? "Swank factor" : "",
+            xlabel = row == 2 ? "Photon Energy (keV)" : "",
+            ylabel = col == 1 ? "Swank Factor" : "",
             xticks = 0:20:140,
             limits = ((0, 152), (0.7, 1.01)),
         )
@@ -379,14 +693,14 @@ let
             swank[m.name];
             color,
             linewidth = 3,
-            label = "Geant4 (this notebook)",
+            label = "Geant4 (This Notebook)",
         )
         ref = reference[m.name]
         Mke.scatter!(
             ax, ref.energy_keV, ref.swank;
             color = (PALETTE.reference, 0.85),
             markersize = 6,
-            label = "Hajdok et al. (EGSnrc), read off their Fig. 3.4",
+            label = "Hajdok et al. (EGSnrc), Read Off Their Fig. 3.4",
         )
         for (j, e) in enumerate(MC.k_edges(m))
             Mke.vlines!(
@@ -397,7 +711,7 @@ let
                 linewidth = 1.5,
             )
             note!(
-                ax, e.edge_keV, 0.72 + 0.035 * (j - 1), "$(e.element) K-edge";
+                ax, e.edge_keV, 0.72 + 0.035 * (j - 1), "$(e.element) K-Edge";
                 align = (:left, :bottom),
                 offset = (4, 0),
                 color = PALETTE.muted,
@@ -408,7 +722,7 @@ let
             ax,
             150,
             0.995,
-            "their curve reads ≥ 0.99 here";
+            "Their Curve Reads ≥ 0.99 Here";
             align = (:right, :center),
             color = PALETTE.muted,
             fontsize = 14,
@@ -425,13 +739,13 @@ let
             ),
         ],
         [
-            "Geant4, this notebook (line, one colour per material)",
-            "Hajdok et al., EGSnrc (points, read off their figure)",
+            "Geant4, This Notebook (Line, One Colour per Material)",
+            "Hajdok et al., EGSnrc (Points, Read Off Their Figure)",
         ];
         orientation = :horizontal,
     )
     Mke.Label(
-        fig[0, 1:2], "Swank factor of a layer that stops 99 % of the photons";
+        fig[0, 1:2], "Swank Factor of a Layer That Stops 99 % of the Photons";
         fontsize = 22,
         font = :bold,
         halign = :left,
@@ -459,15 +773,44 @@ differences = Dict(
         for m in materials
 )
 
+# ╔═╡ b4ddae61-0e59-4de6-a7b1-32eb97bb80d4
+let
+    Mke.set_theme!(THEME)
+    # A sketch (not data): a Swank factor plunging at a K-edge, and the same small error in reading
+    # the energy off a scanned figure, on the flat part and on the plunge
+    edge = 33.0
+    swank_sketch(E) = E < edge ? 0.99 : 0.99 - 0.13 * exp(-(E - edge) / 4)
+    E = range(25, 50; length = 600)
+    fig = Mke.Figure(size = (1400, 470))
+    ax = Mke.Axis(
+        fig[1, 1];
+        title = "Why Points on a K-Edge Test the Shape, Not the Value",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Swank Factor",
+        limits = ((25, 50), (0.84, 1.0)),
+        xticks = ([edge], ["K-Edge"]),
+    )
+    Mke.lines!(ax, E, swank_sketch.(E); color = PALETTE.ink, linewidth = 3)
+    δ = 0.4
+    for (E0, label, align) in ((edge + 0.6, "On the Plunge: Reading 0.4 keV Off\nChanges the Value by Hundredths", (:left, :top)), (44.0, "Away from It: the Same 0.4 keV\nChanges It by a Thousandth", (:center, :top)))
+        a, b = swank_sketch(E0), swank_sketch(E0 + δ)
+        Mke.lines!(ax, [E0, E0 + δ], [a, a]; color = PALETTE.reference, linewidth = 4)
+        Mke.lines!(ax, [E0 + δ, E0 + δ], [a, b]; color = PALETTE.reference, linewidth = 4)
+        Mke.scatter!(ax, [E0, E0 + δ], [a, b]; color = PALETTE.reference, markersize = 10)
+        note!(ax, E0 < 40 ? E0 + 1.2 : E0, E0 < 40 ? b - 0.004 : a - 0.008, label; align, color = PALETTE.reference, fontsize = 15)
+    end
+    fig
+end
+
 # ╔═╡ 2a065f94-1937-5a38-8a08-1da9a8c2bdba
 let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1200, 520))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Geant4 minus EGSnrc, at every point read off their figure",
-        xlabel = "photon energy (keV)",
-        ylabel = "difference in\nSwank factor",
+        title = "Geant4 Minus EGSnrc, at Every Point Read Off Their Figure",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Difference in\nSwank Factor",
         xticks = 0:10:150,
         limits = ((0, 152), (-0.05, 0.05)),
     )
@@ -496,7 +839,7 @@ let
         ax,
         150,
         0.006,
-        "reading + counting uncertainty";
+        "Reading + Counting Uncertainty";
         align = (:right, :bottom),
         color = PALETTE.muted,
         fontsize = 15,
@@ -597,6 +940,7 @@ MC.PhysicsSettings()
 # ╔═╡ Cell order:
 # ╟─e73ba2f8-d658-5841-81a3-2a87c22483ad
 # ╟─0c4f12bd-ce8f-54a0-81db-2703555bbbfd
+# ╟─ed187164-fabb-4dd3-bdab-96a140a9809a
 # ╟─099436f2-777c-56a3-a8d2-4511d5ec98c3
 # ╠═288da2d3-18a6-5144-8f35-479040757117
 # ╠═f50aa214-0bf2-59d7-ac58-bed477edbd14
@@ -609,6 +953,18 @@ MC.PhysicsSettings()
 # ╠═6e22da4f-5358-57fa-8ef2-c1af6f3e3186
 # ╠═e98766b1-8cfa-5f24-9725-ef6c133c6a49
 # ╠═f952a231-979b-57e6-a76a-a9e7519db225
+# ╟─046ba1cb-724c-43a5-8d17-ff7d23c7ee7d
+# ╠═4516c81c-0e57-4778-a067-29c851c7871e
+# ╠═c04bf056-9767-4761-9b9c-18e682c5b46d
+# ╠═715ddc64-8098-4d69-acc8-3cc2953e7d73
+# ╠═efebaaf3-9efa-432b-83f0-e1f1c0cbcf2f
+# ╠═62815d50-61f6-4fc5-8006-a73ed4f7fa9a
+# ╠═b91c5895-b2fd-41e1-af99-eb84a759da42
+# ╠═258a3933-470c-41a6-b28b-277a0d444288
+# ╠═d1b38f5a-90b4-448c-b3f0-cdd92a32b9a0
+# ╠═6b5cf920-6655-43a7-b5b1-4eb462fad642
+# ╠═3babb8aa-623e-4feb-8be7-7689375efa67
+# ╠═84bb0e96-c9ab-47ea-99fd-b8f039910045
 # ╟─4d005a0b-2dea-5ef5-ad79-7549e327d67d
 # ╠═99d52b8f-7b2e-5da6-8f70-a6cb688af871
 # ╟─b3283488-a9dc-542e-b8dc-91d89ba1f8a7
@@ -618,6 +974,7 @@ MC.PhysicsSettings()
 # ╠═8c745dc8-9df7-546e-89dd-ccba38c68762
 # ╠═4a7e2280-57c6-5770-959f-c54ec2801627
 # ╠═24397966-5f75-55f3-924d-de397cdc4aba
+# ╟─01fd1a99-0195-4f10-9942-3875c3faf157
 # ╟─662e16e5-544c-5943-bc65-a9d61891471f
 # ╟─a470f299-d14b-5e6a-834d-701b3243e7ad
 # ╠═7dac5424-8cef-585f-874a-f59e7ba40eed
@@ -628,9 +985,11 @@ MC.PhysicsSettings()
 # ╟─e1874dcb-0280-5c92-aa97-ef671d64d11c
 # ╟─dd5be4fa-0a4a-59c0-93c6-e1c5a7022d76
 # ╠═a9f7d4e1-e769-5556-b92d-2b90bba2aed0
+# ╟─ab3c32f1-6fd7-4bf5-b436-88a46a81de63
 # ╟─7e09656c-77d4-5969-8a70-1ab5b01ea84e
 # ╟─32a651e3-a493-54e5-9416-6a68359a65b7
 # ╠═256a630f-503e-5dd0-aa39-f9f67400ffb0
+# ╟─b4ddae61-0e59-4de6-a7b1-32eb97bb80d4
 # ╟─2a065f94-1937-5a38-8a08-1da9a8c2bdba
 # ╟─9f940c62-c9bd-52d5-971a-38df8c5ff3bb
 # ╟─467c009d-9f05-536c-82bb-d4d6df3db5fc

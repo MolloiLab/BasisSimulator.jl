@@ -9,6 +9,7 @@ LocalPreferences.toml
 Manifest*.toml
 !docs/Manifest.toml
 !docs/build_env/Manifest.toml
+!lib/BasisMonteCarlo/docs/Manifest-v*.toml
 
 # Docs build (docs/build.sh, docs/render_notebooks.sh). docs/notebooks-static/ IS tracked: the
 # GPU-rendered notebook exports the site ships.

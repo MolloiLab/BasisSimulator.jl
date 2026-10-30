@@ -249,6 +249,9 @@ using BasisMonteCarlo
         # the Gd K-edge: the Force's efficiency drops between 50 and 51 keV
         ufc = BASISSIMULATOR_V0_15_1_EFFICIENCY.ufc
         @test ufc.efficiency[51] < ufc.efficiency[50] - 0.2
+        response = basissimulator_v0_15_1_response()
+        @test response["energies_keV"] == 1.0:140.0
+        @test size(response["R_total"]) == (140, length(response["thresholds_keV"]))
     end
 
     @testset "scatter library: each ray in its own cylinder" begin

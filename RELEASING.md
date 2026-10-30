@@ -60,7 +60,8 @@ deploys from `main` on its own (see the end of this file).
 ## The docs site
 
 `docs.yml` (GitHub Pages) and `snapshot.yml` (Snapshot) build `main` whenever a push changes
-`docs/`, `src/` or `Project.toml`, and can be run from the Actions tab for any commit. A docs-only
+`docs/`, `src/`, `Project.toml` or `lib/BasisMonteCarlo/`, and can be run from the Actions tab for
+any commit. A docs-only
 change is live a few minutes after it merges.
 
 The build refuses notebook pages whose fingerprint is stale. The fingerprint covers the notebook,
@@ -68,4 +69,5 @@ all of `src/`, `Project.toml` (not its `version` line) and the docs lockfiles, s
 change the deploy fails until the notebooks are re-rendered on a GPU machine
 (`docs/render_notebooks.sh`, then `python3 docs/verify_notebook_exports.py`) and the new
 `docs/notebooks-static/` is merged. Re-render in the pull request that changes the code, or in a
-follow-up one.
+follow-up one. The BasisMonteCarlo notebooks (`mc-*`) go stale with `lib/BasisMonteCarlo/` instead
+and render on the CPU (`docs/render_notebooks.sh mc-<stem>`; AGENTS.md, "The documentation site").

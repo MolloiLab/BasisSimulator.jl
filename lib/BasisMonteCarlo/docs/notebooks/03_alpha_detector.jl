@@ -20,15 +20,101 @@ Two things decide what a dexel reports, and both are simulated here:
   becomes, how that cloud is shared between dexels, noise, and the energy thresholds.
 
 The result is the dexel's **response**: for a photon of each energy, how many counts it makes
-above each threshold, in the dexel it hit and in each neighbour. BasisSimulator already uses
-such a table, computed by Hamidreza Khodajou-Chokami with MCNP (`cdte_response_v4`, PR #10),
-whose code was never committed. The last section compares the two point by point.
+above each threshold, in the dexel it hit and in each neighbour. Up to and including
+**v0.15.1**, BasisSimulator uses such a table, computed by Hamidreza Khodajou-Chokami with MCNP
+(`cdte_response_v4`, PR #10), whose code was never committed. Section 4 compares the two point by
+point.
 
-**The parts.** (1) One dexel. (2) The anti-scatter grid over it, as the Alpha has one.
-(3) Photons arriving at an angle. (4) The 2 × 2 binned dexels the scanner reads out. (5) The
-whole detector, one to one, and the symmetry that reduces it to six dexels. (6) The Alpha's
-x-ray beam. (7) Pile-up at clinical count rates.
+!!! note "Which BasisSimulator this notebook compares against"
+    Every comparison with "BasisSimulator v0.15.1" (its `cdte_response_v4`, its fill factor, its
+    one-count cap, its pile-up model's inputs) is with **BasisSimulator v0.15.1**, the last release
+    before this notebook's tables. The x-ray spectra and the bowtie come from the **installed**
+    BasisSimulator, whatever its version; nothing here pins BasisSimulator, or BasisMonteCarlo,
+    to a version. BasisMonteCarlo keeps v0.15.1's table (`basissimulator_v0_15_1_response`), so
+    section 4's comparison stays the same after BasisSimulator moves on.
+
+**The parts.** (1) One dexel and its neighbours. (2) One photon's journey. (3) The response of
+one dexel. (4) Against BasisSimulator v0.15.1's table. (5) The anti-scatter grid over it, as the
+Alpha has one. (6) Photons arriving at an angle. (7) The 2 × 2 binned dexels the scanner reads
+out. (8) The whole detector, one to one. (9) The Alpha's x-ray beam. (10) Pile-up at clinical count
+rates. (11) A clinical beam, photon by photon. Every section opens with a **Where We Are** band: the
+gantry, one dexel's stack with the part under study lit, and the dexel's five steps.
 """
+
+# ╔═╡ 97e89e01-c1b8-4d6e-892f-b17751b636d1
+let
+    Mke.set_theme!(THEME)
+    night, ink, sub = MATERIALS.night, Mke.RGBf(0.93, 0.94, 0.96), Mke.RGBf(0.6, 0.63, 0.68)
+    fig = Mke.Figure(size = (1500, 600), backgroundcolor = night, figure_padding = (10, 10, 10, 10))
+
+    # (1) The gantry, to scale: tube A with detector A (50 cm), tube B with detector B (36 cm)
+    ax1 = canvas(fig[1, 1]; background = night)
+    R_iso, R_det = 610.0, detector_a.radius_mm
+    θ = range(0, 2π; length = 200)
+    Mke.poly!(ax1, Mke.Point2f.(830 .* cos.(θ), 830 .* sin.(θ)); color = MATERIALS.night_ring)
+    Mke.poly!(ax1, Mke.Point2f.(400 .* cos.(θ), 400 .* sin.(θ)); color = night)
+    Mke.poly!(ax1, Mke.Point2f.(170 .* cos.(θ), 120 .* sin.(θ) .- 20); color = Mke.RGBf(0.42, 0.45, 0.5))
+    for x in (-75, 75)
+        Mke.poly!(ax1, Mke.Point2f.(x .+ 50 .* cos.(θ), 10 .+ 60 .* sin.(θ)); color = Mke.RGBf(0.16, 0.18, 0.21))
+    end
+    Mke.poly!(ax1, Mke.Point2f.(22 .* cos.(θ), -105 .+ 20 .* sin.(θ)); color = Mke.RGBf(0.85, 0.85, 0.82))
+    rot(v, t) = Mke.Point2f(v[1] * cos(t) - v[2] * sin(t), v[1] * sin(t) + v[2] * cos(t))
+    for (angle_deg, d, alpha_fill, label) in ((90, detector_a, 0.22, "Tube A"), (90 + 95, detector_b, 0.14, "Tube B"))
+        a = deg2rad(angle_deg)
+        src = Mke.Point2f(R_iso * cos(a), R_iso * sin(a))
+        toward = -Mke.Point2f(cos(a), sin(a))
+        half = deg2rad(MC.fan_angle_deg(d)) / 2
+        φ = range(-half, half; length = 80)
+        arc = [src + R_det * rot(toward, t) for t in φ]
+        Mke.poly!(ax1, Mke.Point2f.(vcat([src], arc)); color = (MATERIALS.beam, alpha_fill))
+        inner = [src + (R_det + 8) * rot(toward, t) for t in φ]
+        outer = [src + (R_det + 50) * rot(toward, t) for t in φ]
+        Mke.poly!(ax1, Mke.Point2f.(vcat(inner, reverse(outer))); color = MATERIALS.cdte)
+        Mke.poly!(ax1, Mke.Rect2f(src[1] - 45, src[2] - 45, 90, 90); color = Mke.RGBf(0.8, 0.83, 0.88))
+        Mke.scatter!(ax1, [src]; color = MATERIALS.beam, markersize = 12)
+        Mke.text!(ax1, src + Mke.Point2f(0, 85); text = label, color = ink, fontsize = 17, font = :bold, align = (:center, :center))
+    end
+    Mke.limits!(ax1, -1030, 1030, -1030, 1030)
+
+    # (2) A patch of the face, to scale: CdTe under the 2-D grid, the near cells cut away
+    ax2 = canvas(fig[1, 2]; background = night)
+    cam = camera(-52, 28)
+    nx, ny = 8, 12
+    ex = exploded_alpha(nx, ny; grid_drawn = 5.0)
+    keep = Block[]
+    append!(keep, ex.layers[:cdte])
+    append!(keep, ex.layers[:cathode])
+    zc = ex.levels[:cathode][2]
+    for b in ex.layers[:grid]
+        b2 = Block((b.lo[1], b.lo[2], zc), (b.hi[1], b.hi[2], zc + 5.0), b.color)
+        b2.hi[1] > 0.3 && b2.lo[2] < 1.6 * cell_pitch[2] && continue
+        push!(keep, b2)
+    end
+    rays = map([(2, 1), (5, 3), (6, 6)]) do (k, l)
+        c = dexel_corner(k, l) .+ alpha.dexel ./ 2
+        a, b = project(cam, (c..., zc + 7.5)), project(cam, (c..., zc + 0.05))
+        (1.0e4, ax -> arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 12))
+    end
+    draw_blocks!(ax2, cam, keep; extras = rays, edge = Mke.RGBf(0.05, 0.06, 0.08), edge_alpha = 0.5)
+
+    # (3) One dexel, taken apart
+    ax3 = canvas(fig[1, 3]; background = night)
+    draw_blocks!(ax3, camera(-56, 30), exploded_alpha(1, 1; gap = 0.35, grid_drawn = 1.1, depth = 1.0, thin = 0.6).blocks; edge = Mke.RGBf(0.05, 0.06, 0.08), edge_alpha = 0.5)
+
+    for (k, (title, subtitle)) in enumerate(
+            (
+                ("Two Tubes, Two Detectors", "The NAEOTOM Alpha: Detector A 50 cm, B 36 cm"),
+                ("CdTe Under a 2-D Grid", "One Crystal; Walls Around Every 4 × 6 Dexels"),
+                ("One Dexel, Taken Apart", "Grid, Cathode, CdTe, Electrode, Chip, Board"),
+            )
+        )
+        Mke.Label(fig[2, k], title; color = ink, fontsize = 26, font = :bold, tellwidth = false)
+        Mke.Label(fig[3, k], subtitle; color = sub, fontsize = 18, tellwidth = false)
+    end
+    Mke.rowgap!(fig.layout, 1, 8)
+    Mke.rowgap!(fig.layout, 2, 4)
+    fig
+end
 
 # ╔═╡ df200390-005d-5328-870a-9a821744961d
 md"""
@@ -38,115 +124,282 @@ md"""
 # ╔═╡ e71ceeb9-0d88-5608-8588-ee48a312de90
 let
     Mke.set_theme!(THEME)
-    fig = Mke.Figure(size = (1200, 330))
-    ax = Mke.Axis(fig[1, 1]; limits = ((0, 130), (0, 30)))
-    Mke.hidedecorations!(ax)
-    Mke.hidespines!(ax)
+    p = alpha.dexel
+    nx, ny = alpha.group
+    cam = camera(-56, 30)
+    fig = Mke.Figure(size = (1450, 1000))
+    ax = canvas(fig[1, 1])
+    ex = exploded_alpha(nx, ny)
+    blocks, levels = ex.blocks, ex.levels
+    (x0, y0), (x1, y1) = ex.extent
 
-    function box!(x, y, w, h, color)
-        r = 1.6
-        θ = range(0, π / 2; length = 10)
-        corners = vcat(
-            [Mke.Point2f(x + w - r + r * cos(t), y + h - r + r * sin(t)) for t in θ],
-            [Mke.Point2f(x + r - r * sin(t), y + h - r + r * cos(t)) for t in θ],
-            [Mke.Point2f(x + r - r * cos(t), y + r - r * sin(t)) for t in θ],
-            [Mke.Point2f(x + w - r + r * sin(t), y + r - r * cos(t)) for t in θ],
-        )
-        return Mke.poly!(
-            ax,
-            corners;
-            color = (color, 0.1),
-            strokecolor = color,
-            strokewidth = 2,
-        )
+    # X rays from the focal spot, far above, into the open cell
+    top = levels[:grid][2]
+    rays = map([(0, 0), (1, 1), (2, 0), (3, 2)]) do (k, l)
+        c = dexel_corner(k, l) .+ p ./ 2
+        a, b = project(cam, (c..., top + 3.0)), project(cam, (c..., top + 0.3))
+        (dot3((c..., top), cam.toward) + 50, ax -> arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3.5, head = 15))
+    end
+    draw_blocks!(ax, cam, blocks; extras = rays)
+
+    # One dexel: the front-right one, its electrode, bump, chip channel and the crystal above
+    k, l = nx - 1, 0
+    c0 = dexel_corner(k, l)
+    for key in (:cdte, :electrodes, :bumps, :asic)
+        z0, z1 = levels[key]
+        outline!(ax, cam, (c0[1], c0[2], z0), (c0[1] + p[1], c0[2] + p[2], z1); linewidth = 3)
     end
 
-    steps = (
-        (
-            title = "1  Photon",
-            body = "one x ray of\nenergy E lands\non the dexel",
-            where = "beam",
-            color = PALETTE.photon,
-        ),
-        (
-            title = "2  Crystal",
-            body = "absorbed, scattered;\nits x rays may land\nunder a neighbour",
-            where = "Geant4",
-            color = PALETTE.xray,
-        ),
-        (
-            title = "3  Charge",
-            body = "each deposit becomes\na cloud of charge,\nσ = 30 µm",
-            where = "Julia",
-            color = PALETTE.electron,
-        ),
-        (
-            title = "4  Dexels",
-            body = "each dexel collects\nthe part of every\ncloud above it",
-            where = "Julia",
-            color = PALETTE.slab_edge,
-        ),
-        (
-            title = "5  Counts",
-            body = "noise, then one count\nfor every threshold\nits energy exceeds",
-            where = "Julia",
-            color = PALETTE.kept,
-        ),
+    rows = (
+        (:grid, "Anti-Scatter Grid", "2-D Tungsten Walls Around Each 4 × 6 Dexels\n(10 mm Tall, Assumed; Drawn Short Here)", ("In Geant4", TAGS.geant4)),
+        (:cathode, "Cathode", "One Thin Metal Film over the Whole Crystal,\nat 800–1000 V", ("Not Simulated", TAGS.not_simulated)),
+        (:cdte, "CdTe Crystal, One Piece", "1.6 mm Deep, Continuous: Absorbs the X Ray,\nwhich Frees a Cloud of Charge", ("In Geant4", TAGS.geant4)),
+        (:electrodes, "Pixel Electrodes (Anodes)", "One Gold Pad per Dexel: Each Collects the Charge\nThat Drifts Down onto It", ("In Julia", TAGS.julia)),
+        (:asic, "Counting Chip (ASIC)", "Per Dexel: Pulse Shaping, Four Thresholds,\nFour Counters", ("In Julia", TAGS.julia)),
+        (:board, "Circuit Board", "Carries Every Dexel's Counts Out", ("Not Simulated", TAGS.not_simulated)),
     )
-    w, gap = 23.0, 3.0
-    for (i, s) in enumerate(steps)
-        x = 1 + (i - 1) * (w + gap)
-        box!(x, 3, w, 25, s.color)
-        Mke.text!(
-            ax,
-            x + 1.5,
-            26.0;
-            text = s.title,
-            font = :bold,
-            fontsize = 20,
-            color = s.color,
-            align = (:left, :top),
-        )
-        Mke.text!(
-            ax,
-            x + 1.5,
-            20.5;
-            text = s.body,
-            fontsize = 15,
-            color = PALETTE.ink,
-            align = (:left, :top),
-        )
-        Mke.text!(
-            ax,
-            x + 1.5,
-            4.5;
-            text = s.where,
-            fontsize = 14,
-            font = :italic,
-            color = s.color,
-            align = (:left, :bottom),
-        )
-        if i < length(steps)
-            Mke.arrows2d!(
-                ax,
-                [Mke.Point2f(x + w + 0.3, 15.5)],
-                [Mke.Vec2f(gap - 0.6, 0)];
-                color = PALETTE.muted,
-                shaftwidth = 3,
-                tipwidth = 12,
-                tiplength = 10,
+    x_text = maximum(project(cam, (x1, y, 0))[1] for y in (y0, y1)) + 2.2
+    entries = [
+        (
+                anchor = project(cam, (x1, (y0 + y1) * 0.6, sum(levels[key]) / 2)),
+                title = name,
+                detail,
+                color = PALETTE.ink,
+                tag,
             )
+            for (key, name, detail, tag) in rows
+    ]
+    labels_right!(ax, entries, x_text; spacing = 1.25, tag_width = 122)
+    Mke.xlims!(ax, nothing, x_text + 9.2)
+    Mke.Label(
+        fig[2, 1],
+        "One Dexel, Outlined in Amber: Its Electrode, Its Chip Channel and the Crystal Above It. The Crystal Is One Piece: the Electrode Alone Makes the Dexel.";
+        font = :bold,
+        fontsize = 17,
+        color = Mke.RGBf(0.8, 0.5, 0.05),
+        halign = :left,
+        tellwidth = false,
+    )
+    fig
+end
+
+# ╔═╡ f6b40d89-2b55-4c5e-b8e7-881636d05f6e
+let
+    Mke.set_theme!(THEME)
+    p, g = alpha.dexel, alpha.gap
+    d = crystal.thickness_mm
+    fig = Mke.Figure(size = (1450, 820))
+    ax = canvas(fig[1, 1])
+
+    # One row of a grid cell, side view (x across, up toward the tube): four dexels and the walls
+    xL, xR = 0.0, cell_pitch[1]
+    y_board, y_asic, y_el = -1.35, -0.95, -0.12
+    rect!(ax, xL, y_board, xR - xL, 0.28, MATERIALS.board)
+    rect!(ax, xL, y_asic, xR - xL, 0.52, MATERIALS.asic)
+    rect!(ax, xL, 0, xR - xL, d, MATERIALS.cdte; strokecolor = (:black, 0.25), strokewidth = 1)
+    rect!(ax, xL, d, xR - xL, 0.05, MATERIALS.cathode; strokecolor = (:black, 0.3), strokewidth = 0.8)
+    for k in 0:3
+        x = dexel_corner(k, 0)[1]
+        rect!(ax, x + 0.02, y_el, p[1] - 0.04, 0.1, MATERIALS.electrode)
+        rect!(ax, x + p[1] / 2 - 0.035, y_asic + 0.52, 0.07, y_el - (y_asic + 0.52), MATERIALS.bump)
+    end
+    for x in (xL, xR)
+        rect!(ax, x - g[1] / 2, d + 0.05, g[1], 1.3, MATERIALS.tungsten)
+    end
+
+    # (1) the x ray, (2) absorbed, (3) the charge drifts and spreads, (4) two electrodes share it
+    hit = Mke.Point2f(dexel_corner(1, 0)[1] + 0.92p[1], d - 0.35)
+    photon!(ax, (hit[1], d + 2.2), hit; cycles = 9, amplitude = 0.02, color = MATERIALS.beam, linewidth = 3.5)
+    Mke.scatter!(ax, [hit]; marker = :star5, markersize = 28, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.5)
+    for (k, z) in enumerate(range(hit[2] - 0.15, 0.08; length = 5))
+        spread = 0.012 + 0.02k
+        xs = hit[1] .+ spread .* [-1.6, -0.8, 0.0, 0.8, 1.6]
+        Mke.scatter!(ax, xs, fill(z, 5); color = (MATERIALS.charge, 0.35 + 0.1k), markersize = 6)
+    end
+    arrow!(ax, (hit[1] - 0.2, hit[2] - 0.1), (hit[1] - 0.2, 0.25); color = MATERIALS.charge, linewidth = 2, head = 10)
+    edge = dexel_corner(2, 0)[1]
+    Mke.lines!(ax, [edge, edge], [-0.12, d]; color = (PALETTE.ink, 0.35), linestyle = :dash, linewidth = 1.5)
+
+    # (5) the chip: the shared cloud's two pulses, against the four thresholds
+    for (k, height) in ((1, 0.62), (2, 0.38))
+        x = dexel_corner(k, 0)[1] + 0.05
+        base = y_asic + 0.06
+        Mke.lines!(ax, Mke.Point2f[(x, base), (x + 0.06, base + 0.4height), (x + 0.11, base), (x + 0.2, base)]; color = :white, linewidth = 2)
+        for (t, level) in enumerate((0.2, 0.35, 0.55, 0.7))
+            on = height >= level
+            Mke.lines!(ax, [x - 0.01, x + 0.2], fill(base + 0.4level, 2); color = (on ? MATERIALS.beam : :white, on ? 0.9 : 0.25), linewidth = 1)
         end
     end
+
+    entries = [
+        (anchor = (hit[1], d + 1.6), title = "1  An X Ray Arrives", detail = "Through the Open Middle of a Grid Cell", color = Mke.RGBf(0.85, 0.5, 0.05), tag = nothing),
+        (anchor = hit, title = "2  The CdTe Absorbs It", detail = "Freeing Electron–Hole Pairs in Proportion to Its Energy", color = Mke.RGBf(0.7, 0.55, 0.05), tag = nothing),
+        (anchor = (hit[1] - 0.2, 0.6), title = "3  The Charge Drifts and Spreads", detail = "Pulled by 800–1000 V to the Back; σ ≈ 30 µm Here", color = MATERIALS.charge, tag = nothing),
+        (anchor = (edge, y_el + 0.05), title = "4  The Electrodes Collect It", detail = "Each Takes the Part Above It: a Cloud on an Edge Is Shared", color = Mke.RGBf(0.7, 0.5, 0.1), tag = nothing),
+        (anchor = (dexel_corner(2, 0)[1] + 0.1, y_asic + 0.3), title = "5  Thresholds Count It", detail = "Each Pulse Against 20, 35, 55, 70 keV:\nOne Count per Threshold It Crosses", color = PALETTE.ink, tag = nothing),
+    ]
+    x_text = xR + 0.55
+    labels_right!(ax, entries, x_text; spacing = 0.55)
+    Mke.text!(ax, xR + g[1] / 2 + 0.05, d + 1.3; text = "Grid Walls\n(Cut Short)", fontsize = 14, color = PALETTE.muted, align = (:left, :top))
+
+    xl = xL - 0.2
+    side_bracket!(ax, xl, 0.0, d + 1.35, "Geant4\nSimulates"; color = TAGS.geant4)
+    side_bracket!(ax, xl, y_asic, -0.04, "Julia\nModels"; color = TAGS.julia)
+    Mke.text!(ax, xL, y_board - 0.08; text = "The Charge Cloud, the Electrodes' Shares, Noise and Thresholds Are Applied in Julia to Geant4's Energy Deposits", fontsize = 15, color = PALETTE.muted, align = (:left, :top))
+    Mke.limits!(ax, xl - 1.25, x_text + 4.4, y_board - 0.45, d + 2.35)
     fig
 end
 
 # ╔═╡ 8326156c-5e6a-5f16-89ab-5e8b268b2e0a
 md"""
-Steps 1–2 are Geant4: it records where every bit of energy is left in the crystal. Steps 3–5 are
-the detector's electronics, modelled in Julia on those positions, so the dexel size, the charge
-cloud, the noise and the thresholds can all be changed without simulating the photons again.
+Steps 1–2 are Geant4: the grid, and where every bit of energy is left in the crystal. Steps 3–5
+are the detector's charge and electronics, modelled in Julia on those positions: the cloud of
+charge each deposit becomes, the share of it each electrode collects, the noise, and the
+thresholds. So the dexel size, the charge cloud, the noise and the thresholds can all be changed
+without simulating the photons again. The cathode film, the solder bumps and the board are not
+simulated (they do not change where energy is left), and of the chip only its noise, thresholds
+and, in section 10, its dead time are modelled.
+
+### What Makes a Dexel
+
+In a scintillator detector such as the SOMATOM Force's, the crystal is sawn into blocks and a
+dexel is one block, its reflector and the photodiode under it. The Alpha's CdTe is **one
+continuous crystal**: nothing inside it separates one dexel from the next. A dexel is a **pixel
+electrode** on the crystal's back face, and the crystal above it; where two electrodes'
+territories meet, a cloud of charge can be shared between them (*charge sharing*). The scanner
+then reads native dexels singly (ultra-high resolution) or adds them 2 × 2 (standard mode), and
+the grid's walls stand around every 4 × 6 native dexels.
 """
+
+# ╔═╡ debadf41-b238-45ca-a2f2-eeecff9a20f5
+let
+    Mke.set_theme!(THEME)
+    p, g = alpha.dexel, alpha.gap
+    d = crystal.thickness_mm
+    fig = Mke.Figure(size = (1600, 620))
+
+    # (a) A scintillator detector: blocks sawn apart, reflector between, a photodiode under each
+    axa = canvas(fig[1, 1]; title = "(a) The Force: a Dexel Is a Sawn Block", titlesize = 20)
+    w, s = 1.0, 0.1
+    for k in 0:2
+        rect!(axa, k * w, 0, w, 1.4, Mke.RGBf(0.97, 0.97, 0.95); strokecolor = (:black, 0.25))
+        rect!(axa, k * w + s / 2, 0, w - s, 1.4, Mke.RGBf(0.74, 0.84, 0.93))
+        rect!(axa, k * w + s / 2, -0.2, w - s, 0.12, Mke.RGBf(0.24, 0.27, 0.55))
+    end
+    Mke.text!(axa, 1.5, -0.3; text = "White Reflector Walls Separate the Blocks;\nOne Photodiode Under Each", align = (:center, :top), fontsize = 15, color = PALETTE.muted)
+    Mke.limits!(axa, -0.3, 3.3, -1.2, 1.8)
+
+    # (b) The Alpha: one crystal; the electrodes underneath decide where one dexel ends
+    axb = canvas(fig[1, 2]; title = "(b) The Alpha: a Dexel Is an Electrode", titlesize = 20)
+    sc = 1 / p[1]
+    rect!(axb, 0, 0, 4.0 + g[1] * sc, d * sc / 3.2, MATERIALS.cdte; strokecolor = (:black, 0.25))
+    for k in 0:3
+        x = (g[1] / 2 + k * p[1]) * sc
+        rect!(axb, x + 0.05, -0.12, 0.9, 0.08, MATERIALS.electrode)
+        Mke.lines!(axb, [x, x], [0, d * sc / 3.2]; color = (PALETTE.ink, 0.25), linestyle = :dash)
+    end
+    rect!(axb, 0, d * sc / 3.2, 4.0 + g[1] * sc, 0.04, MATERIALS.cathode)
+    Mke.text!(axb, (4.0 + g[1] * sc) / 2, -0.3; text = "No Walls Inside the Crystal: Dashed Lines Are Only\nWhere the Electrodes' Territories Meet", align = (:center, :top), fontsize = 15, color = PALETTE.muted)
+    Mke.limits!(axb, -0.3, 4.6, -1.2, 2.4)
+
+    # (c) Seen from the beam: native dexels, the 2 × 2 binned dexels, the grid cell
+    axc = Mke.Axis(
+        fig[1, 3];
+        title = "(c) Native, Binned, and the Grid Cell",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Along Z (mm)",
+        aspect = Mke.DataAspect(),
+    )
+    rect!(axc, -g[1] / 2, -g[2] / 2, cell_pitch[1], cell_pitch[2], MATERIALS.tungsten)
+    for k in 0:3, l in 0:5
+        c = dexel_corner(k, l) .- g ./ 2
+        rect!(axc, c[1], c[2], p[1], p[2], MATERIALS.cdte_lit; strokecolor = PALETTE.slab_edge, strokewidth = 0.8)
+    end
+    for k in 0:2:2, l in 0:2:4
+        c = dexel_corner(k, l) .- g ./ 2
+        Mke.poly!(axc, Mke.Rect2f(c[1], c[2], 2p[1], 2p[2]); color = (:white, 0), strokecolor = PALETTE.photon, strokewidth = 2.5, linestyle = :dash)
+    end
+    c = dexel_corner(0, 0) .- g ./ 2
+    Mke.poly!(axc, Mke.Rect2f(c[1], c[2], p[1], p[2]); color = (:white, 0), strokecolor = MATERIALS.beam, strokewidth = 3.5)
+    note!(axc, cell_pitch[1] + 0.05, 0.1, "Amber: One Native Dexel,\n0.275 × 0.322 mm"; align = (:left, :bottom), color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 14)
+    note!(axc, cell_pitch[1] + 0.05, 0.85, "Dashed Blue: 2 × 2 Binned\nDexels (Standard Mode)"; align = (:left, :bottom), color = PALETTE.photon, fontsize = 14)
+    note!(axc, cell_pitch[1] + 0.05, 1.6, "Grey Frame: the Grid's Walls,\nAround 4 × 6 Native Dexels"; align = (:left, :bottom), color = PALETTE.slab_edge, fontsize = 14)
+    Mke.xlims!(axc, -0.35, cell_pitch[1] + 1.25)
+    Mke.colsize!(fig.layout, 3, Mke.Relative(0.36))
+    fig
+end
+
+# ╔═╡ 22a88d29-5771-4e17-ab70-f33d13c288a8
+md"""
+### Which Beam, and Why
+
+How the photons arrive decides what a simulation measures, so each section says which beam it
+uses, from the simplest to the most realistic:
+
+| beam | what it measures | where |
+|---|---|---|
+| **uniform on one dexel**, no grid | its response: the counts in it and its eight neighbours, per photon landing on it | sections 1–4 |
+| **uniform on one dexel under the grid**, at each of the six positions in a cell | what the walls change, dexel by dexel | sections 5, 7 |
+| **tilted along z** at the cone angle | the outer rows | section 6 |
+| **from the focal spot** over the whole arc, one energy and the 140 kVp spectrum | everything at once: every dexel, its grid, real angles | sections 8, 9 |
+| **clinical spectra, photon by photon**, bare and after 20 and 35 cm of water | whether the single-energy response, weighted by a spectrum, is the clinical beam | section 11 |
+
+There is no pencil beam here: a photon-counting response is per photon landing anywhere on the
+dexel, so photons land uniformly over it. The response is built from single energies because
+BasisSimulator weights it by whatever spectrum a scan uses; section 11 checks that the weighting
+is exact.
+"""
+
+# ╔═╡ 20aa77fa-7c82-4c2a-b72d-58c13baead11
+let
+    Mke.set_theme!(THEME)
+    p = alpha.dexel
+    fig = Mke.Figure(size = (1700, 560))
+    cam = camera(-56, 32)
+    amber = MATERIALS.beam
+    cases = (
+        ("Uniform on One Dexel", "No Grid; the Dexel and Its\nEight Neighbours Read (1–4)", :one),
+        ("Under the Grid", "Uniform on Each of the Six\nPositions in a Cell (5, 7)", :grid),
+        ("At the Cone Angle", "The Outer Rows' Photons\nArrive Tilted (6)", :tilt),
+        ("From the Focal Spot", "The Whole Arc: One Energy,\nthe 140 kVp Spectrum (8, 9)", :focal),
+        ("Clinical Spectra", "Bare and After 20 and 35 cm\nof Water, Photon by Photon (11)", :clinical),
+    )
+    for (k, (title, detail, kind)) in enumerate(cases)
+        ax = canvas(fig[1, k]; title, titlesize = 20)
+        ex = exploded_alpha(4, 3; grid_drawn = 1.6)
+        zc = ex.levels[:cathode][2]
+        blocks = Block[]
+        append!(blocks, ex.layers[:cdte]); append!(blocks, ex.layers[:cathode])
+        if kind in (:grid, :tilt, :focal)
+            for b in ex.layers[:grid]
+                push!(blocks, Block((b.lo[1], b.lo[2], zc), (b.hi[1], b.hi[2], zc + 1.6), b.color))
+            end
+        end
+        extras = Any[]
+        c = dexel_corner(1, 1)
+        if kind in (:one, :grid)
+            column = Block((c[1], c[2], zc), (c[1] + p[1], c[2] + p[2], zc + 3.0), amber; alpha = 0.3, stroke = 0.0)
+            push!(extras, (1.0e3, a -> draw_blocks!(a, cam, [column]; edge_alpha = 0.0)))
+        elseif kind === :tilt
+            for (dx, dy) in ((0.3, 0.3), (0.7, 0.4), (0.5, 0.7))
+                from = project(cam, (c[1] + dx * p[1], c[2] + dy * p[2] - 1.2, zc + 3.4))
+                to = project(cam, (c[1] + dx * p[1], c[2] + dy * p[2], zc))
+                push!(extras, (1.0e3, a -> arrow!(a, from, to; color = amber, linewidth = 2.5, head = 11)))
+            end
+        else
+            focal = ((ex.extent[2][1]) / 2, (ex.extent[2][2]) / 2, zc + 5.0)
+            for (x, y) in ((0.1, 0.1), (0.9, 0.1), (0.1, 0.9), (0.9, 0.9), (0.5, 0.5))
+                from, to = project(cam, focal), project(cam, (x * ex.extent[2][1], y * ex.extent[2][2], zc))
+                push!(extras, (1.0e3, a -> arrow!(a, from, to; color = kind === :clinical ? PALETTE.xray : amber, linewidth = 2.2, head = 10)))
+            end
+            push!(extras, (1.0e3 + 1, a -> Mke.scatter!(a, [project(cam, focal)]; color = PALETTE.ink, markersize = 12)))
+        end
+        draw_blocks!(ax, cam, blocks; extras)
+        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    end
+    fig
+end
 
 # ╔═╡ f7ad4569-b274-5714-83ab-bc7ad0497b53
 md"""
@@ -154,8 +407,8 @@ md"""
 
 Every hardware number this notebook uses, checked against the FDA 510(k) summaries, Siemens'
 own technical documents and peer-reviewed measurements of clinical systems. Where a source and
-BasisSimulator disagree the row is marked **⚠ discrepancy**; the notebook then keeps
-BasisSimulator's value, so the two stay comparable, unless the physics being built needs the
+BasisSimulator v0.15.1 disagree the row is marked **⚠ discrepancy**; the notebook then keeps
+BasisSimulator v0.15.1's value, so the two stay comparable, unless the physics being built needs the
 documented one (the anti-scatter grid, which BasisSimulator does not model, is built as
 documented).
 
@@ -165,7 +418,7 @@ documented).
 288 rows). Detector A has 2752 channels and a 50 cm field of view, detector B 1984 channels and
 36 cm (K211591, K243523).
 
-| quantity | BasisSimulator | documented | status | source |
+| quantity | BasisSimulator v0.15.1 | documented | status | source |
 |---|---|---|---|---|
 | sensor | CdTe, 1.6 mm | CdTe, 1.6 mm | ✓ | K211591 §VI; Sartoretti 2023 |
 | dexel (sub-pixel) at the detector face | 0.275 × 0.322 mm | 0.275 × 0.322 mm (0.151 × 0.176 mm at isocentre) | ✓ | Flohr 2023; Li 2025 |
@@ -233,6 +486,9 @@ import BasisSimulator as BS
 # ╔═╡ fdaa0020-4804-5c58-8453-668f6c70ebf3
 import Serialization
 
+# ╔═╡ 5285d69f-7fb4-488a-9954-5e2d36bf1204
+using Statistics: mean
+
 # ╔═╡ 0df22b09-66d5-59e9-9f68-79a2b1886e38
 PlutoUI.TableOfContents()
 
@@ -249,7 +505,7 @@ PALETTE = (
     kept = Mke.RGBf(0.27, 0.55, 0.34),  # counts
     slab = Mke.RGBAf(0.45, 0.52, 0.62, 0.3),
     slab_edge = Mke.RGBf(0.3, 0.36, 0.44),
-    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator's current table
+    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator v0.15.1's table
     ink = Mke.RGBf(0.13, 0.13, 0.16),
     muted = Mke.RGBf(0.42, 0.42, 0.46),
 )
@@ -321,6 +577,528 @@ function note!(
     )
 end
 
+# ╔═╡ f3001712-cc0a-48db-8c7e-27e06c5aa3fd
+md"""
+### Drawing the Detector
+
+The illustrations are drawn from the same numbers the simulation uses (the dexel pitch, the gaps,
+the grid cell, the crystal's depth), with a small kit: blocks in 3-D, seen from any direction,
+shaded by one light and drawn back to front. The colours are the materials': grey-blue CdTe, a
+pale cathode film, gold electrodes, grey tungsten, the dark counting chip, amber x rays, red
+charge.
+"""
+
+# ╔═╡ 2444710c-f16a-47aa-9ea5-d3cdaa2c6d19
+MATERIALS = (
+    cdte = Mke.RGBf(0.6, 0.65, 0.76),  # cadmium telluride: a dark, metallic grey-blue
+    cdte_lit = Mke.RGBf(0.78, 0.86, 0.98),  # the part of the crystal under one dexel, when marked
+    cathode = Mke.RGBf(0.86, 0.87, 0.9),  # the thin metal film on the front face
+    electrode = Mke.RGBf(0.86, 0.66, 0.2),  # the pixel electrodes (anodes): gold
+    bump = Mke.RGBf(0.75, 0.75, 0.78),  # the solder bumps to the chip
+    asic = Mke.RGBf(0.2, 0.22, 0.27),  # the counting chip
+    board = Mke.RGBf(0.13, 0.4, 0.29),  # circuit board
+    tungsten = Mke.RGBf(0.42, 0.44, 0.5),
+    water = Mke.RGBf(0.62, 0.78, 0.92),
+    beam = Mke.RGBf(0.98, 0.7, 0.25),  # x rays, as in the lab's banner
+    charge = Mke.RGBf(0.7, 0.12, 0.17),  # the freed electrons
+    night = Mke.RGBf(0.05, 0.06, 0.08),  # the dark backdrop of the lab's banner
+    night_ring = Mke.RGBf(0.11, 0.13, 0.16),
+)
+
+# ╔═╡ 18913250-92bd-415e-9559-55e73934e2eb
+begin
+    """A block in 3-D (axis-aligned, `lo` to `hi` in mm), and how to draw it."""
+    Base.@kwdef struct Block
+        lo::NTuple{3, Float64}
+        hi::NTuple{3, Float64}
+        color::Mke.RGBf
+        alpha::Float64 = 1.0
+        stroke::Float64 = 0.6
+    end
+
+    Block(lo, hi, color; kw...) = Block(; lo = Float64.(Tuple(lo)), hi = Float64.(Tuple(hi)), color, kw...)
+end
+
+# ╔═╡ de754d25-442e-4d20-8565-4e0b9a502db7
+"""
+An orthographic camera: seen from `azimuth` (degrees, about the vertical axis z) and `elevation`
+(degrees above the horizontal). Returns the screen's right and up and the direction toward the viewer.
+"""
+function camera(azimuth, elevation)
+    θ, φ = deg2rad(azimuth), deg2rad(elevation)
+    toward = (cos(φ) * cos(θ), cos(φ) * sin(θ), sin(φ))
+    right = (-sin(θ), cos(θ), 0.0)
+    up = (
+        toward[2] * right[3] - toward[3] * right[2],
+        toward[3] * right[1] - toward[1] * right[3],
+        toward[1] * right[2] - toward[2] * right[1],
+    )
+    return (; right, up, toward)
+end
+
+# ╔═╡ dc842efe-90d4-435c-a6de-fc2375005697
+dot3(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+# ╔═╡ 72cb803c-129a-4891-ac42-8308cc4ce50a
+"""Where a point in 3-D lands on the drawing."""
+project(cam, p) = Mke.Point2f(dot3(p, cam.right), dot3(p, cam.up))
+
+# ╔═╡ ee6c802f-d1f0-432e-bae6-166cf16320d3
+"""The six faces of a block: outward normal and corners."""
+function faces(b::Block)
+    (x0, y0, z0), (x1, y1, z1) = b.lo, b.hi
+    return (
+        ((0, 0, 1), ((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1))),
+        ((0, 0, -1), ((x0, y0, z0), (x0, y1, z0), (x1, y1, z0), (x1, y0, z0))),
+        ((1, 0, 0), ((x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1))),
+        ((-1, 0, 0), ((x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0))),
+        ((0, 1, 0), ((x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0))),
+        ((0, -1, 0), ((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1))),
+    )
+end
+
+# ╔═╡ 792826ce-b8c6-4fbd-9919-8c719d716f49
+"""Shade a face by one light from the upper left, front, as illustrators do."""
+function shade(color, normal, cam; light = (-0.35, -0.45, 0.82))
+    n = sqrt(dot3(light, light))
+    lambert = max(0.0, dot3(normal, light) / n)
+    k = 0.62 + 0.42 * lambert
+    return Mke.RGBf(min(1, color.r * k), min(1, color.g * k), min(1, color.b * k))
+end
+
+# ╔═╡ eff17814-a2f6-4d61-a9cd-df7458f5b5b0
+"""
+Draw `blocks` back to front (the painter's way), each with its visible faces shaded, and any
+`extras` (functions drawing lines or arrows, with their depth) in their place among them.
+Blocks should be of similar size (split long walls into pieces) for the order to be right.
+"""
+function draw_blocks!(ax, cam, blocks; extras = [], edge = Mke.RGBf(0.1, 0.12, 0.16), edge_alpha = 0.35)
+    items = Any[(dot3(map(+, b.lo, b.hi) ./ 2, cam.toward), b) for b in blocks]
+    append!(items, extras)
+    sort!(items; by = first)
+    polygons = Vector{Mke.Point2f}[]
+    colors = Mke.RGBAf[]
+    strokes = Mke.RGBAf[]
+    function flush!()
+        isempty(polygons) && return
+        Mke.poly!(
+            ax,
+            copy(polygons);
+            color = copy(colors),
+            strokecolor = copy(strokes),
+            strokewidth = 0.7,
+        )
+        empty!(polygons)
+        empty!(colors)
+        return empty!(strokes)
+    end
+    for (_, item) in items
+        if item isa Block
+            for (normal, corners) in faces(item)
+                dot3(normal, cam.toward) > 1.0e-9 || continue
+                push!(polygons, [project(cam, c) for c in corners])
+                c = shade(item.color, normal, cam)
+                push!(colors, Mke.RGBAf(c.r, c.g, c.b, item.alpha))
+                # a seam between tiles of one layer is drawn in the face's own colour
+                push!(
+                    strokes,
+                    item.stroke > 0 ? Mke.RGBAf(edge.r, edge.g, edge.b, edge_alpha * item.alpha) :
+                        Mke.RGBAf(c.r, c.g, c.b, item.alpha),
+                )
+            end
+        else
+            flush!()
+            item(ax)
+        end
+    end
+    flush!()
+    return ax
+end
+
+# ╔═╡ 896c9200-6700-48f4-beb2-cffee0c1ec0f
+"""
+A label with a leader line: a dot at `anchor`, a line to `at`, and the text there, on a
+translucent rounded background.
+"""
+function callout!(
+        ax,
+        anchor,
+        at,
+        text;
+        color = Mke.RGBf(0.13, 0.13, 0.16),
+        align = (:left, :center),
+        fontsize = 17,
+        background = (:white, 0.9),
+        line = (Mke.RGBf(0.3, 0.3, 0.35), 0.8),
+        font = :regular,
+    )
+    Mke.lines!(ax, Mke.Point2f[anchor, at]; color = line, linewidth = 1.3)
+    Mke.scatter!(ax, [anchor]; color = line, markersize = 7)
+    return Mke.textlabel!(
+        ax,
+        at;
+        text,
+        text_align = align,
+        text_color = color,
+        fontsize,
+        font,
+        background_color = background,
+        strokewidth = 0,
+        padding = (8, 8, 5, 5),
+        cornerradius = 6,
+    )
+end
+
+# ╔═╡ e6249cb2-6672-4f2c-956d-a4e947fa0d07
+"""A blank canvas for an illustration: equal scales, no axes."""
+function canvas(position; background = :white, title = "", kw...)
+    ax = Mke.Axis(
+        position;
+        aspect = Mke.DataAspect(),
+        backgroundcolor = background,
+        title,
+        kw...,
+    )
+    Mke.hidedecorations!(ax)
+    Mke.hidespines!(ax)
+    return ax
+end
+
+# ╔═╡ ed2d4d8c-1329-47a4-841f-7affbc4d204f
+"""
+A photon drawn as a wave from `a` to `b` (2-D), with `cycles` oscillations (more for a higher
+energy) and an arrowhead at `b`.
+"""
+function photon!(ax, a, b; color = MATERIALS.beam, cycles = 6, amplitude = 0.06, linewidth = 3, head = 14)
+    a, b = Mke.Point2f(a), Mke.Point2f(b)
+    d = b - a
+    L = sqrt(d[1]^2 + d[2]^2)
+    t = d / L
+    n = Mke.Point2f(-t[2], t[1])
+    s = range(0, 1; length = 240)
+    ramp(u) = min(1, 8u, 8(1 - u))  # the wave starts and ends on the line
+    points = Mke.Point2f[a + u * d + amplitude * L * ramp(u) * sin(2π * cycles * u) * n for u in s]
+    Mke.lines!(ax, points[1:(end - 6)]; color, linewidth)
+    Mke.scatter!(
+        ax,
+        [b];
+        marker = :utriangle,
+        markersize = head,
+        rotation = atan(t[2], t[1]) - π / 2,
+        color,
+    )
+    return nothing
+end
+
+# ╔═╡ 1d5e84c1-714b-47d6-a120-71068b37aebc
+"""A straight arrow from `a` to `b` (2-D)."""
+function arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 14, linestyle = :solid)
+    a, b = Mke.Point2f(a), Mke.Point2f(b)
+    t = (b - a) / sqrt(sum(abs2, b - a))
+    Mke.lines!(ax, Mke.Point2f[a, b - 0.5 * head / 100 * t]; color, linewidth, linestyle)
+    Mke.scatter!(ax, [b]; marker = :utriangle, markersize = head, rotation = atan(t[2], t[1]) - π / 2, color)
+    return nothing
+end
+
+# ╔═╡ dd76ac67-b4fa-4c94-bdf6-4b431f3d14a4
+"""A rectangle (2-D) from its lower-left corner, width and height."""
+rect!(ax, x, y, w, h, color; kw...) = Mke.poly!(ax, Mke.Rect2f(x, y, w, h); color, kw...)
+
+# ╔═╡ fe495bf4-f87f-45c4-b1ab-16c586bc4df5
+"""
+Spread labels down the right of a drawing: each `entry` is `(; anchor, title, detail, color, tag)`
+(`tag` is `nothing` or `(text, color)`). Labels keep at least `spacing` apart (data units), in the
+order of their anchors, and a bent leader line runs from each anchor to its label at `x`.
+"""
+function labels_right!(ax, entries, x; spacing = 1.0, tag_width = 0.0, title_size = 19, detail_size = 15.5)
+    order = sortperm([e.anchor[2] for e in entries]; rev = true)
+    ys = Float64[]
+    for k in order
+        y = entries[k].anchor[2]
+        isempty(ys) || (y = min(y, last(ys) - spacing))
+        push!(ys, y)
+    end
+    # centre the column of labels on the anchors
+    shift = (sum(e.anchor[2] for e in entries) - sum(ys)) / length(ys)
+    ys .+= max(0, shift)
+    for (k, y) in zip(order, ys)
+        e = entries[k]
+        elbow = Mke.Point2f(x - 0.35 * spacing, y)
+        Mke.lines!(ax, Mke.Point2f[e.anchor, Mke.Point2f(elbow[1] - 0.3 * spacing, e.anchor[2]), elbow, Mke.Point2f(x, y)]; color = (:black, 0.32), linewidth = 1.2)
+        Mke.scatter!(ax, [Mke.Point2f(e.anchor)]; color = (:black, 0.55), markersize = 7)
+        at = Mke.Point2f(x, y)
+        if e.tag !== nothing
+            Mke.textlabel!(ax, at; text = e.tag[1], text_align = (:left, :center), text_color = :white, font = :bold, fontsize = 13, offset = (6, 0), background_color = e.tag[2], strokewidth = 0, padding = (8, 8, 3, 3), cornerradius = 9)
+        end
+        dx = e.tag === nothing ? 6 : 6 + tag_width
+        Mke.text!(ax, at; text = e.title, font = :bold, fontsize = title_size, align = (:left, :bottom), offset = (dx, 1), color = e.color)
+        e.detail == "" || Mke.text!(ax, at; text = e.detail, fontsize = detail_size, align = (:left, :top), offset = (dx, -3), color = Mke.RGBf(0.42, 0.42, 0.46))
+    end
+    return nothing
+end
+
+# ╔═╡ a05ae43e-08a8-4696-b931-100fe6023d33
+"""A vertical bracket at `x` from `y0` to `y1`, with `text` to its left."""
+function side_bracket!(ax, x, y0, y1, text; color, fontsize = 16, tick = 0.08)
+    Mke.lines!(ax, Mke.Point2f[(x + tick, y0), (x, y0), (x, y1), (x + tick, y1)]; color, linewidth = 2)
+    return Mke.text!(ax, x - tick, (y0 + y1) / 2; text, color, fontsize, font = :bold, align = (:right, :center), justification = :right)
+end
+
+# ╔═╡ a2be090c-6854-4fa7-90ce-5494da5bd57c
+"""A small rounded tag ("In Geant4" / "Not Simulated")."""
+function tag!(ax, at, text, color; align = (:left, :center), fontsize = 14, offset = (0, 0))
+    return Mke.textlabel!(
+        ax,
+        at;
+        text,
+        text_align = align,
+        text_color = :white,
+        font = :bold,
+        fontsize,
+        offset,
+        background_color = color,
+        strokewidth = 0,
+        padding = (8, 8, 3, 3),
+        cornerradius = 9,
+    )
+end
+
+# ╔═╡ cf02ddf8-fcef-413d-a30d-d51071fdc761
+TAGS = (
+    geant4 = Mke.RGBf(0.2, 0.55, 0.32),
+    julia = Mke.RGBf(0.16, 0.38, 0.68),
+    not_simulated = Mke.RGBf(0.52, 0.52, 0.57),
+)
+
+# ╔═╡ 2a420206-70e3-4019-945c-f628bd6ee0df
+"""A block drawn faded toward the background (`amount` 0: as is, 1: gone)."""
+function faded(b::Block, amount; to = Mke.RGBf(1, 1, 1))
+    mix(a, c) = a + amount * (c - a)
+    color = Mke.RGBf(mix(b.color.r, to.r), mix(b.color.g, to.g), mix(b.color.b, to.b))
+    return Block(; lo = b.lo, hi = b.hi, color, alpha = b.alpha, stroke = b.stroke)
+end
+
+# ╔═╡ 290c44b9-29d5-4d71-ae2b-b14fa5fc02d5
+"""The convex hull of points (2-D), counter-clockwise, closed."""
+function hull(points)
+    pts = sort(unique(Mke.Point2f.(points)); by = p -> (p[1], p[2]))
+    length(pts) < 3 && return pts
+    cross2(o, a, b) = (a[1] - o[1]) * (b[2] - o[2]) - (a[2] - o[2]) * (b[1] - o[1])
+    lower, upper = Mke.Point2f[], Mke.Point2f[]
+    for p in pts
+        while length(lower) >= 2 && cross2(lower[end - 1], lower[end], p) <= 0
+            pop!(lower)
+        end
+        push!(lower, p)
+    end
+    for p in reverse(pts)
+        while length(upper) >= 2 && cross2(upper[end - 1], upper[end], p) <= 0
+            pop!(upper)
+        end
+        push!(upper, p)
+    end
+    return vcat(lower[1:(end - 1)], upper[1:(end - 1)], lower[1:1])
+end
+
+# ╔═╡ c7ef0930-55ad-4a4f-8296-db3571c54a88
+"""Outline a box (lo, hi) as seen by `cam`: the edge of its silhouette."""
+function outline!(ax, cam, lo, hi; color = MATERIALS.beam, linewidth = 3, linestyle = :solid)
+    corners = [(x, y, z) for x in (lo[1], hi[1]) for y in (lo[2], hi[2]) for z in (lo[3], hi[3])]
+    return Mke.lines!(ax, hull([project(cam, c) for c in corners]); color, linewidth, linestyle)
+end
+
+# ╔═╡ 06101f43-57fd-44a5-b7aa-cd22bfaa5eb1
+"""A curved strip (part of a cylinder about the z axis at the focal spot), as quads with depth, for the painter."""
+function arc_quads(cam, R, half_angle, half_z; columns = 46, thickness = 18.0, color = MATERIALS.ufc)
+    quads = Any[]
+    for k in 1:columns
+        a0 = -half_angle + (k - 1) * 2half_angle / columns
+        a1 = a0 + 2half_angle / columns
+        for (r, normal_sign) in ((R, -1), (R + thickness, 1))
+            corners = [(r * sin(a), -r * cos(a), z) for (a, z) in ((a0, -half_z), (a1, -half_z), (a1, half_z), (a0, half_z))]
+            mid = (a0 + a1) / 2
+            n = (normal_sign * sin(mid), -normal_sign * cos(mid), 0.0)
+            depth = dot3(corners[1] .+ corners[3], cam.toward) / 2
+            push!(
+                quads, (
+                    depth, ax -> begin
+                        dot3(n, cam.toward) > 0 || return
+                        c = shade(color, n, cam)
+                        Mke.poly!(ax, [project(cam, q) for q in corners]; color = c, strokecolor = (:black, 0.25), strokewidth = 0.5)
+                    end,
+                )
+            )
+        end
+    end
+    return quads
+end
+
+# ╔═╡ 246bff85-ebee-4478-a199-b432c91f57ad
+"""
+Where native dexel `(k, l)` sits on the detector's face (its lower-left corner, mm), counted from
+the corner of a grid cell: dexels come in groups of 4 × 6, each group inside one grid cell, half a
+gap in from the cell's edge.
+"""
+dexel_corner(k, l) = (
+    (k ÷ alpha.group[1]) * cell_pitch[1] + alpha.gap[1] / 2 + (k % alpha.group[1]) * alpha.dexel[1],
+    (l ÷ alpha.group[2]) * cell_pitch[2] + alpha.gap[2] / 2 + (l % alpha.group[2]) * alpha.dexel[2],
+)
+
+# ╔═╡ 7b539e6e-ee97-4464-a2c5-f09abe2a32f7
+"""A box cut into about-dexel-sized tiles of one colour (so the painter's order holds), seams hidden."""
+function tiles(lo, hi, color; size = alpha.dexel)
+    nx = max(1, round(Int, (hi[1] - lo[1]) / size[1]))
+    ny = max(1, round(Int, (hi[2] - lo[2]) / size[2]))
+    dx, dy = (hi[1] - lo[1]) / nx, (hi[2] - lo[2]) / ny
+    return [
+        Block((lo[1] + i * dx, lo[2] + j * dy, lo[3]), (lo[1] + (i + 1) * dx, lo[2] + (j + 1) * dy, hi[3]), color; stroke = 0.0)
+            for i in 0:(nx - 1) for j in 0:(ny - 1)
+    ]
+end
+
+# ╔═╡ 7cefafb2-4fa6-43f2-9cc7-c64d016df12b
+"""
+The blocks of a patch of the Alpha's detector, `nx` × `ny` native dexels from the corner of a grid
+cell, pulled apart layer by layer: board, counting chip (ASIC), solder bumps, one gold electrode
+per dexel, the continuous CdTe crystal (drawn `depth` mm deep), the cathode film over it, and the
+grid's walls (drawn `grid_drawn` mm tall) where the patch meets a cell's edge; `thin` scales the
+thin layers, for small drawings. Returns each layer's blocks
+(`layers[key]`), its (bottom, top) (`levels[key]`), all the blocks (`blocks`) and the patch's
+extent on the face (`extent`).
+"""
+function exploded_alpha(nx, ny; gap = 0.8, grid_drawn = 2.4, depth = 1.6, thin = 1.0)
+    p, g = alpha.dexel, alpha.gap
+    x1 = dexel_corner(nx - 1, 0)[1] + p[1] + (nx % alpha.group[1] == 0 ? g[1] / 2 : 0.04)
+    y1 = dexel_corner(0, ny - 1)[2] + p[2] + (ny % alpha.group[2] == 0 ? g[2] / 2 : 0.04)
+    x0, y0 = 0.0, 0.0
+    stack = (
+        (key = :board, h = 0.3thin, gap = 0.45thin),
+        (key = :asic, h = 0.4thin, gap = 0.0),
+        (key = :bumps, h = 0.18thin, gap = 0.0),
+        (key = :electrodes, h = 0.05thin, gap = gap),
+        (key = :cdte, h = depth, gap = 0.0),
+        (key = :cathode, h = 0.05thin, gap = gap),
+        (key = :grid, h = grid_drawn, gap = 0.0),
+    )
+    layers = Dict{Symbol, Vector{Block}}()
+    levels = Dict{Symbol, Tuple{Float64, Float64}}()
+    z = 0.0
+    for layer in stack
+        z0, z1 = z, z + layer.h
+        levels[layer.key] = (z0, z1)
+        layers[layer.key] = if layer.key === :board
+            tiles((x0, y0, z0), (x1, y1, z1), MATERIALS.board)
+        elseif layer.key === :asic
+            tiles((x0, y0, z0), (x1, y1, z1), MATERIALS.asic)
+        elseif layer.key in (:bumps, :electrodes)
+            inset = layer.key === :bumps ? 0.09 : 0.025
+            color = layer.key === :bumps ? MATERIALS.bump : MATERIALS.electrode
+            [
+                Block((c[1] + inset, c[2] + inset, z0), (c[1] + p[1] - inset, c[2] + p[2] - inset, z1), color)
+                    for c in (dexel_corner(k, l) for k in 0:(nx - 1) for l in 0:(ny - 1))
+            ]
+        elseif layer.key === :cdte
+            tiles((x0, y0, z0), (x1, y1, z1), MATERIALS.cdte)
+        elseif layer.key === :cathode
+            tiles((x0, y0, z0), (x1, y1, z1), MATERIALS.cathode)
+        else
+            walls = Block[]
+            for c in 0:(nx ÷ alpha.group[1])
+                x = c * cell_pitch[1]
+                x <= x1 + 1.0e-9 || continue
+                append!(walls, tiles((x - g[1] / 2, y0 - g[2] / 2, z0), (x + g[1] / 2, y1, z1), MATERIALS.tungsten; size = (g[1], p[2])))
+            end
+            for r in 0:(ny ÷ alpha.group[2])
+                y = r * cell_pitch[2]
+                y <= y1 + 1.0e-9 || continue
+                append!(walls, tiles((x0 + g[1] / 2, y - g[2] / 2, z0), (x1, y + g[2] / 2, z1), MATERIALS.tungsten; size = (p[1], g[2])))
+            end
+            walls
+        end
+        z = z1 + layer.gap
+    end
+    return (; layers, levels, blocks = reduce(vcat, values(layers)), extent = ((x0, y0), (x1, y1)))
+end
+
+# ╔═╡ 9893a0c1-2162-4290-8273-19740f076747
+"""
+The master map, as a band across the top of a section's first illustration: the gantry, one
+dexel's stack (a dexel at the corner of a grid cell) with the part under study lit and outlined,
+and the dexel's five steps with this one's lit. `focus` is `:tube`, `:arc`, `:whole`, or one or a
+tuple of the stack's layers, `:grid`, `:cdte`, `:electrodes`, `:asic`. Place it with
+`locator!(fig[0, :], focus; note)`.
+"""
+function locator!(position, focus; note = "")
+    amber, dim = MATERIALS.beam, Mke.RGBf(0.82, 0.83, 0.86)
+    Mke.Box(position; color = Mke.RGBf(0.965, 0.965, 0.975), strokevisible = false, cornerradius = 14)
+    layout = Mke.GridLayout(position; halign = :center, tellwidth = false)
+    focus_set = focus isa Tuple ? focus : (focus,)
+
+    # The gantry, small: tube A, its fan, detector A's arc, the one dexel below
+    ax = canvas(layout[1, 1]; width = 230, height = 230, backgroundcolor = :transparent)
+    θ = range(0, 2π; length = 120)
+    R_iso, R_det = 610.0, detector_a.radius_mm
+    half = deg2rad(MC.fan_angle_deg(detector_a)) / 2
+    lit(k) = k in focus_set || :whole in focus_set
+    Mke.lines!(ax, 820 .* cos.(θ), 820 .* sin.(θ); color = dim, linewidth = 1.5)
+    Mke.poly!(ax, Mke.Point2f.(170 .* cos.(θ), 120 .* sin.(θ) .- 20); color = (PALETTE.muted, 0.25))
+    src = Mke.Point2f(0, R_iso)
+    φ = range(-half, half; length = 60)
+    arc = [src + R_det * Mke.Point2f(sin(t), -cos(t)) for t in φ]
+    Mke.poly!(ax, Mke.Point2f.(vcat([src], arc)); color = (amber, lit(:tube) ? 0.45 : 0.12))
+    Mke.lines!(ax, Mke.Point2f.(arc); color = lit(:arc) ? PALETTE.ink : dim, linewidth = lit(:arc) ? 7 : 4)
+    Mke.scatter!(ax, [src]; marker = :rect, markersize = 16, color = lit(:tube) ? PALETTE.ink : dim)
+    Mke.scatter!(ax, [arc[30]]; marker = :rect, markersize = 9, color = amber, strokecolor = PALETTE.ink, strokewidth = 1)
+    Mke.limits!(ax, -900, 900, -760, 900)
+
+    # One dexel's stack, exploded; the focus lit and outlined, the rest faded
+    axs = canvas(layout[1, 2]; width = 150, height = 250, backgroundcolor = :transparent)
+    ex = exploded_alpha(1, 1; gap = 0.2, grid_drawn = 0.5, depth = 0.42, thin = 0.4)
+    on = :whole in focus_set ? Tuple(keys(ex.layers)) :
+        Tuple(k for k in (:grid, :cathode, :cdte, :electrodes, :bumps, :asic) if k in focus_set || (k === :cathode && :cdte in focus_set))
+    blocks = Block[]
+    for (key, bs) in ex.layers
+        append!(blocks, key in on ? bs : [faded(b, 0.86) for b in bs])
+    end
+    cam = camera(-56, 30)
+    draw_blocks!(axs, cam, blocks; edge_alpha = 0.15)
+    (x0, y0), (x1, y1) = ex.extent
+    for key in on
+        key in (:cathode, :bumps) && continue
+        z0, z1 = ex.levels[key]
+        lo = key === :grid ? (x0 - alpha.gap[1] / 2, y0 - alpha.gap[2] / 2) : (x0, y0)
+        outline!(axs, cam, (lo[1] - 0.04, lo[2] - 0.04, z0 - 0.04), (x1 + 0.04, y1 + 0.04, z1 + 0.04); linewidth = 2.5)
+    end
+
+    # Where we are, in words, and the dexel's five steps with this one's lit
+    text = Mke.GridLayout(layout[1, 3]; valign = :center)
+    Mke.Label(text[1, 1], "Where We Are"; font = :bold, fontsize = 20, color = PALETTE.ink, halign = :left)
+    Mke.Label(text[2, 1], note; fontsize = 17, color = PALETTE.ink, halign = :left, justification = :left)
+    steps = (
+        (:grid, "1  The Grid"),
+        (:cdte, "2  The CdTe Absorbs It"),
+        (:cdte, "3  Its Charge Drifts"),
+        (:electrodes, "4  The Electrodes Collect It"),
+        (:asic, "5  Thresholds Count It"),
+    )
+    for (k, (key, label)) in enumerate(steps)
+        active = key in on
+        Mke.Label(
+            text[k + 2, 1],
+            label;
+            fontsize = 15,
+            font = active ? :bold : :regular,
+            color = active ? Mke.RGBf(0.8, 0.5, 0.05) : PALETTE.muted,
+            halign = :left,
+        )
+    end
+    Mke.rowgap!(text, 3)
+    Mke.rowgap!(text, 1, 6)
+    Mke.rowgap!(text, 2, 10)
+    Mke.colgap!(layout, 28)
+    return layout
+end
+
 # ╔═╡ a75d1e50-0d30-51f0-9004-d0a001673992
 md"""
 ## 1. One Dexel and Its Neighbours
@@ -360,214 +1138,72 @@ let
     Mke.set_theme!(THEME)
     px, py = readout.pitch_x_mm, readout.pitch_y_mm
     d = crystal.thickness_mm
-    fig = Mke.Figure(size = (1400, 640))
+    fig = Mke.Figure(size = (1600, 960))
 
-    # (a) The crystal around the central dexel, in 3-D, with the dexel grid on its back face
-    ax3 = Mke.Axis3(
-        fig[1, 1];
-        title = "(a) 3 × 3 dexels, to scale",
-        aspect = :data,
-        xlabel = "x (mm)",
-        ylabel = "y (mm)",
-        zlabel = "depth z (mm)",
-        azimuth = 1.3π,
-        elevation = 0.16π,
-        zreversed = true,
-        protrusions = (30, 10, 30, 30),
-    )
+    # (a) What Geant4 builds: one slab of CdTe; the 3 × 3 dexels are the electrodes under it
+    ax = canvas(fig[1, 1]; title = "(a) The Crystal, Lifted off Its Electrodes", titlesize = 20)
+    cam = camera(-52, 30)
+    lift = 0.9
+    blocks = Block[]
     for i in -1:1, j in -1:1
-        block = Mke.Rect3f(
-            Mke.Vec3f((i - 0.5) * px, (j - 0.5) * py, 0),
-            Mke.Vec3f(px, py, d),
-        )
-        central = i == 0 && j == 0
-        Mke.mesh!(
-            ax3,
-            block;
-            color = central ? (PALETTE.photon, 0.25) : (PALETTE.slab_edge, 0.1),
-        )
-        Mke.wireframe!(
-            ax3,
-            block;
-            color = central ? PALETTE.photon : PALETTE.slab_edge,
-            linewidth = central ? 2 : 0.8,
-        )
+        x0, y0 = (i - 0.5) * px, (j - 0.5) * py
+        push!(blocks, Block((x0 + 0.012, y0 + 0.012, 0.0), (x0 + px - 0.012, y0 + py - 0.012, 0.05), i == 0 && j == 0 ? MATERIALS.beam : MATERIALS.electrode))
     end
-    # the photons arrive from above (z < 0) onto the central dexel
-    for (x, y) in ((0.0, 0.0), (0.08, -0.1), (-0.09, 0.11), (0.1, 0.12), (-0.11, -0.12))
-        Mke.lines!(ax3, [x, x], [y, y], [-0.8, 0.0]; color = PALETTE.photon, linewidth = 2)
-    end
-    Mke.text!(
-        ax3,
-        Mke.Point3f(0, 0, -0.8);
-        text = "photons",
-        align = (:center, :bottom),
-        color = PALETTE.photon,
-        fontsize = 17,
-        font = :bold,
-        offset = (0, 6),
-    )
-    Mke.text!(
-        ax3,
-        Mke.Point3f(1.5px, -1.5py, 0);
-        text = "front face:\ncathode",
-        align = (:left, :center),
+    append!(blocks, tiles((-1.5px, -1.5py, lift), (1.5px, 1.5py, lift + d), MATERIALS.cdte; size = (px, py)))
+    append!(blocks, tiles((-1.5px, -1.5py, lift + d), (1.5px, 1.5py, lift + d + 0.04), MATERIALS.cathode; size = (px, py)))
+    column = Block((-px / 2, -py / 2, lift + d + 0.04), (px / 2, py / 2, lift + d + 1.6), MATERIALS.beam; alpha = 0.3, stroke = 0.0)
+    draw_blocks!(ax, cam, blocks; extras = [(1.0e3, a -> draw_blocks!(a, cam, [column]; edge_alpha = 0.0))])
+    outline!(ax, cam, (-px / 2, -py / 2, lift), (px / 2, py / 2, lift + d); linewidth = 2.5, linestyle = :dash)
+    Mke.Label(
+        fig[2, 1],
+        "Amber Column: Photons Landing Uniformly over the Middle Dexel.\nDashed: the Crystal Above Its Electrode. Below: the Nine Electrodes.";
         fontsize = 15,
-        color = PALETTE.slab_edge,
-        offset = (8, 0),
-    )
-    Mke.text!(
-        ax3,
-        Mke.Point3f(1.5px, -1.5py, d);
-        text = "back face:\none anode\nper dexel",
-        align = (:left, :center),
-        fontsize = 15,
-        color = PALETTE.slab_edge,
-        offset = (8, 0),
+        color = PALETTE.ink,
+        tellwidth = false,
     )
 
-    # (b) The dexel grid seen from the beam
+    # (b) Seen from the beam
     axb = Mke.Axis(
         fig[1, 2];
-        title = "(b) Seen from the beam",
-        xlabel = "x, across the fan (mm)",
-        ylabel = "y, along the patient (mm)",
+        title = "(b) Seen from the Beam",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Along the Patient (mm)",
         aspect = Mke.DataAspect(),
         limits = ((-1.6px, 2.3px), (-2.0py, 1.6py)),
     )
     for i in -1:1, j in -1:1
         central = i == 0 && j == 0
-        Mke.poly!(
-            axb, Mke.Rect2f((i - 0.5) * px, (j - 0.5) * py, px, py);
-            color = central ? (PALETTE.photon, 0.18) : (PALETTE.slab_edge, 0.06),
-            strokecolor = PALETTE.slab_edge,
-            strokewidth = 1.5,
-        )
+        rect!(axb, (i - 0.5) * px, (j - 0.5) * py, px, py, central ? Mke.RGBf(0.98, 0.88, 0.68) : MATERIALS.cdte_lit; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
     end
-    note!(
-        axb,
-        0,
-        0.12,
-        "central dexel:\nphotons land\nanywhere here";
-        align = (:center, :center),
-        color = PALETTE.photon,
-        fontsize = 14,
-    )
-    note!(
-        axb,
-        px,
-        py,
-        "neighbour";
-        align = (:center, :center),
-        color = PALETTE.muted,
-        fontsize = 13,
-        alpha = 0.0,
-    )
-    Mke.bracket!(
-        axb,
-        -0.5px,
-        -1.5py,
-        0.5px,
-        -1.5py;
-        text = "$(px) mm",
-        orientation = :down,
-        fontsize = 15,
-        color = PALETTE.ink,
-        textcolor = PALETTE.ink,
-    )
-    Mke.bracket!(
-        axb,
-        1.5px,
-        -0.5py,
-        1.5px,
-        0.5py;
-        text = "$(py) mm",
-        orientation = :down,
-        fontsize = 15,
-        color = PALETTE.ink,
-        textcolor = PALETTE.ink,
-    )
+    note!(axb, 0, 0.0, "Middle\nDexel"; align = (:center, :center), color = Mke.RGBf(0.75, 0.45, 0.05), fontsize = 14)
+    Mke.bracket!(axb, -0.5px, -1.5py, 0.5px, -1.5py; text = "$(px) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
+    Mke.bracket!(axb, 1.5px, -0.5py, 1.5px, 0.5py; text = "$(py) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
 
-    # (c) A cut through the central row: depth and the drift of the charge
+    # (c) Side view: the cathode, the crystal, the anodes; the charge drifts down
     axc = Mke.Axis(
         fig[1, 3];
-        title = "(c) Side view",
-        xlabel = "x, across the fan (mm)",
-        ylabel = "depth z (mm)",
+        title = "(c) Side View",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Depth (mm)",
         yreversed = true,
         aspect = Mke.DataAspect(),
         limits = ((-1.6px, 2.6px), (-0.35, d + 0.15)),
     )
-    Mke.poly!(
-        axc,
-        Mke.Rect2f(-1.5px, 0, 3px, d);
-        color = PALETTE.slab,
-        strokecolor = PALETTE.slab_edge,
-        strokewidth = 1.5,
-    )
+    rect!(axc, -1.5px, 0, 3px, d, MATERIALS.cdte)
+    rect!(axc, -1.5px, -0.04, 3px, 0.04, MATERIALS.cathode)
     for i in -1:1
-        Mke.lines!(
-            axc,
-            [(i - 0.5) * px + 0.01, (i + 0.5) * px - 0.01],
-            [d, d];
-            color = PALETTE.slab_edge,
-            linewidth = 6,
-        )
+        rect!(axc, (i - 0.5) * px + 0.01, d, px - 0.02, 0.05, i == 0 ? MATERIALS.beam : MATERIALS.electrode)
     end
-    Mke.lines!(axc, [-1.5px, 1.5px], [0, 0]; color = PALETTE.slab_edge, linewidth = 3)
-    Mke.lines!(axc, [0.03, 0.03], [-0.3, 0.45]; color = PALETTE.photon, linewidth = 3)
-    Mke.scatter!(axc, [Mke.Point2f(0.03, 0.45)]; color = PALETTE.electron, markersize = 12)
-    Mke.arrows2d!(
-        axc,
-        [Mke.Point2f(0.03, 0.5)],
-        [Mke.Vec2f(0, d - 0.6)];
-        color = PALETTE.electron,
-        shaftwidth = 3,
-        tipwidth = 12,
-        tiplength = 12,
-    )
-    note!(
-        axc,
-        0.06,
-        0.95,
-        "the freed\nelectrons drift\nto the anode,\nspreading";
-        align = (:left, :center),
-        color = PALETTE.electron,
-        fontsize = 13,
-    )
-    note!(
-        axc,
-        -1.45px,
-        d - 0.08,
-        "anodes (one per dexel)";
-        align = (:left, :bottom),
-        color = PALETTE.slab_edge,
-        fontsize = 13,
-    )
-    note!(
-        axc,
-        -1.45px,
-        -0.05,
-        "cathode";
-        align = (:left, :bottom),
-        color = PALETTE.slab_edge,
-        fontsize = 13,
-    )
-    Mke.bracket!(
-        axc,
-        1.5px,
-        0,
-        1.5px,
-        d;
-        text = "$(d) mm",
-        orientation = :down,
-        fontsize = 15,
-        color = PALETTE.ink,
-        textcolor = PALETTE.ink,
-    )
-
-    Mke.colsize!(fig.layout, 1, Mke.Relative(0.36))
+    Mke.lines!(axc, [0.03, 0.03], [-0.3, 0.45]; color = MATERIALS.beam, linewidth = 3)
+    Mke.scatter!(axc, [Mke.Point2f(0.03, 0.45)]; marker = :star5, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, markersize = 16)
+    Mke.arrows2d!(axc, [Mke.Point2f(0.03, 0.5)], [Mke.Vec2f(0, d - 0.6)]; color = MATERIALS.charge, shaftwidth = 3, tipwidth = 12, tiplength = 12)
+    note!(axc, 0.06, 0.95, "The Freed Electrons\nDrift to the Anodes,\nSpreading"; align = (:left, :center), color = MATERIALS.charge, fontsize = 13)
+    Mke.bracket!(axc, 1.5px, 0, 1.5px, d; text = "$(d) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
+    Mke.colsize!(fig.layout, 1, Mke.Relative(0.38))
     Mke.colgap!(fig.layout, 30)
+    locator!(fig[0, :], (:cdte, :electrodes); note = "Steps 2–4 · One Dexel\nand Its Neighbours")
     fig
 end
 
@@ -626,14 +1262,14 @@ let
     steps = [s for s in tracks.steps if s.event == shared_event]
     dep = deposits_run.deposits
     k = findall(==(shared_event), dep.event)
-    fig = Mke.Figure(size = (1400, 620))
+    fig = Mke.Figure(size = (1400, 910))
 
     # (a) Side view of the photon and its x ray, with the dexel boundaries
     axa = Mke.Axis(
         fig[1, 1];
-        title = "(a) The photon and its x ray",
-        xlabel = "x, across the fan (mm)",
-        ylabel = "depth z (mm)",
+        title = "(a) The Photon and Its X Ray",
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Depth (mm)",
         yreversed = true,
         aspect = Mke.DataAspect(),
         limits = ((-1.6px, 1.6px), (-0.25, d + 0.1)),
@@ -676,7 +1312,7 @@ let
         axa,
         -1.45px,
         d - 0.05,
-        "dashed: dexel\nboundaries";
+        "Dashed: Dexel\nBoundaries";
         align = (:left, :bottom),
         color = PALETTE.muted,
         fontsize = 14,
@@ -685,9 +1321,9 @@ let
     # (b) Top view: the energy deposits and their charge clouds over the dexel grid
     axb = Mke.Axis(
         fig[1, 2];
-        title = "(b) Its charge clouds, from above",
-        xlabel = "x (mm)",
-        ylabel = "y (mm)",
+        title = "(b) Its Charge Clouds, from Above",
+        xlabel = "X (mm)",
+        ylabel = "Y (mm)",
         aspect = Mke.DataAspect(),
         limits = ((-1.5px, 1.5px), (-1.5py, 1.5py)),
     )
@@ -719,7 +1355,7 @@ let
         axb,
         0,
         -1.4py,
-        "circles: 2σ = 60 µm";
+        "Circles: 2σ = 60 µm";
         align = (:center, :bottom),
         color = PALETTE.electron,
         fontsize = 14,
@@ -729,9 +1365,9 @@ let
     energies = single_response.dexel_energy_keV[shared_event, :, :]
     axc = Mke.Axis(
         fig[1, 3];
-        title = "(c) What each dexel collects",
-        xlabel = "x (dexel)",
-        ylabel = "y (dexel)",
+        title = "(c) What Each Dexel Collects",
+        xlabel = "X (Dexel)",
+        ylabel = "Y (Dexel)",
         aspect = Mke.DataAspect(),
         xticks = (1:3, ["−1", "0", "+1"]),
         yticks = (1:3, ["−1", "0", "+1"]),
@@ -759,6 +1395,7 @@ let
 
     Mke.colsize!(fig.layout, 1, Mke.Relative(0.24))
     Mke.colgap!(fig.layout, 30)
+    locator!(fig[0, :], (:cdte, :electrodes); note = "Steps 2–4 · One Photon's\nJourney, Followed")
     fig
 end
 
@@ -794,6 +1431,62 @@ the edge of the split clouds.
 # ╔═╡ b334ec12-f83a-59bc-8936-c7e16badc21c
 spectrum_energy = 60.0
 
+# ╔═╡ 8b38185f-e423-49ca-af97-536138ddc8be
+let
+    Mke.set_theme!(THEME)
+    p, g = alpha.dexel, alpha.gap
+    d = crystal.thickness_mm
+    edges = MC.k_edges(crystal.material)
+    kα = Dict(e.element => e.kalpha_keV for e in edges)
+    fig = Mke.Figure(size = (1700, 820))
+    cases = (
+        ("All of It Stays", "Absorbed, Its Charge Under This Dexel:\nthe Full-Energy Peak at E", PALETTE.kept),
+        ("A Cd or Te X Ray Escapes", "$(round(kα["Cd"]; digits = 1)) or $(round(kα["Te"]; digits = 1)) keV Leave the Crystal:\nEscape Peaks at E − $(round(kα["Cd"]; digits = 1)) and E − $(round(kα["Te"]; digits = 1))", PALETTE.xray),
+        ("Its X Ray Lands Next Door", "The Neighbour Sees $(round(Int, kα["Cd"]))–$(round(Int, kα["Te"])) keV,\nThis Dexel the Rest", Mke.RGBf(0.45, 0.3, 0.6)),
+        ("The Cloud Lands on an Edge", "Charge Shared Between Two Dexels:\nAnything from 0 to E in Each", MATERIALS.charge),
+    )
+    function slab!(ax)
+        rect!(ax, -1.5p[1], 0, 3p[1], d, MATERIALS.cdte; strokecolor = (:black, 0.25))
+        rect!(ax, -1.5p[1], d, 3p[1], 0.04, MATERIALS.cathode)
+        for k in -1:1
+            rect!(ax, (k - 0.5) * p[1] + 0.02, -0.1, p[1] - 0.04, 0.07, k == 0 ? MATERIALS.beam : MATERIALS.electrode)
+        end
+        for x in (-0.5p[1], 0.5p[1])
+            Mke.lines!(ax, [x, x], [0, d]; color = (PALETTE.ink, 0.3), linestyle = :dash, linewidth = 1.2)
+        end
+        return
+    end
+    function cloud!(ax, x, z; split = false)
+        Mke.lines!(ax, [x, x], [z - 0.05, 0.05]; color = (MATERIALS.charge, 0.5), linewidth = 1.5, linestyle = :dot)
+        return Mke.poly!(ax, Mke.Circle(Mke.Point2f(x, 0.08), 0.06); color = (MATERIALS.charge, 0.35), strokecolor = MATERIALS.charge, strokewidth = 1)
+    end
+    for (k, (title, detail, color)) in enumerate(cases)
+        ax = canvas(fig[1, k]; title, titlecolor = color, titlesize = 20)
+        slab!(ax)
+        x_hit = k == 4 ? 0.5p[1] - 0.025 : 0.0
+        hit = Mke.Point2f(x_hit, d - 0.45)
+        photon!(ax, (x_hit, d + 0.9), hit; cycles = 5, amplitude = 0.03, color = MATERIALS.beam)
+        Mke.scatter!(ax, [hit]; marker = :star5, markersize = 22, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.2)
+        if k == 1
+            cloud!(ax, hit[1], hit[2])
+        elseif k == 2
+            cloud!(ax, hit[1], hit[2])
+            photon!(ax, hit, (-0.33, d + 0.8); cycles = 3, amplitude = 0.06, color = PALETTE.xray, head = 11)
+        elseif k == 3
+            cloud!(ax, hit[1], hit[2])
+            stop = Mke.Point2f(1.15p[1], 0.5)
+            photon!(ax, hit, stop; cycles = 3, amplitude = 0.06, color = PALETTE.xray, head = 10)
+            cloud!(ax, stop[1], stop[2])
+        else
+            cloud!(ax, hit[1], hit[2])
+        end
+        Mke.limits!(ax, -1.7p[1], 1.7p[1], -0.3, d + 1.0)
+        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    end
+    locator!(fig[0, :], :cdte; note = "Steps 2–4 · Where One\nPhoton's Charge Goes")
+    fig
+end
+
 # ╔═╡ 6a162bd9-0b36-5cf6-b16e-6b6d095b5ee8
 let
     Mke.set_theme!(THEME)
@@ -802,17 +1495,17 @@ let
     fig = Mke.Figure(size = (1200, 600))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "What each dexel collects from $(round(Int, E0)) keV photons landing on the central one",
-        xlabel = "energy collected by the dexel (keV)",
-        ylabel = "per keV, per photon",
+        title = "What Each Dexel Collects from $(round(Int, E0)) keV Photons Landing on the Middle One",
+        xlabel = "Energy Collected by the Dexel (keV)",
+        ylabel = "Per keV, per Photon",
         yscale = log10,
         limits = ((0, E0 + 3), (1.0e-5, 3)),
     )
     for (dexel, label, color) in (
-            ((0, 0), "central dexel", PALETTE.photon),
-            ((1, 0), "side neighbour (along x)", PALETTE.xray),
-            ((0, 1), "side neighbour (along y)", PALETTE.kept),
-            ((1, 1), "corner neighbour", PALETTE.muted),
+            ((0, 0), "Middle Dexel", PALETTE.photon),
+            ((1, 0), "Side Neighbour (Along X)", PALETTE.xray),
+            ((0, 1), "Side Neighbour (Along Y)", PALETTE.kept),
+            ((1, 1), "Corner Neighbour", PALETTE.muted),
         )
         s = MC.dexel_spectrum(r, dexel; bin_keV = 0.5)
         Mke.stairs!(
@@ -849,7 +1542,7 @@ let
         ax,
         3,
         2.0e-5,
-        "split charge clouds: anything from 0 to E";
+        "Split Charge Clouds: Anything from 0 to E";
         align = (:left, :bottom),
         color = PALETTE.muted,
         fontsize = 14,
@@ -860,9 +1553,9 @@ end
 
 # ╔═╡ 65f1babc-4849-5e3a-8404-738562c88837
 md"""
-## 4. Compared with BasisSimulator's Current Table
+## 4. Compared with BasisSimulator v0.15.1's Table
 
-BasisSimulator's photon-counting detector model uses `cdte_response_v4`: for photons of each
+Up to and including v0.15.1, BasisSimulator's photon-counting detector model uses `cdte_response_v4`: for photons of each
 energy from 1 to 140 keV landing on a dexel, the mean number of counts above each of nine
 thresholds (20, 25, 30, 35, 55, 60, 70, 75, 90 keV), in the 3 × 3 neighbourhood and per dexel,
 from MCNP with a 30 µm Gaussian charge cloud and 1.5 keV electronic noise. Its file does not
@@ -873,8 +1566,26 @@ The same thresholds and the same noise are applied to the Geant4 dexel signals b
 """
 
 # ╔═╡ 0eff78e6-df72-522a-b5db-d70421a6cdec
-# BasisSimulator's bundled table, read from the file the simulator itself loads
-current_table = Serialization.deserialize(BS.default_mc_drm_path())
+# BasisSimulator v0.15.1's table (`cdte_response_v4`), as BasisMonteCarlo keeps it for comparison
+current_table = MC.basissimulator_v0_15_1_response()
+
+# ╔═╡ 0c8a2fcc-ca65-4040-9b13-973725659b2e
+# Is BasisMonteCarlo's copy the table the installed BasisSimulator ships? Up to v0.15.1 it must be,
+# byte for byte; a later release may ship this notebook's table instead, and the copy stands alone
+let
+    installed = pkgversion(BS)
+    kept = joinpath(pkgdir(MC), "src", "data", "basissimulator_v0_15_1_cdte_response_v4.jls")
+    shipped = isdefined(BS, :default_mc_drm_path) ? BS.default_mc_drm_path() : ""
+    same = isfile(shipped) && read(shipped) == read(kept)
+    message = if installed <= v"0.15.1"
+        same ?
+            "✓ The installed BasisSimulator, v$(installed), ships exactly this table." :
+            "✗ **The installed BasisSimulator, v$(installed), ships a different table from BasisMonteCarlo's copy of v0.15.1's `cdte_response_v4`.** Check the copy against BasisSimulator v0.15.1."
+    else
+        "The installed BasisSimulator is v$(installed), which no longer needs this table. The comparisons below are with BasisSimulator v0.15.1's `cdte_response_v4`, which BasisMonteCarlo keeps (`basissimulator_v0_15_1_response`): they do not change with BasisSimulator's version."
+    end
+    Markdown.parse(message)
+end
 
 # ╔═╡ 4e507ffb-04ca-5f56-a577-e2715de205a4
 thresholds = current_table["thresholds_keV"]
@@ -889,6 +1600,52 @@ counts = [
         for r in responses
 ]
 
+# ╔═╡ cb866af1-b9f8-467d-bab4-77815e589bd9
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 520))
+    levels = [20, 25, 30, 35, 55, 60, 70, 75, 90]
+
+    # (a) One 60 keV pulse against the nine thresholds: one count for each it crosses
+    ax = Mke.Axis(
+        fig[1, 1];
+        title = "(a) One Pulse, Nine Thresholds",
+        titlesize = 20,
+        xlabel = "Time (ns)",
+        ylabel = "Pulse Height (keV)",
+        limits = ((0, 40), (0, 100)),
+        yticks = [20, 35, 55, 70, 90],
+    )
+    t = range(0, 40; length = 300)
+    pulse = [60 * (x / 8) * exp(1 - x / 8) for x in t]
+    for L in levels
+        crossed = maximum(pulse) >= L
+        Mke.hlines!(ax, L; color = crossed ? MATERIALS.beam : (PALETTE.muted, 0.5), linewidth = crossed ? 2 : 1, linestyle = crossed ? :solid : :dash)
+    end
+    Mke.lines!(ax, t, pulse; color = PALETTE.photon, linewidth = 3.5)
+    note!(ax, 39, 57, "60 keV Crosses 20–55:\n+1 in Each of Six Counters"; align = (:right, :top), color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 15)
+    note!(ax, 39, 94, "Dashed: Not Crossed"; align = (:right, :top), color = PALETTE.muted, fontsize = 14)
+
+    # (b) A photon whose charge is shared: two pulses, in two dexels, both above 20 keV
+    axb = Mke.Axis(
+        fig[1, 2];
+        title = "(b) Charge Shared: Two Dexels, Two Counts",
+        titlesize = 20,
+        xlabel = "Time (ns)",
+        ylabel = "Pulse Height (keV)",
+        limits = ((0, 40), (0, 100)),
+        yticks = [20, 35, 55, 70],
+    )
+    for (E, color, label) in ((38, PALETTE.photon, "This Dexel: 38 keV"), (22, MATERIALS.charge, "Its Neighbour: 22 keV"))
+        Mke.lines!(axb, t, [E * (x / 8) * exp(1 - x / 8) for x in t]; color, linewidth = 3, label)
+    end
+    Mke.hlines!(axb, 20; color = MATERIALS.beam, linewidth = 2)
+    note!(axb, 39, 22, "Both Cross 20 keV: One Photon,\nTwo Counts Above 20 keV"; align = (:right, :bottom), color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 15)
+    Mke.axislegend(axb; position = :rt)
+    locator!(fig[0, :], :asic; note = "Step 5 · Thresholds\nCount Each Pulse")
+    fig
+end
+
 # ╔═╡ 28a04c08-f2be-5b0b-8487-d1953b4ffca4
 let
     Mke.set_theme!(THEME)
@@ -897,8 +1654,8 @@ let
     fig = Mke.Figure(size = (1200, 900))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Counts per photon in the 3 × 3 dexels, above each threshold",
-        ylabel = "counts per photon",
+        title = "Counts per Photon in the 3 × 3 Dexels, Above Each Threshold",
+        ylabel = "Counts per Photon",
         xticks = 10:10:140,
         limits = ((8, 142), (0, 1.3)),
     )
@@ -928,7 +1685,7 @@ let
         ax,
         140,
         1.25,
-        "lines: Geant4 (this notebook)    dots: cdte_response_v4 (MCNP)";
+        "Lines: Geant4 (This Notebook)    Dots: BasisSimulator v0.15.1 (cdte_response_v4, MCNP)";
         align = (:right, :top),
         fontsize = 15,
     )
@@ -936,17 +1693,17 @@ let
         ax,
         12,
         1.1,
-        "above 1: charge sharing makes one\nphoton count in two dexels";
+        "Above 1: Charge Sharing Makes One\nPhoton Count in Two Dexels";
         align = (:left, :center),
         fontsize = 14,
         color = PALETTE.muted,
     )
-    Mke.Legend(fig[1, 2], ax; valign = :center, title = "threshold")
+    Mke.Legend(fig[1, 2], ax; valign = :center, title = "Threshold")
 
     axd = Mke.Axis(
         fig[2, 1];
-        xlabel = "photon energy (keV)",
-        ylabel = "Geant4 − MCNP\n(counts per photon)",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Geant4 − MCNP\n(Counts per Photon)",
         xticks = 10:10:140,
         limits = ((8, 142), (-0.06, 0.06)),
     )
@@ -966,7 +1723,7 @@ let
         axd,
         140,
         0.01,
-        "grey band: ±0.01 counts per photon";
+        "Grey Band: ±0.01 Counts per Photon";
         align = (:right, :bottom),
         color = PALETTE.muted,
         fontsize = 14,
@@ -1079,175 +1836,83 @@ let
     Mke.set_theme!(THEME)
     p, G, g = alpha.dexel, alpha.group, alpha.gap
     H = alpha.wall_height
-    fig = Mke.Figure(size = (1400, 700))
-    centre(m, axis) = MC.dexel_centre(m, p[axis], G[axis], g[axis])
-    tungsten = Mke.RGBf(0.35, 0.35, 0.4)
+    fig = Mke.Figure(size = (1700, 1000))
 
-    # (a) One grid cell in 3-D: the walls standing on the gaps, the dexels below
-    ax3 = Mke.Axis3(
-        fig[1, 1];
-        title = "(a) One grid cell: 4 × 6 dexels",
-        aspect = :data,
-        xlabel = "x (mm)",
-        ylabel = "y (mm)",
-        zlabel = "z (mm)",
-        azimuth = 1.25π,
-        elevation = 0.2π,
-        zreversed = true,
-        protrusions = (30, 10, 30, 30),
-    )
-    for i in 0:(G[1] - 1), j in 0:(G[2] - 1)
-        block = Mke.Rect3f(
-            Mke.Vec3f(centre(i, 1) - p[1] / 2, centre(j, 2) - p[2] / 2, 0),
-            Mke.Vec3f(p[1], p[2], 1.6),
-        )
-        Mke.mesh!(ax3, block; color = (PALETTE.photon, 0.18))
-        Mke.wireframe!(ax3, block; color = PALETTE.slab_edge, linewidth = 0.6)
+    # (a) One grid cell, to scale: 10 mm walls around 4 × 6 dexels, the near walls cut away
+    ax = canvas(fig[1, 1]; title = "(a) One Grid Cell, to Scale", titlesize = 20)
+    cam = camera(-50, 24)
+    ex = exploded_alpha(2G[1], G[2]; grid_drawn = H)
+    zc = ex.levels[:cathode][2]
+    blocks = Block[]
+    append!(blocks, ex.layers[:cdte]); append!(blocks, ex.layers[:cathode])
+    for b in ex.layers[:grid]
+        b2 = Block((b.lo[1], b.lo[2], zc), (b.hi[1], b.hi[2], zc + H), b.color)
+        b2.lo[2] < 0.3 && b2.lo[1] > 0.3 && continue        # the near wall, cut away
+        push!(blocks, b2)
     end
-    half_x, half_y = cell_pitch[1] / 2, cell_pitch[2] / 2
-    for sx in (-1, 1)
-        wall = Mke.Rect3f(
-            Mke.Vec3f(sx * half_x - g[1] / 2, -half_y - g[2] / 2, -H),
-            Mke.Vec3f(g[1], cell_pitch[2] + g[2], H),
-        )
-        Mke.mesh!(ax3, wall; color = (tungsten, 0.3))
+    c = dexel_corner(5, 2) .+ p ./ 2
+    straight = ((c..., zc + H + 3.0), (c..., zc))
+    extras = [(1.0e4, a -> arrow!(a, project(cam, straight[1]), project(cam, straight[2]); color = MATERIALS.beam, linewidth = 3.5))]
+    draw_blocks!(ax, cam, blocks; extras)
+    for k in 0:(2G[1] - 1), l in 0:(G[2] - 1)
+        q = dexel_corner(k, l)
+        corners = [(q[1], q[2], zc), (q[1] + p[1], q[2], zc), (q[1] + p[1], q[2] + p[2], zc), (q[1], q[2] + p[2], zc), (q[1], q[2], zc)]
+        Mke.lines!(ax, [project(cam, x) for x in corners]; color = (PALETTE.ink, 0.25), linewidth = 0.6)
     end
-    for sy in (-1, 1)
-        wall = Mke.Rect3f(
-            Mke.Vec3f(-half_x + g[1] / 2, sy * half_y - g[2] / 2, -H),
-            Mke.Vec3f(cell_pitch[1] - g[1], g[2], H),
-        )
-        Mke.mesh!(ax3, wall; color = (tungsten, 0.2))
-    end
-    Mke.text!(
-        ax3,
-        Mke.Point3f(half_x, -half_y, -H);
-        text = "tungsten walls,\n$(H) mm tall",
-        align = (:left, :center),
-        offset = (8, 0),
-        fontsize = 15,
-        color = tungsten,
-    )
-    Mke.text!(
-        ax3,
-        Mke.Point3f(half_x, -half_y, 1.6);
-        text = "CdTe, 1.6 mm",
-        align = (:left, :center),
-        offset = (8, 0),
-        fontsize = 15,
-        color = PALETTE.photon,
-    )
+    Mke.Label(fig[2, 1], "Tungsten Walls over the Gaps, $(round(Int, H)) mm Tall (Assumed),\n$(round(Int, 1000g[1])) µm Thick; the Near Wall Cut Away.\nThin Lines: Where the Dexels Are (Electrodes Below)"; fontsize = 15, color = PALETTE.ink, tellwidth = false)
 
     # (b) Seen from the beam: three by two cells, and the six distinct positions
     axb = Mke.Axis(
         fig[1, 2];
-        title = "(b) Seen from the beam: the six kinds of dexel",
-        xlabel = "x, across the fan (mm)",
-        ylabel = "y, along z (mm)",
+        title = "(b) Seen from the Beam: the Six Kinds of Dexel",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Along Z (mm)",
         aspect = Mke.DataAspect(),
     )
+    centre(m, axis) = MC.dexel_centre(m, p[axis], G[axis], g[axis])
+    half_x, half_y = cell_pitch[1] / 2, cell_pitch[2] / 2
     for cx in -1:1, cy in -1:0
         x0 = cx * cell_pitch[1] - half_x
         y0 = (cy + 0.5) * cell_pitch[2] - half_y
-        Mke.poly!(
-            axb,
-            Mke.Rect2f(x0, y0, cell_pitch[1], cell_pitch[2]);
-            color = (tungsten, 0.55),
-            strokewidth = 0,
-        )
+        rect!(axb, x0, y0, cell_pitch[1], cell_pitch[2], MATERIALS.tungsten)
         for i in 0:(G[1] - 1), j in 0:(G[2] - 1)
             x = cx * cell_pitch[1] + centre(i, 1)
             y = (cy + 0.5) * cell_pitch[2] + centre(j, 2)
-            Mke.poly!(
-                axb,
-                Mke.Rect2f(x - p[1] / 2, y - p[2] / 2, p[1], p[2]);
-                color = :white,
-                strokecolor = PALETTE.slab_edge,
-                strokewidth = 0.8,
-            )
+            rect!(axb, x - p[1] / 2, y - p[2] / 2, p[1], p[2], MATERIALS.cdte_lit; strokecolor = PALETTE.slab_edge, strokewidth = 0.8)
         end
     end
     mirror(k, n) = min(k, n - 1 - k)
     letter(i, j) = positions[findfirst(q -> q.target == (mirror(i, G[1]), mirror(j, G[2])), positions)].label
     for i in 0:(G[1] - 1), j in 0:(G[2] - 1)
-        Mke.text!(
-            axb,
-            centre(i, 1),
-            centre(j, 2) + 0.5 * cell_pitch[2];
-            text = letter(i, j),
-            align = (:center, :center),
-            fontsize = 15,
-            font = :bold,
-            color = PALETTE.photon,
-        )
+        Mke.text!(axb, centre(i, 1), centre(j, 2) + 0.5 * cell_pitch[2]; text = letter(i, j), align = (:center, :center), fontsize = 15, font = :bold, color = PALETTE.photon)
     end
-    note!(
-        axb,
-        1.5 * cell_pitch[1],
-        cell_pitch[2] + 0.1,
-        "grey: wall over a gap";
-        align = (:right, :bottom),
-        color = tungsten,
-        fontsize = 14,
-    )
+    note!(axb, 1.5 * cell_pitch[1], cell_pitch[2] + 0.12, "Grey: the Walls, over the Gaps"; align = (:right, :bottom), color = PALETTE.slab_edge, fontsize = 14)
 
-    # (c) Side view of a cell along x: walls over the gaps, a photon blocked, one let through
+    # (c) Side view along x: walls over the gaps, a photon on a wall stopped, one in the open passes
     axc = Mke.Axis(
         fig[1, 3];
-        title = "(c) Side view",
-        xlabel = "x (mm)",
-        ylabel = "z (mm)",
-        yreversed = true,
-        limits = ((-0.85 * cell_pitch[1], 0.85 * cell_pitch[1]), (-H - 1, 2.6)),
+        title = "(c) Side View (Width Stretched)",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Height Above the Crystal (mm)",
+        limits = ((-0.85 * cell_pitch[1], 0.85 * cell_pitch[1]), (-1.9, H + 1.6)),
     )
-    Mke.poly!(
-        axc,
-        Mke.Rect2f(-0.85 * cell_pitch[1], 0, 1.7 * cell_pitch[1], 1.6);
-        color = PALETTE.slab,
-        strokecolor = PALETTE.slab_edge,
-    )
+    rect!(axc, -0.85 * cell_pitch[1], -1.6, 1.7 * cell_pitch[1], 1.6, MATERIALS.cdte)
     for sx in (-1, 1)
-        Mke.poly!(axc, Mke.Rect2f(sx * half_x - g[1] / 2, -H, g[1], H); color = tungsten)
+        rect!(axc, sx * half_x - g[1] / 2, 0, g[1], H, MATERIALS.tungsten)
     end
     for i in 0:(G[1] - 1)
-        Mke.lines!(
-            axc,
-            [centre(i, 1) - p[1] / 2 + 0.01, centre(i, 1) + p[1] / 2 - 0.01],
-            [1.6, 1.6];
-            color = PALETTE.slab_edge,
-            linewidth = 6,
-        )
+        rect!(axc, centre(i, 1) - p[1] / 2 + 0.01, -1.75, p[1] - 0.02, 0.1, MATERIALS.electrode)
     end
-    Mke.lines!(axc, [0.1, 0.1], [-H - 0.8, 0.7]; color = PALETTE.photon, linewidth = 3)
-    Mke.lines!(axc, [half_x, half_x], [-H - 0.8, -4]; color = PALETTE.photon, linewidth = 3)
-    Mke.scatter!(
-        axc,
-        [Mke.Point2f(half_x, -4)];
-        marker = :xcross,
-        color = PALETTE.electron,
-        markersize = 16,
-    )
-    note!(
-        axc,
-        0.12,
-        -H + 0.5,
-        "straight from\nthe focus:\npasses";
-        align = (:left, :top),
-        color = PALETTE.photon,
-        fontsize = 13,
-    )
-    note!(
-        axc,
-        half_x - 0.05,
-        -2.5,
-        "on a wall:\nstopped";
-        align = (:right, :top),
-        color = PALETTE.electron,
-        fontsize = 13,
-    )
-
-    Mke.colsize!(fig.layout, 1, Mke.Relative(0.3))
+    Mke.lines!(axc, [0.1, 0.1], [H + 1.3, -0.8]; color = MATERIALS.beam, linewidth = 3)
+    Mke.lines!(axc, [half_x, half_x], [H + 1.3, 4.0]; color = MATERIALS.beam, linewidth = 3)
+    Mke.scatter!(axc, [Mke.Point2f(half_x, 4.0)]; marker = :xcross, color = PALETTE.xray, markersize = 18)
+    note!(axc, 0.06, H - 0.3, "Straight from the\nFocal Spot: Passes"; align = (:right, :top), color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 14)
+    note!(axc, half_x - 0.04, 3.4, "On a Wall:\nStopped"; align = (:right, :top), color = PALETTE.xray, fontsize = 14)
+    Mke.colsize!(fig.layout, 1, Mke.Relative(0.36))
     Mke.colsize!(fig.layout, 3, Mke.Relative(0.22))
+    locator!(fig[0, :], :grid; note = "Step 1 · The Grid,\nin Front of the CdTe")
     fig
 end
 
@@ -1294,9 +1959,9 @@ let
     fig = Mke.Figure(size = (1200, 620))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Counts above 20 keV in the dexel, per photon landing on it",
-        xlabel = "photon energy (keV)",
-        ylabel = "counts per photon",
+        title = "Counts Above 20 keV in the Dexel, per Photon Landing on It",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Counts per Photon",
         xticks = 10:10:140,
         limits = ((8, 142), (0, 1.05)),
     )
@@ -1308,7 +1973,7 @@ let
         color = PALETTE.muted,
         linestyle = :dash,
         linewidth = 3,
-        label = "no grid (section 3)",
+        label = "No Grid (Section 3)",
     )
     colors = Mke.cgrad(:tableau_10, 6; categorical = true)
     for (k, pos) in enumerate(positions)
@@ -1318,14 +1983,14 @@ let
             [c.per_dexel[2, 2, 1] for c in grid_counts[k]];
             color = colors[k],
             linewidth = 2.5,
-            label = "position $(pos.label)",
+            label = "Position $(pos.label)",
         )
     end
     note!(
         ax,
         140,
         0.05,
-        "every position counts almost the same: the walls stand over the gaps, not over dexels";
+        "Every Position Counts Almost the Same: the Walls Stand over the Gaps, Not over Dexels";
         align = (:right, :bottom),
         fontsize = 14,
         color = PALETTE.muted,
@@ -1350,47 +2015,50 @@ let
     Mke.set_theme!(THEME)
     sdd = 1113.0
     half_z = 24 * cell_pitch[2]
-    fig = Mke.Figure(size = (1200, 460))
+    θ_edge = atand(half_z / sdd)
+    fig = Mke.Figure(size = (1600, 760))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Side view of the scanner along z (not to scale across)",
-        xlabel = "distance from the focal spot (mm)",
-        ylabel = "z (mm)",
+        title = "(a) The Scanner Along Z (Not to Scale Across)",
+        titlesize = 20,
+        xlabel = "Distance from the Focal Spot (mm)",
+        ylabel = "Z (mm)",
         limits = ((-40, sdd + 230), (-1.6 * half_z, 1.6 * half_z)),
     )
-    Mke.scatter!(ax, [Mke.Point2f(0, 0)]; color = PALETTE.xray, markersize = 18)
-    Mke.lines!(ax, [sdd, sdd], [-half_z, half_z]; color = PALETTE.slab_edge, linewidth = 10)
+    Mke.scatter!(ax, [Mke.Point2f(0, 0)]; color = MATERIALS.beam, markersize = 18)
+    Mke.lines!(ax, [sdd, sdd], [-half_z, half_z]; color = MATERIALS.cdte, linewidth = 12)
     for zt in (-half_z, -half_z / 2, 0, half_z / 2, half_z)
-        Mke.lines!(ax, [0, sdd], [0, zt]; color = (PALETTE.photon, 0.6), linewidth = 1.5)
+        Mke.lines!(ax, [0, sdd], [0, zt]; color = (MATERIALS.beam, 0.7), linewidth = 1.5)
     end
-    angle = round(atand(half_z / sdd); digits = 2)
-    note!(
-        ax,
-        10,
-        6,
-        "focal spot";
-        align = (:left, :bottom),
-        color = PALETTE.xray,
-        fontsize = 15,
+    note!(ax, 10, 6, "Focal Spot"; align = (:left, :bottom), color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 15)
+    note!(ax, sdd - 10, half_z, "Outer Row: $(round(θ_edge; digits = 2))° Cone Angle"; align = (:right, :bottom), color = PALETTE.ink, fontsize = 15)
+    note!(ax, sdd + 15, 0, "Detector,\n$(round(2half_z; digits = 1)) mm\nAlong Z"; align = (:left, :center), color = PALETTE.slab_edge, fontsize = 15)
+
+    # (b) In the crystal of an outer row, to scale: a deep photon's charge lands one row over
+    p = alpha.dexel[2]
+    d = crystal.thickness_mm
+    axb = Mke.Axis(
+        fig[1, 2];
+        title = "(b) An Outer Row, to Scale",
+        titlesize = 20,
+        xlabel = "Z (mm)",
+        ylabel = "Depth (mm)",
+        aspect = Mke.DataAspect(),
+        yreversed = true,
+        limits = ((-0.55, 0.85), (-0.55, d + 0.25)),
     )
-    note!(
-        ax,
-        sdd - 10,
-        half_z,
-        "outer row: $(angle)° cone angle";
-        align = (:right, :bottom),
-        color = PALETTE.photon,
-        fontsize = 15,
-    )
-    note!(
-        ax,
-        sdd + 15,
-        0,
-        "detector,\n$(round(2half_z; digits = 1)) mm\nalong z";
-        align = (:left, :center),
-        color = PALETTE.slab_edge,
-        fontsize = 15,
-    )
+    rect!(axb, -0.55, 0, 1.4, d, MATERIALS.cdte)
+    for k in -1:1
+        rect!(axb, (k - 0.5) * p + 0.015, d, p - 0.03, 0.06, MATERIALS.electrode)
+        Mke.lines!(axb, [(k + 0.5) * p, (k + 0.5) * p], [0, d]; color = (PALETTE.ink, 0.3), linestyle = :dash)
+    end
+    z_in = 0.5p - 0.06
+    stop = z_in + d * 0.95 * tand(θ_edge)
+    Mke.lines!(axb, [z_in - 0.45 * tand(θ_edge), stop], [-0.45, 0.95d]; color = MATERIALS.beam, linewidth = 3)
+    Mke.scatter!(axb, [Mke.Point2f(stop, 0.95d)]; marker = :star5, markersize = 18, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam)
+    note!(axb, -0.52, 0.25, "Absorbed Deep, a $(round(θ_edge; digits = 1))° Photon\nHas Crossed into the Next\nRow's Territory"; align = (:left, :center), color = PALETTE.ink, fontsize = 14)
+    Mke.colsize!(fig.layout, 2, Mke.Relative(0.42))
+    locator!(fig[0, :], (:grid, :cdte); note = "Steps 1–3 · The Outer\nRows' Photons Arrive Tilted")
     fig
 end
 
@@ -1417,9 +2085,9 @@ let
     fig = Mke.Figure(size = (1200, 560))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Position F: where the counts land, by cone angle",
-        xlabel = "photon energy (keV)",
-        ylabel = "counts above 20 keV per photon",
+        title = "Position F: Where the Counts Land, by Cone Angle",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Counts Above 20 keV per Photon",
         xticks = 10:10:140,
         limits = ((8, 142), (0, 1.0)),
     )
@@ -1432,7 +2100,7 @@ let
             [x.per_dexel[2, 2, 1] for x in c];
             color = colors[k],
             linewidth = 3,
-            label = "$(θ)°: the dexel aimed at",
+            label = "$(θ)°: the Dexel Aimed At",
         )
         Mke.lines!(
             ax,
@@ -1441,14 +2109,14 @@ let
             color = colors[k],
             linewidth = 2,
             linestyle = :dash,
-            label = "$(θ)°: the next row",
+            label = "$(θ)°: the Next Row",
         )
     end
     note!(
         ax,
         140,
         0.35,
-        "the deeper the photon goes (high energy),\nthe further it drifts into the next row";
+        "The Deeper the Photon Goes (High Energy),\nthe Further It Drifts into the Next Row";
         align = (:right, :center),
         fontsize = 14,
         color = PALETTE.muted,
@@ -1490,6 +2158,42 @@ binned_counts = let
     )
 end
 
+# ╔═╡ 313586e2-12f3-49c0-8418-027e1f21533c
+let
+    Mke.set_theme!(THEME)
+    p, G, g = alpha.dexel, alpha.group, alpha.gap
+    fig = Mke.Figure(size = (1500, 900))
+    ax = Mke.Axis(
+        fig[1, 1];
+        title = "One Grid Cell: 4 × 6 Native Dexels, Read as 2 × 3 Binned Dexels",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Along Z (mm)",
+        aspect = Mke.DataAspect(),
+    )
+    rect!(ax, -g[1] / 2, -g[2] / 2, cell_pitch[1], cell_pitch[2], MATERIALS.tungsten)
+    corner_colour, middle_colour = Mke.RGBf(0.78, 0.86, 0.98), Mke.RGBf(0.86, 0.93, 0.84)
+    for k in 0:3, l in 0:5
+        c = dexel_corner(k, l) .- g ./ 2
+        rect!(ax, c[1], c[2], p[1], p[2], l in (2, 3) ? middle_colour : corner_colour; strokecolor = PALETTE.slab_edge, strokewidth = 0.8)
+    end
+    for k in 0:2:2, l in 0:2:4
+        c = dexel_corner(k, l) .- g ./ 2
+        Mke.poly!(ax, Mke.Rect2f(c[1], c[2], 2p[1], 2p[2]); color = (:white, 0), strokecolor = PALETTE.photon, strokewidth = 3, linestyle = :dash)
+    end
+    # a photon on the edge between two members of one group: both count it, the group twice
+    c = dexel_corner(0, 0) .- g ./ 2
+    star = Mke.Point2f(c[1] + p[1], c[2] + 0.55p[2])
+    Mke.scatter!(ax, [star]; marker = :star5, markersize = 26, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.5)
+    Mke.poly!(ax, Mke.Circle(star, 0.06); color = (MATERIALS.charge, 0.25), strokecolor = MATERIALS.charge)
+    note!(ax, cell_pitch[1] - 0.1, 0.25, "A Photon Shared Between Two Members\nof One Group: Each Counts It, So the\nBinned Dexel Counts It Twice"; align = (:left, :center), color = MATERIALS.charge, fontsize = 15)
+    note!(ax, cell_pitch[1] - 0.1, 1.05, "Green: the Middle Group (E, F)\nBlue: the Corner Groups (A–D)"; align = (:left, :center), color = PALETTE.ink, fontsize = 15)
+    note!(ax, cell_pitch[1] - 0.1, 1.75, "Dashed: One Binned Dexel,\n2 × 2 Native (0.55 × 0.644 mm)"; align = (:left, :center), color = PALETTE.photon, fontsize = 15)
+    Mke.xlims!(ax, -0.3, cell_pitch[1] + 1.6)
+    locator!(fig[0, :], :asic; note = "Step 5 · Counting,\nThen Adding 2 × 2")
+    fig
+end
+
 # ╔═╡ 52e68256-0954-5993-b7ea-a0ef64dbde97
 let
     Mke.set_theme!(THEME)
@@ -1497,9 +2201,9 @@ let
     fig = Mke.Figure(size = (1200, 600))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "A binned (2 × 2) dexel: counts above each threshold, per photon landing on it",
-        xlabel = "photon energy (keV)",
-        ylabel = "counts per photon",
+        title = "A Binned (2 × 2) Dexel: Counts Above Each Threshold, per Photon Landing on It",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Counts per Photon",
         xticks = 10:10:140,
         limits = ((8, 142), (0, 1.25)),
     )
@@ -1526,11 +2230,11 @@ let
         ax,
         140,
         1.2,
-        "solid: corner group   dashed: middle group";
+        "Solid: Corner Group   Dashed: Middle Group";
         align = (:right, :top),
         fontsize = 14,
     )
-    Mke.Legend(fig[1, 2], ax; valign = :center, title = "threshold")
+    Mke.Legend(fig[1, 2], ax; valign = :center, title = "Threshold")
     fig
 end
 
@@ -1573,6 +2277,53 @@ let
     )
 end
 
+# ╔═╡ 8a8a6147-7140-4c47-8268-4d0002045acf
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 1000))
+    ax = canvas(fig[1, 1]; title = "Detector A, from the Focal Spot (Depth Exaggerated)", titlesize = 20)
+    cam = camera(-62, 26)
+    R = detector_a.radius_mm
+    half = deg2rad(MC.fan_angle_deg(detector_a)) / 2
+    half_z = MC.face_size_mm(detector_a)[2] / 2
+    amber = MATERIALS.beam
+    items = arc_quads(cam, R, half, half_z; thickness = 25.0, color = MATERIALS.cdte)
+    focal = (0.0, 0.0, 0.0)
+    corners = [(R * sin(a), -R * cos(a), z) for (a, z) in ((-half, -half_z), (half, -half_z), (half, half_z), (-half, half_z))]
+    iso = (0.0, -610.0, 0.0)
+    push!(
+        items,
+        (
+            1.0e4,
+            a -> begin
+                for (c1, c2) in zip(corners, circshift(corners, -1))
+                    Mke.poly!(a, Mke.Point2f[project(cam, focal), project(cam, c1), project(cam, c2)]; color = (amber, 0.1))
+                end
+                for c in corners
+                    Mke.lines!(a, [project(cam, focal), project(cam, c)]; color = (amber, 0.7), linewidth = 1.5)
+                end
+                Mke.scatter!(a, [project(cam, focal)]; color = PALETTE.ink, markersize = 14)
+                Mke.scatter!(a, [project(cam, iso)]; marker = :cross, markersize = 18, color = PALETTE.ink)
+            end,
+        ),
+    )
+    sort!(items; by = first)
+    for (_, f) in items
+        f(ax)
+    end
+    callout!(ax, project(cam, focal), project(cam, focal) + Mke.Point2f(150, 80), "Focal Spot"; fontsize = 16)
+    callout!(ax, project(cam, iso), project(cam, iso) + Mke.Point2f(260, 60), "Isocentre, 610 mm Away"; fontsize = 16)
+    edge = (R * sin(half), -R * cos(half), half_z)
+    callout!(ax, project(cam, edge), project(cam, edge) + Mke.Point2f(120, 120), "$(detector_a.columns) Columns × $(detector_a.rows) Rows of Native Dexels\n$(round(MC.fan_angle_deg(detector_a); digits = 1))° Fan, at $(round(R; digits = 1)) mm"; fontsize = 16)
+    low = (R * sin(-half / 2), -R * cos(-half / 2), -half_z)
+    callout!(ax, project(cam, low), project(cam, low) + Mke.Point2f(-120, -160), "The Outer Rows See the Beam\nat the Cone Angle (Section 6)"; fontsize = 16, align = (:right, :center))
+    xs = [project(cam, c)[1] for c in vcat(corners, [focal])]
+    ys = [project(cam, c)[2] for c in vcat(corners, [focal])]
+    Mke.limits!(ax, minimum(xs) - 520, maximum(xs) + 650, minimum(ys) - 240, maximum(ys) + 200)
+    locator!(fig[0, :], :arc; note = "The Whole Arc:\n$(detector_a.columns) × $(detector_a.rows) Dexels")
+    fig
+end
+
 # ╔═╡ 39c48e80-8b7e-5910-9909-463d8f715b0f
 let
     Mke.set_theme!(THEME)
@@ -1582,13 +2333,13 @@ let
     # (a) The gantry from the patient's feet: focal spot and the two detector arcs
     ax = Mke.Axis(
         fig[1, 1];
-        title = "(a) The detectors around the focal spot",
-        xlabel = "x (mm)",
-        ylabel = "y (mm)",
+        title = "(a) The Detectors Around the Focal Spot",
+        xlabel = "X (mm)",
+        ylabel = "Y (mm)",
         aspect = Mke.DataAspect(),
         limits = ((-620, 620), (-150, 1420)),
     )
-    for (d, color, label) in ((detector_a, PALETTE.photon, "detector A"), (detector_b, PALETTE.xray, "detector B"))
+    for (d, color, label) in ((detector_a, PALETTE.photon, "Detector A"), (detector_b, PALETTE.xray, "Detector B"))
         half = deg2rad(MC.fan_angle_deg(d)) / 2
         θ = range(-half, half; length = 200)
         r = d === detector_a ? R : R + 60
@@ -1616,7 +2367,7 @@ let
         ax,
         0,
         610,
-        "50 cm scan field\n(detector A)";
+        "50 cm Scan Field\n(Detector A)";
         align = (:center, :center),
         color = PALETTE.muted,
         fontsize = 14,
@@ -1625,7 +2376,7 @@ let
         ax,
         15,
         -20,
-        "focal spot";
+        "Focal Spot";
         align = (:left, :top),
         color = PALETTE.xray,
         fontsize = 15,
@@ -1634,7 +2385,7 @@ let
         ax,
         0,
         R + 110,
-        "B is drawn outside A for clarity:\nboth sit 1113 mm from their own focal spot";
+        "B Is Drawn Outside A for Clarity:\nBoth Sit 1113 mm from Their Own Focal Spot";
         align = (:center, :bottom),
         fontsize = 13,
         color = PALETTE.muted,
@@ -1646,9 +2397,9 @@ let
     p, G, g = detector_a.dexel_mm, detector_a.group, detector_a.gap_mm
     axb = Mke.Axis(
         fig[1, 2];
-        title = "(b) A patch of the face: 3 × 2 of its 688 × 48 grid cells",
-        xlabel = "along the arc (mm)",
-        ylabel = "z (mm)",
+        title = "(b) A Patch of the Face: 3 × 2 of Its 688 × 48 Grid Cells",
+        xlabel = "Along the Arc (mm)",
+        ylabel = "Z (mm)",
         aspect = Mke.DataAspect(),
     )
     tungsten = Mke.RGBf(0.35, 0.35, 0.4)
@@ -1668,7 +2419,7 @@ let
         axb,
         3 * pitch[1],
         2 * pitch[2],
-        "blue: dexels   grey: walls over the gaps";
+        "Blue: Dexels   Grey: Walls over the Gaps";
         align = (:right, :bottom),
         fontsize = 14,
         offset = (0, 6),
@@ -1714,9 +2465,9 @@ let
     # (a) The whole detector's counts per dexel (normalised to the mean photons per dexel)
     ax = Mke.Axis(
         fig[1, 1:2];
-        title = "(a) Every dexel of detector A: counts above 20 keV per photon landing on it",
-        xlabel = "dexel column",
-        ylabel = "row",
+        title = "(a) Every Dexel of Detector A: Counts Above 20 keV per Photon Landing on It",
+        xlabel = "Dexel Column",
+        ylabel = "Row",
     )
     hm = Mke.heatmap!(
         ax,
@@ -1726,14 +2477,14 @@ let
         colormap = :viridis,
         colorrange = (0.6, 1.3),
     )
-    Mke.Colorbar(fig[1, 3], hm; label = "counts per photon")
+    Mke.Colorbar(fig[1, 3], hm; label = "Counts per Photon")
 
     # (b) A close-up: three grid cells across, two along z
     axz = Mke.Axis(
         fig[2, 1];
-        title = "(b) Close-up: the 4 × 6 cells",
-        xlabel = "dexel column",
-        ylabel = "row",
+        title = "(b) Close-Up: the 4 × 6 Cells",
+        xlabel = "Dexel Column",
+        ylabel = "Row",
         aspect = Mke.DataAspect(),
     )
     cols = 1373:1384
@@ -1750,9 +2501,9 @@ let
     # (c) Averaged over the detector by position in the cell, against the six-position runs of section 5
     axc = Mke.Axis(
         fig[2, 2];
-        title = "(c) By position in the cell",
-        xlabel = "position in the grid cell",
-        ylabel = "counts above 20 keV per photon",
+        title = "(c) By Position in the Cell",
+        xlabel = "Position in the Grid Cell",
+        ylabel = "Counts Above 20 keV per Photon",
         xticks = (1:6, [p.label for p in positions]),
         limits = (nothing, (0.95, 1.3)),
     )
@@ -1772,7 +2523,7 @@ let
         sums ./ numbers;
         color = PALETTE.photon,
         markersize = 16,
-        label = "whole detector (this air scan)",
+        label = "Whole Detector (This Air Scan)",
     )
     Mke.scatter!(
         axc,
@@ -1781,7 +2532,7 @@ let
         color = PALETTE.xray,
         marker = :diamond,
         markersize = 16,
-        label = "one dexel at a time, 3 × 3 total (section 5)",
+        label = "One Dexel at a Time, 3 × 3 Total (Section 5)",
     )
     Mke.axislegend(axc; position = :lb)
 
@@ -1874,19 +2625,71 @@ spectra = Dict(
         for angle in (10, 8)
 )
 
+# ╔═╡ c81376fc-7b62-4e44-af3b-ec6cba4a8a9c
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 810))
+    ax = canvas(fig[1, 1])
+    amber = MATERIALS.beam
+    Mke.poly!(ax, Mke.Rect2f(-0.6, -1.5, 2.4, 3.0); color = Mke.RGBf(0.93, 0.94, 0.96), strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+    rect!(ax, -0.45, -0.25, 0.3, 0.5, PALETTE.slab_edge)
+    Mke.text!(ax, -0.3, -0.45; text = "Cathode", align = (:center, :top), fontsize = 14, color = PALETTE.muted)
+    Mke.poly!(ax, Mke.Point2f[(1.2, -0.9), (1.55, -0.9), (1.55, 0.9), (1.35, 0.9)]; color = Mke.RGBf(0.6, 0.45, 0.3))
+    Mke.text!(ax, 1.42, -1.0; text = "Tungsten Anode", align = (:center, :top), fontsize = 14, color = PALETTE.muted)
+    arrow!(ax, (-0.1, 0.0), (1.22, 0.0); color = PALETTE.photon, linewidth = 2.5, head = 11)
+    Mke.text!(ax, 0.55, 0.12; text = "Electrons", align = (:center, :bottom), fontsize = 14, color = PALETTE.photon)
+    Mke.text!(ax, 0.6, 1.6; text = "X-Ray Tube, 140 kVp", align = (:center, :bottom), fontsize = 18, font = :bold, color = PALETTE.ink)
+    Mke.text!(ax, 0.6, -1.65; text = "Anode Angle: 8° Documented;\nBasisSimulator v0.15.1: 10° Spectrum", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+    focal = Mke.Point2f(1.28, 0.0)
+    x_end = 13.5
+    Mke.poly!(ax, Mke.Point2f[focal, (x_end, 2.6), (x_end, -2.6)]; color = (amber, 0.13))
+    for y in (-2.6, 0.0, 2.6)
+        Mke.lines!(ax, [focal, Mke.Point2f(x_end, y)]; color = (amber, 0.5), linewidth = 1)
+    end
+    filters = (
+        (2.4, 0.18, Mke.RGBf(0.75, 0.77, 0.8), "3 mm Al", "Always"),
+        (4.0, 0.12, Mke.RGBf(0.6, 0.62, 0.68), "0.9 mm Ti", "BasisSimulator v0.15.1's\nAlpha Protocol"),
+        (5.7, 0.08, Mke.RGBf(0.55, 0.6, 0.5), "0.4 mm Sn", "Documented on Both\nTubes; Not Used Here"),
+    )
+    for (x, w, c, name, when) in filters
+        h = 0.25 + (x - focal[1]) * 2.6 / (x_end - focal[1])
+        rect!(ax, x, -h, w, 2h, c; strokecolor = (:black, 0.3))
+        Mke.text!(ax, x + w / 2, h + 0.12; text = name, align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
+        Mke.text!(ax, x + w / 2, -h - 0.12; text = when, align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+    end
+    xb = 7.2
+    hb = 0.25 + (xb - focal[1]) * 2.6 / (x_end - focal[1])
+    Mke.poly!(ax, Mke.Point2f[(xb, -hb), (xb + 0.55, -hb), (xb + 0.08, 0), (xb + 0.55, hb), (xb, hb)]; color = Mke.RGBf(0.75, 0.77, 0.8), strokecolor = (:black, 0.3))
+    Mke.text!(ax, xb + 0.25, hb + 0.12; text = "Bowtie", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
+    Mke.text!(ax, xb + 0.25, -hb - 0.12; text = "2.5 mm Al\nat the Centre", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+    θ = range(0, 2π; length = 100)
+    xi = 10.3
+    Mke.poly!(ax, Mke.Point2f.(xi .+ 1.1 .* cos.(θ), 0.8 .* sin.(θ)); color = (MATERIALS.water, 0.6), strokecolor = (PALETTE.photon, 0.5))
+    Mke.scatter!(ax, [Mke.Point2f(xi, 0)]; marker = :cross, markersize = 16, color = PALETTE.ink)
+    Mke.text!(ax, xi, 0.95; text = "Patient (Isocentre, 610 mm)", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
+    rect!(ax, x_end, -2.7, 0.15, 5.4, MATERIALS.cdte; strokecolor = PALETTE.slab_edge)
+    for y in range(-2.6, 2.6; length = 8)
+        rect!(ax, x_end - 0.35, y - 0.012, 0.35, 0.024, MATERIALS.tungsten)
+    end
+    Mke.text!(ax, x_end + 0.1, 2.85; text = "Grid + CdTe\n(1113 mm)", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
+    Mke.limits!(ax, -1.4, 14.6, -3.4, 3.9)
+    locator!(fig[0, :], :tube; note = "The X-Ray Tube and\nWhat the Beam Passes")
+    fig
+end
+
 # ╔═╡ 877c4989-7b59-5741-a50a-433cf4a4a14b
 let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1200, 560))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "The photons reaching the detector: 140 kVp, 3 mm Al + 0.9 mm Ti",
-        xlabel = "photon energy (keV)",
-        ylabel = "photons per mAs per mm²\nper keV, at 1113 mm",
+        title = "The Photons Reaching the Detector: 140 kVp, 3 mm Al + 0.9 mm Ti",
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Photons per mAs per mm²\nper keV, at 1113 mm",
         xticks = 0:20:140,
         limits = ((10, 142), (0, nothing)),
     )
-    for (angle, color, label) in ((10, PALETTE.photon, "anode 10° (BasisSimulator)"), (8, PALETTE.xray, "anode 8° (documented)"))
+    for (angle, color, label) in ((10, PALETTE.photon, "Anode 10° (BasisSimulator v0.15.1)"), (8, PALETTE.xray, "Anode 8° (Documented)"))
         e, w = spectra[angle]
         bin = e[2] - e[1]
         Mke.lines!(ax, e, w ./ bin; color, linewidth = 3, label)
@@ -1898,7 +2701,7 @@ let
         ax,
         21,
         0,
-        "thresholds: 20, 35, 55, 70 keV";
+        "Thresholds: 20, 35, 55, 70 keV";
         align = (:left, :bottom),
         offset = (0, 8),
         color = PALETTE.muted,
@@ -1908,7 +2711,7 @@ let
         ax,
         59,
         0,
-        "tungsten K lines";
+        "Tungsten K Lines";
         align = (:center, :bottom),
         offset = (0, 230),
         color = PALETTE.ink,
@@ -1957,15 +2760,38 @@ hvl_check = let
 
     [
         (
-            label = "BasisSimulator: anode 10°,\n3 mm Al + 0.9 mm Ti",
+            label = "BasisSimulator v0.15.1: Anode 10°,\n3 mm Al + 0.9 mm Ti",
             hvl = hvl(10, [("Ti", 0.9)]),
         ),
         (
-            label = "anode 8° (documented),\n3 mm Al + 0.9 mm Ti",
+            label = "Anode 8° (Documented),\n3 mm Al + 0.9 mm Ti",
             hvl = hvl(8, [("Ti", 0.9)]),
         ),
-        (label = "anode 8°,\n3 mm Al, no titanium", hvl = hvl(8, Tuple{String, Float64}[])),
+        (label = "Anode 8°,\n3 mm Al, No Titanium", hvl = hvl(8, Tuple{String, Float64}[])),
     ]
+end
+
+# ╔═╡ 01ccb19c-6a12-4958-b5c0-acb5ea96acfa
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1400, 380))
+    for (k, (al, reading, title)) in enumerate(((0, "100 %", "No Aluminium in the Beam"), (7.8, "50 %", "7.7–7.9 mm of Aluminium: Half Is Left")))
+        ax = canvas(fig[1, k]; title, titlesize = 20)
+        Mke.scatter!(ax, [Mke.Point2f(0, 0)]; marker = :rect, markersize = 22, color = PALETTE.ink)
+        Mke.text!(ax, 0, -0.45; text = "Tube\n(140 kVp, Through\nthe Bowtie's Centre)", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+        Mke.poly!(ax, Mke.Point2f[(0.1, 0), (6, 0.45), (6, -0.45)]; color = (MATERIALS.beam, 0.25))
+        if al > 0
+            for i in 0:3
+                rect!(ax, 2.8 + 0.18i, -0.35, 0.12, 0.7, Mke.RGBf(0.75, 0.77, 0.8); strokecolor = (:black, 0.3))
+            end
+            Mke.text!(ax, 3.1, 0.5; text = "Aluminium Sheets", align = (:center, :bottom), fontsize = 14, color = PALETTE.ink)
+        end
+        Mke.poly!(ax, Mke.Point2f.(6.0 .+ 0.35 .* cos.(range(0, 2π; length = 60)), 0.35 .* sin.(range(0, 2π; length = 60))); color = Mke.RGBf(0.85, 0.87, 0.9), strokecolor = PALETTE.slab_edge)
+        Mke.text!(ax, 6.0, -0.5; text = "Ion Chamber\nat the Isocentre", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+        Mke.textlabel!(ax, Mke.Point2f(6.0, 0.75); text = "Air Kerma: $(reading)", text_align = (:center, :bottom), fontsize = 16, font = :bold, text_color = PALETTE.kept, background_color = (:white, 0.9), strokewidth = 0)
+        Mke.limits!(ax, -0.8, 7.0, -1.3, 1.3)
+    end
+    fig
 end
 
 # ╔═╡ f68a9548-e730-4402-af6d-ed2f2a2dc3a9
@@ -1974,8 +2800,8 @@ let
     fig = Mke.Figure(size = (1200, 480))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Half-value layer at the isocentre, 140 kVp",
-        xlabel = "half-value layer (mm of aluminium)",
+        title = "Half-Value Layer at the Isocentre, 140 kVp",
+        xlabel = "Half-Value Layer (mm of Aluminium)",
         yticks = (1:3, [c.label for c in hvl_check]),
         yreversed = true,
         limits = ((0, 12), (0.4, 4.2)),
@@ -1985,7 +2811,7 @@ let
         ax,
         7.8,
         3.85,
-        "measured on the Alpha: 7.7–7.9 mm";
+        "Measured on the Alpha: 7.7–7.9 mm";
         align = (:center, :center),
         color = PALETTE.kept,
         fontsize = 16,
@@ -2032,7 +2858,7 @@ end
 md"""
 **Counts per bin, three ways.** For photons of this spectrum landing on the detector:
 
-- **BasisSimulator today**: its response matrix (`compute_mc_drm`, built from `cdte_response_v4`)
+- **BasisSimulator v0.15.1**: its response matrix (`compute_mc_drm`, built from `cdte_response_v4`)
   folded with the spectrum, times its fill factor (0.95);
 - **Geant4, one dexel**: the same calculation with section 3's Geant4 response (no grid);
 - **Geant4, the whole detector**: an air scan of all of detector A with the spectrum itself,
@@ -2099,6 +2925,44 @@ whole_bins = let c = air_scan_spectrum
     bins_from(above)
 end
 
+# ╔═╡ b3df600c-9c49-48f5-89b1-760870751d97
+let
+    Mke.set_theme!(THEME)
+    p, G, g = alpha.dexel, alpha.group, alpha.gap
+    fig = Mke.Figure(size = (1600, 560))
+
+    # (a) One photon, shared by two dexels: the detector counts it twice; v0.15.1 rescales to one
+    ax = canvas(fig[1, 1]; title = "(a) One Shared Photon: Two Counts, or One?", titlesize = 20)
+    for k in 0:1
+        rect!(ax, k * 1.1, 0, 1.0, 0.6, MATERIALS.cdte_lit; strokecolor = PALETTE.slab_edge)
+        Mke.textlabel!(ax, Mke.Point2f(k * 1.1 + 0.5, 0.3); text = "+1", text_align = (:center, :center), fontsize = 18, font = :bold, text_color = :white, background_color = PALETTE.photon, strokewidth = 0, cornerradius = 8)
+    end
+    Mke.scatter!(ax, [Mke.Point2f(1.05, 0.62)]; marker = :star5, markersize = 26, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.5)
+    Mke.text!(ax, 1.05, -0.15; text = "The Detector (No Anti-Coincidence Logic\nDocumented): Both Counts Kept, 2 per Photon", align = (:center, :top), fontsize = 15, color = PALETTE.ink)
+    Mke.text!(ax, 1.05, -0.75; text = "BasisSimulator v0.15.1: Any Energy That Makes\nMore Than 1 Count per Photon Is Scaled Back to 1", align = (:center, :top), fontsize = 15, color = PALETTE.reference)
+    Mke.limits!(ax, -0.3, 2.4, -1.35, 1.0)
+
+    # (b) The share of the face that sees photons: v0.15.1's fill factor against the grid's open area
+    axb = Mke.Axis(
+        fig[1, 2];
+        title = "(b) The Share of the Face That Collects Photons",
+        titlesize = 20,
+        xlabel = "Across the Fan (mm)",
+        ylabel = "Along Z (mm)",
+        aspect = Mke.DataAspect(),
+    )
+    rect!(axb, -g[1] / 2, -g[2] / 2, cell_pitch[1], cell_pitch[2], MATERIALS.tungsten)
+    for k in 0:3, l in 0:5
+        c = dexel_corner(k, l) .- g ./ 2
+        rect!(axb, c[1], c[2], p[1], p[2], MATERIALS.cdte_lit; strokecolor = PALETTE.slab_edge, strokewidth = 0.6)
+    end
+    open_fraction = prod(G .* p) / prod(cell_pitch)
+    note!(axb, cell_pitch[1] - 0.05, 1.3, "Open (Light): $(round(open_fraction; digits = 2)) of the Face\nWith the Grid, as Built Here"; align = (:left, :center), color = PALETTE.photon, fontsize = 15)
+    note!(axb, cell_pitch[1] - 0.05, 0.5, "BasisSimulator v0.15.1:\nFill Factor 0.95"; align = (:left, :center), color = PALETTE.reference, fontsize = 15)
+    Mke.xlims!(axb, -0.3, cell_pitch[1] + 1.5)
+    fig
+end
+
 # ╔═╡ 5138ed44-8263-5dbf-9d6e-d78c085c4a85
 let
     Mke.set_theme!(THEME)
@@ -2106,9 +2970,9 @@ let
     fig = Mke.Figure(size = (1200, 640))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "Counts in each energy bin, per photon reaching the detector (140 kVp)",
-        xlabel = "energy bin (keV)",
-        ylabel = "counts per photon",
+        title = "Counts in Each Energy Bin, per Photon Reaching the Detector (140 kVp)",
+        xlabel = "Energy Bin (keV)",
+        ylabel = "Counts per Photon",
         xticks = (1:4, labels),
         limits = (nothing, (0, 0.42)),
     )
@@ -2116,15 +2980,15 @@ let
         (
             bs_bins,
             PALETTE.reference,
-            "BasisSimulator today (cdte_response_v4, capped at 1 count per photon, × 0.95)",
+            "BasisSimulator v0.15.1 (cdte_response_v4, Capped at 1 Count per Photon, × 0.95)",
         ),
         (
             geant4_bins_capped,
             (PALETTE.reference, 0.45),
-            "Geant4, one dexel, with the same cap and × 0.95",
+            "Geant4, One Dexel, with the Same Cap and × 0.95",
         ),
-        (geant4_bins, PALETTE.muted, "Geant4, one dexel, no grid, every count kept"),
-        (whole_bins, PALETTE.photon, "Geant4, whole detector A with its grid"),
+        (geant4_bins, PALETTE.muted, "Geant4, One Dexel, No Grid, Every Count Kept"),
+        (whole_bins, PALETTE.photon, "Geant4, Whole Detector A with Its Grid"),
     )
     width = 0.2
     for (k, (values, color, label)) in enumerate(series)
@@ -2258,6 +3122,38 @@ pileup = let
     )
 end
 
+# ╔═╡ dc89fc6d-57b5-42e2-97ba-04cb2fb1614d
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 800))
+    ax = Mke.Axis(
+        fig[1, 1];
+        title = "One Dexel's Pulses in 60 ns, at Clinical Rates",
+        titlesize = 20,
+        xlabel = "Time (ns)",
+        ylabel = "Pulse Height (keV)",
+        limits = ((0, 60), (0, 110)),
+        yticks = [20, 35, 55, 70],
+    )
+    τ = 5.0
+    shape(t, t0, E) = t < t0 ? 0.0 : E * ((t - t0) / 2.5) * exp(1 - (t - t0) / 2.5)
+    pulses = [(4.0, 45.0), (19.0, 62.0), (21.5, 40.0), (38.0, 30.0), (50.0, 75.0)]
+    t = range(0, 60; length = 1200)
+    for (t0, _) in pulses
+        Mke.vspan!(ax, t0, t0 + τ; color = (PALETTE.muted, 0.12))
+    end
+    signal = [sum(shape(x, t0, E) for (t0, E) in pulses) for x in t]
+    for level in (20, 35, 55, 70)
+        Mke.hlines!(ax, level; color = (MATERIALS.beam, 0.7), linewidth = 1.2, linestyle = :dash)
+    end
+    Mke.lines!(ax, t, signal; color = PALETTE.photon, linewidth = 3)
+    note!(ax, 20.2, 104, "Two Photons 2.5 ns Apart Merge:\nOne Count, at a Higher Energy (Pile-Up)"; align = (:center, :top), color = MATERIALS.charge, fontsize = 15)
+    note!(ax, 59, 10, "Grey: the $(round(Int, τ)) ns Dead Time After Each Pulse"; align = (:right, :bottom), color = PALETTE.muted, fontsize = 14)
+    note!(ax, 1, 72, "Dashed: the Four Thresholds"; align = (:left, :bottom), color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 14)
+    locator!(fig[0, :], :asic; note = "Step 5 at Clinical\nCount Rates")
+    fig
+end
+
 # ╔═╡ 4c43a065-f125-5640-8df8-a2b16fdbdd4e
 let
     Mke.set_theme!(THEME)
@@ -2265,22 +3161,22 @@ let
     fig = Mke.Figure(size = (1200, 600))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "What pile-up does at $(round(photon_rate / 1.0e6; digits = 1)) million photons per second per dexel",
-        xlabel = "energy bin (keV)",
-        ylabel = "recorded ÷ true counts",
+        title = "What Pile-Up Does at $(round(photon_rate / 1.0e6; digits = 1)) Million Photons per Second per Dexel",
+        xlabel = "Energy Bin (keV)",
+        ylabel = "Recorded ÷ True Counts",
         xticks = (1:4, labels),
         limits = (nothing, (0.5, nothing)),
     )
     Mke.hlines!(ax, 1; color = PALETTE.ink, linewidth = 1.5)
     series = (
-        ((:incident, 5.0), PALETTE.reference, "incident spectrum, 5.0 ns (BasisSimulator)"),
+        ((:incident, 5.0), PALETTE.reference, "Incident Spectrum, 5.0 ns (BasisSimulator v0.15.1)"),
         (
             (:incident, 6.0),
             (PALETTE.reference, 0.5),
-            "incident spectrum, 6.0 ns (measured 5.3–7.0)",
+            "Incident Spectrum, 6.0 ns (Measured 5.3–7.0)",
         ),
-        ((:pulses, 5.0), PALETTE.photon, "Geant4 pulse heights, 5.0 ns"),
-        ((:pulses, 6.0), (PALETTE.photon, 0.5), "Geant4 pulse heights, 6.0 ns"),
+        ((:pulses, 5.0), PALETTE.photon, "Geant4 Pulse Heights, 5.0 ns"),
+        ((:pulses, 6.0), (PALETTE.photon, 0.5), "Geant4 Pulse Heights, 6.0 ns"),
     )
     width = 0.2
     for (k, (key, color, label)) in enumerate(series)
@@ -2312,11 +3208,198 @@ let
     )
 end
 
+# ╔═╡ 88117c52-14b8-4302-a0e5-2231d12504e2
+md"""
+## 11. A Clinical Beam, for Real
+
+Every count so far came from photons of **one energy**. A scan is a spectrum, hardened by the
+bowtie and by the patient, and BasisSimulator never follows it photon by photon: it weights the
+single-energy response by the spectrum. This section checks that shortcut by doing it the long
+way:
+
+- the Alpha's **140 kVp beam** (BasisSimulator's spectrum: the 10° anode, 3 mm Al + 0.9 mm Ti,
+  through the bowtie's centre), **bare and after 20 and 35 cm of water** (the patient's primary
+  photons; the patient's scatter is notebook 10's);
+- each one **drawn photon by photon from its spectrum** onto one native dexel, as in sections 1–4
+  (800 000 photons, in 16 independent chunks), with the same charge cloud, noise and thresholds;
+- against the single-energy counts of section 4 **weighted by the same spectrum**, in each of the
+  four bins (20–35, 35–55, 55–70 and above 70 keV) and in all of them together.
+
+Charge sharing makes the counts nonlinear in the photon (one photon can count twice), but each
+photon still counts independently of the others below pile-up rates, so the weighted sum must
+hold exactly; the check is whether it does.
+"""
+
+# ╔═╡ 25f703a9-2bc9-4781-9a28-dd84484cb1d6
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 820))
+    ax = canvas(fig[1, 1]; title = "The Beam, Photon by Photon", titlesize = 20)
+    amber = MATERIALS.beam
+    focal = Mke.Point2f(0, 0)
+    Mke.scatter!(ax, [focal]; marker = :rect, markersize = 22, color = PALETTE.ink)
+    Mke.text!(ax, focal + Mke.Point2f(0, 0.45); text = "140 kVp Tube", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
+    R = 10.0
+    φ = range(-deg2rad(24.1), deg2rad(24.1); length = 60)
+    arc = [Mke.Point2f(R * sin(t), -R * cos(t)) for t in φ]
+    Mke.poly!(ax, vcat([focal], arc); color = (amber, 0.15))
+    Mke.poly!(ax, Mke.Point2f[(-1.2, -1.6), (1.2, -1.6), (0.15, -2.0), (1.2, -2.4), (-1.2, -2.4), (-0.15, -2.0)]; color = Mke.RGBf(0.75, 0.77, 0.8))
+    Mke.text!(ax, 1.35, -2.0; text = "Bowtie", align = (:left, :center), fontsize = 15, color = PALETTE.ink)
+    θ = range(0, 2π; length = 100)
+    Mke.poly!(ax, Mke.Point2f.(2.4 .* cos.(θ), -5.45 .+ 1.6 .* sin.(θ)); color = (MATERIALS.water, 0.7), strokecolor = (PALETTE.photon, 0.5))
+    Mke.text!(ax, 0, -5.45; text = "0, 20 or 35 cm\nof Water", align = (:center, :center), fontsize = 15, color = PALETTE.ink)
+    inner = [Mke.Point2f((R + 0.05) * sin(t), -(R + 0.05) * cos(t)) for t in φ]
+    outer = [Mke.Point2f((R + 0.45) * sin(t), -(R + 0.45) * cos(t)) for t in φ]
+    Mke.poly!(ax, vcat(inner, reverse(outer)); color = MATERIALS.cdte, strokecolor = PALETTE.slab_edge)
+    Mke.text!(ax, 0, -R - 0.7; text = "One Native Dexel of CdTe, as in Sections 1–4", align = (:center, :top), fontsize = 15, font = :bold, color = PALETTE.ink)
+    Mke.limits!(ax, -6.5, 6.5, -R - 1.8, 1.4)
+
+    continuum(e) = !(57 <= e <= 70)
+    shapes = [(b.label, b.spectrum.energies_keV, b.spectrum.weights ./ (sum(b.spectrum.weights) * 0.5)) for b in clinical_beams]
+    top = 1.35 * maximum(maximum(w[continuum.(e)]) for (_, e, w) in shapes)
+    axs = Mke.Axis(
+        fig[1, 2];
+        title = "The Beam Hardens in the Patient",
+        titlesize = 20,
+        xlabel = "Photon Energy (keV)",
+        ylabel = "Fraction of Photons per keV",
+        limits = ((10, 145), (0, top)),
+        xticks = 20:20:140,
+    )
+    for t in air_readout.thresholds_keV
+        Mke.vlines!(axs, t; color = (PALETTE.muted, 0.5), linestyle = :dash, linewidth = 1.2)
+    end
+    colors = (PALETTE.photon, PALETTE.xray, PALETTE.electron)
+    for (k, (label, e, w)) in enumerate(shapes)
+        Mke.lines!(axs, e, w; color = colors[k], linewidth = 3, label = "$(label): Mean $(round(sum(w .* e) / sum(w); digits = 1)) keV")
+    end
+    note!(axs, 63.5, 0.97top, "Tungsten's K Lines\n(Off Scale)"; align = (:center, :top), fontsize = 14, color = PALETTE.muted)
+    note!(axs, 21, 0.03top, "Dashed: the Four Thresholds"; align = (:left, :bottom), fontsize = 14, color = PALETTE.muted)
+    Mke.axislegend(axs; position = :rt)
+    Mke.colsize!(fig.layout, 1, Mke.Relative(0.36))
+    locator!(fig[0, :], :whole; note = "Everything at Once:\nTube, Patient, Every Step")
+    fig
+end
+
+# ╔═╡ 888c0650-ebc4-4bfa-8880-335e82f146c0
+# The Alpha's 140 kVp beam on the central ray: BasisSimulator's spectrum (10° anode) through the
+# bowtie's centre, then through 0, 20 and 35 cm of water (the primary photons)
+clinical_beams = let
+    bowtie = BS.resolve_bowtie_filter(:large_body)
+    centre = argmin(abs.(bowtie.angles))
+    bowtie_al_mm = 10 * bowtie.thickness[centre, findfirst(==("Al"), bowtie.materials)]
+    aluminium, water = MC.DetectorMaterial(:Al), MC.DetectorMaterial(:Water)
+    e, w = spectra[10]
+    through_bowtie = w .* exp.(-[MC.linear_attenuation(aluminium, max(E, 1.0)) for E in e] .* bowtie_al_mm)
+    [
+        (
+                label = L == 0 ? "No Patient" : "$(round(Int, L / 10)) cm of Water",
+                water_mm = L,
+                spectrum = MC.Spectrum(
+                    collect(Float64, e),
+                    through_bowtie .* exp.(-[MC.linear_attenuation(water, max(E, 1.0)) for E in e] .* L),
+                ),
+            )
+            for L in (0.0, 200.0, 350.0)
+    ]
+end
+
+# ╔═╡ 2956ae91-7028-45a0-9466-12370ae5a928
+# Each beam photon by photon onto one native dexel (16 chunks of 50 000), each chunk's charge
+# shared and counted where it ran, with section 4's noise
+clinical_counts = let
+    responses_by_chunk = MC.simulate_sweep(
+        [(crystal, b.spectrum, 600 + chunk) for b in clinical_beams for chunk in 1:16];
+        n = 50_000,
+        beam,
+        readout,
+    )
+    counted = [
+        MC.threshold_counts(r, air_readout.thresholds_keV; electronic_noise_keV = current_table["sigma_elec_keV"]).total
+            for r in responses_by_chunk
+    ]
+    [counted[(16(k - 1) + 1):(16k)] for k in eachindex(clinical_beams)]
+end
+
+# ╔═╡ b93ed54c-9e8b-45ee-b09c-7a06a1f1aed2
+# The long way against the shortcut: counts per photon in each bin (and above 20 keV), the direct
+# value with its noise (the 16 chunks' spread), and the single-energy counts weighted by the spectrum
+clinical_check = let
+    E = collect(energies)
+    thresholds_at = [findfirst(==(t), thresholds) for t in air_readout.thresholds_keV]
+    per_energy = [c.total[thresholds_at] for c in counts]
+    noise(values) = sqrt(sum(abs2, values .- mean(values)) / (length(values) - 1) / length(values))
+    labels = ["20–35 keV", "35–55 keV", "55–70 keV", "> 70 keV", "All Above 20 keV"]
+    with_total(above) = vcat(bins_from(above), above[1])
+    map(enumerate(clinical_beams)) do (k, b)
+        e, w = b.spectrum.energies_keV, b.spectrum.weights
+        weighted = [
+            sum(w .* [MC.interpolate_linear(E, [p[t] for p in per_energy], x) for x in e]) / sum(w)
+                for t in 1:4
+        ]
+        chunks = [with_total(c) for c in clinical_counts[k]]
+        (
+            label = b.label,
+            bins = labels,
+            table = with_total(weighted),
+            direct = with_total(sum(clinical_counts[k]) ./ length(clinical_counts[k])),
+            noise = [noise([c[i] for c in chunks]) for i in eachindex(labels)],
+        )
+    end
+end
+
+# ╔═╡ 1029e073-9f7e-4bc3-a1b0-e5ec3a79b03f
+let
+    Mke.set_theme!(THEME)
+    fig = Mke.Figure(size = (1600, 560))
+    for (k, c) in enumerate(clinical_check)
+        x = 1:length(c.bins)
+        ax = Mke.Axis(
+            fig[1, k];
+            title = c.label,
+            titlesize = 20,
+            ylabel = k == 1 ? "Counts per Photon" : "",
+            xticks = (x, replace.(c.bins, " keV" => "")),
+            xticklabelrotation = π / 6,
+            limits = ((0.4, length(x) + 0.6), (0, 1.15 * maximum(c.direct))),
+        )
+        Mke.scatter!(ax, x .- 0.1, c.table; color = PALETTE.reference, marker = :diamond, markersize = 16, label = "Single Energies, Weighted by the Spectrum")
+        Mke.errorbars!(ax, x .+ 0.1, c.direct, 3 .* c.noise; color = PALETTE.kept, whiskerwidth = 10, linewidth = 2)
+        Mke.scatter!(ax, x .+ 0.1, c.direct; color = PALETTE.kept, markersize = 14, label = "Geant4, the Spectrum Itself (± 3σ)")
+        k == 1 && Mke.axislegend(ax; position = :lt)
+    end
+    fig
+end
+
+# ╔═╡ b8846f41-7a5f-41bd-90b9-0881b4ecc0e4
+let
+    rows = String[]
+    for c in clinical_check, i in eachindex(c.bins)
+        difference = c.direct[i] - c.table[i]
+        allowed = 3c.noise[i] + 0.003
+        pass = abs(difference) <= allowed
+        push!(rows, "| $(pass ? "✓" : "✗ **fail**") | $(c.label), $(c.bins[i]) | $(round(c.table[i]; digits = 4)) | $(round(c.direct[i]; digits = 4)) ± $(round(c.noise[i]; digits = 4)) | $(round(difference; digits = 4)) | ≤ $(round(allowed; digits = 4)) |")
+    end
+    passed = count(r -> startswith(r, "| ✓"), rows)
+    Markdown.parse(
+        """
+        | | beam, counts per photon | single energies, weighted | Geant4, the spectrum itself | difference | allowed |
+        |---|---|---|---|---|---|
+        $(join(rows, "\n"))
+
+        **$(passed) of $(length(rows)) agree.** Allowed: three times the direct simulation's own noise, plus 0.003 for
+        the single-energy table's noise and its 1-keV grid. Where they agree, the single-energy response, weighted by any
+        spectrum, is the clinical beam: a response table on a 1-keV grid is all a scan needs (below pile-up rates,
+        section 10).
+        """
+    )
+end
+
 # ╔═╡ 92576991-a76a-5062-b4fc-e5d8604dd672
 md"""
 ## Saving the Tables
 
-The tables BasisSimulator would load, written in the layout of its current `cdte_response_v4`
+The tables BasisSimulator would load, written in the layout of v0.15.1's `cdte_response_v4`
 (the same keys, dimensions and meaning; `BasisSimulator.load_mc_response` reads them), with the
 provenance alongside. Two tables:
 
@@ -2396,7 +3479,7 @@ end
 md"""
 ## Where This Leaves the Alpha
 
-- **One dexel**, simulated in Geant4 from first principles, reproduces BasisSimulator's current
+- **One dexel**, simulated in Geant4 from first principles, reproduces BasisSimulator v0.15.1's
   MCNP table (`cdte_response_v4`) to about 0.01 counts per photon at every threshold.
 - **The anti-scatter grid**, absent from BasisSimulator, changes the share of the detector that
   sees photons from 0.95 to about 0.72, without making dexels unequal in an air scan.
@@ -2405,15 +3488,23 @@ md"""
 - **The count rates** and pulse heights feed BasisSimulator's own pile-up model, with the
   crystal's real pulse-height spectrum in place of the incident one.
 
-What would replace BasisSimulator's tables: the six positions' responses on its energy grid,
+- **A clinical beam**, photon by photon, gives the single-energy response weighted by its spectrum
+  (section 11): the table on a 1-keV grid is all a scan needs below pile-up rates.
+
+What would replace BasisSimulator v0.15.1's tables: the six positions' responses on its energy grid,
 at the cone angle of each row, binned 2 × 2, with the grid's open fraction, from this notebook.
 """
 
 # ╔═╡ Cell order:
 # ╟─6e30fdb2-879c-52f4-99ab-666bbb68cd4f
+# ╟─97e89e01-c1b8-4d6e-892f-b17751b636d1
 # ╟─df200390-005d-5328-870a-9a821744961d
 # ╟─e71ceeb9-0d88-5608-8588-ee48a312de90
+# ╟─f6b40d89-2b55-4c5e-b8e7-881636d05f6e
 # ╟─8326156c-5e6a-5f16-89ab-5e8b268b2e0a
+# ╟─debadf41-b238-45ca-a2f2-eeecff9a20f5
+# ╟─22a88d29-5771-4e17-ab70-f33d13c288a8
+# ╟─20aa77fa-7c82-4c2a-b72d-58c13baead11
 # ╟─f7ad4569-b274-5714-83ab-bc7ad0497b53
 # ╟─943d5189-ca8c-5e1b-860d-dad9ed192843
 # ╠═ed5d0968-55b8-54bb-be08-b8b3e5231445
@@ -2423,11 +3514,38 @@ at the cone angle of each row, binned 2 × 2, with the grid's open fraction, fro
 # ╠═1ff7c097-d985-5412-9686-8e062018d0b2
 # ╠═bc2a467c-d990-556b-b955-dd91539122ab
 # ╠═fdaa0020-4804-5c58-8453-668f6c70ebf3
+# ╠═5285d69f-7fb4-488a-9954-5e2d36bf1204
 # ╠═0df22b09-66d5-59e9-9f68-79a2b1886e38
 # ╠═40986dbf-a0d8-51ea-aa7b-75b21dcc7eaa
 # ╠═a944bba9-6761-5648-b028-0d90a7b56e29
 # ╠═c5fa8b52-766b-5c4a-9794-a056c8e00dc2
 # ╠═eb7fb66a-4e78-5a01-ada0-e323524fde34
+# ╟─f3001712-cc0a-48db-8c7e-27e06c5aa3fd
+# ╠═2444710c-f16a-47aa-9ea5-d3cdaa2c6d19
+# ╠═18913250-92bd-415e-9559-55e73934e2eb
+# ╠═de754d25-442e-4d20-8565-4e0b9a502db7
+# ╠═dc842efe-90d4-435c-a6de-fc2375005697
+# ╠═72cb803c-129a-4891-ac42-8308cc4ce50a
+# ╠═ee6c802f-d1f0-432e-bae6-166cf16320d3
+# ╠═792826ce-b8c6-4fbd-9919-8c719d716f49
+# ╠═eff17814-a2f6-4d61-a9cd-df7458f5b5b0
+# ╠═896c9200-6700-48f4-beb2-cffee0c1ec0f
+# ╠═e6249cb2-6672-4f2c-956d-a4e947fa0d07
+# ╠═ed2d4d8c-1329-47a4-841f-7affbc4d204f
+# ╠═1d5e84c1-714b-47d6-a120-71068b37aebc
+# ╠═dd76ac67-b4fa-4c94-bdf6-4b431f3d14a4
+# ╠═fe495bf4-f87f-45c4-b1ab-16c586bc4df5
+# ╠═a05ae43e-08a8-4696-b931-100fe6023d33
+# ╠═a2be090c-6854-4fa7-90ce-5494da5bd57c
+# ╠═cf02ddf8-fcef-413d-a30d-d51071fdc761
+# ╠═2a420206-70e3-4019-945c-f628bd6ee0df
+# ╠═290c44b9-29d5-4d71-ae2b-b14fa5fc02d5
+# ╠═c7ef0930-55ad-4a4f-8296-db3571c54a88
+# ╠═06101f43-57fd-44a5-b7aa-cd22bfaa5eb1
+# ╠═246bff85-ebee-4478-a199-b432c91f57ad
+# ╠═7b539e6e-ee97-4464-a2c5-f09abe2a32f7
+# ╠═7cefafb2-4fa6-43f2-9cc7-c64d016df12b
+# ╠═9893a0c1-2162-4290-8273-19740f076747
 # ╟─a75d1e50-0d30-51f0-9004-d0a001673992
 # ╠═d1967848-6509-5e0e-8f13-db8ea4993799
 # ╠═c03a39db-4010-59b6-8c41-be48372ae822
@@ -2444,11 +3562,14 @@ at the cone angle of each row, binned 2 × 2, with the grid's open fraction, fro
 # ╠═efb0402d-648c-5ab8-a06d-f031e9550e90
 # ╟─4f6dd6cb-cb42-5da9-9692-b257389cacf7
 # ╠═b334ec12-f83a-59bc-8936-c7e16badc21c
+# ╟─8b38185f-e423-49ca-af97-536138ddc8be
 # ╟─6a162bd9-0b36-5cf6-b16e-6b6d095b5ee8
 # ╟─65f1babc-4849-5e3a-8404-738562c88837
 # ╠═0eff78e6-df72-522a-b5db-d70421a6cdec
+# ╟─0c8a2fcc-ca65-4040-9b13-973725659b2e
 # ╠═4e507ffb-04ca-5f56-a577-e2715de205a4
 # ╠═124978ab-3b89-5c61-996d-64d7f222d405
+# ╟─cb866af1-b9f8-467d-bab4-77815e589bd9
 # ╟─28a04c08-f2be-5b0b-8487-d1953b4ffca4
 # ╟─c0ec94cf-51a6-5967-8b5a-2a582ed1ebf9
 # ╟─db9638a4-4721-5644-b84e-bec6fa1a80e3
@@ -2473,11 +3594,13 @@ at the cone angle of each row, binned 2 × 2, with the grid's open fraction, fro
 # ╟─49a1c7cc-171e-5724-a834-f334c5e9c2ea
 # ╟─25fb922f-615e-5b76-9048-7acf73bb0f3a
 # ╠═39f04615-41a5-5f60-894d-f8e636e68f8c
+# ╟─313586e2-12f3-49c0-8418-027e1f21533c
 # ╟─52e68256-0954-5993-b7ea-a0ef64dbde97
 # ╟─9133ec80-9f4b-5fbd-8d36-626ca9c12719
 # ╠═7081fb53-7350-5ef5-82fc-c3866ca8dc5a
 # ╠═bfee1bcb-7273-5f67-b684-42e8be79191d
 # ╟─c0f06895-b97e-5bc3-81dd-bdd5b1a8a0c3
+# ╟─8a8a6147-7140-4c47-8268-4d0002045acf
 # ╟─39c48e80-8b7e-5910-9909-463d8f715b0f
 # ╟─2ae8390f-0dcc-5f4b-85ca-ca5cb562bb98
 # ╠═1e681426-7ee2-5fe5-a150-92b684d4aed3
@@ -2488,9 +3611,11 @@ at the cone angle of each row, binned 2 × 2, with the grid's open fraction, fro
 # ╠═5d8d5cd1-8ff7-5356-87bb-24b57c3281f1
 # ╠═1d5d02ab-485b-567f-ac5d-aaea105040a4
 # ╠═15bdf1fd-777f-50c0-ad69-59c912741e2e
+# ╟─c81376fc-7b62-4e44-af3b-ec6cba4a8a9c
 # ╟─877c4989-7b59-5741-a50a-433cf4a4a14b
 # ╟─848bfaff-246d-4084-989c-c17ef4008e41
 # ╠═648db0cd-57fc-46a7-894e-06ab540140a2
+# ╟─01ccb19c-6a12-4958-b5c0-acb5ea96acfa
 # ╟─f68a9548-e730-4402-af6d-ed2f2a2dc3a9
 # ╟─0e2ac434-ad27-4763-bbb7-f1a231b06087
 # ╟─0534c5aa-7947-53bd-b463-865d06524b9c
@@ -2502,14 +3627,23 @@ at the cone angle of each row, binned 2 × 2, with the grid's open fraction, fro
 # ╠═b6f087da-6174-536f-bcc8-cb3162a5672a
 # ╠═386f7529-23ab-58b1-8cb8-b437f6202d92
 # ╠═ffbb7b94-2da1-50b4-a068-3db6b4722420
+# ╟─b3df600c-9c49-48f5-89b1-760870751d97
 # ╟─5138ed44-8263-5dbf-9d6e-d78c085c4a85
 # ╟─f47124cb-a324-5c43-b885-8868f266f9e8
 # ╟─fe7057a7-e676-5a62-899c-da11603bb9ed
 # ╠═b42aaddf-0087-5766-91d5-7a5d1fd04261
 # ╠═4d962a9a-3fd6-5fab-a132-c9c9907d4abc
 # ╠═98710092-8d7f-56d4-964f-36441ac6613a
+# ╟─dc89fc6d-57b5-42e2-97ba-04cb2fb1614d
 # ╟─4c43a065-f125-5640-8df8-a2b16fdbdd4e
 # ╟─455fbb1d-4de4-588e-98b7-7d0159a29d63
+# ╟─88117c52-14b8-4302-a0e5-2231d12504e2
+# ╟─25f703a9-2bc9-4781-9a28-dd84484cb1d6
+# ╠═888c0650-ebc4-4bfa-8880-335e82f146c0
+# ╠═2956ae91-7028-45a0-9466-12370ae5a928
+# ╠═b93ed54c-9e8b-45ee-b09c-7a06a1f1aed2
+# ╟─1029e073-9f7e-4bc3-a1b0-e5ec3a79b03f
+# ╟─b8846f41-7a5f-41bd-90b9-0881b4ecc0e4
 # ╟─92576991-a76a-5062-b4fc-e5d8604dd672
 # ╠═fd10aa2e-f7ac-5b15-b095-6f2ead637241
 # ╠═d090515d-ebde-502a-88ff-a1801857dd84

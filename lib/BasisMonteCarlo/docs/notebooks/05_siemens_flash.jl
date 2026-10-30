@@ -2784,7 +2784,7 @@ let
     end
     Mke.bracket!(axb, xr - reach, H + 0.1, xr, H + 0.1; text = "H tan θ: These Hit the Plate", orientation = :up, fontsize = 14, color = PALETTE.xray, textcolor = PALETTE.xray)
     Mke.bracket!(axb, 0.5p[1] + 0.12, 0, 0.5p[1] + 0.12, H; text = "H = $(round(Int, H)) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
-    Mke.Label(fig[2, 2], "Photons Arriving θ = $(round(Int, θ))° Across the Fan: the Fraction\n1 − H tan θ / Opening Reaches the Ceramic. Along Z There Are No Plates."; fontsize = 15, color = PALETTE.ink, tellwidth = false)
+    Mke.Label(fig[2, 2], "Photons Arriving θ = $(round(Int, θ))° Across the Fan:\nthe Fraction 1 − H tan θ / Opening Reaches the Ceramic.\nAlong Z There Are No Plates, So Nothing Is Stopped."; fontsize = 15, color = PALETTE.ink, tellwidth = false)
     Mke.colsize!(fig.layout, 2, Mke.Relative(0.32))
     locator!(fig[0, :], :grid; note = "Step 1 · The Grid\nIn Front of the Ceramic")
     fig
@@ -3280,7 +3280,7 @@ let
         Mke.lines!(ax, [focal, Mke.Point2f(x_end, y)]; color = (amber, 0.5), linewidth = 1)
     end
     filters = (
-        (2.4, 0.3, Mke.RGBf(0.75, 0.77, 0.8), "8.4 mm Al", "BasisSimulator's\nFlash, Always"),
+        (3.0, 0.3, Mke.RGBf(0.75, 0.77, 0.8), "8.4 mm Al", "BasisSimulator's\nFlash, Always"),
         (4.6, 0.1, Mke.RGBf(0.55, 0.6, 0.5), "0.4 mm Sn", "Sn140 Only"),
     )
     for (x, w, c, name, when) in filters

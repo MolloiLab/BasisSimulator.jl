@@ -1,10 +1,17 @@
-# Examples gallery — one card per Pluto notebook in docs/notebooks/, grouped by topic.
-# Each card links to /examples/<slug>/, registered programmatically in docs/app.jl and served
-# by NotebookPage(slug). A notebook without an entry in NOTEBOOK_META still gets a card (under
-# "More"), so a new notebook never 404s; give it an entry and a group for a real description.
+# Examples gallery — one card per Pluto notebook in docs/notebooks/, grouped by topic, and one per
+# BasisMonteCarlo.jl notebook in lib/BasisMonteCarlo/docs/notebooks/ (slug `mc-<stem>`, under
+# "Detector physics"). Each card links to /examples/<slug>/, registered programmatically in
+# docs/app.jl and served by NotebookPage(slug). A notebook without an entry in NOTEBOOK_META still
+# gets a card (under "More"), so a new notebook never 404s; give it an entry and a group for a real
+# description. A BasisMonteCarlo notebook not rendered yet (no export) gets an unlinked card, and its
+# card image is the first figure of its export (docs/assets/mc-<stem>.webp, written by
+# docs/extract_montecarlo.jl), a plain panel until then.
 
 let BASE          = get(ENV, "BASISSIM_BASE", ""),
     notebooks_dir = joinpath(@__DIR__, "..", "..", "..", "notebooks"),
+    mc_notebooks_dir = joinpath(@__DIR__, "..", "..", "..", "..", "lib", "BasisMonteCarlo", "docs", "notebooks"),
+    static_dir    = joinpath(@__DIR__, "..", "..", "..", "notebooks-static"),
+    assets_dir    = joinpath(@__DIR__, "..", "..", "..", "assets"),
     GROUPS = [
         ("getting-started", "Getting started", "The API end to end, on one clinical scanner.",
             ["01_five_struct_api"]),
@@ -16,6 +23,12 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             ["09_siemens_force_ufc_dual_source_vmi", "12_siemens_flash_ufc"]),
         ("acquisition", "Acquisition, artifacts & validation", "Helical coverage, metal artifacts, and a head-to-head with CatSim.",
             ["11_helical_scanning", "10_titanium_implant", "06_catsim_vs_basissim"]),
+        ("detector-physics", "Detector physics (BasisMonteCarlo.jl)",
+            "Geant4 Monte Carlo of the detectors and the scatter behind BasisSimulator's tables, each piece checked against documentation and the literature.",
+            ["mc-01_cdte_slab_efficiency", "mc-02_benchmark_hajdok_swank", "mc-03_alpha_detector",
+             "mc-04_siemens_force", "mc-05_siemens_flash", "mc-06_ge_revolution_apex",
+             "mc-07_philips_brilliance_ict", "mc-08_canon_aquilion_one",
+             "mc-09_scatter_water_cylinders", "mc-10_scatter_library", "mc-11_scatter_validation"]),
     ],
     NOTEBOOK_META = Dict(
         "01_five_struct_api" => (
@@ -115,9 +128,101 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "catsim_vs_basissim_mosaic.png",
             tags      = ["CatSim", "Validation", "Benchmark"],
         ),
+        # BasisMonteCarlo.jl: the card image is the notebook's first figure (see the top of this file).
+        "mc-01_cdte_slab_efficiency" => (
+            title     = "Detector Efficiency from First Principles: a CdTe Slab",
+            summary   = "Geant4 on the simplest detector, a slab of CdTe: photons followed step by step, a check " *
+                        "against Beer-Lambert, the energy budget photon by photon, and the efficiency η(E) the " *
+                        "escaping characteristic x rays take from Beer-Lambert.",
+            thumbnail = "mc-01_cdte_slab_efficiency.webp",
+            tags      = ["Geant4", "PCCT", "CdTe", "Efficiency"],
+        ),
+        "mc-02_benchmark_hajdok_swank" => (
+            title     = "Benchmark: the Swank Factor of Four Detector Materials",
+            summary   = "The Monte Carlo against a published EGSnrc study (Hajdok, Battista and Cunningham, " *
+                        "Med. Phys. 2008): the Swank factor of amorphous silicon and selenium, cesium iodide " *
+                        "and lead iodide from 10 to 150 keV, panel by panel.",
+            thumbnail = "mc-02_benchmark_hajdok_swank.webp",
+            tags      = ["Geant4", "Benchmark", "Swank factor"],
+        ),
+        "mc-03_alpha_detector" => (
+            title     = "The NAEOTOM Alpha Detector",
+            summary   = "The photon-counting detector built in Geant4 from one dexel up: grid, oblique photons, " *
+                        "2 × 2 binning, charge sharing, thresholds and pile-up, compared point by point with " *
+                        "BasisSimulator's MCNP response table.",
+            thumbnail = "mc-03_alpha_detector.webp",
+            tags      = ["PCCT", "Geant4", "NAEOTOM Alpha"],
+        ),
+        "mc-04_siemens_force" => (
+            title     = "The SOMATOM Force Detector",
+            summary   = "The Force's UFC (Gd₂O₂S) dexels and 2-D grid in Geant4, each piece checked against " *
+                        "Siemens' documentation; the v0.15.1 efficiency table reproduced, and the new table, " *
+                        "with its Swank factor, built from the documented detector.",
+            thumbnail = "mc-04_siemens_force.webp",
+            tags      = ["EID", "Geant4", "UFC", "Dual-source"],
+        ),
+        "mc-05_siemens_flash" => (
+            title     = "The SOMATOM Definition Flash Detector",
+            summary   = "The Flash's UFC detector and grid in Geant4, checked against Siemens' data sheets and " *
+                        "the FDA clearances; the current table reproduced, where it parts from the documented " *
+                        "detector, and a better one with its Swank factor.",
+            thumbnail = "mc-05_siemens_flash.webp",
+            tags      = ["EID", "Geant4", "UFC", "Dual-source"],
+        ),
+        "mc-06_ge_revolution_apex" => (
+            title     = "The GE Gemstone Detector: Revolution Apex",
+            summary   = "GE's Gemstone garnet scintillator and 3D collimator in Geant4, checked against the FDA " *
+                        "clearances, GE's patents and the literature; the current table reproduced, and a new " *
+                        "one for a garnet that can exist.",
+            thumbnail = "mc-06_ge_revolution_apex.webp",
+            tags      = ["EID", "Geant4", "Gemstone"],
+        ),
+        "mc-07_philips_brilliance_ict" => (
+            title     = "The Philips Brilliance iCT Detector",
+            summary   = "A scanner BasisSimulator does not have yet: the NanoPanel detector in Geant4 from what " *
+                        "is documented and stated assumptions, the beam fitted to measured half-value layers, " *
+                        "and an efficiency table for the iCT 256 and the iCT SP.",
+            thumbnail = "mc-07_philips_brilliance_ict.webp",
+            tags      = ["EID", "Geant4", "Philips", "HVL fit"],
+        ),
+        "mc-08_canon_aquilion_one" => (
+            title     = "The Canon Aquilion ONE Detector: GENESIS and PRISM",
+            summary   = "A scanner BasisSimulator does not have yet: the PUREViSION detector in Geant4, the beam " *
+                        "fitted to measured half-value layers and checked on Canon's silver filter, and an " *
+                        "efficiency table for each edition.",
+            thumbnail = "mc-08_canon_aquilion_one.webp",
+            tags      = ["EID", "Geant4", "Canon", "HVL fit"],
+        ),
+        "mc-09_scatter_water_cylinders" => (
+            title     = "Scatter in Water Cylinders",
+            summary   = "A fan beam through 20 to 50 cm water cylinders in Geant4, scored by forced detection " *
+                        "with no grid, a 1-D and a 2-D grid, against published measurements and " *
+                        "BasisSimulator's current model, closed by a scorecard.",
+            thumbnail = "mc-09_scatter_water_cylinders.webp",
+            tags      = ["Scatter", "Geant4", "Anti-scatter grid", "Scorecard"],
+        ),
+        "mc-10_scatter_library" => (
+            title     = "A Scatter Library over Water-Equivalent Diameter",
+            summary   = "Geant4 pencil-beam scatter kernels for water cylinders of 20 to 50 cm, every ray and " *
+                        "energy, scored on six scanners' detectors at once, closed by a pass/fail scorecard " *
+                        "against direct Monte Carlo of whole fan beams.",
+            thumbnail = "mc-10_scatter_library.webp",
+            tags      = ["Scatter", "Geant4", "WED", "Scorecard"],
+        ),
+        "mc-11_scatter_validation" => (
+            title     = "Validating the Scatter Library Beyond Water Cylinders",
+            summary   = "Five phantoms that are not water cylinders, simulated directly in Geant4, against the " *
+                        "library's water-equivalent-diameter prediction and BasisSimulator's current model, on " *
+                        "a 2-D-grid and a 1-D-grid scanner, with a scorecard.",
+            thumbnail = "mc-11_scatter_validation.webp",
+            tags      = ["Scatter", "Geant4", "WED", "Validation"],
+        ),
     )
 
-    number(slug) = first(split(slug, "_"))
+    number(slug) = startswith(slug, "mc-") ?
+        "MC " * first(split(chopprefix(slug, "mc-"), "_")) :
+        first(split(slug, "_"))
+    rendered(slug) = !startswith(slug, "mc-") || isfile(joinpath(static_dir, "$(slug).fragment.html"))
 
     # Card builder — defined inside the `let` so Therapy's file-based router does not register it.
     notebook_card = function (slug::AbstractString)
@@ -127,9 +232,13 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = nothing,
             tags      = String[],
         ))
-        A(:href => "$(BASE)/examples/$(slug)/", :class => "block group no-underline",
+        live = rendered(slug)
+        wrap = live ?
+            (card -> A(:href => "$(BASE)/examples/$(slug)/", :class => "block group no-underline", card)) :
+            (card -> Div(:class => "block opacity-70", card))   # not rendered yet: no page to open
+        wrap(
             Div(:class => "h-full flex flex-col border border-warm-200 dark:border-warm-800 rounded-xl overflow-hidden bg-warm-50 dark:bg-warm-900/40 hover:bg-white dark:hover:bg-warm-900/70 hover:border-accent-400 dark:hover:border-accent-600 transition-colors",
-                if meta.thumbnail !== nothing
+                if meta.thumbnail !== nothing && isfile(joinpath(assets_dir, meta.thumbnail))
                     Div(:class => "bg-white border-b border-warm-200 dark:border-warm-800",
                         Img(:src => "$(BASE)/assets/$(meta.thumbnail)", :alt => meta.title, :loading => "lazy",
                             :class => "w-full aspect-[16/10] object-contain"))
@@ -145,16 +254,21 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
                         meta.title),
                     P(:class => "text-sm text-warm-600 dark:text-warm-400 leading-relaxed flex-1", meta.summary),
                     Div(:class => "pt-2 text-xs font-mono text-warm-500 group-hover:text-accent-600 dark:group-hover:text-accent-400 transition-colors",
-                        "Open notebook →"))))
+                        live ? "Open notebook →" : "Not rendered yet"))))
     end
 
     () -> begin
-        # Honor BASISSIM_SKIP_NOTEBOOKS (app.jl registers no route for a skipped notebook).
-        skip = Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
+        # Honor BASISSIM_SKIP_NOTEBOOKS (app.jl registers no route for a skipped notebook); a
+        # trailing `*` matches a prefix, as in app.jl.
+        patterns = strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false))
+        skipped = s -> any(p -> endswith(p, "*") ? startswith(s, chop(p)) : s == p, patterns)
         present = isdir(notebooks_dir) ?
             Set(splitext(f)[1] for f in readdir(notebooks_dir)
-                if endswith(f, ".jl") && !(splitext(f)[1] in skip)) :
+                if endswith(f, ".jl") && !skipped(splitext(f)[1])) :
             Set{String}()
+        isdir(mc_notebooks_dir) && union!(present,
+            ("mc-" * splitext(f)[1] for f in readdir(mc_notebooks_dir)
+             if endswith(f, ".jl") && !skipped("mc-" * splitext(f)[1])))
         grouped = Set(s for g in GROUPS for s in g[4])
         extra = sort([s for s in present if !(s in grouped)])
         groups = [(id, t, d, filter(in(present), slugs)) for (id, t, d, slugs) in GROUPS]
@@ -168,7 +282,8 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
                 H1(:class => "no-rule font-serif font-medium text-warm-900 dark:text-warm-100 text-4xl md:text-5xl leading-[1.05] tracking-tight",
                     "Examples"),
                 P(:class => "max-w-2xl text-warm-600 dark:text-warm-400 leading-relaxed text-base",
-                    "Complete studies, each run end to end on a GPU: the code, the prose and every figure, rendered ",
+                    "Complete studies, each run end to end (on a GPU; the detector-physics notebooks on CPU workers): ",
+                    "the code, the prose and every figure, rendered ",
                     "in place. Each page links to the notebook's source, which opens in Pluto."),
                 Div(:class => "flex flex-wrap gap-2 pt-2",
                     [A(:href => "#$(id)", :class => "px-3 py-1 rounded-full border border-warm-300 dark:border-warm-700 text-xs text-warm-700 dark:text-warm-300 hover:border-accent-400 hover:text-accent-600 dark:hover:text-accent-400 no-underline transition-colors",

@@ -35,6 +35,8 @@ src/denoising/          SpectralHYPR (hypr.jl), ACNR, T-LBF, sinogram SVD / SF-J
 src/spectrum/, src/bowtie/   data tables read at run time
 test/                   runtests.jl includes one file per area; test/docs.jl checks the API docs
 docs/                   the documentation site (below)
+lib/BasisMonteCarlo/    BasisMonteCarlo.jl, the Geant4 detector and scatter Monte Carlo: its own
+                        package (src/, test/, tables/) and notebooks (docs/notebooks/)
 ```
 
 ## Working on the code
@@ -84,7 +86,29 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   (not its `version` line), both docs lockfiles, `docs/extract_all.jl` and
   `docs/notebooks/DATA_PROVENANCE.sha256`. Any code change makes every export stale; that is by
   design: the docs deploy refuses stale exports, so re-render after a code change (in that pull
-  request or a follow-up). The site deploys from `main`; no release is needed.
+  request or a follow-up). The site deploys from `main`; no release is needed. (The
+  BasisMonteCarlo notebooks have their own fingerprint: next item.)
+- **BasisMonteCarlo notebooks** (`lib/BasisMonteCarlo/docs/notebooks/<stem>.jl`) are the
+  Examples' "Detector physics (BasisMonteCarlo.jl)" category, slug `mc-<stem>`
+  (`/examples/mc-04_siemens_force/`). They run on the CPU in their own environment,
+  `lib/BasisMonteCarlo/docs/` (each starts 8 Distributed workers), and `docs/extract_montecarlo.jl`
+  renders them into the same `docs/notebooks-static/`, saving each one's first figure as its card,
+  `docs/assets/mc-<stem>.webp`. Render them by slug: `docs/render_notebooks.sh mc-04_siemens_force`
+  (5–15 min each; `mc-10_scatter_library` about 3.6 h). With no arguments the script renders every
+  stale notebook of both kinds, these on a CPU lane beside the GPU lanes (`BASISSIM_MC_LANES=2` for
+  two); `BASISSIM_SKIP_NOTEBOOKS=mc-10_scatter_library` leaves that one out. A render reruns the
+  simulations, so it rewrites what the notebook saves (`lib/BasisMonteCarlo/tables/`). Their
+  fingerprint hashes the notebook, `lib/BasisMonteCarlo/src/`, `lib/BasisMonteCarlo/Project.toml`
+  (not its `version` line), `lib/BasisMonteCarlo/docs/Project.toml` and its committed
+  `Manifest.toml`, `lib/BasisMonteCarlo/docs/reference_data/`, and the exporter
+  (`docs/build_env/Manifest.toml`, `docs/extract_all.jl`, `docs/extract_montecarlo.jl`); not
+  `docs/Manifest.toml` or the root `src/`, so a BasisSimulator change does not re-render them.
+  Because `docs/extract_all.jl` is in every BasisSimulator export's fingerprint, a change that only
+  concerns these notebooks goes in `docs/extract_montecarlo.jl`. The kV sliders of 04–08 are forced
+  fallbacks (`MC_FORCE_FALLBACK_BONDS`, mirrored in the verifier). A notebook not rendered yet has
+  no page and an unlinked card, and the verifier (so `docs/build.sh` and the deploy) fails until it
+  is rendered; `BASISSIM_SKIP_NOTEBOOKS='mc-*' docs/build.sh` builds without them (a trailing `*`
+  matches a prefix, in the verifier and the site).
 - **Data:** notebook 05 reads the XCAT male chest export from `BASISSIM_XCAT_DIR`
   (the lab's copy: `/share/crsp/lab/symolloi/share/XCAT Anatomies/vmale_50/vmale_50_chest_with_plaque`);
   without it the notebook renders its no-data notice. `DATA_PROVENANCE.sha256` holds the checksum
@@ -119,12 +143,14 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 
 ## CI and deployment (`.github/workflows/`)
 
-- `CI.yml`: the `version` check, and the test suite on Linux, Windows and macOS (Julia 1.12).
+- `CI.yml`: the `version` check, the test suite on Linux, Windows and macOS (Julia 1.12), and
+  `lib/BasisMonteCarlo`'s test suite on Linux (`basismontecarlo`; Geant4.jl, plus `g++` for its
+  cross-section shim).
 - `TagBot.yml`: tags `v<version>` and writes the GitHub Release after the General registry merges a
   registration.
 - `docs.yml` (GitHub Pages) and `snapshot.yml` (Snapshot, managed by Snapshot with a marked local
-  edit) build `main` on every push that changes `docs/`, `src/` or `Project.toml`, or any commit by
-  hand from the Actions tab.
+  edit) build `main` on every push that changes `docs/`, `src/`, `Project.toml` or
+  `lib/BasisMonteCarlo/`, or any commit by hand from the Actions tab.
 
 ## Around this repository
 

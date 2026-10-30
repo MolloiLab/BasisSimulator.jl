@@ -34,6 +34,7 @@ using Random: Random, Xoshiro
 using SpecialFunctions: erf
 using Scratch: @get_scratch!
 import Libdl
+import Serialization
 import Distributed
 
 include("materials.jl")
@@ -64,7 +65,7 @@ export ScatterScanner, ScatterReadout, ScatterTally, scatter_tally, merge_tallie
 export ForcedScatterReadout, VertexLog, forced_attenuation, scattering_tables, exit_length
 export ScatterLibrary, kernel_ray, scatter_library, library_kernel, library_scan
 export Check, check_relative, check_below, check_range, scorecard
-export BASISSIMULATOR_V0_15_1_EFFICIENCY
+export BASISSIMULATOR_V0_15_1_EFFICIENCY, basissimulator_v0_15_1_response
 export cell_pitch, cell_count, face_size_mm, fan_angle_deg, dexel_centre, dexel_edges
 export start_workers, stop_workers, workers, simulate_sweep
 export DexelEnergyReadout, DexelEnergy, dexel_energy, dexel_efficiency, dexel_swank
