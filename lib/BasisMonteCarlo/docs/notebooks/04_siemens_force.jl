@@ -3685,6 +3685,11 @@ clinical_check = let
     m1 = [d.crystal_keV / d.n for d in one_dexel]
     m2 = [d.crystal2_keV2 / d.n for d in one_dexel]
     cell = MC.energy_absorption_efficiency.(grid_runs.with)
+    # the whole arc against one cell, from section 7's own air scans: the fan and cone angles (and the
+    # model's arc, not tilted along z) change it a little; interpolated between the scans' energies
+    cell_at(x) = MC.interpolate_linear(collect(grid_energies), cell, clamp(x, 20.0, 140.0))
+    arc_ratio = [sum(s.energy_keV) / s.photon_keV / cell_at(E) for (E, s) in zip(air_energies, air_scans)]
+    ratio_at(x) = MC.interpolate_linear(air_energies, arc_ratio, clamp(x, first(air_energies), last(air_energies)))
     at(table, x) = MC.interpolate_linear(E, table, x)
     noise(values) = sqrt(sum(abs2, values .- mean(values)) / (length(values) - 1) / length(values))
     map(enumerate(clinical_beams)) do (k, b)
@@ -3708,7 +3713,7 @@ clinical_check = let
                 noise = noise([dqe_of([c]) for c in chunks]),
             ),
             arc = (
-                table = sum(w .* e .* [MC.interpolate_linear(collect(grid_energies), cell, clamp(x, 20.0, 140.0)) for x in e]) / sum(w .* e),
+                table = sum(w .* e .* [cell_at(x) * ratio_at(x) for x in e]) / sum(w .* e),
                 direct = arc_of(sum(arcs)),
                 noise = noise(arc_of.(arcs)),
             ),
@@ -3767,8 +3772,9 @@ let
         $(join(rows, "\n"))
 
         **$(passed) of $(length(rows)) agree.** Allowed: three times the direct simulation's own noise, plus 0.002 for the
-        efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and 0.01 for the whole arc, whose dexels
-        see the beam at the fan and cone angles that one straight dexel does not (section 7). Where they agree, the
+        efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and 0.01 for the whole arc, whose prediction is one cell's efficiency
+        times the arc's own excess over it, measured in section 7's air scans and interpolated between their energies: so
+        this checks the spectrum's weighting, not the arc's geometry, which section 7 reports. Where they agree, the
         single-energy table, weighted by any spectrum, is the clinical beam: what BasisSimulator does with it is exact.
         """
     )
