@@ -1096,6 +1096,7 @@ readout = MC.DexelEnergyReadout(
         pitch_y_mm = pitch_mm[2],
         neighborhood = 3,
         cloud_sigma_um = 0.01,
+        transport = nothing,  # a scintillator: each dexel keeps the energy left in its own ceramic
     ),
 )
 

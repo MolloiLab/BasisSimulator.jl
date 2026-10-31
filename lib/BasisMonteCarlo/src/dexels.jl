@@ -20,21 +20,61 @@
 # =============================================================================
 
 """
+    ChargeTransport(; bias_V = 900.0, thickness_mm = 1.6, mu_tau_electron = 3.3e-3,
+                      mu_tau_hole = 2.0e-4, thermal_voltage = 0.02585, relative_permittivity = 10.9,
+                      pair_energy_eV = 4.43, cluster_mm = 0.05)
+
+How the charge a photon frees travels to the electrodes of a photon-counting crystal (CdTe by
+default); every [`DexelReadout`](@ref) uses it unless given `transport = nothing`. In place of one
+fixed Gaussian cloud, each deposit's electrons drift from its depth to the pixel electrodes at the
+back face (the cathode is the front face, where photons enter):
+
+- they spread by **diffusion**, σ² = 2 (kT/q) d / E over a drift of `d` at field E =
+  `bias_V / thickness_mm` (the mobility cancels), and by the **repulsion** of their own charge,
+  a uniform sphere growing as R³ = 3 Q d / (4π ε E) (Gatti et al. 1987), taken as σ = R/√5;
+  deposits within `cluster_mm` of each other repel as one cloud;
+- each dexel records the charge they **induce** on its electrode (Shockley–Ramo), from its
+  weighting potential (exact, by images), with electrons and holes **trapped** on the way over
+  mean drift lengths λ = μτE (Hecht).
+
+The photoelectron's track is already in the deposits' positions (Geant4 follows the electrons).
+Defaults: 900 V across 1.6 mm (Flohr & Schmidt 2023: 800–1000 V); μτ of CdTe (Del Sordo et al.
+2009); 300 K; one electron–hole pair per 4.43 eV. Together they spread the charge like a single
+Gaussian of about 15–16 µm over clinical beams, matching Zhan et al. 2026's fit to the clinical
+NAEOTOM Alpha (16.4 µm); notebook 03 checks it.
+"""
+Base.@kwdef struct ChargeTransport
+    bias_V::Float64 = 900.0
+    thickness_mm::Float64 = 1.6
+    mu_tau_electron::Float64 = 3.3e-3
+    mu_tau_hole::Float64 = 2.0e-4
+    thermal_voltage::Float64 = 0.02585
+    relative_permittivity::Float64 = 10.9
+    pair_energy_eV::Float64 = 4.43
+    cluster_mm::Float64 = 0.05
+end
+
+"""
     DexelReadout(; pitch_x_mm, pitch_y_mm, neighborhood = 3, cloud_sigma_um = 30.0,
-                   group = (1, 1), gap_mm = (0.0, 0.0), target = (0, 0))
+                   group = (1, 1), gap_mm = (0.0, 0.0), target = (0, 0), transport = ChargeTransport())
 
 The dexel grid and charge spreading of a photon-counting detector:
 
 - `pitch_x_mm`, `pitch_y_mm`: the dexel size (the electrode pitch at the crystal);
 - `neighborhood`: the side of the square of dexels recorded around the target one (odd; 3
   gives the target dexel and its 8 neighbours);
-- `cloud_sigma_um`: the width σ of the Gaussian charge cloud each deposit becomes by the time it
-  reaches the electrodes (the same σ for every deposit);
+- `cloud_sigma_um`: with `transport = nothing`, the width σ of the Gaussian charge cloud each
+  deposit becomes by the time it reaches the electrodes (the same σ for every deposit);
 - `group`, `gap_mm`: dexels come in groups of `group[1] × group[2]` (x, y), separated by
   `gap_mm` (the cells of an anti-scatter grid, whose walls stand over the gaps). The default,
   one dexel per group and no gap, is a plain uniform grid;
 - `target`: which dexel of the central group is the one photons are aimed at, counted from 0
   at the group's −x, −y corner. In a uniform grid it is the dexel centred on the origin.
+- `transport`: a [`ChargeTransport`](@ref) (the default) transports the charge from each
+  deposit's depth (diffusion, repulsion, induction, trapping), and `cloud_sigma_um` is not used;
+  `nothing` spreads every deposit into the fixed cloud of `cloud_sigma_um` instead (BasisSimulator
+  v0.15.1's model, 30 µm). An energy-integrating (scintillator) readout, whose dexels collect the
+  energy left in their own ceramic, asks for `transport = nothing` with a vanishing cloud.
 
 [`dexel_beam`](@ref) gives the beam that illuminates the target dexel uniformly. See
 [`dexel_response`](@ref) for how a run becomes dexel signals, and [`threshold_counts`](@ref) for
@@ -48,6 +88,7 @@ Base.@kwdef struct DexelReadout
     group::Tuple{Int, Int} = (1, 1)
     gap_mm::Tuple{Float64, Float64} = (0.0, 0.0)
     target::Tuple{Int, Int} = (0, 0)
+    transport::Union{Nothing, ChargeTransport} = ChargeTransport()
 end
 
 """Centre of dexel `m` along an axis with dexel pitch `p`, groups of `G` and gaps `g`."""
@@ -101,7 +142,8 @@ function Base.show(io::IO, r::DexelReadout)
     return print(
         io,
         "DexelReadout(", r.pitch_x_mm, " × ", r.pitch_y_mm, " mm dexels, ",
-        r.neighborhood, " × ", r.neighborhood, " neighbourhood, σ_cloud = ", r.cloud_sigma_um, " µm)",
+        r.neighborhood, " × ", r.neighborhood, " neighbourhood, ",
+        r.transport === nothing ? "σ_cloud = $(r.cloud_sigma_um) µm" : "charge transported at $(r.transport.bias_V) V", ")",
     )
 end
 
@@ -151,6 +193,7 @@ function dexel_response(run::MonoenergeticRun, readout::DexelReadout)
         ArgumentError("the run has no deposits: simulate it with record_deposits = true")
     )
     isodd(readout.neighborhood) || throw(ArgumentError("neighborhood must be odd"))
+    readout.transport === nothing || return transported_response(run, readout)
 
     n = readout.neighborhood
     σ = readout.cloud_sigma_um / 1000
@@ -184,6 +227,195 @@ function dexel_response(run::MonoenergeticRun, readout::DexelReadout)
         end
     end
 
+    return DexelResponse(run.energy_keV, run.n, readout, run.detector, energies)
+end
+
+# -----------------------------------------------------------------------------
+# Charge transport: drift, diffusion, repulsion, induction and trapping
+# -----------------------------------------------------------------------------
+
+"""Field (V/mm) and the mean drift lengths before trapping, λ = μτE (mm), of electrons and holes."""
+function transport_lengths(p::ChargeTransport)
+    field = p.bias_V / p.thickness_mm
+    return (
+        field = field,
+        electron = p.mu_tau_electron * 100 * field,  # μτ (cm²/V) × field (V/mm) × 100 mm²/cm² = mm
+        hole = p.mu_tau_hole * 100 * field,
+    )
+end
+
+"""Width (mm) a cloud gains by diffusion while drifting `d` mm: σ² = 2 (kT/q) d / E."""
+diffusion_sigma(d, p::ChargeTransport) = sqrt(2 * p.thermal_voltage * max(d, 0.0) / (p.bias_V / p.thickness_mm))
+
+"""Width (mm, per axis) a cloud of `energy_keV` gains by its own repulsion while drifting `d` mm."""
+function repulsion_sigma(energy_keV, d, p::ChargeTransport)
+    Q = energy_keV * 1000 / p.pair_energy_eV * 1.602176634e-19  # C
+    ε = 8.8541878128e-12 * p.relative_permittivity  # F/m
+    E = p.bias_V / (p.thickness_mm * 1.0e-3)  # V/m
+    R = cbrt(3 * Q * max(d, 0.0) * 1.0e-3 / (4π * ε * E))  # m
+    return R * 1.0e3 / sqrt(5)
+end
+
+"""
+    weighting_potential(x, y, d, wx, wy, L; images = 40)
+
+Shockley–Ramo weighting potential of a rectangular electrode `wx × wy` (mm) centred at the origin
+of the anode plane, at (`x`, `y`) laterally and `d` mm above that plane, in a slab `L` mm thick with
+a grounded cathode: the solid angle the electrode subtends over 2π, summed over its images.
+"""
+function weighting_potential(x, y, d, wx, wy, L; images = 40)
+    a = (-wx / 2 - x, wx / 2 - x)
+    b = (-wy / 2 - y, wy / 2 - y)
+    total = 0.0
+    for n in (-images - 1):images
+        h = d + 2n * L
+        if h == 0
+            total += (abs(x) < wx / 2 && abs(y) < wy / 2) ? 1.0 : 0.0
+            continue
+        end
+        s = 0.0
+        for (i, ai) in enumerate(a), (j, bj) in enumerate(b)
+            s += (-1)^(i + j) * atan(ai * bj / (h * sqrt(ai^2 + bj^2 + h^2)))
+        end
+        total += s / (2π)
+    end
+    return total
+end
+
+struct InductionTable
+    xs::StepRangeLen{Float64, Base.TwicePrecision{Float64}, Base.TwicePrecision{Float64}, Int}
+    ys::StepRangeLen{Float64, Base.TwicePrecision{Float64}, Base.TwicePrecision{Float64}, Int}
+    zs::StepRangeLen{Float64, Base.TwicePrecision{Float64}, Base.TwicePrecision{Float64}, Int}
+    φ::Array{Float32, 3}
+    ge::Array{Float32, 3}  # what the drifting electrons add beyond their arrival
+    gh::Array{Float32, 3}  # what the drifting holes add
+end
+
+const INDUCTION_TABLES = Dict{Tuple{ChargeTransport, Float64, Float64}, InductionTable}()
+const INDUCTION_LOCK = ReentrantLock()
+
+"""
+The induction table of one electrode `wx × wy` (built once per process): φ on a grid of lateral
+offsets (one quadrant) and depths z from the cathode, with
+`ge = −φ(z) + (1/λe) ∫_z^L e^{−(z'−z)/λe} φ dz'` and `gh = φ(z) − (1/λh) ∫_0^z e^{−(z−z')/λh} φ dz'`.
+"""
+function induction_table(wx, wy, p::ChargeTransport; reach = (0.75, 0.85), spacing = 0.005, dz = 0.01)
+    key = (p, round(wx; digits = 4), round(wy; digits = 4))
+    return lock(INDUCTION_LOCK) do
+        haskey(INDUCTION_TABLES, key) && return INDUCTION_TABLES[key]
+        L = p.thickness_mm
+        λ = transport_lengths(p)
+        xs = 0.0:spacing:reach[1]
+        ys = 0.0:spacing:reach[2]
+        zs = range(0.0, L; length = round(Int, L / dz) + 1)
+        φ = zeros(length(xs), length(ys), length(zs))
+        Threads.@threads for i in eachindex(xs)
+            for j in eachindex(ys), k in eachindex(zs)
+                φ[i, j, k] = weighting_potential(xs[i], ys[j], L - zs[k], wx, wy, L)
+            end
+        end
+        ge, gh = similar(φ), similar(φ)
+        h = step(zs)
+        for i in eachindex(xs), j in eachindex(ys)
+            acc = 0.0
+            ge[i, j, end] = -φ[i, j, end]
+            for k in (length(zs) - 1):-1:1
+                acc = exp(-h / λ.electron) * acc + h / 2 * (φ[i, j, k] + exp(-h / λ.electron) * φ[i, j, k + 1])
+                ge[i, j, k] = -φ[i, j, k] + acc / λ.electron
+            end
+            acc = 0.0
+            gh[i, j, 1] = φ[i, j, 1]
+            for k in 2:length(zs)
+                acc = exp(-h / λ.hole) * acc + h / 2 * (φ[i, j, k] + exp(-h / λ.hole) * φ[i, j, k - 1])
+                gh[i, j, k] = φ[i, j, k] - acc / λ.hole
+            end
+        end
+        INDUCTION_TABLES[key] = InductionTable(xs, ys, zs, Float32.(φ), Float32.(ge), Float32.(gh))
+    end
+end
+
+"""Trilinear look-up of `table` at lateral offset (x, y) and depth z; 0 beyond the grid."""
+function induction_lookup(t::InductionTable, table, x, y, z)
+    ax, ay = abs(x), abs(y)
+    (ax > last(t.xs) || ay > last(t.ys)) && return 0.0
+    fx = ax / step(t.xs) + 1
+    fy = ay / step(t.ys) + 1
+    fz = clamp(z, first(t.zs), last(t.zs)) / step(t.zs) + 1
+    i = min(floor(Int, fx), length(t.xs) - 1)
+    j = min(floor(Int, fy), length(t.ys) - 1)
+    k = min(floor(Int, fz), length(t.zs) - 1)
+    u, v, w = fx - i, fy - j, fz - k
+    c = 0.0
+    for (di, wi) in ((0, 1 - u), (1, u)), (dj, wj) in ((0, 1 - v), (1, v)), (dk, wk) in ((0, 1 - w), (1, w))
+        c += wi * wj * wk * table[i + di, j + dj, k + dk]
+    end
+    return c
+end
+
+"""The energy each dexel records from each photon with the charge transported (see [`ChargeTransport`](@ref))."""
+function transported_response(run::MonoenergeticRun, readout::DexelReadout)
+    p = readout.transport
+    L = p.thickness_mm
+    λ = transport_lengths(p)
+    n = readout.neighborhood
+    mx, my = recorded_dexels(readout)
+    edges_x = [dexel_edges(m, readout.pitch_x_mm, readout.group[1], readout.gap_mm[1]) for m in mx]
+    edges_y = [dexel_edges(m, readout.pitch_y_mm, readout.group[2], readout.gap_mm[2]) for m in my]
+    centre_x = [sum(e) / 2 for e in edges_x]
+    centre_y = [sum(e) / 2 for e in edges_y]
+    tables = [induction_table(edges_x[i][2] - edges_x[i][1], edges_y[j][2] - edges_y[j][1], p) for i in 1:n, j in 1:n]
+    energies = zeros(Float32, run.n, n, n)
+    dep = run.deposits
+    share_x, share_y = zeros(n), zeros(n)
+    cluster = Int[]
+    K = length(dep.event)
+    k = 1
+    while k <= K
+        # one photon's deposits are consecutive; group them into clouds (single linkage)
+        last_k = k
+        while last_k < K && dep.event[last_k + 1] == dep.event[k]
+            last_k += 1
+        end
+        idx = k:last_k
+        m = length(idx)
+        resize!(cluster, m)
+        cluster .= 1:m
+        for a in 1:m, b in (a + 1):m
+            ka, kb = idx[a], idx[b]
+            close = (dep.x_mm[ka] - dep.x_mm[kb])^2 + (dep.y_mm[ka] - dep.y_mm[kb])^2 + (dep.z_mm[ka] - dep.z_mm[kb])^2 < p.cluster_mm^2
+            if close && cluster[a] != cluster[b]
+                ca, cb = cluster[a], cluster[b]
+                for c in 1:m
+                    cluster[c] == cb && (cluster[c] = ca)
+                end
+            end
+        end
+        for a in 1:m
+            ka = idx[a]
+            x, y, z, e = dep.x_mm[ka], dep.y_mm[ka], dep.z_mm[ka], dep.energy_keV[ka]
+            e_cloud, z_cloud = 0.0, 0.0
+            for b in 1:m
+                cluster[b] == cluster[a] || continue
+                e_cloud += dep.energy_keV[idx[b]]
+                z_cloud += dep.energy_keV[idx[b]] * dep.z_mm[idx[b]]
+            end
+            z_cloud /= e_cloud
+            σ = max(sqrt(diffusion_sigma(L - z, p)^2 + repulsion_sigma(e_cloud, L - z_cloud, p)^2), 1.0e-4)
+            arrival = exp(-(L - z) / λ.electron)
+            for i in 1:n
+                share_x[i] = cloud_share(x, edges_x[i]..., σ)
+                share_y[i] = cloud_share(y, edges_y[i]..., σ)
+            end
+            ev = dep.event[ka]
+            for j in 1:n, i in 1:n
+                t = tables[i, j]
+                ox, oy = x - centre_x[i], y - centre_y[j]
+                q = arrival * share_x[i] * share_y[j] + induction_lookup(t, t.ge, ox, oy, z) + induction_lookup(t, t.gh, ox, oy, z)
+                energies[ev, i, j] += e * q
+            end
+        end
+        k = last_k + 1
+    end
     return DexelResponse(run.energy_keV, run.n, readout, run.detector, energies)
 end
 
@@ -330,7 +562,8 @@ function response_table(
         "Var_total" => Var_total,
         "Cov_total" => Cov_total,
         "Cov_pixpair" => Cov_pixpair,
-        "sigma_cloud_um" => first(responses).readout.cloud_sigma_um,
+        # the fixed cloud's width; NaN when the charge was transported (no single width)
+        "sigma_cloud_um" => first(responses).readout.transport === nothing ? first(responses).readout.cloud_sigma_um : NaN,
         "sigma_elec_keV" => Float64(electronic_noise_keV),
     )
     merge!(table, Dict{String, Any}(string(k) => v for (k, v) in metadata))

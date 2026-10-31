@@ -1,5 +1,6 @@
 using Test
 using BasisMonteCarlo
+using Random: Xoshiro
 
 @testset "BasisMonteCarlo" begin
     @testset "materials" begin
@@ -54,6 +55,7 @@ using BasisMonteCarlo
             pitch_x_mm = 0.275,
             pitch_y_mm = 0.322,
             cloud_sigma_um = 30.0,
+            transport = nothing,
         )
         beam = AreaBeam(; width_mm = 0.275, height_mm = 0.322)
         run = simulate_monoenergetic(
@@ -114,6 +116,7 @@ using BasisMonteCarlo
                 pitch_x_mm = pitch[1],
                 pitch_y_mm = pitch[2],
                 cloud_sigma_um = 0.01,
+                transport = nothing,
             )
         )
         beam = AreaBeam(; width_mm = 0.9, height_mm = 1.0)
@@ -295,6 +298,74 @@ using BasisMonteCarlo
         # 300 mm one with its length cut short
         tall = [ray(-8.0, 250.0), ray(0.0, 400.0)]
         @test sum(scan(300.0, tall).scatter) ≈ 0.1 * (300.0 + 400.0) rtol = 1.0e-5
+    end
+
+    @testset "charge transport: induction and trapping" begin
+        p = ChargeTransport()
+        L = p.thickness_mm
+        wx, wy = 0.275, 0.322
+        # The weighting potentials of all the pixels add up to a whole-face electrode's: z / L
+        for z in (0.3, 1.2)
+            s = sum(weighting_potential(i * wx, j * wy, L - z, wx, wy, L) for i in -40:40, j in -40:40)
+            @test s ≈ z / L atol = 0.005
+        end
+        @test weighting_potential(0.0, 0.0, 1.0e-4, wx, wy, L) ≈ 1 atol = 0.01
+        @test abs(weighting_potential(0.0, 0.0, L, wx, wy, L)) < 1.0e-12
+
+        # Narrower clouds than v0.15.1's 30 µm: more photons keep their full energy in one dexel
+        crystal = SlabDetector(:CdTe, 1.6)
+        beam = AreaBeam(; width_mm = wx, height_mm = wy)
+        run = simulate_monoenergetic(crystal, 60.0; n = 5_000, beam, seed = 2, record_deposits = true)
+        # the charge is transported by default; the fixed cloud is asked for
+        @test DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy).transport == ChargeTransport()
+        fixed = dexel_response(run, DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy, transport = nothing))
+        moved = dexel_response(run, DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy))
+        full(r) = count(>(58.0f0), r.dexel_energy_keV[:, 2, 2])
+        @test full(moved) > full(fixed)
+
+        # Nothing is created and little is lost: over 9 × 9 dexels the recorded charge is the
+        # deposited energy less trapping (a few %)
+        wide = dexel_response(run, DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy, neighborhood = 9, transport = ChargeTransport()))
+        ratio = sum(Float64, wide.dexel_energy_keV) / sum(Float64, run.deposits.energy_keV)
+        @test 0.95 < ratio <= 1.0
+    end
+
+    @testset "electronics: shaped pulses, comparators, variation" begin
+        # A CR-RC pulse is 2.446 τ wide at half its height and peaks at 1 after τ
+        @test BasisMonteCarlo.shaper_fwhm(1) ≈ 2.4464 atol = 1.0e-3
+        @test BasisMonteCarlo.shaper_pulse(1.0, 1.0, 1) ≈ 1
+
+        # Pulses far apart: every pulse above a threshold counts, none below
+        values, cdf = [50.0], [1.0]
+        alone = PulseShaper(; fwhm_ns = 10.0, dead_ns = 20.0)
+        @test pulse_counts(Xoshiro(1), alone, 1.0e-6, 500, values, cdf, [20.0, 60.0]) == [500, 0]
+
+        # Narrow pulses and a long dead time: a non-paralysable counter, n / (1 + rate × dead)
+        rate, dead = 0.01, 50.0
+        narrow = PulseShaper(; fwhm_ns = 0.5, dead_ns = dead)
+        counted = pulse_counts(Xoshiro(2), narrow, rate, 20_000, values, cdf, [20.0]; dt_ns = 0.05)[1]
+        @test counted / 20_000 ≈ 1 / (1 + rate * dead) rtol = 0.03
+
+        # Two pulses that overlap count once with a plain comparator, twice when it retriggers
+        piled(retrigger) = pulse_counts(Xoshiro(3), PulseShaper(; fwhm_ns = 10.0, dead_ns = 0.0, retrigger), 0.2, 20_000, values, cdf, [20.0])[1]
+        @test piled(false) < piled(true)
+
+        # Without noise, a gain g at threshold T counts what the nominal dexel counts at T / g; a
+        # threshold offset δ counts what it counts at T + δ
+        heights, p = collect(10.0:1.0:100.0), fill(1 / 91, 91)
+        quiet = (; electronic_noise_keV = 1.0e-6, fano = 0.0)
+        @test counts_above(heights, p, [40.5]; variation = DexelVariation(; gain = 1.1), quiet...) ≈
+            counts_above(heights, p, [40.5 / 1.1]; quiet...)
+        @test counts_above(heights, p, [40.5]; variation = DexelVariation(; threshold_offset_keV = 2.0), quiet...) ≈
+            counts_above(heights, p, [42.5]; quiet...)
+        @test counts_above(heights, p, [0.0])[1] ≈ 1 atol = 1.0e-6
+
+        # A dexel's pulses per photon: at least one when the photon is absorbed (60 keV in 1.6 mm CdTe), at
+        # most one in each dexel of the 3 × 3
+        crystal = SlabDetector(:CdTe, 1.6)
+        run = simulate_monoenergetic(crystal, 60.0; n = 2_000, beam = AreaBeam(; width_mm = 0.275, height_mm = 0.322), seed = 4, record_deposits = true)
+        h = pulse_heights(dexel_response(run, DexelReadout(; pitch_x_mm = 0.275, pitch_y_mm = 0.322, transport = nothing)))
+        @test interaction_probability(run) < sum(h) <= 9
     end
 
     @testset "physics is fixed per process" begin
