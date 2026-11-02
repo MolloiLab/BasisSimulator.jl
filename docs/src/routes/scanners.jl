@@ -151,7 +151,7 @@ protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols
                 ["pileup", "true", "pile-up per native dexel (needs dead_time_ns > 0); corrected by calibrate_pileup → apply_pileup!"],
                 ["gain_spread / threshold_spread_keV", "0.0 / 0.0", "native dexels' gain (relative σ) and threshold offsets (keV); corrected by calibrate_flat_field"],
                 ["defect_seed", "1", "the fixed pattern of the dexels' defects"],
-                ["scatter_correction", "false", "model-based scatter estimate-and-subtract on the bins"],
+                ["scatter_correction", "false", "subtract the scatter estimated from the recorded counts (the Geant4 kernels, the patient taken as water)"],
                 ["noise_reduction", "0.0", "count-noise blend, 0 = Poisson counts … 1 = expected counts"],
             ]; mono = [1, 2]),
 

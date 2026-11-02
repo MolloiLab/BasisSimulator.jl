@@ -335,7 +335,12 @@ protocol = BS.CTProtocol(
 # the volume and can alias in strongly beam-hardened regions. The Hybrid-IR cell reads
 # `sim_opts.projector`, so its system matrix always matches the operator that made the data.
 # `view_samples = 5`: the detector integrates each view while the gantry turns (notebook 01).
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
+sim_opts = BS.SimOptions(
+    seed = 1234,
+    projector = :dd_fast,
+    view_samples = 5,
+    use_scatter = true,
+);
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(

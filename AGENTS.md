@@ -29,6 +29,8 @@ src/object/             materials, attenuation tables, Phantom
 src/phantoms/           the XCAT artifact loaders
 src/projection/         :dd_fast (default), dd, dd transpose, Siddon, polychromatic kernels
 src/detector/           EICT physics chain, photon-counting (pcct/: MC response, pile-up), scatter
+                        (scatter_kernels.jl reads the Geant4 scatter library, one artifact per scanner;
+                        scatter.jl superposes it on each acquisition's rays and corrects it)
 src/correction/         water BHC (sinogram and image domain), pile-up correction, radial cupping
 src/reconstruction/     core (filtering, backprojection), fbp (FDK, WFBP), hybrid_ir, ir, vmi, workspace
 src/denoising/          SpectralHYPR (hypr.jl), ACNR, T-LBF, sinogram SVD / SF-JSD, median-z, RSKR
@@ -36,7 +38,8 @@ src/spectrum/, src/bowtie/   data tables read at run time
 test/                   runtests.jl includes one file per area; test/docs.jl checks the API docs
 docs/                   the documentation site (below)
 lib/BasisMonteCarlo/    BasisMonteCarlo.jl, the Geant4 detector and scatter Monte Carlo: its own
-                        package (src/, test/, tables/) and notebooks (docs/notebooks/)
+                        package (src/, test/, tables/) and notebooks (docs/notebooks/);
+                        scripts/split_scatter_library.jl makes the per-scanner scatter artifacts
 ```
 
 ## Working on the code
@@ -48,6 +51,9 @@ lib/BasisMonteCarlo/    BasisMonteCarlo.jl, the Geant4 detector and scatter Mont
   Tests that need a GPU skip without one ("Skipping … no GPU backend"); run the ones your change
   touches on a GPU and say so in the pull request. `test/nchannel_nb04_reference.jl` is a frozen
   oracle (the published estimator); never edit it.
+- **Scatter in tests** runs on a small synthetic library in the real on-disk format
+  (`test/scatter_library.jl`, loaded with `scatter_kernels(entry; path)`); the tests never download
+  the real kernels. Scanners in tests that simulate scatter name its entries.
 - **Every exported name has a docstring**, and every source file that defines one is mapped to a
   section of the API page in `docs/src/api_sections.jl`; `test/docs.jl` enforces both. A new file
   or export therefore needs a docstring and, for a new file, a line in that map.

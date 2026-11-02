@@ -377,6 +377,10 @@ the detector's response (`m1`, `m2`) and electronic noise (`σ_electronic`) are 
 that point, so `simulate!` no longer needs `scanner`. The signal model is in
 [`EICTWorkspace`](@ref).
 
+With `SimOptions(use_scatter = true)` the scanner's Geant4 scatter kernels
+([`scatter_kernels`](@ref)) add the patient's scatter to `S₁` and `S₂` before the noise, and the DAS
+subtracts the scatter it estimates from the measured signal alone (the patient taken as water).
+
 Reconstruction is NOT included — handled by the caller via `reconstruct!`.
 """
 function simulate!(

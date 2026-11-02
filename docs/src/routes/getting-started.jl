@@ -339,8 +339,11 @@ enhancement = after .- before"""),
                  c("[(\"Sn\", 0.4)]"), " in millimetres, with a decimal point."),
             ),
             p(c("SimOptions"), " holds the physics. Everything a clinical acquisition does is on by default: the detector's ",
-              "efficiency and fill factor, scatter, the focal spot, the heel effect, lag, and quantum and electronic noise, ",
-              "drawn in the counts before the log, where a real detector produces them. Three settings are yours to choose:"),
+              "efficiency and fill factor, the focal spot, the heel effect, lag, and quantum and electronic noise, ",
+              "drawn in the counts before the log, where a real detector produces them. Scatter is the exception: ",
+              c("use_scatter = true"), " superposes the scanner's Geant4 scatter kernels (", c("scatter_kernels"),
+              ", a download of about 250 MB per scanner, cached) on the patient's own rays, and the scanner's constant ",
+              "names its kernels. Three settings are yours to choose:"),
             bullets(
                 (b(c("seed")), ": every independent acquisition needs its own. ", c("simulate!"), " restarts the noise from ",
                  c("seed"), " each time, so two tubes, two kVp, a before and after, or a hundred repeat scans with one seed ",
@@ -351,7 +354,7 @@ enhancement = after .- before"""),
                  "example uses it; leave it at 1 while you iterate."),
                 (b(c("projector")), ": ", c(":dd_fast"), " (the default, distance-driven) or ", c(":siddon"), ". Leave it."),
             ),
-            p("The physics switches are read when the workspace is built. To turn scatter off, say, build a new workspace ",
+            p("The physics switches are read when the workspace is built. To turn scatter on, say, build a new workspace ",
               "with the new options; changing them before ", c("simulate!"), " does nothing."),
             H3(:class => h3_cls, "Dose"),
             p("Every scan reports its CTDIvol and DLP, from a Monte Carlo of the simulated beam in the 32 cm body CTDI phantom:"),
@@ -418,7 +421,8 @@ end"""),
             H2(:id => "spectral", :class => h2_cls, "4 · Spectral Imaging"),
             p("A photon-counting detector sorts every photon by its energy into bins. ", c("PCCTScanner"), " adds that ",
               "detector: its energy thresholds and dead time, with the scatter correction applied inside ",
-              c("simulate!"), " and the pile-up corrected after it, from a calibration of simulated air scans. This one ",
+              c("simulate!"), " when the scan simulates scatter (", c("use_scatter = true"), ", the kernels of the entry ",
+              "the scanner names) and the pile-up corrected after it, from a calibration of simulated air scans. This one ",
               "counts in four bins, with a detector narrowed to the phantom to save memory:"),
             julia(raw"""scanner_pc = BS.PCCTScanner(
     source_to_isocenter = 610.0, source_to_detector = 1113.0,
@@ -427,6 +431,7 @@ end"""),
     energy_thresholds = [20.0, 35.0, 55.0, 70.0], # four counting bins, keV
     dead_time_ns = 27.0, # pile-up is modelled once there is a dead time
     scatter_correction = true,
+    scatter_kernels = "NAEOTOM Alpha", # the scatter library's entry for this geometry
 )
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
 res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)

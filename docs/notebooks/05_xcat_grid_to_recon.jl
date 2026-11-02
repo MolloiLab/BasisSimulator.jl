@@ -496,7 +496,12 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000040
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
+sim_opts = BS.SimOptions(
+    seed = 1234,
+    projector = :dd_fast,
+    view_samples = 5,
+    use_scatter = true,
+);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""

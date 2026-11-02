@@ -326,7 +326,12 @@ between the channels, which the decomposition would then amplify.
 # ╔═╡ 09000006-0000-4000-8000-000000000010
 begin
     VIEW_SAMPLES = 5
-    force_opts = BS.SimOptions(projector = :dd_fast, use_heel_effect = false, view_samples = VIEW_SAMPLES)
+    force_opts = BS.SimOptions(
+        projector = :dd_fast,
+        use_heel_effect = false,
+        use_scatter = true,
+        view_samples = VIEW_SAMPLES,
+    )
     "The same physics switches with one field replaced."
     with_option(opts, field, value) = BS.SimOptions(;
         (f => getfield(opts, f) for f in fieldnames(BS.SimOptions) if f !== field)...,

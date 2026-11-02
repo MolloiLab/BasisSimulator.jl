@@ -294,9 +294,12 @@ md"""
 md"""
 ### 4. `SimOptions`
 
-The **physics** of the forward model. Every effect is on by default except optical crosstalk:
-fill factor, energy-dependent detector efficiency, scatter, focal-spot blur, quantum and
-electronic noise, detector lag and the anode heel effect. The polychromatic source spectrum,
+The **physics** of the forward model. Every effect is on by default except optical crosstalk and
+scatter: fill factor, energy-dependent detector efficiency, focal-spot blur, quantum and
+electronic noise, detector lag and the anode heel effect. Patient scatter is the scanner's Geant4
+scatter kernels (BasisMonteCarlo's library, `scatter_kernels`), superposed on the phantom's own
+rays; they are a download of about 250 MB per scanner, so `use_scatter = true` asks for them, and
+a scanner the library has no entry for (`scatter_kernels = ""`) cannot. The polychromatic source spectrum,
 the bowtie and beam hardening are always part of the model. Turn an effect off to measure its
 contribution.
 
@@ -322,9 +325,9 @@ sim_opts = BS.SimOptions(
     seed = 1234,            # fixed noise realisation: same seed + same inputs = same sinogram
     projector = :dd_fast,
     view_samples = 5,       # the detector integrates over the arc of each view (5 sub-views)
+    use_scatter = true,     # the Revolution Apex's Geant4 scatter kernels
 
     # Switch individual effects off, e.g.:
-    # use_scatter     = false,
     # use_heel_effect = false,
     # use_focal_spot  = false,
     # use_lag         = false,
@@ -334,9 +337,10 @@ sim_opts = BS.SimOptions(
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
 !!! info "Detector-specific physics lives on the scanner"
-    `SimOptions` carries only the effects both detector families share. Pile-up, its correction,
-    photon-counting scatter correction and the count-noise blend are fields of `PCCTScanner`;
-    detector lag applies to the scintillator only.
+    `SimOptions` carries only the effects both detector families share. The scatter kernels are
+    the scanner's (`scatter_kernels`); pile-up, its correction, photon-counting scatter correction
+    and the count-noise blend are fields of `PCCTScanner`; detector lag applies to the
+    scintillator only.
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001

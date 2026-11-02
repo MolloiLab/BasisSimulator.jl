@@ -202,10 +202,11 @@ struct ScatterKernelArtifact
     tree_hash::String   # git-tree-sha1 of the extracted directory (the artifact store's key)
 end
 
-# RELEASE: the assets are attached to the v0.16.0 release. Fill `sha256` and `tree_hash` from
-# `lib/BasisMonteCarlo/scripts/split_scatter_library.jl`, which writes the per-scanner files and
-# prints both; an entry whose `sha256` is empty is not released yet.
-const _SCATTER_RELEASE_URL = "https://github.com/MolloiLab/BasisSimulator.jl/releases/download/v0.16.0"
+# RELEASE: the assets are a data release of their own, tag `scatter-kernels-v2` (made before the
+# package release, so that the hashes below can be registered with it; RELEASING.md). Fill `sha256`
+# and `tree_hash` from `lib/BasisMonteCarlo/scripts/split_scatter_library.jl --archive`, which
+# writes the per-scanner files and prints both; an entry whose `sha256` is empty is not released.
+const _SCATTER_RELEASE_URL = "https://github.com/MolloiLab/BasisSimulator.jl/releases/download/scatter-kernels-v2"
 
 _scatter_artifact(stem) = ScatterKernelArtifact(
     "$(stem).toml",
@@ -291,8 +292,8 @@ function _download_scatter_kernels(entry::AbstractString; quiet::Bool = false)
     a = SCATTER_KERNEL_ARTIFACTS[entry]
     isempty(a.sha256) && throw(
         ArgumentError(
-            "the scatter kernels of \"$(entry)\" are not released yet (BasisSimulator v0.16.0 attaches " *
-                "them to its GitHub release). Load a local copy of the library BasisMonteCarlo wrote with " *
+            "the scatter kernels of \"$(entry)\" are not released yet (the GitHub release " *
+                "`scatter-kernels-v2` will carry them). Load a local copy of the library BasisMonteCarlo wrote with " *
                 "`scatter_kernels(\"$(entry)\"; path = \"…/$(a.file)\")`, or set `use_scatter = false`."
         )
     )

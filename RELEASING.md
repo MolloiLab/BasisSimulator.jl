@@ -24,12 +24,18 @@ deploys from `main` on its own (see the end of this file).
    `## [<version>](https://github.com/MolloiLab/BasisSimulator.jl/compare/v<previous>...v<version>) (<YYYY-MM-DD>)`
    and add an empty `## [Unreleased]` above it. Group entries as `Breaking` / `Added` / `Changed` /
    `Fixed` / `Performance` / `Documented`, skipping empty groups.
-5. **Test:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'`, the GPU paths on a GPU (CI has
+5. **Scatter kernels (when the library changed).** Split BasisMonteCarlo's library per scanner and
+   zip it, `julia lib/BasisMonteCarlo/scripts/split_scatter_library.jl scatter_library_v2.toml out/ --archive`
+   (in an environment with `p7zip_jll`); attach the six `.zip`s to a GitHub release of their own,
+   tag `scatter-kernels-v2` (a new tag for a new library), and paste the printed SHA-256 and tree
+   hash of each into `SCATTER_KERNEL_ARTIFACTS` (`src/detector/scatter_kernels.jl`). Check one
+   download: `BS.scatter_kernels("SOMATOM Force")` in a fresh depot.
+6. **Test:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'`, the GPU paths on a GPU (CI has
    none; the recipe is in the guide's Contributing section), and loading on the newest released
    Julia (`julia +<newest> --project=. -e 'using Pkg; Pkg.test()'`), because the registry's
    AutoMerge loads the package there whatever the `julia` compat says. Say in the pull request what
    passed on which hardware.
-6. **Merge the pull request, then comment on its merge commit** on GitHub:
+7. **Merge the pull request, then comment on its merge commit** on GitHub:
 
    ```
    @JuliaRegistrator register

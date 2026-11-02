@@ -431,7 +431,7 @@ function _water_length(p::ScatterPlan, t::Real, i::Int, g::Int)
     target = log(max(t, 1.0e-6))
     w = view(p.detected, :, i, g)
     μ = p.water_mu_per_mm
-    μ̄ = sum(w .* μ)
+    μ̄ = sum(w[e] * μ[e] for e in eachindex(w))
     x = -target / μ̄
     for _ in 1:30
         s0, s1 = 0.0, 0.0
@@ -552,13 +552,15 @@ function _scatter_estimate!(p::ScatterPlan, measured::AbstractArray)
     estimate = zeros(size(p.estimate)...)
     wet = zeros(n_cc, n_g, n_cv)
     for pass in 1:_SCATTER_CORRECTION_PASSES
-        for v in 1:n_cv, g in 1:n_g, i in 1:n_cc
-            s = pass == 1 ? 0.0 : sum(_field_at_ray(p, estimate, ch, i, g, v) for ch in 1:n_est)
-            t = (Float64(measured[i, g, v]) - s) / max(p.air[i, g], 1.0e-30)
-            x = _water_length(p, t, i, g)
-            # below a millimetre of water the ray is taken to miss the patient (the air calibration's
-            # own scale), as the forward model leaves the gases out
-            wet[i, g, v] = x < 1 ? 0.0 : x
+        Threads.@threads for v in 1:n_cv
+            for g in 1:n_g, i in 1:n_cc
+                s = pass == 1 ? 0.0 : sum(_field_at_ray(p, estimate, ch, i, g, v) for ch in 1:n_est)
+                t = (Float64(measured[i, g, v]) - s) / max(p.air[i, g], 1.0e-30)
+                x = _water_length(p, t, i, g)
+                # below a millimetre of water the ray is taken to miss the patient (the air calibration's
+                # own scale), as the forward model leaves the gases out
+                wet[i, g, v] = x < 1 ? 0.0 : x
+            end
         end
         fill!(estimate, 0.0)
         _scatter_views!(estimate, p, (v, g) -> _water_rays(p, view(wet, :, :, v), g), channels; view = :wet)

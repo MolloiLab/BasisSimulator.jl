@@ -96,16 +96,56 @@ onward they are written by hand, and releases are cut by hand — see
   `simulate_pulse_train`. The new plumbing (`eid_signal_moments`, the native table, `pcct_count!`,
   `pcct_event_classes`, `pcct_position_gain`, `pileup_counts!`) is internal.
 
+- **Patient scatter is the Geant4 scatter library**, superposed on each acquisition's own rays; the analytic
+  convolution model (Ohnesorge-style kernel, `(diameter/30)^1.5` and air-gap scalings) is gone. BasisMonteCarlo's v2
+  library (notebook 10: pencil beams in water elliptical cylinders, Compton, wide- and forward-Rayleigh parts kept
+  apart, path lengths by energy, per-column moments) is read as plain data (TOML header + little-endian Float32,
+  BasisSimulator's own copy of the reader, `read_scatter_library`) and superposed as its `library_scan` does: each
+  view in the water ellipse of its rays (`view = :mean`, the geometric mean of the water-equivalent and the outline
+  ellipses), each ray at the impact whose chord is its water-equivalent length, its Compton and Rayleigh parts scaled
+  by its materials against water (the library's element table and the scanner's angle profile) and by how much less
+  gets out of them, moved to its own column. The rays are the phantom's own, walked per material
+  (`dd_fast_material_paths!`) on coarse rays: 0.25° across the fan, groups of three library rows along z, views every
+  10°; each dexel interpolates between the library's 2° × 10–20 mm bins and the coarse views. An energy integrator's
+  scatter enters `S₁` (its `m₁`-weighted keV over `E_ref`) and `S₂` (`m₂/m₁` at the photon's energy), so its noise
+  carries the scatter; a photon counter's enters each bin's expected counts before the noise and pile-up, a photon
+  counted by the library split over the bins as the response table splits a photon of its energy (`R(E, b)/η(E)`).
+  Against BasisMonteCarlo's own `library_scan` on the same rays and data (SOMATOM Force, Aquilion ONE; 32 cm cylinder,
+  36 × 26 cm ellipse) the superposition agrees to 1e-6 per bin; against `library_scan` on exact rays every 0.05° to
+  ≤ 1.7 % per bin (4 % at the patient-edge peak of a 20 cm cylinder on the Aquilion), 0.9 % at the centre.
+- **The scatter correction estimates from the data alone.** The energy integrator's DAS (always) and
+  `PCCTScanner(; scatter_correction = true)` measure every coarse ray's water-equivalent length from its measured
+  transmission (scatter included, inverted through the ray's spectrum), superpose the scatter of that water patient
+  (`view = :wet`), subtract it and measure again (two passes). Before, the energy integrator subtracted exactly the
+  scatter it had injected and the photon counter re-ran the analytic model; now the correction is realistic, not
+  exact (residual on a 30 cm water cylinder: a few % of the scatter).
+- **Each scanner names its scatter kernels**: `EICTScanner(; scatter_kernels = "")` and
+  `PCCTScanner(; scatter_kernels = "")`, the library entry (`"SOMATOM Force"`, `"SOMATOM Definition Flash"`,
+  `"NAEOTOM Alpha"`, `"Revolution Apex"`, `"Brilliance iCT"`, `"Aquilion ONE"`). `SOMATOM_FORCE`, `SOMATOM_DEFINITION_FLASH`,
+  `REVOLUTION_APEX` and `NAEOTOM_ALPHA` set theirs, and their `_B`/`_UHR` copies inherit it; `use_scatter = true` on a
+  scanner with `""` throws, naming the scanners that have kernels. `scatter_kernels(entry; path)` loads an entry
+  (cached per process) from its artifact, one per scanner (about 250 MB, Julia artifact store, SHA-256 verified,
+  `SCATTER_KERNEL_ARTIFACTS`), or from a local library with `path`. Outside the library's grid (thickness
+  140–500 mm, aspect 0.6–2.5, 20–140 keV) the nearest kernels stand in, with a one-time warning; an ellipse thinner
+  than 140 mm takes the thinnest kernel scaled by the water its ray crosses.
+- **`SimOptions(; use_scatter = false)` by default** (was `true`): the kernels are a download. The docs notebooks of
+  the clinical scanners set `use_scatter = true`. `SimOptions(o; kwargs...)` is the copy constructor.
+- **Removed:** `ScatterModel`, `geometry_aware_scatter_model`, `create_scatter_kernel_spatial`,
+  `estimate_phantom_diameter_cm`, `estimate_scatter_field!`, `compute_scatter_energy_weights`, `inject_scatter!`,
+  `inject_scatter_bins!`, `compute_scatter_bin_weights` and the `SCATTER_REF_*` constants; the `phantom` keyword of
+  `build_physics_config` and `resolve_source_spectrum_full`; `PhysicsConfig.scatter` holds `ScatterKernels`;
+  `EICTWorkspace`'s `scatter_kernel`, `scatter_kernel_1d`, `scatter_temp` and `PCCTWorkspace`'s `combined` are gone,
+  `scatter` (a `ScatterPlan`, or `nothing`) is new on both; `keep_projection` keeps no scatter field (the scatter is
+  in the projection). A phantom simulated with scatter has at most 64 materials (`compact_materials`).
+
 ### Fixed
 - **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
 - **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
   applied once, to the quanta (`I₀·ff`).
 - **The electronic noise** was converted to photons with the spectrum's mean energy; it is in keV (÷ gain), in the
   signal's own units.
-- **EICT scatter** was estimated from a sinogram that carried the bowtie and the detector response, so an empty
-  field scattered; the scatter source is each ray's primary times the object's own line integral (the sinogram
-  less its air value, `estimate_scatter_field!(…; air_reference)`), and the spectral weight is signal-weighted
-  (`m₁`).
+- **An empty field scattered** (the EICT scatter was estimated from a sinogram carrying the bowtie and the detector
+  response); the library's superposition leaves gases out of the patient, so air scatters nothing.
 
 ### Added
 - **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and
@@ -127,8 +167,11 @@ onward they are written by hand, and releases are cut by hand — see
 - Tests (`test/eict_signal.jl`, CPU): the air scan's variance against `S₂/(I₀·ff·S₁²)` with and without a bowtie
   (ratio 1 ± 0.02); NEQ in air = ff·N·DQE(0) to 2 % (Force, 120 kV: DQE(0) = 0.832); the variance behind 20 and
   30 cm of water against `D/λ` and the rising dispersion; the electronic term; water BHC against a 70 keV scan
-  (< 1 HU, cupping < 2 HU); an empty field's scatter (< 1e-5); and a noise-free dual-kVp decomposition returning
-  the water path.
+  (< 1 HU, cupping < 2 HU); and a noise-free dual-kVp decomposition returning the water path.
+- Tests (`test/scatter.jl`, on a synthetic library written in the library's format by `test/scatter_library.jl`): the
+  reader's round trip, the kernels' geometry and clamped interpolation, the error for a scanner with no kernels, a
+  centred cylinder's symmetric profile, linearity in mAs, both families' units, the data-driven correction, an
+  empty field (no scatter), and CPU/GPU agreement.
 
 ### Documented
 - **The notebooks and the scanners page follow v0.16:** every documentation notebook uses the scanner constants

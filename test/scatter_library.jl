@@ -81,7 +81,8 @@ function _synthetic_scatter_library(dir; name = "BS test scanner", energy_weight
         "rayleigh" => 0.25 .* S,
         "forward" => 0.1 .* S,
         "primary" => ones(nu, na, nT, nE),
-        "paths" => [t / 2 for _ in 1:2, _ in 1:30, _ in u, _ in r, t in T, _ in E],
+        # half the thickness, spread over the 5-keV bands from 20 to 140 keV, where the photons are
+        "paths" => [5 <= band <= 28 ? t / 48 : 0.0 for _ in 1:2, band in 1:30, _ in u, _ in r, t in T, _ in E],
         "offsets" => zeros(nc, nu, na, nT, nE),
         "spreads" => fill(2 / sqrt(12), nc, nu, na, nT, nE),
         "angles" => ones(2, 7, nE),

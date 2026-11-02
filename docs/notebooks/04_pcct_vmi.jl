@@ -140,8 +140,9 @@ scan field behind the large-body bowtie, and a 1.6 mm CdTe sensor whose response
 charge sharing, electronic noise, the anti-scatter grid) is BasisMonteCarlo's Geant4 table. Each
 native dexel counts on its own, Poisson, sharing photons with its neighbours, and piles up at its
 own rate (27 ns dead time). It is a realistic unit: its native dexels' gains spread by 2 % and
-their thresholds by 0.35 keV, a fixed pattern that would ring the image uncorrected. Scatter is
-simulated and corrected inside `simulate!`; pile-up and then the flat field are corrected after
+their thresholds by 0.35 keV, a fixed pattern that would ring the image uncorrected. Scatter (the
+Geant4 library's kernels for the Alpha) is simulated inside `simulate!` and corrected there from
+the recorded counts alone; pile-up and then the flat field are corrected after
 it, each with a calibration from simulated air scans. See the
 [scanners page](../../scanners/) for where each value comes from.
 """
@@ -186,8 +187,9 @@ protocol = alpha_protocol(174.0 * DOSE_SCALE);
 md"""
 ### Simulation and Reconstruction Options
 
-The physics switches of the basis-spectral-denoising Alpha model. Quantum noise, Compton
-scatter and the focal-spot blur are on. The switches turned off model a scintillator (fill
+The physics switches of the basis-spectral-denoising Alpha model. Quantum noise, patient
+scatter (the Alpha's Geant4 kernels, superposed on the phantom's own rays) and the focal-spot blur
+are on. The switches turned off model a scintillator (fill
 factor, optical crosstalk, the scintillator efficiency table, lag): the CdTe detector's
 efficiency, fill and charge sharing are already in its Monte Carlo response. The heel effect is off.
 
@@ -226,6 +228,7 @@ draw_options(; seed, use_noise) = BS.SimOptions(
     use_focal_spot = true,
     use_heel_effect = false,
     use_lag = false,
+    use_scatter = true,   # the Alpha's Geant4 scatter kernels (`scatter_kernels`)
     view_samples = 5,     # sub-views per view: the arc the gantry turns while a view is read
     view_arc = 1.0,       # a photon-counting detector integrates for the whole view period
 );
@@ -251,9 +254,11 @@ md"""
 ### Simulate: `simulate!` and `spectral_basis`
 
 `simulate!` runs the whole photon-counting detector model on the GPU: polychromatic forward
-projection of every sub-view through the Monte Carlo detector response, scatter injection,
+projection of every sub-view through the Monte Carlo detector response, the patient scatter
+(the Geant4 kernels superposed on the phantom's own rays),
 the counts of every native dexel (Poisson, neighbours covarying through the photons they share),
-its pile-up, the digital 2 × 2 sum, then scatter correction. The pile-up is corrected after it
+its pile-up, the digital 2 × 2 sum, then the scatter correction (estimated from the counts, the
+patient taken as water). The pile-up is corrected after it
 with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated air scans at
 rising tube currents (never from the model's own matrices), then the dexels' gains with
 `apply_flat_field!`, from a low-flux air scan `calibrate_flat_field`. It returns
