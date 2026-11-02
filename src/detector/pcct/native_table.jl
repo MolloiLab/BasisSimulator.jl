@@ -229,4 +229,4 @@ function pcct_count!(counts::AbstractVector, expected::AbstractVector, classes; 
     return counts
 end
 
-export PCCT_NATIVE_TABLE_PATH, pcct_native_table, pcct_position_gain, pcct_event_classes, pcct_count!
+# Internal: the simulator's plumbing, reached as `BasisSimulator.pcct_count!` etc. (not exported).

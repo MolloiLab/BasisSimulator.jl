@@ -123,8 +123,8 @@ md"""
 
 The Apex Elite geometry (source–isocenter 625.6 mm, source–detector 1100 mm, 834 columns
 × 0.6 mm on an arc with the quarter-detector offset, 256 rows × 0.625 mm), its Gemstone
-scintillator (`:lumex`) and the GE large-body bowtie: the basis-spectral-denoising model,
-value for value.
+scintillator (`:lumex`) and the GE large-body bowtie: the documented `REVOLUTION_APEX`, without
+electronic noise (`EICTScanner(REVOLUTION_APEX; electronic_noise = 0.0)`).
 
 Rapid kVp switching alternates the tube between 80 and 140 kVp within every view period, on
 one tube and one detector, so the two channels see the same rays. It is modelled as two
@@ -135,28 +135,7 @@ the arc the gantry turns per view (`view_arc`).
 """
 
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
-scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6,
-    source_to_detector = 1100.0,
-    detector_rows = 256,
-    detector_cols = 834,
-    detector_row_size = 0.625,
-    detector_col_size = 0.6,
-    detector_col_offset = 0.25,
-    detector_shape = :arc,
-    focal_spot_width = 1.0,
-    focal_spot_length = 1.0,
-    target_angle = 10.0,
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex,
-    detector_depth = 3.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-    electronic_noise = 0,
-    detection_gain = 10.0,
-)
+scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000102
 md"""
@@ -293,9 +272,11 @@ calibration draws pass it back (`projection`) and only draw their noise. That is
 bit-identical to simulating each draw afresh, at a fraction of the cost.
 
 Each acquisition keeps what the spectral basis needs: its corrected log sinograms, its
-per-ray air counts `I0_ray` (the detector's air count × the bowtie air profile) and its
-per-ray detected spectrum from `resolve_source_spectrum_full` (source × filtration × bowtie ×
-detector response), the same model the forward projector applied.
+one-channel spectral basis, `spectral_basis(ws, protocol)`: each ray's detected spectrum
+(source × filtration × bowtie × the detector's signal per photon, `m₁(E) = E·efficiency(E)`),
+the model the forward projector applied, scaled to the ray's noise-equivalent quanta in air,
+`I₀·ff·S₁²/S₂` (an energy integrator's signal is not Poisson: its variance is `S₂/S₁` times its
+mean, the dispersion, which rises as the beam hardens).
 """
 
 # ╔═╡ 4315ef69-aa2f-4ee0-a13b-c65e01fb87ce
@@ -314,17 +295,8 @@ dual_scans = map(collect(keys(exposures))) do k
             projection === nothing && (projection = result.projection)
             channels[r] = Float32.(Array(ws.sinogram))
             if model === nothing
-                air = ws.bowtie_air_reference === nothing ?
-                    ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-                    Float32.(Array(ws.bowtie_air_reference))
-                I0 = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * Float64(ws.η_eff)
-                energies, response = BS.resolve_source_spectrum_full(
-                    opts, protocol; scanner = scanner, geom = ws.geom,
-                )
-                model = (
-                    geom = ws.geom, I0_ray = Float32.(I0 .* air),
-                    energies = Float64.(energies), response = Float32.(response),
-                )
+                # the acquisition's one-channel basis: the model the projector applied
+                model = (geom = ws.geom, basis = BS.spectral_basis(ws, protocol))
             end
         finally
             BS.release_backend!(ws)
@@ -348,16 +320,14 @@ md"""
 ### 1. Spectral Basis from the Two Acquisitions
 
 `spectral_basis_from_acquisitions` merges the two kVp energy grids onto their union and
-scales each acquisition's per-ray spectrum by its own air counts, so the likelihood sees the
+scales each acquisition's per-ray spectrum by its own noise-equivalent quanta, so the likelihood sees the
 absolute response ``\Phi_k(E)`` of every ray and channel: source, filtration, bowtie and
 detector, the model that generated the data. It does not depend on the noise, so every draw
 shares it.
 """
 
 # ╔═╡ 4ca28c64-ee96-47c8-b7c3-f0e0c4c99423
-basis = BS.spectral_basis_from_acquisitions(acquisitions = [
-    (energies = s.energies, response = s.response, I0_ray = s.I0_ray) for s in dual_scans
-]);
+basis = BS.spectral_basis_from_acquisitions(acquisitions = [s.basis for s in dual_scans]);
 
 # ╔═╡ 03a10001-0000-4000-8000-000000000001
 let

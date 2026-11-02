@@ -401,9 +401,8 @@ end
     @test det.material == BS.CDTE_MATERIAL
     @test det.thickness_mm == 1.6
     @test det.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
-    @test det.enable_charge_sharing
-    @test det.enable_pile_up
-    @test det.enable_anti_coincidence
+    @test fieldnames(BS.PhotonCountingDetector) ==
+        (:material, :thickness_mm, :pixel_size_mm, :energy_thresholds_keV, :dead_time_ns, :binning_factor)
 end
 
 @testset "EnergyResolvedSinogram contract" begin

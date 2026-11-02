@@ -61,12 +61,12 @@ end
 
 @testset "protocol variants: the copy constructor" begin
     low = CTProtocol(
-        kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5, collimation_mm = 4.8, anode_angle = 8,
+        kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5, collimation_mm = 4.8,
         additional_filters = [("Ti", 0.9)]
     )
     @test CTProtocol(low) == low && hash(CTProtocol(low)) == hash(low)
     high = CTProtocol(low; kVp = 140, mA = 190.0, additional_filters = [("Ti", 0.9), ("Sn", 0.6)])
-    @test high.kVp == 140 && high.mA == 190.0 && high.views == 1160 && high.collimation_mm == 4.8 && high.anode_angle == 8
+    @test high.kVp == 140 && high.mA == 190.0 && high.views == 1160 && high.collimation_mm == 4.8
     @test high.additional_filters == [("Ti", 0.9), ("Sn", 0.6)] && low.additional_filters == [("Ti", 0.9)]
     # a new mAs sets the current afresh; a variant keeps an axial scan axial
     @test CTProtocol(low; mAs = 100.0).mA == 200.0

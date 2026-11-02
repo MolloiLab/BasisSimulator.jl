@@ -21,7 +21,7 @@ against the same chain applied to the noise-free acquisition.
 | Phantom     | **1600 × 1100 × 20** | **0.2 isotropic**      | 320 × 220 × 4 mm              |
 | Recon       | 512 × 512 × **3**    | **0.625 isotropic**    | FOV 32 cm × 1.875 mm z        |
 | Collimation | **5.0 mm nominal**   | —                      | cone-guard rows added automatically |
-| Scanner     | Siemens NAEOTOM Alpha | 0.302 × 0.353 mm pixels (2 × 2 binned) | 144 rows, 50 cm scan field |
+| Scanner     | Siemens NAEOTOM Alpha | 0.373 × 0.399 mm pixels (2 × 2 digitally binned) | 144 rows, 50 cm scan field |
 | Protocol    | PCCT, 4 bins         | 140 kVp · 1200 views · 0.5 s rotation · 5 sub-views per view | the physical scan's 10.12 mGy CTDIvol |
 
 ```
@@ -372,11 +372,14 @@ end
 md"""
 ### 2. `PCCTScanner`: Siemens NAEOTOM Alpha (4 thresholds)
 
-The NAEOTOM Alpha model of basis-spectral-denoising (and semmd-bayesian), value for value, as in
-notebook 04: a CdTe direct-conversion detector with native dexels 0.275 × 0.322 mm at the
-detector face read out 2 × 2 binned, an arc detector with the quarter-detector offset, a 50 cm
-scan field behind the large-body bowtie, 10 keV energy resolution, charge sharing and 5 ns dead
-time. Pile-up is simulated and corrected, and so is scatter; the counts are exact Poisson. The
+The documented NAEOTOM Alpha, `NAEOTOM_ALPHA`, in its standard mode: native CdTe dexels at a
+0.34 × 0.364 mm pitch summed digitally 2 × 2 after counting (1376 pixel columns of 0.373 mm and
+144 rows of 0.399 mm at the isocentre), an arc detector with the quarter-detector offset, a 50 cm
+scan field behind the large-body bowtie, and a 1.6 mm CdTe sensor whose response (absorption,
+charge sharing, electronic noise, the anti-scatter grid) is BasisMonteCarlo's Geant4 table. Each
+native dexel counts on its own, Poisson, sharing photons with its neighbours, and piles up at its
+own rate (27 ns dead time). Scatter is simulated and corrected inside `simulate!`; pile-up is
+corrected after it, with a calibration from simulated air scans, as in notebook 04. The
 thresholds `T = [20, 35, 55, 70] keV` define four bins:
 
 | Bin | Range (keV) |
@@ -390,46 +393,7 @@ The bowtie makes the air response vary across the fan, so the spectral model is 
 """
 
 # ╔═╡ 08030001-0000-4000-8000-000000000010
-scanner = let
-    native_col_mm, native_row_mm, binning = 0.275, 0.322, 2
-    sid, sdd = 610.0, 1113.0
-    col_iso = native_col_mm * binning / (sdd / sid)     # binned pixel at isocentre, mm
-    row_iso = native_row_mm * binning / (sdd / sid)
-    BS.PCCTScanner(
-        source_to_isocenter = sid,
-        source_to_detector = sdd,
-        detector_rows = 144,
-        detector_cols = ceil(Int, 500.0 / col_iso),     # covers the 50 cm scan field
-        detector_row_size = row_iso,
-        detector_col_size = col_iso,
-        detector_shape = :arc,
-        detector_col_offset = 0.25,                     # quarter-detector offset
-        focal_spot_width = 0.4,
-        focal_spot_length = 0.5,
-        target_angle = 7.0,
-        gantry_rotation_time = 0.5,
-        scan_diameter = 500.0,
-        gantry_aperture = 820.0,
-        flat_filter_material = :aluminum,
-        flat_filter_thickness = 3.0,
-        bowtie_filter = :large_body,
-        detector_material = :cdte,
-        detector_depth = 1.6,
-        fill_factor_row = 0.95,
-        fill_factor_col = 0.95,
-        energy_thresholds = [20.0, 35.0, 55.0, 70.0],   # four energy windows, keV
-        energy_resolution = 10.0,
-        charge_sharing_fwhm = 0.08,
-        dead_time_ns = 5.0,
-        pixel_mode = :standard,
-        native_dexel_col_mm = native_col_mm,
-        native_dexel_row_mm = native_row_mm,
-        binning_factor = binning,
-        pileup_correction = true,      # model-based inverse of the pile-up migration
-        scatter_correction = true,     # scatter re-estimated and subtracted per bin
-        noise_reduction = 0.0,         # exact Poisson counts
-    )
-end;
+scanner = BS.NAEOTOM_ALPHA;
 
 # ╔═╡ 08030002-0000-4000-8000-000000000001
 md"""
@@ -533,7 +497,10 @@ md"""
 
 `simulate!` runs the whole photon-counting detector model on the GPU: polychromatic forward
 projection of every sub-view through the Monte Carlo detector response, scatter injection,
-Poisson counts in every bin, pile-up migration, then pile-up and scatter correction. It returns
+the counts of every native dexel (Poisson, neighbours covarying through the photons they share),
+its pile-up, the digital 2 × 2 sum, then scatter correction. The pile-up is corrected after it
+with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated air scans at
+rising tube currents (never from the model's own matrices). It returns
 the four corrected sinograms ``h_k = -\log(y_k / I_{0,k})`` (`pcct_sino.bins`,
 `[col, row, view]`), the air count of every ray in every bin (`I0_bins`, `[col, row, bin]`), the
 dose report and, with `keep_projection = true`, the projection the next draw reuses.
@@ -550,6 +517,9 @@ acquisition = let
     model = nothing
     channels = Dict{Symbol, Vector{Array{Float32, 3}}}()
     seconds = Dict{Symbol, Float64}()
+    # pile-up, calibrated as a scanner does: air scans at rising currents (few views: a rate curve)
+    pileup = BS.calibrate_pileup(scanner, BS.CTProtocol(protocol; views = 40), recon_opts;
+        sim_opts = draw_options(; DRAWS[:reference]...))
     for name in (:reference, :calibration, :measured)     # the noise-free draw first: it projects
         opts = draw_options(; DRAWS[name]...)
         t0 = time()
@@ -560,6 +530,7 @@ acquisition = let
                 report_dose = projection === nothing,
                 keep_projection = projection === nothing, projection = projection)
             projection === nothing && (projection = sim.projection)
+            BS.apply_pileup!(sim.pcct_sino.bins, sim.I0_bins, pileup, protocol)
             channels[name] = [Array(b) for b in sim.pcct_sino.bins]   # the four corrected bins
             if model === nothing
                 I0 = Float32.(Array(sim.I0_bins))                     # [n_cols, n_rows, n_bins]

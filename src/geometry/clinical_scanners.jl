@@ -68,12 +68,13 @@ electrode plus its share of the anti-scatter grid's gaps), magnified 1113/610.
 - Pitch 0.37 × 0.40 mm at the isocentre: Li 2025, Table 1. 144 × 0.4 mm, 1376 columns (2752
   native): K243523, Tables 3–4.
 - CdTe 1.6 mm, the 2-D grid of 4 × 6 dexel cells, the transported charge (16 µm) and 1.9 keV of
-  electronic noise: the response table, [`PCCT_NATIVE_TABLE_PATH`](@ref) (Geant4, BasisMonteCarlo
+  electronic noise: the response table, `PCCT_NATIVE_TABLE_PATH` (Geant4, BasisMonteCarlo
   notebook 03; Flohr & Schmidt 2023; Zhan 2026).
 - Thresholds 20, 35, 55 and 70 keV (bins 20–35, 35–55, 55–70, > 70 keV): Sartoretti 2023.
 - Dead time 27 ns per native dexel, retriggering comparators after a 10 ns CR-RC shaper: the fit
   of notebook 03 to Li 2025's count loss.
-- Focal spot 0.4 × 0.5 mm, 7° anode geometry, 3 mm Al, large-body bowtie, 820 mm bore: the notebooks.
+- Anode 8° (K233657 Table 4; K243523 Table 3), which is also the spectrum's tabulated angle.
+- Focal spot 0.4 × 0.5 mm, 3 mm Al, large-body bowtie, 820 mm bore: the notebooks.
 - Scatter correction on, exact Poisson counts: the notebooks' detector toggles.
 
 Its dexels are ideal (no gain or threshold spread). BasisMonteCarlo notebook 03 assumes a 2 % gain
@@ -96,7 +97,7 @@ const NAEOTOM_ALPHA = let native_pitch = (0.34, 1.13 * 0.322), sid = 610.0, sdd 
         detector_col_offset = 0.25,
         focal_spot_width = 0.4,
         focal_spot_length = 0.5,
-        target_angle = 7.0,
+        target_angle = 8.0,
         gantry_rotation_time = 0.5,
         scan_diameter = 500.0,
         gantry_aperture = 820.0,
@@ -204,7 +205,8 @@ Force's `:ufc`).
 - 64 × 0.6 mm rows, 736 channels: FDA K133589 (comparison table); Siemens datasheet (2010).
 - Source–isocentre 595 mm, source–detector 1085.6 mm, arc detector: DICOM-CT-PD / AAPM LDCT
   projection data.
-- Focal spot 0.7 × 0.7 mm, 7° anode (IEC 60336); 78 cm bore, 50 cm scan field: Siemens datasheet.
+- Focal spot 0.7 × 0.7 mm, 7° anode (IEC 60336; its spectrum is the IPEM table at 8°, the nearest
+  tabulated); 78 cm bore, 50 cm scan field: Siemens datasheet.
 - 8.4 mm Al-equivalent flat filtration (6.8 tube + 1.6 beam-limiting device): Siemens datasheet.
 - Large-body bowtie: an assumption (profile unpublished).
 - UFC depth 1.4 mm, the only UFC thickness Siemens quotes, and the depth of its Geant4 table

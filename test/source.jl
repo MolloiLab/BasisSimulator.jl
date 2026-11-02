@@ -167,7 +167,7 @@ end
     @test p.rotation_time == 1.0
     @test p.n_rotations == 1.0
     @test p.collimation_mm === nothing
-    @test p.anode_angle == 10
+    @test !hasproperty(p, :anode_angle)          # the anode is the scanner's (`target_angle`)
     @test isempty(p.additional_filters)
 end
 
@@ -540,8 +540,10 @@ end
     p_ax = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 200)
     @test p_ax.pitch === nothing
 
-    p_h = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 200,
-        collimation_mm = 40.0, pitch = 1.2, n_rotations = 6)
+    p_h = BS.CTProtocol(
+        mA = 200.0, kVp = 120.0, views = 200,
+        collimation_mm = 40.0, pitch = 1.2, n_rotations = 6
+    )
     @test p_h.pitch == 1.2
     @test p_h.n_rotations == 6.0
 

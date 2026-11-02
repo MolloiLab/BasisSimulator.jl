@@ -30,7 +30,7 @@ onward they are written by hand, and releases are cut by hand — see
   `detector_efficiency_mode = :beer_lambert` models any depth (`m₁ = E·q`, `m₂ = E²·q`). The Beer–Lambert
   attenuation tables are scaled to the same densities.
 - **Removed:** `compute_eid_efficiency_vector`, `get_gemstone_mc_efficiency`, `get_ufc_mc_efficiency`,
-  `get_ufc_flash_mc_efficiency` (→ `eid_signal_moments`); `detector_efficiency_gemstone`, `detector_efficiency_ufc`,
+  `get_ufc_flash_mc_efficiency` (the tables are the exported `*_MC_EFFICIENCY_LUT`s; the response is internal); `detector_efficiency_gemstone`, `detector_efficiency_ufc`,
   `detector_efficiency_ufc_flash` (→ `DetectorEfficiency(material, thickness_mm, mode)` with the scanner's own
   `detector_material` and `detector_depth`; its `fill_factor` field is gone, the scanner's is the one);
   `apply_fill_factor!` (the fill factor scales the quanta once, in the noise); `get_scintillator_mu`'s silent
@@ -79,6 +79,23 @@ onward they are written by hand, and releases are cut by hand — see
 - **`fill_factor_standard` is removed**, with the fallback it served: an `EICTScanner`'s fill factors must lie in
   (0, 1] (zero meant "unset").
 
+- **One anode angle, the scanner's.** `CTProtocol`'s `anode_angle` field and keyword are removed: the anode is
+  hardware, `scanner.target_angle`, which now also picks the spectrum (the bundled IPEM table at the nearest
+  tabulated angle, 8° or 10°). `resolve_source_spectrum_without_bowtie` requires `scanner`. `NAEOTOM_ALPHA`'s
+  anode is 8° (documented; was 7° geometry with a 10° spectrum); the SOMATOM Definition Flash (7°) and the
+  default `EICTScanner`/`PCCTScanner` (7°) now read the 8° table where a protocol defaulted to 10°.
+- **`PhotonCountingDetector`** keeps only what is read: `material`, `thickness_mm`, `pixel_size_mm`,
+  `energy_thresholds_keV`, `dead_time_ns`, `binning_factor` (gone: `energy_resolution_keV`,
+  `charge_sharing_fwhm_mm`, `enable_charge_sharing`, `enable_pile_up`, `enable_anti_coincidence`,
+  `coincidence_window_ns`, `electronic_noise_keV`, `seed`, all informational).
+- **Public names against v0.15.1:** added `calibrate_flat_field`, `apply_flat_field!`, `calibrate_pileup`,
+  `apply_pileup!`, `NAEOTOM_ALPHA_UHR` (and a `spectral_basis` method); removed `PileupResult`, `apply_fill_factor!`,
+  `apply_pcct_noise!`, `apply_pcct_pileup!`, `apply_pcct_pileup_correction!`, `compute_eid_efficiency_vector`,
+  `detector_efficiency_gemstone`, `detector_efficiency_ufc`, `detector_efficiency_ufc_flash`,
+  `fill_factor_standard`, `get_gemstone_mc_efficiency`, `get_ufc_flash_mc_efficiency`, `get_ufc_mc_efficiency`,
+  `simulate_pulse_train`. The new plumbing (`eid_signal_moments`, the native table, `pcct_count!`,
+  `pcct_event_classes`, `pcct_position_gain`, `pileup_counts!`) is internal.
+
 ### Fixed
 - **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
 - **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
@@ -102,7 +119,7 @@ onward they are written by hand, and releases are cut by hand — see
   energy-blind; photon counter (2 % gain, 0.35 keV thresholds) 0.0287 → 0.0073 rms log, the rest the offsets'
   different weight on a hardened beam.
 
-- `eid_signal_moments(model, energies) -> (m₁, m₂)`, and `spectral_basis(ws::EICTWorkspace, protocol)`: the
+- `spectral_basis(ws::EICTWorkspace, protocol)`: the
   one-channel basis of an energy-integrating acquisition, its air response scaled to the noise-equivalent quanta
   `I₀·ff·S₁²/S₂`; `spectral_basis_from_acquisitions` takes these directly for dual-kVp and dual-source pairs.
 - Tests (`test/eict_signal.jl`, CPU): the air scan's variance against `S₂/(I₀·ff·S₁²)` with and without a bowtie
@@ -112,6 +129,13 @@ onward they are written by hand, and releases are cut by hand — see
   the water path.
 
 ### Documented
+- **The notebooks and the scanners page follow v0.16:** every documentation notebook uses the scanner constants
+  (01/02/05 `REVOLUTION_APEX`; 03/06/07 `EICTScanner(REVOLUTION_APEX; electronic_noise = 0.0)`; 04/08
+  `NAEOTOM_ALPHA`; 09 `SOMATOM_FORCE`; 12 `SOMATOM_DEFINITION_FLASH`) instead of hand-copied blocks; the
+  dual-energy notebooks build their bases with `spectral_basis(ws, protocol)`; the photon-counting notebooks
+  correct pile-up with `calibrate_pileup` → `apply_pileup!`; 09 and 12 describe the Geant4 tables (the Flash at
+  1.4 mm, within 0.5 % of the Force); the scanners page and the guide drop the removed keywords and the
+  protocol's anode angle.
 - **Getting Started rewritten as the package's guide**, for readers from a first-time user to a contributor:
   install, a first scan, then the phantom, the scan, reconstruction and spectral imaging in order, with the why of
   each setting, a units table, an anatomical chest scanned with and without iodine contrast, memory, notebooks and

@@ -136,7 +136,7 @@ end
         @test loss_edge < 0.3 * loss_centre       # a tenth of the flux, well under a third of the loss
         # the correction calibrated from air scans at rising currents undoes it in air
         cal = BS.calibrate_pileup(scanner, protocol, recon; sim_opts = opts)
-        bins = BS.apply_pileup!([copy(b) for b in res.pcct_sino.bins], ws.I0_cpu, cal)
+        bins = BS.apply_pileup!([copy(b) for b in res.pcct_sino.bins], ws.I0_cpu, cal, protocol)
         before = maximum(maximum(abs, Array(res.pcct_sino.bins[b])[:, r, 1]) for b in 1:4)
         after = maximum(maximum(abs, Array(bins[b])[:, r, 1]) for b in 1:4)
         @test after < before / 5

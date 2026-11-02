@@ -171,11 +171,11 @@ end
     PileupCalibration
 
 A photon counter's pile-up, from simulated air scans at rising tube currents: for each bin, the
-pile-up-free counts per recorded count (`ratio[b, k]`) at each recorded count of a pixel
-(`recorded[k]`, all bins summed, per view).
+pile-up-free counts per recorded count (`ratio[b, k]`) at each recorded count rate of a pixel
+(`recorded[k]`, all bins summed, counts per second).
 """
 struct PileupCalibration
-    recorded::Vector{Float64}
+    recorded::Vector{Float64}       # counts per second
     ratio::Matrix{Float64}
 end
 
@@ -187,7 +187,8 @@ Calibrate pile-up the way a scanner can, from simulated air scans at the protoco
 times each of `currents`: the pile-up-free counts of every pixel are the lowest current's,
 scaled linearly with the current, and each bin's ratio of those to the recorded counts is
 tabulated against the pixel's recorded counts (every pixel and current, binned in log counts).
-Use it with [`apply_pileup!`](@ref).
+Tabulated against the recorded count rate, it serves scans of any view count, so the calibration
+scans may use few views (`CTProtocol(protocol; views = 40)`). Use it with [`apply_pileup!`](@ref).
 """
 function calibrate_pileup(
         scanner::PCCTScanner, protocol::CTProtocol, recon_opts;
@@ -212,7 +213,7 @@ function calibrate_pileup(
             rec = [counts[k][b][i] for b in 1:nb]
             free = [counts[1][b][i] * x / levels[1] for b in 1:nb]
             sum(rec) > 0 || continue
-            push!(xs, sum(rec))
+            push!(xs, sum(rec) / (protocol.rotation_time / protocol.views))   # a rate: views need not match the scan's
             push!(ys, [rec[b] > 0 ? free[b] / rec[b] : 1.0 for b in 1:nb])
         end
     end
@@ -228,21 +229,21 @@ function calibrate_pileup(
 end
 
 """
-    apply_pileup!(bins, I0, cal::PileupCalibration) -> bins
+    apply_pileup!(bins, I0, cal::PileupCalibration, protocol) -> bins
 
-Undo pile-up with the curves [`calibrate_pileup`](@ref) measured: each ray's recorded counts
-`I0[col, row, b]·e^{−bin_b}`, all bins summed, look up each bin's ratio of pile-up-free to
+Undo pile-up with the curves [`calibrate_pileup`](@ref) measured: each ray's recorded count rate
+(`I0[col, row, b]·e^{−bin_b}`, all bins summed, over the scan's time per view), looks up each bin's ratio of pile-up-free to
 recorded counts (linear between the calibration's points, held at its ends), which multiplies
 that bin's counts.
 """
-function apply_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::PileupCalibration)
+function apply_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::PileupCalibration, protocol::CTProtocol)
     nb = length(bins)
     size(cal.ratio, 1) == nb == size(I0, 3) || throw(DimensionMismatch("one calibration curve and I0 plane per bin"))
     host = [Float64.(Array(b)) for b in bins]
     I0h = Float64.(Array(I0))
     x, κ = cal.recorded, cal.ratio
     for v in axes(host[1], 3), r in axes(host[1], 2), c in axes(host[1], 1)
-        n = sum(I0h[c, r, b] * exp(-host[b][c, r, v]) for b in 1:nb)
+        n = sum(I0h[c, r, b] * exp(-host[b][c, r, v]) for b in 1:nb) / (protocol.rotation_time / protocol.views)
         if n <= x[1]
             i, f = 1, 0.0
         elseif n >= x[end]
@@ -262,5 +263,4 @@ function apply_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::
     return bins
 end
 
-export FlatFieldCalibration, calibrate_flat_field, apply_flat_field!
-export PileupCalibration, calibrate_pileup, apply_pileup!
+export calibrate_flat_field, apply_flat_field!, calibrate_pileup, apply_pileup!

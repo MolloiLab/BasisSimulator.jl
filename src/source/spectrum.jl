@@ -245,6 +245,10 @@ function get_filter_mu(material::String, energy_keV::Float64)
     return ustrip(u"cm^-1", XA.linear_attenuation_coeff(mat, energy_keV * u"keV"))
 end
 
+# The anode is the scanner's (`target_angle`); the IPEM tables bundled here are at 8° and 10°, so a
+# spectrum is read at the tabulated angle nearest the scanner's (7° → 8°, the nearest).
+ipem_anode_angle(target_angle::Real) = target_angle <= 9 ? 8 : 10
+
 """
     load_spectrum_unfiltered(kVp::Int; anode_angle::Int=10) -> (energies, flux)
 

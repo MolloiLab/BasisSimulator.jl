@@ -17,6 +17,7 @@ _dose_protocol(; kVp = 120, mA = 350.0, kwargs...) = BS.CTProtocol(;
     bare = BS.EICTScanner(
         source_to_isocenter = 1000.0, source_to_detector = 1500.0, detector_rows = 16,
         detector_cols = 64, flat_filter_material = :aluminum, flat_filter_thickness = 7.0,
+        target_angle = 10.0,                     # the 10° IPEM table the reference value is for
         bowtie_filter = :none,
     )
     kerma(kVp; filters = Tuple{String, Float64}[]) = BS.air_kerma_free_in_air(

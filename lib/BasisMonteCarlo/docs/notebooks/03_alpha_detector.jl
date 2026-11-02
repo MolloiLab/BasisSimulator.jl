@@ -2935,59 +2935,27 @@ md"""
 The photons come from BasisSimulator itself: its IPEM Report 78 tungsten spectrum at 140 kVp,
 through the scanner's 3 mm of aluminium and the protocol's 0.9 mm of titanium, scaled to the
 detector at 1113 mm, exactly the spectrum `simulate!` uses for the Alpha (BasisSimulator's notebooks 04 and 08).
-The IPEM spectrum's anode angle is BasisSimulator's default, 10°; the Alpha's anode is 8°
-(⚠ *discrepancy* above), so the 8° spectrum is shown beside it.
+BasisSimulator v0.15.1 read the 10° IPEM table (its protocol default); BasisSimulator now reads the
+table at the scanner's own anode, the Alpha's documented 8° (`NAEOTOM_ALPHA.target_angle`). Both are
+shown; the 10° spectrum is v0.15.1's.
 """
 
 # ╔═╡ 5d8d5cd1-8ff7-5356-87bb-24b57c3281f1
-# BasisSimulator's Alpha, as on its scanner page (BasisSimulator's notebooks 04 and 08)
-bs_scanner = let native_col = 0.275, native_row = 0.322, sid = 610.0, sdd = 1113.0, bf = 2
-    col_iso = native_col * bf / (sdd / sid)
-    row_iso = native_row * bf / (sdd / sid)
-    BS.PCCTScanner(
-        source_to_isocenter = sid,
-        source_to_detector = sdd,
-        detector_rows = 144,
-        detector_cols = ceil(Int, 500.0 / col_iso),
-        detector_row_size = row_iso,
-        detector_col_size = col_iso,
-        detector_shape = :arc,
-        detector_col_offset = 0.25,
-        focal_spot_width = 0.4,
-        focal_spot_length = 0.5,
-        target_angle = 7.0,
-        gantry_rotation_time = 0.5,
-        scan_diameter = 500.0,
-        gantry_aperture = 820.0,
-        flat_filter_material = :aluminum,
-        flat_filter_thickness = 3.0,
-        bowtie_filter = :large_body,
-        detector_material = :cdte,
-        detector_depth = 1.6,
-        fill_factor_row = 0.95,
-        fill_factor_col = 0.95,
-        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution = 10.0,
-        charge_sharing_fwhm = 0.08,
-        dead_time_ns = 5.0,
-        pixel_mode = :standard,
-        native_dexel_col_mm = native_col,
-        native_dexel_row_mm = native_row,
-        binning_factor = bf,
-        pileup_correction = true,
-        scatter_correction = true,
-        noise_reduction = 0.0,
-    )
-end
+# BasisSimulator's Alpha, its documented constant (BasisSimulator's notebooks 04 and 08)
+bs_scanner = BS.NAEOTOM_ALPHA
+
+# ╔═╡ 7a3c0d11-5e2b-4f6a-9c8d-03a1b2c3d4e5
+# The same scanner with another anode: BasisSimulator reads the IPEM spectrum at the anode angle
+# nearest the scanner's own (8° or 10°)
+bs_scanner_at(anode_angle) = BS.PCCTScanner(bs_scanner; target_angle = Float64(anode_angle))
 
 # ╔═╡ 1d5d02ab-485b-567f-ac5d-aaea105040a4
-bs_protocol(anode_angle) = BS.CTProtocol(;
+bs_protocol = BS.CTProtocol(;
     kVp = 140,
     mA = 174.0,
     views = 1200,
     rotation_time = 0.5,
     collimation_mm = 5.0,
-    anode_angle,
     additional_filters = [("Ti", 0.9)],
 )
 
@@ -2996,8 +2964,8 @@ bs_protocol(anode_angle) = BS.CTProtocol(;
 spectra = Dict(
     angle => BS.resolve_source_spectrum_without_bowtie(
             BS.SimOptions(),
-            bs_protocol(angle);
-            scanner = bs_scanner,
+            bs_protocol;
+            scanner = bs_scanner_at(angle),
         )
         for angle in (10, 8)
 )
@@ -3123,13 +3091,12 @@ hvl_check = let
             views = 1200,
             rotation_time = 0.5,
             collimation_mm = 5.0,
-            anode_angle,
             additional_filters = filters,
         )
         e, w = BS.resolve_source_spectrum_without_bowtie(
             BS.SimOptions(),
             protocol;
-            scanner = bs_scanner,
+            scanner = bs_scanner_at(anode_angle),
         )
         μ = [MC.linear_attenuation(aluminium, max(E, 1.0)) for E in e]
         return MC.half_value_layer(e, w .* exp.(-μ .* bowtie_al_mm))
@@ -3249,15 +3216,23 @@ All three are per photon arriving at the detector's front, per native dexel.
 bins_from(above) = [above[1] - above[2], above[2] - above[3], above[3] - above[4], above[4]]
 
 # ╔═╡ 26b7ba11-b550-531e-a435-c117d0ddf3d3
-bs_drm = BS.compute_mc_drm(BS._build_pcct_detector(bs_scanner), 140.0)
+# BasisSimulator v0.15.1's response matrix, frozen: `cdte_response_v4` (BasisMonteCarlo's copy), its
+# counts above the four thresholds differenced into bins, and each energy's counts capped at one
+# photon (v0.15.1's rule; the installed BasisSimulator reads the native Geant4 table instead)
+bs_drm = let t = MC.basissimulator_v0_15_1_response()
+    R, th = Float64.(t["R_total"]), Float64.(t["thresholds_keV"])
+    k = [findfirst(==(x), th) for x in (20.0, 35.0, 55.0, 70.0)]
+    D = hcat(R[:, k[1]] .- R[:, k[2]], R[:, k[2]] .- R[:, k[3]], R[:, k[3]] .- R[:, k[4]], R[:, k[4]])
+    D = max.(D, 0.0)
+    (energies = Float64.(t["energies_keV"]), D = D ./ max.(sum(D; dims = 2), 1.0))
+end
 
 # ╔═╡ eefd3a0b-3fd0-529b-a9b2-b48dd07f032c
 # BasisSimulator: counts per bin per photon arriving, for the 10° spectrum, with its fill factor
 bs_bins = let
     e, w = spectra[10]
-    grid = range(1.0, 140.0; length = size(bs_drm, 1))
-    weights = [sum(w[abs.(e .- E) .<= step(grid) / 2]) for E in grid]
-    0.95 * vec(sum(weights .* bs_drm; dims = 1)) ./ sum(weights)
+    weights = [sum(w[abs.(e .- E) .<= 0.5]) for E in bs_drm.energies]
+    0.95 * vec(sum(weights .* bs_drm.D; dims = 1)) ./ sum(weights)
 end
 
 # ╔═╡ ee77cb7f-65ec-5973-bee7-d09ea418ad7c
@@ -3423,13 +3398,15 @@ md"""
 At clinical tube currents a dexel receives tens of millions of photons per second. Its
 electronics need a few nanoseconds to process each pulse; a second pulse inside that **dead
 time** is either lost or merged with the first into one pulse of their summed energy (pile-up).
-BasisSimulator models this with a pulse-train Monte Carlo (`simulate_pulse_train`,
-seminonparalyzable, Hamid's PR #10): Poisson arrivals, dead-time gating, energy summation.
+BasisSimulator v0.15.1 modelled this with a pulse-train Monte Carlo (`simulate_pulse_train`,
+seminonparalyzable, Hamid's PR #10): Poisson arrivals, dead-time gating, energy summation. It is
+kept below, verbatim but for its names, for the comparison; BasisSimulator now uses the model this
+section fits (shaped pulses, retriggering comparators, per native dexel).
 
 What a dexel's electronics see is not the incident spectrum, though: it is the **pulse
 heights** the crystal produces, including the split charge clouds and the K x rays shared with
 neighbours, more pulses than photons and many of low energy. Going beyond BasisSimulator's
-input, the same pile-up code is fed here the Geant4 pulse-height spectrum of a dexel at its
+input, v0.15.1's pile-up code is fed here the Geant4 pulse-height spectrum of a dexel at its
 true pulse rate.
 """
 
@@ -3467,6 +3444,182 @@ pulses = let
     )
 end
 
+# ╔═╡ 7a3c0d11-5e2b-4f6a-9c8d-03a1b2c3d4e6
+# BasisSimulator v0.15.1's pulse-train Monte Carlo (src/detector/pcct/mc_pileup.jl at v0.15.1,
+# Hamid's PR #10), kept here verbatim but for the names, for the comparison below
+begin
+    struct V0151PileupResult
+        n_true::Int
+        n_recorded::Int
+        true_energies::Vector{Float64}
+        recorded_energies::Vector{Float64}
+        true_bin_counts::Vector{Int}
+        recorded_bin_counts::Vector{Int}
+        trigger_bins::Vector{Int}
+    end
+
+    function v0151_simulate_pulse_train(
+        spectrum_weights::AbstractVector{<:Real},
+        energies::AbstractVector{<:Real},
+        count_rate::Real,
+        dead_time_ns::Real;
+        observation_time_s::Real=1e-3,
+        model::Symbol=:seminonparalyzable,
+        f_retrigger::Float64=0.3,
+        thresholds_keV::AbstractVector{<:Real}=[20.0, 35.0, 55.0, 70.0],
+        rng::BS.Random.AbstractRNG=BS.Random.default_rng()
+    )
+        τ_s = Float64(dead_time_ns) * 1e-9  # Dead time in seconds
+        rate = Float64(count_rate)
+        T_obs = Float64(observation_time_s)
+        n_thresh = length(thresholds_keV)
+
+        # Normalize spectrum weights to probability distribution
+        w = Float64.(spectrum_weights)
+        w_sum = sum(w)
+        if w_sum > 0.0
+            w ./= w_sum
+        else
+            w .= 1.0 / length(w)
+        end
+
+        # Build cumulative distribution for energy sampling
+        E_vals = Float64.(energies)
+        cdf = cumsum(w)
+
+        # Generate Poisson number of photons in observation window
+        expected_count = rate * T_obs
+        n_photons = v0151_poisson(rng, expected_count)
+
+        if n_photons == 0
+            return V0151PileupResult(0, 0,
+                Float64[], Float64[],
+                zeros(Int, n_thresh), zeros(Int, n_thresh),
+                Int[])
+        end
+
+        # Generate arrival times (sorted uniform in [0, T_obs])
+        # Explicitly create Vector to avoid scalar dispatch when n_photons=1
+        arrival_times = Vector{Float64}(undef, n_photons)
+        for i in 1:n_photons
+            arrival_times[i] = rand(rng) * T_obs
+        end
+        sort!(arrival_times)
+
+        # Sample photon energies from spectrum
+        photon_energies = Vector{Float64}(undef, n_photons)
+        for i in 1:n_photons
+            u = rand(rng)
+            idx = searchsortedfirst(cdf, u)
+            idx = clamp(idx, 1, length(E_vals))
+            photon_energies[i] = E_vals[idx]
+        end
+
+        # Apply dead-time gating and pileup.
+        # `trigger_bins[k]` records the bin of the photon that triggered event k
+        # (the photon that broke dead time). Photons that pile up onto an
+        # already-open event contribute energy but do NOT seed a new trigger —
+        # that is the count-loss mechanism.
+        recorded_energies = Float64[]
+        trigger_bins      = Int[]
+        it = 1
+        while it <= n_photons
+            # This photon triggers an event
+            event_energy = photon_energies[it]
+            event_time   = arrival_times[it]
+            trigger_bin  = v0151_threshold_bin(event_energy, thresholds_keV)
+
+            if model == :seminonparalyzable
+                # Seminonparalyzable: dead time can be retriggered
+                dead_end = event_time + τ_s
+                jt = it + 1
+                while jt <= n_photons && arrival_times[jt] < dead_end
+                    # This photon arrives during dead time → pileup (energy adds)
+                    event_energy += photon_energies[jt]
+                    # Check retrigger: with probability f_retrigger, dead time resets
+                    if rand(rng) < f_retrigger
+                        dead_end = arrival_times[jt] + τ_s
+                    end
+                    jt += 1
+                end
+                push!(recorded_energies, event_energy)
+                push!(trigger_bins, trigger_bin)
+                it = jt
+            else
+                # Nonparalyzable: fixed dead time, no retrigger
+                dead_end = event_time + τ_s
+                jt = it + 1
+                while jt <= n_photons && arrival_times[jt] < dead_end
+                    event_energy += photon_energies[jt]
+                    jt += 1
+                end
+                push!(recorded_energies, event_energy)
+                push!(trigger_bins, trigger_bin)
+                it = jt
+            end
+        end
+
+        # Bin true and recorded photons
+        true_bins = zeros(Int, n_thresh)
+        rec_bins  = zeros(Int, n_thresh)
+
+        for E in photon_energies
+            b = v0151_threshold_bin(E, thresholds_keV)
+            if b > 0
+                true_bins[b] += 1
+            end
+        end
+
+        for E in recorded_energies
+            b = v0151_threshold_bin(E, thresholds_keV)
+            if b > 0
+                rec_bins[b] += 1
+            end
+        end
+
+        return V0151PileupResult(
+            n_photons, length(recorded_energies),
+            photon_energies, recorded_energies,
+            true_bins, rec_bins,
+            trigger_bins,
+        )
+    end
+
+    function v0151_threshold_bin(E::Float64, thresholds::AbstractVector{<:Real})
+        n = length(thresholds)
+        if E < thresholds[1]
+            return 0
+        end
+        for b in n:-1:1
+            if E >= thresholds[b]
+                return b
+            end
+        end
+        return 0
+    end
+
+    function v0151_poisson(rng::BS.Random.AbstractRNG, λ::Float64)
+        if λ <= 0.0
+            return 0
+        elseif λ < 30.0
+            # Knuth's algorithm for small λ
+            L = exp(-λ)
+            k = 0
+            p = 1.0
+            while true
+                k += 1
+                p *= rand(rng)
+                if p < L
+                    return k - 1
+                end
+            end
+        else
+            # Gaussian approximation for large λ
+            return max(0, round(Int, λ + sqrt(λ) * randn(rng)))
+        end
+    end
+end
+
 # ╔═╡ 98710092-8d7f-56d4-964f-36441ac6613a
 # Recorded against true counts per bin over many 1 ms pulse trains, for both inputs and two dead times
 pileup = let
@@ -3477,7 +3630,7 @@ pileup = let
         recorded = zeros(4)
         rng = BS.Random.Xoshiro(7)
         for _ in 1:200
-            r = BS.simulate_pulse_train(
+            r = v0151_simulate_pulse_train(
                 weights,
                 energies,
                 rate,
@@ -3673,7 +3826,6 @@ li_beams = Dict(
                 views = 1200,
                 rotation_time = 0.5,
                 collimation_mm = 5.0,
-                anode_angle = 8,
                 additional_filters = [("Ti", 0.9)],
             );
             scanner = bs_scanner,
@@ -5207,6 +5359,7 @@ notebook as plain data BasisSimulator reads without BasisMonteCarlo.
 # ╟─dd7dbc05-6496-563a-ab62-46a547a22324
 # ╟─c89fca63-6462-5f25-b16e-d491689a48a3
 # ╠═5d8d5cd1-8ff7-5356-87bb-24b57c3281f1
+# ╠═7a3c0d11-5e2b-4f6a-9c8d-03a1b2c3d4e5
 # ╠═1d5d02ab-485b-567f-ac5d-aaea105040a4
 # ╠═15bdf1fd-777f-50c0-ad69-59c912741e2e
 # ╟─c81376fc-7b62-4e44-af3b-ec6cba4a8a9c
@@ -5231,6 +5384,7 @@ notebook as plain data BasisSimulator reads without BasisMonteCarlo.
 # ╟─fe7057a7-e676-5a62-899c-da11603bb9ed
 # ╠═b42aaddf-0087-5766-91d5-7a5d1fd04261
 # ╠═4d962a9a-3fd6-5fab-a132-c9c9907d4abc
+# ╠═7a3c0d11-5e2b-4f6a-9c8d-03a1b2c3d4e6
 # ╠═98710092-8d7f-56d4-964f-36441ac6613a
 # ╟─dc89fc6d-57b5-42e2-97ba-04cb2fb1614d
 # ╟─4c43a065-f125-5640-8df8-a2b16fdbdd4e

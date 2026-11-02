@@ -89,7 +89,7 @@ include("eid_response_tables.jl")
 """
     DetectorEfficiencyMode
 
-How [`eid_signal_moments`](@ref) computes an energy-integrating detector's response:
+How `eid_signal_moments` computes an energy-integrating detector's response:
 [`MC_LUT`](@ref) (its Geant4 table) or [`BEER_LAMBERT`](@ref) (analytic absorption).
 """
 @enum DetectorEfficiencyMode begin
@@ -214,5 +214,5 @@ end
 # =============================================================================
 
 export DetectorEfficiency, DetectorEfficiencyMode, BEER_LAMBERT, MC_LUT
-export get_scintillator_mu, eid_signal_moments
+export get_scintillator_mu
 export GEMSTONE_MC_EFFICIENCY_LUT, UFC_MC_EFFICIENCY_LUT, UFC_FLASH_MC_EFFICIENCY_LUT

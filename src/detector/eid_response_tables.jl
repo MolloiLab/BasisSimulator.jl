@@ -16,7 +16,7 @@ per energy).
   the mean squared signal per incident photon (keV²): absorption and the Swank spread together.
 - `thickness_mm`: the crystal depth the table was made at.
 
-The fill factor is not in the table; it applies once, separately. See [`eid_signal_moments`](@ref).
+The fill factor is not in the table; it applies once, separately. See `eid_signal_moments`.
 """
 const GEMSTONE_MC_EFFICIENCY_LUT = (
     energies = collect(1.0:140.0),
@@ -96,7 +96,7 @@ The flat-field response of the Siemens SOMATOM Force Stellar Infinity detector, 
   the mean squared signal per incident photon (keV²): absorption and the Swank spread together.
 - `thickness_mm`: the crystal depth the table was made at.
 
-The fill factor is not in the table; it applies once, separately. See [`eid_signal_moments`](@ref).
+The fill factor is not in the table; it applies once, separately. See `eid_signal_moments`.
 """
 const UFC_MC_EFFICIENCY_LUT = (
     energies = collect(1.0:140.0),
@@ -177,7 +177,7 @@ Siemens quotes), per keV from 1 to 140 keV, from Geant4 (BasisMonteCarlo noteboo
   the mean squared signal per incident photon (keV²): absorption and the Swank spread together.
 - `thickness_mm`: the crystal depth the table was made at.
 
-The fill factor is not in the table; it applies once, separately. See [`eid_signal_moments`](@ref).
+The fill factor is not in the table; it applies once, separately. See `eid_signal_moments`.
 """
 const UFC_FLASH_MC_EFFICIENCY_LUT = (
     energies = collect(1.0:140.0),

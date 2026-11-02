@@ -70,7 +70,8 @@ the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 # Source Parameters
 - `focal_spot_width::T`: Focal spot width (mm)
 - `focal_spot_length::T`: Focal spot length (mm)
-- `target_angle::T`: Anode target angle (degrees)
+- `target_angle::T`: Anode target angle (degrees): the heel effect's, the focal spot's and the spectrum's
+  (the bundled IPEM table at the nearest tabulated angle, 8° or 10°)
 
 # Gantry Parameters
 - `gantry_rotation_time::T`: Gantry rotation time (seconds)
@@ -281,7 +282,7 @@ pile-up by [`calibrate_pileup`](@ref)). The ideal detector is a copy with the sp
 
 `detector_col_size` / `detector_row_size` are the pixel's pitch at the isocentre; a native dexel's
 pitch is the pixel's over `binning_factor`. The dexel's aperture, the anti-scatter grid, the
-charge sharing and the electronic noise are the response table's ([`PCCT_NATIVE_TABLE_PATH`](@ref)).
+charge sharing and the electronic noise are the response table's (`PCCT_NATIVE_TABLE_PATH`).
 """
 function PCCTScanner(;
         detector_material::Symbol = :CdTe, detector_depth::Real = 1.6,
@@ -820,7 +821,6 @@ function _build_pcct_detector(scanner::PCCTScanner{T}) where {T}
         pixel_size_mm = (scanner.detector_row_size, scanner.detector_col_size) .* (mag / scanner.binning_factor),
         energy_thresholds_keV = Float64.(scanner.energy_thresholds),
         dead_time_ns = scanner.dead_time_ns,
-        enable_pile_up = scanner.dead_time_ns > 0.0,
         binning_factor = scanner.binning_factor
     )
 end

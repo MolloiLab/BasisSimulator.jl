@@ -65,7 +65,7 @@ end
     free = _scan(BS.PCCTScanner(base; pileup = false), phantom, protocol, opts).bins
     piled = _scan(base, phantom, protocol, opts)
     cal = BS.calibrate_pileup(base, protocol, _EICT_RECON; sim_opts = opts)
-    corrected = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal)
+    corrected = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
     before = _rms(reduce(vcat, vec.(piled.bins .- free)))
     after = _rms(reduce(vcat, vec.(corrected .- free)))
     @test 0.01 < before < 0.3                                 # the loss is visible, the regime clinical

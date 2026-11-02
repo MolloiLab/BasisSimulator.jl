@@ -163,7 +163,7 @@ is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
   log-domain sinograms); pile-up (`S × counts` per native dexel) makes them fractional; with noise
   off they are the expected counts.
 
-The noise is drawn per native dexel, photon class by photon class ([`pcct_count!`](@ref)): each
+The noise is drawn per native dexel, photon class by photon class (`pcct_count!`): each
 dexel Poisson, neighbours covarying through the photons they share, so a 2 × 2 binned pixel's
 variance exceeds its mean. Views are drawn in parallel from streams seeded by `(seed, view)`.
 
@@ -756,19 +756,19 @@ has a bowtie — use the `_with_bowtie` variant.
 Pass `scanner` so the pipeline can read `flat_filter_material`,
 `flat_filter_thickness`, and `source_to_detector` from the hardware spec.
 """
-function resolve_source_spectrum_without_bowtie(sim_opts::SimOptions, protocol::CTProtocol; scanner = nothing)
+function resolve_source_spectrum_without_bowtie(sim_opts::SimOptions, protocol::CTProtocol; scanner::Scanner)
     # Physics-based: raw IPEM spectrum + Beer-Lambert filtering
-    e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle = protocol.anode_angle)
+    e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle = ipem_anode_angle(scanner.target_angle))
 
     # Build filter list: scanner's built-in flat filter + protocol extras
     filters = Tuple{String, Float64}[]
-    if scanner !== nothing && scanner.flat_filter_thickness > 0
+    if scanner.flat_filter_thickness > 0
         push!(filters, (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)))
     end
     append!(filters, protocol.additional_filters)
 
     # Apply Beer-Lambert filtering + inverse-square-law distance scaling
-    sdd_mm = scanner !== nothing ? Float64(scanner.source_to_detector) : 750.0
+    sdd_mm = Float64(scanner.source_to_detector)
     e, w = filter_spectrum(e, w; filters = filters, sdd_mm = sdd_mm)
 
     return e, w

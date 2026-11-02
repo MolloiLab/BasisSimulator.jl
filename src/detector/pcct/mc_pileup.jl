@@ -179,5 +179,3 @@ function pileup_counts!(
     end
     return counts
 end
-
-export pileup_counts!

@@ -238,13 +238,6 @@ end
         @test d.energy_thresholds_keV == s.energy_thresholds
         @test d.dead_time_ns == s.dead_time_ns
         @test d.binning_factor == s.binning_factor
-        @test d.enable_pile_up == true
-    end
-
-    @testset "zero dead_time_ns ⇒ no pile-up" begin
-        s = BS.PCCTScanner(; detector_material = :cdte, pcct_kwargs..., dead_time_ns = 0.0)
-        d = BS._build_pcct_detector(s)
-        @test d.enable_pile_up == false
     end
 end
 

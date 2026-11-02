@@ -513,7 +513,7 @@ end
 Pre-allocated workspace for zero-allocation EICT single-kVp simulation.
 
 The signal model: one photon of energy `E` leaves a mean signal `m₁(E)` and a mean squared
-signal `m₂(E)` ([`eid_signal_moments`](@ref)). Along a ray with source transmission `B` and
+signal `m₂(E)` (`eid_signal_moments`). Along a ray with source transmission `B` and
 object line integral `L`, the projector forms `S₁ = Σ w̄ m₁′ B e^{−L}` and
 `S₂ = Σ w̄ m₂′ B e^{−L}` (primes: in units of `E_ref = Σ w̄ m₁`), the detector reads
 `λ = I₀·ff·S₁` with variance `I₀·ff·S₂ + σ_electronic²`, and `dispersion = S₂/S₁`. The air
