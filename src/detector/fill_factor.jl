@@ -11,11 +11,8 @@ grids, scintillator packaging, anti-scatter grid supports, pixel isolation).
 
 # Physics
 
-Detected photons scale linearly:
-    I_out = I_in × ff
-    p_out = p_in − log(ff)   (projection domain, since p = −log(I))
-
-`apply_fill_factor!` operates in projection domain (sinogram space).
+A dexel collects the fraction `ff` of the quanta landing on it, so the energy-integrating noise
+draws from `I₀·ff` (`simulate!`); the air calibration divides the same factor out of the mean.
 
 # CatSim parity
 Matches CatSim's `Detector_ThirdgenCurved.py`:
@@ -68,42 +65,6 @@ Effective (total) fill factor = `row_fill × col_fill`.
 """
 effective_fill_factor(model::FillFactorModel) = model.row_fill * model.col_fill
 
-"""
-    apply_fill_factor!(sinogram, model::FillFactorModel) -> sinogram
-
-Apply fill factor effect to projection-domain sinogram (in-place, GPU-native).
-
-Mathematical formulation: `p_out = p_in − log(ff)` where `ff` is the effective
-fill factor. Since `ff < 1`, `−log(ff) > 0`, so projection values increase
-uniformly (more apparent attenuation due to reduced active area).
-
-!!! note "auto-cancelled by `simulate!`"
-    The EICT `simulate!` driver subtracts this same `−log(ff_eff)` offset
-    after the air-scan / log step, matching the way real scanners absorb
-    detector gain into their calibration reference.  Notebooks that call
-    `simulate!` get back log-line-integrals with this effect already
-    cancelled; only direct callers of `apply_fill_factor!` need to worry
-    about the residual offset.
-"""
-function apply_fill_factor!(
-    sinogram::AbstractArray{T,3},
-    model::FillFactorModel
-) where T
-    ff = effective_fill_factor(model)
-
-    if ff ≈ 1.0
-        return sinogram
-    end
-
-    offset = T(-log(ff))
-
-    AK.foreachindex(sinogram) do idx
-        sinogram[idx] += offset
-    end
-
-    return sinogram
-end
-
 # =============================================================================
 # Exports
 # =============================================================================
@@ -111,4 +72,3 @@ end
 export FillFactorModel
 export fill_factor_standard
 export effective_fill_factor
-export apply_fill_factor!

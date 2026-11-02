@@ -21,6 +21,7 @@ const BS = BasisSimulator
     @testset "detector/" begin
         include("detector.jl")
         include("detector_offset.jl")
+        include("eict_signal.jl")
     end
     @testset "docs/" begin
         include("docs.jl")

@@ -33,32 +33,32 @@ import AcceleratedKernels  # workspace kernels are AK-based; loading here for pa
 @testset "PhysicsConfig — default + populated" begin
     @testset "default_physics_config — all effects nothing" begin
         cfg = BS.default_physics_config()
-        @test cfg.fill_factor          === nothing
-        @test cfg.scatter              === nothing
-        @test cfg.optical_crosstalk    === nothing
-        @test cfg.focal_spot           === nothing
-        @test cfg.detector_efficiency  === nothing
-        @test cfg.lag                  === nothing
-        @test cfg.heel_effect          === nothing
-        @test cfg.noise_seed           === nothing
+        @test cfg.fill_factor === nothing
+        @test cfg.scatter === nothing
+        @test cfg.optical_crosstalk === nothing
+        @test cfg.focal_spot === nothing
+        @test cfg.detector_efficiency === nothing
+        @test cfg.lag === nothing
+        @test cfg.heel_effect === nothing
+        @test cfg.noise_seed === nothing
         @test cfg.energy_keV == 60.0
     end
 
     @testset "default_physics_config — populated kwargs propagate" begin
         cfg = BS.default_physics_config(;
-            fill_factor       = BS.fill_factor_standard(),
-            scatter           = BS.geometry_aware_scatter_model(BS.EICTScanner()),
+            fill_factor = BS.fill_factor_standard(),
+            scatter = BS.geometry_aware_scatter_model(BS.EICTScanner()),
             optical_crosstalk = BS.optical_crosstalk_typical(),
-            detector_efficiency = BS.detector_efficiency_gemstone(),
-            lag               = BS.lag_gadox(),
-            noise_seed        = 7,
-            energy_keV        = 75.0,
+            detector_efficiency = BS.DetectorEfficiency(:lumex, 3.0, BS.MC_LUT),
+            lag = BS.lag_gadox(),
+            noise_seed = 7,
+            energy_keV = 75.0,
         )
-        @test cfg.fill_factor          isa BS.FillFactorModel
-        @test cfg.scatter              isa BS.ScatterModel
-        @test cfg.optical_crosstalk    isa BS.OpticalCrosstalkModel
-        @test cfg.detector_efficiency  isa BS.DetectorEfficiency
-        @test cfg.lag                  isa BS.LagModel
+        @test cfg.fill_factor isa BS.FillFactorModel
+        @test cfg.scatter isa BS.ScatterModel
+        @test cfg.optical_crosstalk isa BS.OpticalCrosstalkModel
+        @test cfg.detector_efficiency isa BS.DetectorEfficiency
+        @test cfg.lag isa BS.LagModel
         @test cfg.noise_seed == 7
         @test cfg.energy_keV == 75.0
     end
@@ -71,7 +71,7 @@ end
     @testset "geometry_aware_scatter_model scales with air gap" begin
         ref = BS.EICTScanner(
             source_to_isocenter = BS.SCATTER_REF_SID_MM,
-            source_to_detector  = BS.SCATTER_REF_SDD_MM,
+            source_to_detector = BS.SCATTER_REF_SDD_MM,
         )
         ref_model = BS.geometry_aware_scatter_model(ref)
         @test ref_model isa BS.ScatterModel
@@ -161,9 +161,9 @@ end
     n_bins = 4
     R = zeros(n_E, n_bins)
     for (i, E) in enumerate(energies)
-        b = E <  35 ? 1 :
-            E <  55 ? 2 :
-            E <  70 ? 3 : 4
+        b = E < 35 ? 1 :
+            E < 55 ? 2 :
+            E < 70 ? 3 : 4
         R[i, b] = 1.0
     end
     η = ones(n_E)
@@ -183,10 +183,10 @@ end
     n_bins = 4
     bins_before = [fill(Float32(2.0), nc, nr, nv) for _ in 1:n_bins]
     bins = deepcopy(bins_before)
-    sf   = fill(Float32(0.01), nc, nr, nv)
-    I0  = fill(Float32(1.0e5), nc, nr, n_bins)           # per ray, per bin
+    sf = fill(Float32(0.01), nc, nr, nv)
+    I0 = fill(Float32(1.0e5), nc, nr, n_bins)           # per ray, per bin
     I0_all = fill(Float32(4.0e5), nc, nr)                # per ray, all bins
-    bw = [0.40, 0.30, 0.20, 0.10]
+    bw = [0.4, 0.3, 0.2, 0.1]
 
     BS.inject_scatter_bins!(bins, sf, I0, I0_all, bw)
     for b in 1:n_bins
@@ -219,264 +219,69 @@ end
 end
 
 # -----------------------------------------------------------------------------
-# detector_efficiency.jl — GE Gemstone MC LUT + Beer-Lambert fallback
+# detector_efficiency.jl — the Geant4 tables, Beer–Lambert, the model's checks
+# (the signal moments themselves: eict_signal.jl)
 # -----------------------------------------------------------------------------
-@testset "DetectorEfficiency — Gemstone MC LUT" begin
-    @testset "detector_efficiency_gemstone factory" begin
-        model = BS.detector_efficiency_gemstone()
-        @test model.material == "Gemstone"
-        @test model.thickness_mm == 3.0
-        @test model.fill_factor == 0.9
-        @test model.mode == BS.MC_LUT
-
-        bl = BS.detector_efficiency_gemstone(mode = :beer_lambert)
-        @test bl.mode == BS.BEER_LAMBERT
+@testset "EICT detector tables: K-edge escape, 1–140 keV, one per scintillator" begin
+    g, u, f = BS.GEMSTONE_MC_EFFICIENCY_LUT, BS.UFC_MC_EFFICIENCY_LUT, BS.UFC_FLASH_MC_EFFICIENCY_LUT
+    for t in (g, u, f)
+        @test t.energies == collect(1.0:140.0)
+        @test length(t.efficiency) == length(t.dqe0) == 140
+        @test all(0 .< t.efficiency .<= 1)
     end
-
-    @testset "get_gemstone_mc_efficiency captures Tb K-edge fluorescence drop" begin
-        η52 = BS.get_gemstone_mc_efficiency(52.0)
-        η53 = BS.get_gemstone_mc_efficiency(53.0)
-        # MC LUT: at the K-edge (52→53 keV) η drops from ~0.956 to ~0.807
-        # because Tb-Kα fluorescence escapes the crystal.
-        @test η52 > 0.9
-        @test η53 < 0.82
-        @test η52 - η53 > 0.10
-    end
-
-    @testset "get_gemstone_mc_efficiency captures Lu K-edge fluorescence drop" begin
-        η63 = BS.get_gemstone_mc_efficiency(63.0)
-        η64 = BS.get_gemstone_mc_efficiency(64.0)
-        # ~0.846 → ~0.762 at the Lu K-edge
-        @test η63 > 0.83
-        @test η64 < 0.78
-        @test η63 - η64 > 0.06
-    end
-
-    @testset "MC LUT linear interpolation at non-integer keV" begin
-        η_60_5 = BS.get_gemstone_mc_efficiency(60.5)
-        @test BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[61] < η_60_5 < BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[60] + 1.0e-12 ||
-              BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[60] < η_60_5 < BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[61] + 1.0e-12
-    end
-
-    @testset "MC LUT clamps below 1 keV and above 140 keV" begin
-        @test BS.get_gemstone_mc_efficiency(0.5) == BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[1]
-        @test BS.get_gemstone_mc_efficiency(200.0) == BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[end]
-    end
-
-    @testset "compute_eid_efficiency_vector — MC routes to LUT" begin
-        model = BS.detector_efficiency_gemstone()
-        energies = [30.0, 52.0, 53.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(model, energies)
-        @test length(η) == length(energies)
-        @test η[3] < η[2]                    # Tb K-edge fluorescence drop
-        @test η ≈ [BS.get_gemstone_mc_efficiency(E) for E in energies]
-    end
-
-    @testset "compute_eid_efficiency_vector — Beer-Lambert path" begin
-        bl = BS.detector_efficiency_gemstone(mode = :beer_lambert)
-        energies = [30.0, 60.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(bl, energies)
-        @test length(η) == length(energies)
-        @test all(0 .<= η .<= 1)
-        # Beer-Lambert η decreases monotonically with energy (above K-edge data).
-        # Across 60-140 keV this is monotonic since no K-edge in that range.
-        @test η[2] > η[4]
-    end
+    @test (g.thickness_mm, u.thickness_mm, f.thickness_mm) == (3.0, 1.4, 1.4)
+    # fluorescence escape: the efficiency DROPS across the K-edge (Tb 52.0, Lu 63.3, Gd 50.2 keV)
+    @test g.efficiency[51] - g.efficiency[52] > 0.1
+    @test g.efficiency[63] - g.efficiency[64] > 0.05
+    @test u.efficiency[50] - u.efficiency[51] > 0.1
+    @test f.efficiency[50] - f.efficiency[51] > 0.1
+    # the Force and Flash ceramics are the same UFC at the same depth, from separate runs
+    @test u.efficiency != f.efficiency
+    @test maximum(abs.(u.efficiency .- f.efficiency)) < 0.01
 end
 
-@testset "DetectorEfficiency — UFC MC LUT (Siemens Force Gd₂O₂S)" begin
-    @testset "detector_efficiency_ufc factory" begin
-        model = BS.detector_efficiency_ufc()
-        @test model.material == "UFC"
-        @test model.thickness_mm == 1.4
-        @test model.fill_factor == 0.9
-        @test model.mode == BS.MC_LUT
-
-        bl = BS.detector_efficiency_ufc(mode = :beer_lambert)
-        @test bl.mode == BS.BEER_LAMBERT
-    end
-
-    @testset "LUT shape + provenance values" begin
-        @test length(BS.UFC_MC_EFFICIENCY_LUT.energies) == 140
-        @test length(BS.UFC_MC_EFFICIENCY_LUT.efficiency) == 140
-        # Spot-check verbatim values from Khodajou-Chokami efficiency_results.csv
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[1] ≈ 9.90863305e-01
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[50] ≈ 9.69026725e-01
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[51] ≈ 7.41154644e-01
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[140] ≈ 8.15971281e-01
-    end
-
-    @testset "get_ufc_mc_efficiency captures Gd K-edge fluorescence drop" begin
-        η50 = BS.get_ufc_mc_efficiency(50.0)
-        η51 = BS.get_ufc_mc_efficiency(51.0)
-        # MC LUT: at the Gd K-edge (50.24 keV) η drops ~0.969 → ~0.741
-        # because Gd-Kα fluorescence (~43 keV) escapes the crystal.
-        @test η50 > 0.95
-        @test η51 < 0.78
-        @test η50 - η51 > 0.20
-    end
-
-    @testset "get_ufc_mc_efficiency captures Gd L-edge dip near 8 keV" begin
-        @test BS.get_ufc_mc_efficiency(8.0) < BS.get_ufc_mc_efficiency(7.0)
-    end
-
-    @testset "MC LUT linear interpolation + clamping" begin
-        η_60_5 = BS.get_ufc_mc_efficiency(60.5)
-        lo = min(BS.UFC_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_MC_EFFICIENCY_LUT.efficiency[61])
-        hi = max(BS.UFC_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_MC_EFFICIENCY_LUT.efficiency[61])
-        @test lo - 1.0e-12 < η_60_5 < hi + 1.0e-12
-
-        @test BS.get_ufc_mc_efficiency(0.5) == BS.UFC_MC_EFFICIENCY_LUT.efficiency[1]
-        @test BS.get_ufc_mc_efficiency(200.0) == BS.UFC_MC_EFFICIENCY_LUT.efficiency[end]
-    end
-
-    @testset "compute_eid_efficiency_vector — MC routes to UFC LUT" begin
-        model = BS.detector_efficiency_ufc()
-        energies = [30.0, 50.0, 51.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(model, energies)
-        @test length(η) == length(energies)
-        @test η[3] < η[2]                    # Gd K-edge fluorescence drop
-        @test η ≈ [BS.get_ufc_mc_efficiency(E) for E in energies]
-    end
-
-    @testset "compute_eid_efficiency_vector — UFC Beer-Lambert path" begin
-        bl = BS.detector_efficiency_ufc(mode = :beer_lambert)
-        energies = [30.0, 49.0, 51.0, 100.0]
-        η = BS.compute_eid_efficiency_vector(bl, energies)
-        @test length(η) == length(energies)
-        @test all(0 .<= η .<= 1)
-        # Beer-Lambert predicts η RISES just above the Gd K-edge (more
-        # absorption) — the opposite of the MC LUT's fluorescence-escape
-        # drop.  That contrast is the whole point of the MC path.
-        @test η[3] > η[2]
-    end
-
-    @testset "build_physics_config routes :ufc to the UFC factory" begin
-        scanner = BS.EICTScanner(detector_material = :ufc, detector_depth = 1.4)
-        sim_opts = BS.SimOptions()
-        e = collect(20.0:10.0:140.0)
-        w = ones(length(e))
-        config = BS.build_physics_config(scanner, sim_opts, e, w)
-        @test config.detector_efficiency !== nothing
-        @test config.detector_efficiency.material == "UFC"
-        @test config.detector_efficiency.mode == BS.MC_LUT
-
-        # Unknown EICT material errors with a clear message
-        bad = BS.EICTScanner(detector_material = :unobtainium)
-        @test_throws ErrorException BS.build_physics_config(bad, sim_opts, e, w)
-    end
+@testset "Beer–Lambert absorption rises across the K-edge, the table's escape falls" begin
+    E = [49.0, 51.0]
+    bl, _ = BS.eid_signal_moments(BS.DetectorEfficiency(:ufc, 1.4, BS.BEER_LAMBERT), E)
+    mc, _ = BS.eid_signal_moments(BS.DetectorEfficiency(:ufc, 1.4, BS.MC_LUT), E)
+    @test bl[2] / E[2] > bl[1] / E[1]
+    @test mc[2] / E[2] < mc[1] / E[1]
 end
 
-@testset "DetectorEfficiency — UFC Flash MC LUT (Siemens Definition Flash Gd₂O₂S)" begin
-    @testset "detector_efficiency_ufc_flash factory" begin
-        model = BS.detector_efficiency_ufc_flash()
-        @test model.material == "UFC_Flash"
-        @test model.thickness_mm == 1.0
-        @test model.fill_factor == 0.9
+@testset "build_physics_config: the scanner's scintillator and depth" begin
+    e = collect(20.0:10.0:140.0)
+    w = ones(length(e))
+    for s in (BS.SOMATOM_FORCE, BS.SOMATOM_DEFINITION_FLASH, BS.REVOLUTION_APEX)
+        model = BS.build_physics_config(s, BS.SimOptions(), e, w).detector_efficiency
+        @test model.material === s.detector_material
+        @test model.thickness_mm == s.detector_depth
         @test model.mode == BS.MC_LUT
-
-        bl = BS.detector_efficiency_ufc_flash(mode = :beer_lambert)
-        @test bl.mode == BS.BEER_LAMBERT
     end
-
-    @testset "LUT shape + provenance values" begin
-        @test length(BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies) == 140
-        @test length(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency) == 140
-        # Spot-check verbatim values from Khodajou-Chokami flash_efficiency_results.csv
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[1] ≈ 9.90863305e-01
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[50] ≈ 9.24938847e-01
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[51] ≈ 7.39476107e-01
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[140] ≈ 5.87915529e-01
-    end
-
-    @testset "get_ufc_flash_mc_efficiency captures Gd K-edge fluorescence drop" begin
-        η50 = BS.get_ufc_flash_mc_efficiency(50.0)
-        η51 = BS.get_ufc_flash_mc_efficiency(51.0)
-        # MC LUT: at the Gd K-edge (50.24 keV) η drops ~0.925 → ~0.739
-        # because Gd-Kα fluorescence (~43 keV) escapes the crystal.
-        @test η50 > 0.90
-        @test η51 < 0.78
-        @test η50 - η51 > 0.15
-    end
-
-    @testset "get_ufc_flash_mc_efficiency captures Gd L-edge dip near 8 keV" begin
-        @test BS.get_ufc_flash_mc_efficiency(8.0) < BS.get_ufc_flash_mc_efficiency(7.0)
-    end
-
-    @testset "MC LUT linear interpolation + clamping" begin
-        η_60_5 = BS.get_ufc_flash_mc_efficiency(60.5)
-        lo = min(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[61])
-        hi = max(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[61])
-        @test lo - 1.0e-12 < η_60_5 < hi + 1.0e-12
-
-        @test BS.get_ufc_flash_mc_efficiency(0.5) == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[1]
-        @test BS.get_ufc_flash_mc_efficiency(200.0) == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[end]
-    end
-
-    @testset "Flash is a distinct detector from the Force UFC" begin
-        # Same Gd₂O₂S physics (L-edge, K-edge), thinner crystal → steeper
-        # high-energy roll-off.  Guards against ever aliasing the two LUTs.
-        @test BS.get_ufc_flash_mc_efficiency(140.0) < 0.65   # Force: 0.816
-        @test BS.get_ufc_mc_efficiency(140.0) > 0.80
-        @test BS.get_ufc_flash_mc_efficiency(100.0) < BS.get_ufc_mc_efficiency(100.0)
-    end
-
-    @testset "compute_eid_efficiency_vector — MC routes to Flash LUT" begin
-        model = BS.detector_efficiency_ufc_flash()
-        energies = [30.0, 50.0, 51.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(model, energies)
-        @test length(η) == length(energies)
-        @test η[3] < η[2]                    # Gd K-edge fluorescence drop
-        @test η ≈ [BS.get_ufc_flash_mc_efficiency(E) for E in energies]
-    end
-
-    @testset "compute_eid_efficiency_vector — Flash Beer-Lambert path" begin
-        bl = BS.detector_efficiency_ufc_flash(mode = :beer_lambert)
-        energies = [30.0, 49.0, 51.0, 100.0]
-        η = BS.compute_eid_efficiency_vector(bl, energies)
-        @test length(η) == length(energies)
-        @test all(0 .<= η .<= 1)
-        # Beer-Lambert predicts η RISES just above the Gd K-edge — the
-        # opposite of the MC LUT's fluorescence-escape drop.
-        @test η[3] > η[2]
-    end
-
-    @testset "build_physics_config routes :ufc_flash to the Flash factory" begin
-        scanner = BS.EICTScanner(detector_material = :ufc_flash, detector_depth = 1.0)
-        sim_opts = BS.SimOptions()
-        e = collect(20.0:10.0:140.0)
-        w = ones(length(e))
-        config = BS.build_physics_config(scanner, sim_opts, e, w)
-        @test config.detector_efficiency !== nothing
-        @test config.detector_efficiency.material == "UFC_Flash"
-        @test config.detector_efficiency.mode == BS.MC_LUT
-    end
-
+    bl = BS.SimOptions(detector_efficiency_mode = :beer_lambert)
+    @test BS.build_physics_config(BS.SOMATOM_FORCE, bl, e, w).detector_efficiency.mode == BS.BEER_LAMBERT
+    off = BS.build_physics_config(BS.SOMATOM_FORCE, BS.SimOptions(use_detector_efficiency = false), e, w)
+    @test off.detector_efficiency === nothing
+    # a depth the table was not made at, and a material with no model, are refused
+    @test_throws ArgumentError BS.build_physics_config(
+        BS.EICTScanner(BS.SOMATOM_FORCE; detector_depth = 1.0), BS.SimOptions(), e, w
+    )
+    @test_throws ArgumentError BS.build_physics_config(
+        BS.EICTScanner(detector_material = :unobtainium), BS.SimOptions(), e, w
+    )
 end
 
 @testset "get_scintillator_mu — Gemstone + CdTe" begin
     # CdTe K-edges: Cd at 26.7 keV, Te at 31.8 keV.
-    μ_cdte_25 = BS.get_scintillator_mu("CdTe", 25.0)
-    μ_cdte_27 = BS.get_scintillator_mu("CdTe", 27.0)
-    @test μ_cdte_27 > μ_cdte_25     # Just above Cd K-edge → bigger μ
-
-    # Gemstone @ 60 keV ~32.7 cm⁻¹ (NIST XCOM table)
-    μ_gem_60 = BS.get_scintillator_mu("Gemstone", 60.0)
-    @test 28 < μ_gem_60 < 38
-
-    # Alias resolves to Gemstone table
-    μ_lumex_60 = BS.get_scintillator_mu("lumex", 60.0)
-    @test μ_lumex_60 ≈ μ_gem_60  atol = 1.0e-12
-
-    # Unknown material → warning + Gemstone fallback (no crash)
-    μ_unknown = BS.get_scintillator_mu("nonexistent", 60.0)
-    @test μ_unknown ≈ μ_gem_60  atol = 1.0e-12
+    @test BS.get_scintillator_mu("CdTe", 27.0) > BS.get_scintillator_mu("CdTe", 25.0)
+    # Gemstone @ 60 keV: 32.7 cm⁻¹ at 7.0 g/cm³ (NIST XCOM), scaled to 6.40 g/cm³
+    @test BS.get_scintillator_mu("Gemstone", 60.0) ≈ 32.7 * 6.4 / 7.0 rtol = 1.0e-6
+    @test_throws ArgumentError BS.get_scintillator_mu("nonexistent", 60.0)
 end
 
 # -----------------------------------------------------------------------------
 # fill_factor.jl
 # -----------------------------------------------------------------------------
-@testset "FillFactorModel + apply_fill_factor!" begin
+@testset "FillFactorModel" begin
     @testset "effective_fill_factor multiplies row × col" begin
         m = BS.FillFactorModel(0.9, 0.8, true)
         @test BS.effective_fill_factor(m) ≈ 0.72  atol = 1.0e-12
@@ -494,21 +299,6 @@ end
         @test BS.effective_fill_factor(m) ≈ 0.9  atol = 1.0e-12
     end
 
-    @testset "apply_fill_factor!  adds −log(ff) in projection domain" begin
-        m = BS.fill_factor_standard()
-        sino = ones(Float32, 16, 4, 8)
-        BS.apply_fill_factor!(sino, m)
-        @test sino ≈ ones(Float32, 16, 4, 8) .+ Float32(-log(0.9))  atol = 1.0e-6
-    end
-
-    @testset "ff ≈ 1.0 short-circuits (no-op)" begin
-        m = BS.FillFactorModel(1.0, 1.0, true)
-        sino = ones(Float32, 8, 2, 4)
-        sino_before = copy(sino)
-        BS.apply_fill_factor!(sino, m)
-        @test sino == sino_before
-    end
-
     @testset "1-arg constructor rejects ff outside (0, 1]" begin
         @test_throws AssertionError BS.FillFactorModel(0.0)
         @test_throws AssertionError BS.FillFactorModel(1.5)
@@ -522,7 +312,7 @@ end
     @testset "optical_crosstalk_typical = CatSim defaults" begin
         m = BS.optical_crosstalk_typical()
         @test m.row_coeff ≈ 0.045
-        @test m.col_coeff ≈ 0.040
+        @test m.col_coeff ≈ 0.04
     end
 
     @testset "create_optical_crosstalk_kernel sums to 1, center is (1-2α)(1-2β)" begin
@@ -735,9 +525,11 @@ end
         @test minimum(eigvals(Symmetric(moments.covariance))) >= -1.0e-10
 
         @test_throws DimensionMismatch BS.compute_mc_count_moments(
-            det, energies, weights[1:end-1])
+            det, energies, weights[1:(end - 1)]
+        )
         @test_throws ArgumentError BS.compute_mc_count_moments(
-            det, energies, zeros(length(energies)))
+            det, energies, zeros(length(energies))
+        )
     end
 end
 
@@ -780,7 +572,8 @@ end
     I0_bins = reshape(repeat(I0_vec, inner = 32 * 4), 32, 4, 4)     # per ray, per bin
     # Uniform log line integral h = 2 → expected counts λ_b = I0_b·e⁻²
     make_sino() = BS.EnergyResolvedSinogram(
-        [fill(Float32(2), 32, 4, 25) for _ in 1:4], thresholds)
+        [fill(Float32(2), 32, 4, 25) for _ in 1:4], thresholds
+    )
 
     sino = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 11)
     for (b, bin) in enumerate(sino.bins)
@@ -802,7 +595,7 @@ end
     # noise_reduction = 1 collapses to the noiseless expectation exactly
     # (any nonzero value leaves the strict Poisson count model)
     s4 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42, noise_reduction = 1.0)
-    @test all(all(isapprox.(Array(bin), 2f0; atol = 2f-5)) for bin in s4.bins)
+    @test all(all(isapprox.(Array(bin), 2.0f0; atol = 2.0f-5)) for bin in s4.bins)
 
     # raw_out: measured counts captured verbatim at the sampling site —
     # TRUE ZEROS preserved; the floor at 1 lives only in the log bins
@@ -810,16 +603,17 @@ end
     s5 = make_sino()
     raw5 = [similar(b) for b in s5.bins]
     BS.apply_pcct_noise!(s5, lo_I0; seed = 5, raw_out = raw5)
-    @test sum(count(==(0f0), r) for r in raw5) > 0
+    @test sum(count(==(0.0f0), r) for r in raw5) > 0
     for (b, r) in enumerate(raw5)
         @test all(isinteger, r)
         enc = lo_I0[:, :, b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
-        @test all(abs.(enc .- max.(Float64.(r), 1.0)) .< 1e-4)
+        @test all(abs.(enc .- max.(Float64.(r), 1.0)) .< 1.0e-4)
     end
 
     @test_throws DimensionMismatch BS.apply_pcct_noise!(make_sino(), I0_bins[:, :, 1:3])
     @test_throws DimensionMismatch BS.apply_pcct_noise!(
-        make_sino(), I0_bins; raw_out = [zeros(Float32, 32, 4, 25)])
+        make_sino(), I0_bins; raw_out = [zeros(Float32, 32, 4, 25)]
+    )
 end
 
 # -----------------------------------------------------------------------------

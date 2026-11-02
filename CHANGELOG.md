@@ -12,6 +12,55 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+### Breaking
+- **The energy-integrating detector integrates energy.** Each photon of energy `E` leaves a mean signal
+  `m₁ = E·efficiency` and a mean square `m₂ = m₁²/dqe0` (`eid_signal_moments`). One projector walk forms both
+  spectral sums of every ray, `S₁ = Σ w̄ m₁ B e^{−L}` and `S₂ = Σ w̄ m₂ B e^{−L}`; the detector reads
+  `λ = I₀·ff·S₁` with Gaussian noise of variance `I₀·ff·S₂ + σ_electronic²`. Before, it counted photons
+  (`Σ w̄ η B e^{−L}`, Poisson variance = mean) and applied η twice (in the sum and again in `I₀`). In air the noise
+  σ falls by 2.7 % (SOMATOM Force, 120 kV: η̄² = 0.788 → DQE(0) = 0.832), 2.2 % (Force, 80 kV), 7.0 % (Definition
+  Flash) and 2.8 % (Revolution Apex); behind water it now rises with the dispersion `S₂/S₁` (Force, 120 kV: 1.203 in
+  air, 1.429 behind 20 cm and 1.501 behind 30 cm, all relative to the air beam's mean signal), so behind 30 cm σ is
+  ≈ 9 % above v0.15.1. Mean CT numbers of non-water materials change through the energy weighting (`m₁ ∝ E`).
+- **The Geant4 detector tables replace the MCNP ones**: `GEMSTONE_MC_EFFICIENCY_LUT`, `UFC_MC_EFFICIENCY_LUT` and
+  `UFC_FLASH_MC_EFFICIENCY_LUT` now hold BasisMonteCarlo's flat-field Geant4 runs (`energies`, `efficiency`,
+  `dqe0`, `thickness_mm`), copied in as plain data: Gemstone at 6.40 g/cm³ and 3.0 mm, UFC at 7.31 g/cm³ and
+  1.4 mm for both Siemens scanners. `SOMATOM_DEFINITION_FLASH.detector_depth` is 1.4 mm (was 1.0). A table is
+  made at one depth, so `DetectorEfficiency(material, thickness_mm, MC_LUT)` refuses another;
+  `detector_efficiency_mode = :beer_lambert` models any depth (`m₁ = E·q`, `m₂ = E²·q`). The Beer–Lambert
+  attenuation tables are scaled to the same densities.
+- **Removed:** `compute_eid_efficiency_vector`, `get_gemstone_mc_efficiency`, `get_ufc_mc_efficiency`,
+  `get_ufc_flash_mc_efficiency` (→ `eid_signal_moments`); `detector_efficiency_gemstone`, `detector_efficiency_ufc`,
+  `detector_efficiency_ufc_flash` (→ `DetectorEfficiency(material, thickness_mm, mode)` with the scanner's own
+  `detector_material` and `detector_depth`; its `fill_factor` field is gone, the scanner's is the one);
+  `apply_fill_factor!` (the fill factor scales the quanta once, in the noise); `get_scintillator_mu`'s silent
+  Gemstone fallback for an unknown material (it throws) and its aliases (`"lumex"`, `"GOS"`, `"UFC_Flash"`, …).
+- **`EICTWorkspace` fields:** `η_vec`, `wη_gpu`, `η_eff`, `σ_e_photon` and `air_scan` are gone; `m1`, `m2` (keV,
+  keV²), `wm1_gpu`, `wm2_gpu`, `dispersion` (the per-ray `S₂/S₁` of the last projection) and `σ_electronic`
+  (electronic noise ÷ gain, in units of the air beam's mean signal) are new; `bowtie_air_reference` is
+  `air_reference` and always built. `keep_projection` keeps the dispersion too.
+
+### Fixed
+- **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
+- **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
+  applied once, to the quanta (`I₀·ff`).
+- **The electronic noise** was converted to photons with the spectrum's mean energy; it is in keV (÷ gain), in the
+  signal's own units.
+- **EICT scatter** was estimated from a sinogram that carried the bowtie and the detector response, so an empty
+  field scattered; the scatter source is each ray's primary times the object's own line integral (the sinogram
+  less its air value, `estimate_scatter_field!(…; air_reference)`), and the spectral weight is signal-weighted
+  (`m₁`).
+
+### Added
+- `eid_signal_moments(model, energies) -> (m₁, m₂)`, and `spectral_basis(ws::EICTWorkspace, protocol)`: the
+  one-channel basis of an energy-integrating acquisition, its air response scaled to the noise-equivalent quanta
+  `I₀·ff·S₁²/S₂`; `spectral_basis_from_acquisitions` takes these directly for dual-kVp and dual-source pairs.
+- Tests (`test/eict_signal.jl`, CPU): the air scan's variance against `S₂/(I₀·ff·S₁²)` with and without a bowtie
+  (ratio 1 ± 0.02); NEQ in air = ff·N·DQE(0) to 2 % (Force, 120 kV: DQE(0) = 0.832); the variance behind 20 and
+  30 cm of water against `D/λ` and the rising dispersion; the electronic term; water BHC against a 70 keV scan
+  (< 1 HU, cupping < 2 HU); an empty field's scatter (< 1e-5); and a noise-free dual-kVp decomposition returning
+  the water path.
+
 ### Documented
 - **Getting Started rewritten as the package's guide**, for readers from a first-time user to a contributor:
   install, a first scan, then the phantom, the scan, reconstruction and spectral imaging in order, with the why of

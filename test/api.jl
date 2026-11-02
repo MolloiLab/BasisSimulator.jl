@@ -142,7 +142,11 @@ _ts("entering SimOptions testset")
         @test BS.SimOptions(projector = :siddon).projector == :siddon
         @test_throws ArgumentError BS.SimOptions(projector = :bogus)
         # the removed per-energy option fails loudly and names the valid projectors
-        err = try BS.SimOptions(projector = :dd); nothing catch e; e end
+        err = try
+            BS.SimOptions(projector = :dd); nothing
+        catch e
+            e
+        end
         @test err isa ArgumentError
         @test occursin(":dd_fast", err.msg) && occursin(":siddon", err.msg)
     end
@@ -342,7 +346,7 @@ _ts("entering simulate!(PCCTWorkspace) — return contract testset")
     end
 
     before = copy(raw[1])
-    fill!(logged[1], 0f0)
+    fill!(logged[1], 0.0f0)
     @test raw[1] == before
     @test_throws DimensionMismatch BS._capture_pcct_raw_counts(logged, I0[:, :, 1:3])
 end
@@ -566,7 +570,7 @@ end
 #
 # Contract:
 # - Signature is `(ws, phantom, protocol, sim_opts)` — scanner is consumed at
-#   workspace creation time (η_eff, σ_e_photon baked in there).
+#   workspace creation time (m1, m2, σ_electronic baked in there).
 # - Returns `nothing`; mutates `ws.sinogram` in place.
 # - Notebooks read `ws.sinogram` directly (and `ws.geom`) — no separate
 #   `sino_noisy_out` field.
@@ -610,11 +614,9 @@ _ts("entering simulate!(EICTWorkspace) — return contract testset")
     else
         _ts("  building toy_eict_setup")
         s = _toy_eict_setup()
-        # Workspace baked-in noise constants (Pass 2 contract).
-        @test s.ws.η_eff isa Float32
-        @test 0 < s.ws.η_eff ≤ 1
-        @test s.ws.σ_e_photon isa Float32
-        @test s.ws.σ_e_photon ≥ 0
+        # Workspace baked-in noise constant
+        @test s.ws.σ_electronic isa Float32
+        @test s.ws.σ_electronic ≥ 0
         # Sino shape matches (n_cols, n_rows, n_views).
         @test size(s.ws.sinogram) == (64, 8, 16)
         _ts("  running simulate!")
@@ -755,7 +757,7 @@ _ts("entering resolve_source_spectrum_without_bowtie testset")
 @testset "resolve_source_spectrum_without_bowtie" begin
     scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; )
+    sim_opts = BS.SimOptions()
 
     e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
 
@@ -777,7 +779,7 @@ _ts("entering apply_bowtie_to_spectrum testset")
     scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; )
+    sim_opts = BS.SimOptions()
 
     e, w_1d = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     n_E = length(e)
@@ -880,7 +882,7 @@ _ts("entering resolve_source_spectrum_with_bowtie testset")
     scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; )
+    sim_opts = BS.SimOptions()
 
     @testset "composes _without_bowtie + apply_bowtie_to_spectrum" begin
         # The wrapper is just a composition — verify it produces the same
@@ -990,7 +992,7 @@ _ts("entering build_physics_config testset")
 
     @testset "fill_factor: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()    # 0.85 × 0.92
-        opts = BS.SimOptions(; )
+        opts = BS.SimOptions()
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor.row_fill ≈ 0.85
         @test cfg.fill_factor.col_fill ≈ 0.92
@@ -1004,7 +1006,7 @@ _ts("entering build_physics_config testset")
             detector_material = :lumex, detector_depth = 3.0,
             fill_factor_row = 0.0, fill_factor_col = 0.0,    # ← unset
         )
-        opts = BS.SimOptions(; )
+        opts = BS.SimOptions()
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         # Factory fill_factor_standard returns a populated model — non-zero.
@@ -1043,7 +1045,7 @@ _ts("entering build_physics_config testset")
 
     @testset "focal_spot: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(; )
+        opts = BS.SimOptions()
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.focal_spot.width ≈ 1.2
         @test cfg.focal_spot.length ≈ 1.0
@@ -1051,7 +1053,7 @@ _ts("entering build_physics_config testset")
 
     @testset "heel_effect: target_angle pulled from scanner" begin
         sc = _scanner_with_full_hardware()    # 7.5°
-        opts = BS.SimOptions(; )
+        opts = BS.SimOptions()
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.heel_effect isa BS.HeelEffect
         @test cfg.heel_effect.anode_angle_deg ≈ 7.5
@@ -1059,7 +1061,7 @@ _ts("entering build_physics_config testset")
 
     @testset "scatter: phantom-diameter scaling kicks in when phantom passed" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(; )
+        opts = BS.SimOptions()
         # No phantom: scatter still built, just without size-aware scaling.
         cfg_nopath = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg_nopath.scatter isa BS.ScatterModel
@@ -1354,7 +1356,7 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         # A fixed noisy z-uniform object must remain axially uniform and HIR60
         # must damp, not amplify, pixel-scale texture. This is the regression
         # for the stale per-epoch Huber gradient that produced a terminal mesh.
-        noisy = sino .+ 0.003f0 .* randn(MersenneTwister(0x484952), Float32, size(sino))
+        noisy = sino .+ 0.003f0 .* randn(MersenneTwister(0x00484952), Float32, size(sino))
         noisy_hir_ws = BS.create_hir_recon_workspace(
             noisy, geom_out, (32, 32, 11); strength = 60, projector = :dd_fast,
         )
@@ -1365,8 +1367,10 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         inner[10:23, 10:23] .= true
         function hp_std(vol, k)
             img = @view vol[:, :, k]
-            hp = img .- (circshift(img, (1, 0)) .+ circshift(img, (-1, 0)) .+
-                         circshift(img, (0, 1)) .+ circshift(img, (0, -1))) ./ 4
+            hp = img .- (
+                circshift(img, (1, 0)) .+ circshift(img, (-1, 0)) .+
+                    circshift(img, (0, 1)) .+ circshift(img, (0, -1))
+            ) ./ 4
             std(hp[inner])
         end
         fbp_hp = [hp_std(noisy_fdk, k) for k in axes(noisy_fdk, 3)]
@@ -1582,12 +1586,14 @@ _ts("entering Workspace ctors — EICT field invariants testset")
         @test size(ws.μ_volume) == size(s.phantom.mask)
         @test size(ws.sino_mono) == sino_shape
         @test size(ws.I_transmitted) == sino_shape
-        @test size(ws.air_scan) == sino_shape
+        @test size(ws.dispersion) == sino_shape
+        @test size(ws.air_reference) == sino_shape[1:2]
         @test size(ws.physics_output) == sino_shape
 
-        # Pre-computed noise constants from Pass 2 cleanup.
-        @test ws.η_eff isa Float32 && 0 < ws.η_eff ≤ 1
-        @test ws.σ_e_photon isa Float32 && ws.σ_e_photon ≥ 0
+        # The detector response and electronic noise, baked in at construction
+        @test length(ws.m1) == length(ws.m2) == length(ws.energies)
+        @test all(ws.m2 .>= ws.m1 .^ 2)
+        @test ws.σ_electronic isa Float32 && ws.σ_electronic ≥ 0
 
         # weights_norm is normalized to sum to 1.
         @test sum(Float64.(ws.weights_norm)) ≈ 1.0  rtol = 1.0e-5
@@ -1613,7 +1619,7 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
             flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
         )
         protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-        sim_opts = BS.SimOptions(; )
+        sim_opts = BS.SimOptions()
         recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
         phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
         phantom = BS.Phantom(
@@ -1804,7 +1810,7 @@ _ts("entering PCCT focal-spot preset defaults testset")
     @test opts.use_focal_spot === false
     @test opts.use_lag === false
     # Opt-in must survive preset resolution.
-    opts_on = BS.SimOptions( use_lag = false, use_focal_spot = true)
+    opts_on = BS.SimOptions(use_lag = false, use_focal_spot = true)
     @test opts_on.use_focal_spot === true
     # EICT preset unchanged.
     eict = BS.SimOptions()

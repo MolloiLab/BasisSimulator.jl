@@ -17,14 +17,14 @@ an assumption in the docstring.
     REVOLUTION_APEX
 
 The GE Revolution Apex Elite: a 256-row wide-cone energy-integrating scanner with a curved
-Gemstone garnet array (`detector_material = :lumex`, BasisSimulator's Gemstone Monte Carlo
-efficiency table).
+Gemstone garnet array (`detector_material = :lumex`, the Geant4 table
+[`GEMSTONE_MC_EFFICIENCY_LUT`](@ref)).
 
 - 256 × 0.625 mm rows, 160 mm coverage: FDA K133705, K213715.
 - 834 columns of 0.6 mm at the isocentre, source–isocentre 625.6 mm, source–detector 1100 mm:
   not published; the documentation notebooks' values.
 - Focal spot 1.0 × 1.0 mm, 10° anode, 2.5 mm Al flat filter, GE large-body bowtie: the notebooks.
-- 3.0 mm garnet depth (used only by the Beer–Lambert fallback): an assumption (XCIST's default).
+- 3.0 mm garnet at 6.40 g/cm³, the depth of its Geant4 table: an assumption (XCIST's default).
 - Fill factor 0.9 × 0.9 and detection gain 10 e⁻/keV: assumptions.
 - Electronic noise 3500 e⁻, the clinical DAS readout of notebooks 01, 02 and 05. The VMI notebooks
   (03, 06, 07) run without it: `EICTScanner(REVOLUTION_APEX; electronic_noise = 0.0)`.
@@ -187,8 +187,9 @@ Force's `:ufc`).
 - Focal spot 0.7 × 0.7 mm, 7° anode (IEC 60336); 78 cm bore, 50 cm scan field: Siemens datasheet.
 - 8.4 mm Al-equivalent flat filtration (6.8 tube + 1.6 beam-limiting device): Siemens datasheet.
 - Large-body bowtie: an assumption (profile unpublished).
-- UFC depth 1.0 mm and fill factor 0.9 × 0.9: assumptions (proprietary; inert with the Monte Carlo
-  table, and the fill factor cancels in the air calibration).
+- UFC depth 1.4 mm, the only UFC thickness Siemens quotes, and the depth of its Geant4 table
+  ([`UFC_FLASH_MC_EFFICIENCY_LUT`](@ref)); fill factor 0.9 × 0.9: assumptions (proprietary). The
+  fill factor scales the quanta, hence the noise, and cancels in the air calibration.
 - Electronic noise 1500 e⁻ (the Stellar detector's floor; ≈ 3500 e⁻ before 2011) and detection
   gain 10 e⁻/keV: assumptions.
 """
@@ -210,7 +211,7 @@ const SOMATOM_DEFINITION_FLASH = EICTScanner(;
     flat_filter_thickness = 8.4,
     bowtie_filter = :large_body,
     detector_material = :ufc_flash,
-    detector_depth = 1.0,
+    detector_depth = 1.4,
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
     electronic_noise = 1500.0,

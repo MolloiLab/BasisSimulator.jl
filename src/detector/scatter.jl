@@ -703,8 +703,14 @@ Compute the scatter intensity spatial distribution WITHOUT modifying the input s
 Ohnesorge convolution model — returns only the spatial scatter intensity field.
 The output is in intensity units relative to I0=1. Used by both EICT and PCCT paths.
 
+The scatter source of a ray is its primary intensity `e^{−p}` times the object's line
+integral. `air_reference` (`[n_cols, n_rows]`, the air signal of each dexel) separates the two
+when the sinogram carries a bowtie or detector response: the object's line integral is then
+`p + log(air)`, so an empty field scatters nothing. Without it the sinogram is taken as already
+air-normalised.
+
 # Returns
-`output` filled with scatter intensity at each detector pixel.
+`output` filled with scatter intensity at each detector dexel.
 Multiply by `I0_total` to get absolute scatter counts.
 """
 function estimate_scatter_field!(
@@ -712,11 +718,14 @@ function estimate_scatter_field!(
     sinogram::AbstractArray{T,3},
     model::ScatterModel;
     ws_scatter_temp=nothing,
-    ws_kernel_1d=nothing
+    ws_kernel_1d=nothing,
+    air_reference=nothing,
 ) where T
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
     C = T(model.scatter_coefficient * model.scale_factor)
+    has_air = air_reference !== nothing
+    air = has_air ? air_reference : similar(sinogram, T, 1, 1)
 
     # ─── SEPARABLE PATH (Gaussian kernels) ──────────────────────────────
     if model.kernel_type == :gaussian
@@ -732,11 +741,11 @@ function estimate_scatter_field!(
         scatter_temp = ws_scatter_temp !== nothing ? ws_scatter_temp : similar(sinogram)
 
         # Step 1: Pre-signal into output
-        let sino = sinogram, pre = output, c = C
+        let sino = sinogram, pre = output, c = C, air = air, ha = has_air, nc = n_cols, nr = n_rows
             AK.foreachindex(sino) do idx
                 proj = sino[idx]
-                clamped = min(proj, T(20))
-                @inbounds pre[idx] = exp(-clamped) * proj * c
+                @inbounds pre[idx] = exp(-min(proj, T(20))) *
+                    _scatter_object_path(proj, air, ha, idx, nc, nr) * c
             end
         end
 
@@ -755,7 +764,7 @@ function estimate_scatter_field!(
     half_k = kernel_size ÷ 2
 
     let kernel = kernel, output = output, half_k = half_k,
-        n_cols = n_cols, n_rows = n_rows, C = C
+        n_cols = n_cols, n_rows = n_rows, C = C, air = air, ha = has_air
         AK.foreachindex(sinogram) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % Int32(n_cols)) + Int32(1)
@@ -769,8 +778,9 @@ function estimate_scatter_field!(
                     src_col = clamp(col + di, 1, n_cols)
                     src_row = clamp(row + dj, 1, n_rows)
                     src_prep = sinogram[src_col, src_row, angle]
-                    src_clamped = min(max(src_prep, T(1e-10)), T(20))
-                    scatter_pre = exp(-src_clamped) * src_clamped * C
+                    src_idx = src_col + (src_row - 1) * n_cols + (angle - 1) * n_cols * n_rows
+                    obj = min(_scatter_object_path(src_prep, air, ha, src_idx, n_cols, n_rows), T(20))
+                    scatter_pre = exp(-min(src_prep, T(20))) * obj * C
                     ki = di + half_k + 1
                     kj = dj + half_k + 1
                     scatter_est += scatter_pre * kernel[ki, kj]
@@ -780,6 +790,14 @@ function estimate_scatter_field!(
         end
     end
     return output
+end
+
+# The object's own line integral along a ray: the sinogram value minus the air signal's, never
+# negative (noise-free air reads exactly zero).
+@inline function _scatter_object_path(proj::T, air, has_air::Bool, idx, n_cols, n_rows) where {T}
+    has_air || return max(proj, zero(T))
+    i = (idx - 1) % (n_cols * n_rows) + 1
+    return max(proj + log(max(@inbounds(air[i]), T(1.0e-30))), zero(T))
 end
 
 # compute_scatter_bin_fractions DELETED — replaced by compute_scatter_bin_weights()
