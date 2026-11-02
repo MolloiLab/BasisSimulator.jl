@@ -424,7 +424,7 @@ end"""),
             p("A photon-counting detector sorts every photon by its energy into bins. ", c("PCCTScanner"), " adds that ",
               "detector: its energy thresholds and dead time, with the scatter correction applied inside ",
               c("simulate!"), " (the Geant4 kernels of the scanner's entry, as for the energy integrator) and the pile-up ",
-              "corrected after it, from a calibration of simulated air scans. This one is the NAEOTOM Alpha's detector, ",
+              "and the dexels' flat field corrected after it, each from a calibration of simulated air scans. This one is the NAEOTOM Alpha's detector, ",
               "four bins and 27 ns of dead time, read one native dexel per pixel and narrowed to the phantom to save memory:"),
             julia(raw"""scanner_pc = BS.PCCTScanner(
     BS.NAEOTOM_ALPHA; # its geometry, thresholds 20/35/55/70 keV, dead time and scatter kernels
@@ -433,15 +433,17 @@ end"""),
     detector_row_size = 0.35,
     detector_col_size = 0.3,
     binning_factor = 1, # one native dexel per pixel (the Alpha sums 2 × 2)
-    gain_spread = 0.0, # an ideal detector: no dexel defects to flat-field
-    threshold_spread_keV = 0.0,
-)
+) # a realistic unit, like the Alpha: its dexels' gains and thresholds spread
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
 res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 
 # pile-up, calibrated as a scanner does it: air scans at rising currents (few views suffice)
 pileup = BS.calibrate_pileup(scanner_pc, BS.CTProtocol(protocol; views = 40), recon; sim_opts)
-BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)"""),
+BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
+
+# then the flat field: a low-flux air scan gives every pixel's gain in every bin
+flat = BS.calibrate_flat_field(scanner_pc, protocol, recon; sim_opts)
+BS.apply_flat_field!(res_pc.pcct_sino.bins, flat)"""),
             p("The pile-up model simulates shaped pulses on the CPU at the count rates this scan will see; it takes ",
               "seconds and is memoised for the session. Set ", c("dead_time_ns = 0"), " to skip pile-up while you iterate."),
             p("The decomposition needs the detector's response, and the workspace has it: it is the model that made ",
