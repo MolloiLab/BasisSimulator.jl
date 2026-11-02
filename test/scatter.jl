@@ -80,10 +80,17 @@ end
     # the impact whose chord is a given length, in the kernel's own (tilted) ray
     a, b = 150.0, 200.0
     for L in (50.0, 150.0, 290.0)
-        u = BS._kernel_impact(a, b, L)
+        u, q = BS._kernel_impact(a, b, L)
+        @test q ≈ sqrt(1 - u^2)
         @test BS._kernel_chord(a, b, u) ≈ L rtol = 1.0e-6
+        # in single precision too, and at the edge, where 1 − u² is below its rounding
+        u32, q32 = BS._kernel_impact(Float32(a), Float32(b), Float32(L))
+        @test u32 ≈ u rtol = 1.0e-5
+        @test q32 ≈ q rtol = 1.0e-5
     end
-    @test BS._kernel_impact(a, b, 400.0) == 0.0                                 # longer than the axis ray
+    edge = BS._kernel_chord(a, b, 1 - 1.0e-8)
+    @test BS._kernel_impact(Float32(a), Float32(b), Float32(edge))[2] ≈ BS._kernel_impact(a, b, edge)[2] rtol = 0.02
+    @test BS._kernel_impact(a, b, 400.0) == (0.0, 1.0)                          # longer than the axis ray
     @test BS._kernel_offset(a, b, 1.0) > BS._kernel_offset(a, b, 0.5) > 0
     # clamped linear interpolation
     @test BS._bracket([1.0, 2.0, 4.0], 3.0) == (2, 3, 0.5)
@@ -94,7 +101,7 @@ end
     γ = range(-25, 25; length = 501)
     xs = sid .* sind.(γ)
     lengths = [abs(x) < 120 ? 2 * 90 * sqrt(1 - (x / 120)^2) : 0.0 for x in xs]
-    e = BS._view_ellipse(xs, lengths)
+    e = BS._view_ellipse(xs, BS._ray_widths(xs), lengths)
     @test e.a ≈ 90 rtol = 2.0e-3
     @test e.b ≈ 120 rtol = 2.0e-3
     @test abs(e.centre) < 1.0e-6
@@ -164,29 +171,26 @@ end
 end
 
 @testset "outside the grid: the nearest kernels, scaled below the thinnest" begin
-    k = BS.scatter_kernels(_SCATTER_TEST_ENTRY)
-    γ = collect(range(-24.75, 24.75; length = 100))
-    sid = k.source_to_isocenter_mm
-    rays(R) = (;
-        angle_deg = γ,
-        wet_mm = [abs(sid * sind(g)) < R ? 2 * sqrt(R^2 - (sid * sind(g))^2) : 0.0 for g in γ],
-        outline_mm = zeros(100),
-        spectrum = fill(0.01, 1, 100),
-        compton = nothing,
-        rayleigh_wide = nothing,
-        rayleigh_forward = nothing,
-        delta_mu_per_mm = nothing,
-    )
-    scan(R) = let out = zeros(25, 11, 1), r = rays(R)
-        n = BS._superpose!(
-            out, k, merge(r, (; ellipse_mm = r.wet_mm)), [zeros(5); 1.0; zeros(5)], ones(1, 1),
-            [BS._bracket(k.energies_keV, 70.0)], BS._SuperposeScratch(k, 1),
-        )
-        (; out, n)
+    air = _scatter_phantom(; a_cm = 0.0, n = 8)
+    protocol = BS.CTProtocol(; kVp = 120.0, mAs = 100.0, views = 8)
+    plan = BS.create_workspace(_SCATTER_EICT, protocol, _scatter_opts(), _SCATTER_RECON, air).scatter
+    sid = plan.kernels.source_to_isocenter_mm
+    T = eltype(plan.scratch.wet)
+
+    # a centred water cylinder of radius R (mm) on every coarse ray, superposed as the correction's
+    # water patient
+    scan(R) = let s = plan.scratch
+        wet = [abs(sid * sind(γ)) < R ? 2 * sqrt(R^2 - (sid * sind(γ))^2) : 0.0 for γ in plan.angle_deg]
+        copyto!(s.wet, repeat(T.(wet), 1, size(s.wet, 2), size(s.wet, 3)))
+        fill!(s.plain, true)
+        BS._scatter_weights!(plan, 1)
+        out = similar(plan.estimate)
+        n = BS._superpose!(out, plan, s.wet)
+        (; out = Array(out), n)
     end
-    thin, thinnest, thickest = scan(35.0), scan(70.0), scan(400.0)
-    @test thin.n > 0 && thickest.n > 0 && thinnest.n == 0
-    @test 0 < sum(thin.out) < sum(thinnest.out)             # less water, less scatter
+    thin, inside, thickest = scan(35.0), scan(80.0), scan(400.0)
+    @test thin.n > 0 && thickest.n > 0 && inside.n == 0
+    @test 0 < sum(thin.out) < sum(inside.out)               # less water, less scatter
     @test all(isfinite, thickest.out) && sum(thickest.out) > 0          # the thickest kernels stand in
 end
 

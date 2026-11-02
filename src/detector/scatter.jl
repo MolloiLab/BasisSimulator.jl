@@ -30,6 +30,10 @@ lengths measured again (`_SCATTER_CORRECTION_PASSES` times). It never sees the p
 realistic, not exact: it treats the patient as water and the view's outline as its
 water-equivalent lengths' (`view = :wet`).
 
+Everything after the plan is built runs on the workspace's backend (the GPU, or Julia's threads on
+the CPU): the walk, each ray's lengths and photons, the superposition (`scatter_kernels.jl`), the
+correction's inversion, and the maps to dexels. The plan keeps its own copy of the library there.
+
 Outside the library's grids (thickness 140–500 mm, aspect 0.6–2.5, 20–140 keV) the nearest
 kernels stand in, with a warning once per session; an ellipse thinner than the thinnest kernel's
 takes that kernel scaled by the water the ray crosses against what the kernel's own ray crosses.
@@ -41,6 +45,10 @@ const _SCATTER_RAY_STEP_DEG = 0.25
 const _SCATTER_GROUP_ROWS = 3
 const _SCATTER_CORRECTION_PASSES = 2
 
+# Each coarse ray's footprint is walked as this many columns × rows of sub-footprints, in parallel,
+# and their path lengths averaged: the same footprint, `_SCATTER_WALK_SPLIT²` times the threads
+const _SCATTER_WALK_SPLIT = 4
+
 # Materials below this density (g/cm³) are gases: outside the patient's outline, and not scattering
 const _SCATTER_GAS_DENSITY = 0.01
 
@@ -48,39 +56,27 @@ const _SCATTER_GAS_DENSITY = 0.01
     ScatterPlan
 
 What `simulate!` needs to superpose the scatter library on one workspace's acquisition, built with
-the workspace: the coarse rays (a `CTGeometry` of their own, their fan angles and z groups, each
-library row's share of a group's beam), every ray's source spectrum and measured-signal weights,
-the detector's weight of a photon in each output channel (an energy integrator's `S₁` and `S₂`, a
-photon counter's bins), the materials' scattering and attenuation tables, and on the device the
-walk's buffer, the scatter field (library bins × channels × coarse views), the correction's
-estimate and the maps from bins and coarse views to dexels and views.
+the workspace: the coarse rays (a `CTGeometry` of their own, `geom`, and `walk`, the same with
+each footprint split for the walk; their fan angles and z groups), the
+detector's weight of a photon in each output channel (`channels[energy, channel]`: an energy
+integrator's `S₁` and `S₂`, a photon counter's bins), and on the device the walk's buffer, the
+scatter field (library bins × channels × coarse views), the correction's estimate, the maps from
+bins and coarse views to dexels and views, and
+
+- `library`: the kernels, their column moments and path lengths, and the grids;
+- `rays`: each coarse ray's photons by library energy and channel through water, by spectral
+  energy for its materials, the weights of its measured signal and its air value, the materials'
+  scattering and attenuation against water's, and the maps from bins to coarse rays;
+- `scratch`: the superposition's buffers (`scatter_kernels.jl`).
 """
-struct ScatterPlan{A4, A3, AI, AT}
+struct ScatterPlan{A4, A3, AI, AT, LB, RY, SC}
     kernels::ScatterKernels
     geom::CTGeometry
+    walk::CTGeometry
     views::Vector{Int}
     angle_deg::Vector{Float64}
     z_mm::Vector{Float64}
-    row_share::Matrix{Float64}
-    spectrum::Array{Float64, 3}
-    detected::Array{Float64, 3}
     channels::Matrix{Float64}
-    shares::Vector{Tuple{Int, Int, Float64}}
-    air::Matrix{Float64}
-    water_mu_per_mm::Vector{Float64}
-    gas::Vector{Bool}
-    waterlike::Vector{Bool}
-    mu70_per_mm::Vector{Float64}
-    mu70_water_per_mm::Float64
-    compton::Matrix{Float64}
-    rayleigh_wide::Matrix{Float64}
-    rayleigh_forward::Matrix{Float64}
-    compton_water::Vector{Float64}
-    rayleigh_water::Vector{Float64}
-    band_mu::Matrix{Float64}
-    band_mu_water::Vector{Float64}
-    ray_column::Vector{Tuple{Int, Int, Float64}}
-    group_row::Vector{Tuple{Int, Int, Float64}}
     paths::A4
     measured::A3
     field::A4
@@ -97,9 +93,10 @@ struct ScatterPlan{A4, A3, AI, AT}
     view_lo::AI
     view_hi::AI
     view_w::AT
+    library::LB
+    rays::RY
+    scratch::SC
 end
-
-_n_channels(p::ScatterPlan) = size(p.channels, 2)
 
 # Linear interpolation of `x` between the centres of the bins with `edges`, clamped at the ends.
 _bin_bracket(edges, x) = _bracket((edges[1:(end - 1)] .+ edges[2:end]) ./ 2, x)
@@ -192,14 +189,15 @@ function _scatter_plan(
     last(views) == n_v || push!(views, n_v)
     n_cv = length(views)
 
-    rays = CTGeometry(
+    # the coarse rays, each footprint split into `k × k` (`k = 1`: the rays themselves)
+    coarse_geometry(k) = CTGeometry(
         geom.SAD,
         geom.SDD,
         n_cv,
-        n_g,
-        n_cc,
-        deg2rad(Δγ) * geom.SAD,
-        geom.n_rows * geom.pixel_row_size / n_g,
+        k * n_g,
+        k * n_cc,
+        deg2rad(Δγ / k) * geom.SAD,
+        geom.n_rows * geom.pixel_row_size / (k * n_g),
         geom.angles[views],
         geom.source_positions[:, views],
         geom.detector_centers[:, views],
@@ -209,8 +207,10 @@ function _scatter_plan(
         geom.pitch,
         geom.table_feed,
         :arc,
-        (0.5 - γ_min / Δγ) - (n_cc + 1) / 2,
+        (0.5 - γ_min / (Δγ / k)) - (k * n_cc + 1) / 2,
     )
+    rays = coarse_geometry(1)
+    walk = coarse_geometry(_SCATTER_WALK_SPLIT)
 
     # each coarse ray's footprint on the detector: the dexels it stands for
     fp_cols = zeros(Int32, 2, n_cc)
@@ -229,11 +229,15 @@ function _scatter_plan(
         A[c, r] for c in fp_cols[1, i]:fp_cols[2, i], r in fp_rows[1, g]:fp_rows[2, g]
     ) / ((fp_cols[2, i] - fp_cols[1, i] + 1) * (fp_rows[2, g] - fp_rows[1, g] + 1))
 
-    # ─── Every coarse ray's spectrum, and the weights of the signal it measures ───
+    # ─── Every coarse ray's photons, and the weights of the signal it measures ───
+    # `spectrum[e, i, g]`: the photons of each spectral energy, the ray's share of a library bin;
+    # `lib_share[e, energy]`: each spectral energy between the library's
     trans = source(rays)
     cols = k.column_edges_deg
     ray_share = Δγ / (cols[2] - cols[1])
     nE = length(E)
+    nE_lib = length(k.energies_keV)
+    n_ch = size(channels, 2)
     spectrum = zeros(nE, n_cc, n_g)
     detected = zeros(nE, n_cc, n_g)
     for g in 1:n_g, i in 1:n_cc
@@ -245,10 +249,33 @@ function _scatter_plan(
         s = sum(@view detected[:, i, g])
         s > 0 && (detected[:, i, g] ./= s)
     end
-    shares = [_bracket(k.energies_keV, Ek) for Ek in E]
+    lib_share = zeros(nE, nE_lib)
+    for (e, Ek) in enumerate(E)
+        g1, g2, t = _bracket(k.energies_keV, Ek)
+        lib_share[e, g1] += 1 - t
+        lib_share[e, g2] += t
+    end
+    lib_range = zeros(Int32, 2, nE_lib)
+    for g in 1:nE_lib
+        used = findall(!iszero, view(lib_share, :, g))
+        lib_range[:, g] .= isempty(used) ? (1, 0) : (first(used), last(used))
+    end
+    photons = [spectrum[e, i, g] * channels[e, ch] for e in 1:nE, ch in 1:n_ch, i in 1:n_cc, g in 1:n_g]
+    # through water, every process weighed alike
+    water_photons = zeros(nE_lib, n_ch, n_cc, n_g)
+    for g in 1:n_g, i in 1:n_cc, ch in 1:n_ch, e in 1:nE
+        base = photons[e, ch, i, g]
+        base == 0 && continue
+        for gl in 1:nE_lib
+            lib_share[e, gl] == 0 || (water_photons[gl, ch, i, g] += base * lib_share[e, gl])
+        end
+    end
     air_coarse = [footprint_mean(air, i, g) for i in 1:n_cc, g in 1:n_g]
 
     # ─── The materials against water, at the spectrum's energies ───
+    # `kind`: 0 a gas, 1 like water, 2 another; `ratio[m, e, process]`: the material's Compton,
+    # wide- and forward-Rayleigh scattering against water's; `dmu[m, band]`: its attenuation in
+    # each band of the library's path energies against water's of the same water-equivalent length
     water = XA.Materials.water
     μ(m, x, kind) = ustrip(u"cm^-1", XA.linear_attenuation_coeff(m, x * u"keV", kind)) / 10
     bins = _rayleigh_bins(k)
@@ -257,16 +284,17 @@ function _scatter_plan(
     nbands = size(k.paths, 1)
     band_mu_of(m) = [sum(compute_μ_at_energy(m, Float64(x)) / 10 for x in band_keV(b)) / length(band_keV(b)) for b in 1:nbands]
     n_m = length(materials)
-    compton = zeros(n_m, nE)
-    rayleigh_wide = zeros(n_m, nE)
-    rayleigh_forward = zeros(n_m, nE)
-    band_mu = zeros(n_m, nbands)
-    gas = falses(n_m)
-    mu70 = zeros(n_m)
+    compton_water = [μ(water, Ek, XA.IncoherentScattering()) for Ek in E]
+    rayleigh_water = [μ(water, Ek, XA.CoherentScattering()) for Ek in E]
+    band_mu_water = band_mu_of(water)
+    mu70_water = compute_μ_at_energy(water, 70.0) / 10
+    kind = zeros(Int32, n_m)
+    wet_per_mm = zeros(n_m)
+    ratio = zeros(n_m, nE, 3)
+    dmu = zeros(n_m, nbands)
     for (j, m) in enumerate(materials)
         density = hasproperty(m, :density) ? ustrip(u"g/cm^3", m.density) : 1.0
-        gas[j] = density < _SCATTER_GAS_DENSITY
-        mu70[j] = compute_μ_at_energy(m, 70.0) / 10
+        mu70 = compute_μ_at_energy(m, 70.0) / 10
         fractions = hasproperty(m, :composition) ? m.composition : nothing
         for (e, Ek) in enumerate(E)
             gc, gw, gf = if fractions === nothing
@@ -276,23 +304,17 @@ function _scatter_plan(
                     _angular_factor(k, fractions, water.composition, 2, Ek, bins.wide),
                     _angular_factor(k, fractions, water.composition, 2, Ek, bins.forward)
             end
-            compton[j, e] = μ(m, Ek, XA.IncoherentScattering()) * gc
             rr = μ(m, Ek, XA.CoherentScattering())
-            rayleigh_wide[j, e] = rr * gw
-            rayleigh_forward[j, e] = rr * gf
+            ratio[j, e, 1] = μ(m, Ek, XA.IncoherentScattering()) * gc / compton_water[e]
+            ratio[j, e, 2] = rr * gw / rayleigh_water[e]
+            ratio[j, e, 3] = rr * gf / rayleigh_water[e]
         end
-        band_mu[j, :] .= band_mu_of(m)
+        band_mu = band_mu_of(m)
+        wet_per_mm[j] = mu70 / mu70_water
+        dmu[j, :] .= band_mu .- band_mu_water .* wet_per_mm[j]
+        like_water = all(==(1.0), view(ratio, j, :, :)) && band_mu == band_mu_water && mu70 == mu70_water
+        kind[j] = density < _SCATTER_GAS_DENSITY ? 0 : like_water ? 1 : 2
     end
-    compton_water = [μ(water, Ek, XA.IncoherentScattering()) for Ek in E]
-    rayleigh_water = [μ(water, Ek, XA.CoherentScattering()) for Ek in E]
-    band_mu_water = band_mu_of(water)
-    mu70_water = compute_μ_at_energy(water, 70.0) / 10
-    waterlike = [
-        compton[j, :] == compton_water && rayleigh_wide[j, :] == rayleigh_water &&
-            rayleigh_forward[j, :] == rayleigh_water && band_mu[j, :] == band_mu_water &&
-            mu70[j] == mu70_water
-            for j in 1:n_m
-    ]
 
     # ─── From the library's bins and the coarse views to dexels and views ───
     col_maps = [_bin_bracket(cols, γ) for γ in γ_dexel]
@@ -301,36 +323,82 @@ function _scatter_plan(
         q = clamp(searchsortedlast(views, j), 1, n_cv)
         q == n_cv ? (q, q, 0.0) : (q, q + 1, (j - views[q]) / (views[q + 1] - views[q]))
     end
-    n_ch = size(channels, 2)
+    ray_maps = [_bin_bracket(cols, γ) for γ in angle_deg]
+    group_maps = [_bin_bracket(rows_lib, z) for z in z_mm]
     nlc, nlr = length(cols) - 1, length(rows_lib) - 1
+    all(≈(cols[2] - cols[1]), diff(cols)) || throw(
+        ArgumentError("the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform")
+    )
     device_int(v) = _device_copy(ref, Int32.(v))
     device_real(v) = _device_copy(ref, T.(v))
+    # the library itself as it is (Float32): on the host, the kernels' own arrays
+    device_library(x) = ref isa Array ? x : _device_copy(ref, x)
+    pair(maps) = device_int(reduce(hcat, [[m[1], m[2]] for m in maps]))
+    # each value as the two floats of the workspace's type that sum to it
+    float_pairs(x) = reduce(hcat, [[T(v), T(v - T(v))] for v in x])
+
+    library = (;
+        kernels = device_library(vec(k.kernels)),
+        moments = device_library(vec(k.moments)),
+        paths = device_library(vec(k.paths)),
+        node_deg = device_real(float_pairs(rad2deg.(asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1))))),
+        thicknesses = device_real(k.thicknesses_mm),
+        log_aspects = device_real(log.(k.aspects)),
+        impacts = device_real(k.impact_fractions),
+        cols = device_real(cols),
+        column_width = T(cols[2] - cols[1]),
+        grid = T.((first(k.thicknesses_mm), last(k.thicknesses_mm), first(k.aspects), last(k.aspects), last(k.impact_fractions))),
+    )
+    sid = k.source_to_isocenter_mm
+    ray_consts = (;
+        xs = device_real([sid * sind(γ) for γ in angle_deg]),
+        dxs = device_real(_ray_widths([sid * sind(γ) for γ in angle_deg])),
+        angle_deg = device_real(angle_deg),
+        angle = device_real(float_pairs(angle_deg)),
+        row_share = device_real(row_share),
+        water_photons = device_real(water_photons),
+        photons = device_real(photons),
+        lib_share = device_real(lib_share),
+        lib_range = _device_copy(ref, lib_range),
+        detected = device_real(detected),
+        water_mu_per_mm = device_real([compute_μ_at_energy(water, Ek) / 10 for Ek in E]),
+        air = device_real(air_coarse),
+        kind = _device_copy(ref, kind),
+        wet_per_mm = device_real(wet_per_mm),
+        ratio = device_real(ratio),
+        dmu = device_real(dmu),
+        ray_cols = pair(ray_maps),
+        ray_col_w = device_real(last.(ray_maps)),
+        group_rows = pair(group_maps),
+        group_row_w = device_real(last.(group_maps)),
+    )
+    n_ray = n_cc * n_g * n_cv
+    k_walk = _SCATTER_WALK_SPLIT
+    scratch = (;
+        walk_paths = similar(ref, T, n_m, k_walk * n_cc, k_walk * n_g, n_cv),
+        wet = similar(ref, T, n_cc, n_g, n_cv),
+        outline = similar(ref, T, n_cc, n_g, n_cv),
+        plain = similar(ref, Bool, n_ray),
+        dmu = fill!(similar(ref, T, nbands, n_ray), zero(T)),
+        weights = similar(ref, T, nE_lib, 3, n_ch, n_ray),
+        ellipse = similar(ref, T, 3, n_g, n_cv),
+        shapes = similar(ref, T, 5, n_ray),
+        clamped = similar(ref, Int32, n_ray),
+        corner = fill!(similar(ref, Int32, 8, n_ray), Int32(0)),
+        factor = similar(ref, T, n_ch, 8, n_ray),
+        mix = similar(ref, T, 3nE_lib, n_ch, 8, n_ray),
+        boxes = similar(ref, T, 3, nlc, n_ch, 8, n_ray),
+        window = similar(ref, Int32, 2, n_ch, 8, n_ray),
+        rows = similar(ref, T, nlr, nlc, n_ch, n_g, n_cv),
+    )
     return ScatterPlan(
         k,
         rays,
+        walk,
         views,
         angle_deg,
         z_mm,
-        row_share,
-        spectrum,
-        detected,
         Float64.(channels),
-        shares,
-        air_coarse,
-        [compute_μ_at_energy(water, Ek) / 10 for Ek in E],
-        collect(gas),
-        waterlike,
-        mu70,
-        mu70_water,
-        compton,
-        rayleigh_wide,
-        rayleigh_forward,
-        compton_water,
-        rayleigh_water,
-        band_mu,
-        band_mu_water,
-        [_bin_bracket(cols, γ) for γ in angle_deg],
-        [_bin_bracket(rows_lib, z) for z in z_mm],
         similar(ref, T, n_m, n_cc, n_g, n_cv),
         similar(ref, T, n_cc, n_g, n_cv),
         fill!(similar(ref, T, nlc, nlr, n_ch, n_cv), zero(T)),
@@ -347,166 +415,172 @@ function _scatter_plan(
         device_int(first.(view_maps)),
         device_int(getindex.(view_maps, 2)),
         device_real(last.(view_maps)),
+        library,
+        ray_consts,
+        scratch,
     )
 end
 
 # =============================================================================
-# The rays of one coarse view and group
+# The rays of every coarse view
 # =============================================================================
+
+# `paths[m, column, group, view]`: the mean of the path lengths of each coarse ray's `k × k`
+# sub-footprints (`split[m, k(column - 1) + a, k(group - 1) + b, view]`), its footprint's.
+function _scatter_join_footprints!(paths::AbstractArray{T, 4}, split::AbstractArray{T, 4}) where {T}
+    n_m, n_cc, n_g = size(paths, 1), size(paths, 2), size(paths, 3)
+    k = size(split, 2) ÷ n_cc
+    let paths = paths, split = split, n_m = n_m, n_cc = n_cc, n_g = n_g, k = k
+        AK.foreachindex(paths) do idx
+            q = idx - 1
+            m = q % n_m + 1
+            q ÷= n_m
+            i = q % n_cc + 1
+            q ÷= n_cc
+            g = q % n_g + 1
+            v = q ÷ n_g + 1
+            s = zero(T)
+            for b in 1:k, a in 1:k
+                s += split[m, k * (i - 1) + a, k * (g - 1) + b, v]
+            end
+            paths[idx] = s / (k * k)
+        end
+    end
+    return paths
+end
 
 # From the walk's path lengths (cm, `[material, column, group, view]`): each ray's water-equivalent
-# length, its outline and its materials' ratios to water.
-function _phantom_rays(p::ScatterPlan, L::AbstractArray, v::Int, g::Int)
-    n_cc = length(p.angle_deg)
-    nE = size(p.spectrum, 1)
-    nbands = length(p.band_mu_water)
-    wet = zeros(n_cc)
-    outline = zeros(n_cc)
-    plain = true
-    for i in 1:n_cc, m in axes(L, 1)
-        p.gas[m] && continue
-        Lm = 10 * Float64(L[m, i, g, v])
-        Lm > 0 || continue
-        wet[i] += Lm * p.mu70_per_mm[m] / p.mu70_water_per_mm
-        outline[i] += Lm
-        p.waterlike[m] || (plain = false)
-    end
-    spectrum = view(p.spectrum, :, :, g)
-    plain && return (;
-        angle_deg = p.angle_deg, wet_mm = wet, outline_mm = outline, spectrum,
-        compton = nothing, rayleigh_wide = nothing, rayleigh_forward = nothing, delta_mu_per_mm = nothing,
-    )
-
-    compton = ones(nE, n_cc)
-    rayleigh_wide = ones(nE, n_cc)
-    rayleigh_forward = ones(nE, n_cc)
-    δμ = zeros(nbands, n_cc)
-    for i in 1:n_cc
-        wet[i] > 0 || continue
-        fill!(view(compton, :, i), 0.0)
-        fill!(view(rayleigh_wide, :, i), 0.0)
-        fill!(view(rayleigh_forward, :, i), 0.0)
-        for m in axes(L, 1)
-            p.gas[m] && continue
-            Lm = 10 * Float64(L[m, i, g, v])
-            Lm > 0 || continue
-            for e in 1:nE
-                compton[e, i] += Lm * p.compton[m, e]
-                rayleigh_wide[e, i] += Lm * p.rayleigh_wide[m, e]
-                rayleigh_forward[e, i] += Lm * p.rayleigh_forward[m, e]
+# length, its outline, whether it crosses nothing but water-like materials, and if not its
+# materials' attenuation against water's (`dmu[band, ray]`).
+function _scatter_phantom_rays!(p::ScatterPlan)
+    s, r = p.scratch, p.rays
+    n_m = size(p.paths, 1)
+    nb = size(s.dmu, 1)
+    let wet = s.wet, outline = s.outline, plain = s.plain, dmu = s.dmu, paths = p.paths,
+            kind = r.kind, wet_per_mm = r.wet_per_mm, material_dmu = r.dmu, n_m = n_m, nb = nb
+        AK.foreachindex(wet) do ray
+            T = eltype(wet)
+            w, o, water = zero(T), zero(T), true
+            for m in 1:n_m
+                kind[m] == 0 && continue
+                Lm = 10 * paths[m + n_m * (ray - 1)]
+                Lm > 0 || continue
+                w += Lm * wet_per_mm[m]
+                o += Lm
+                kind[m] == 2 && (water = false)
             end
-            scale = p.mu70_per_mm[m] / p.mu70_water_per_mm
-            for b in 1:nbands
-                δμ[b, i] += (Lm / wet[i]) * (p.band_mu[m, b] - p.band_mu_water[b] * scale)
-            end
-        end
-        for e in 1:nE
-            compton[e, i] /= wet[i] * p.compton_water[e]
-            rayleigh_wide[e, i] /= wet[i] * p.rayleigh_water[e]
-            rayleigh_forward[e, i] /= wet[i] * p.rayleigh_water[e]
-        end
-    end
-    return (;
-        angle_deg = p.angle_deg, wet_mm = wet, outline_mm = outline, spectrum,
-        compton, rayleigh_wide, rayleigh_forward, delta_mu_per_mm = δμ,
-    )
-end
-
-# The water patient the correction estimates: water-equivalent lengths alone.
-_water_rays(p::ScatterPlan, wet::AbstractMatrix, g::Int) = (;
-    angle_deg = p.angle_deg,
-    wet_mm = wet[:, g],
-    outline_mm = wet[:, g],
-    spectrum = view(p.spectrum, :, :, g),
-    compton = nothing,
-    rayleigh_wide = nothing,
-    rayleigh_forward = nothing,
-    delta_mu_per_mm = nothing,
-)
-
-# The water-equivalent length (mm) whose transmission, through the ray's own spectrum and detector
-# weights, is `t` (relative to air): Newton's method on the logarithm.
-function _water_length(p::ScatterPlan, t::Real, i::Int, g::Int)
-    t >= 1 && return 0.0
-    target = log(max(t, 1.0e-6))
-    w = view(p.detected, :, i, g)
-    μ = p.water_mu_per_mm
-    μ̄ = sum(w[e] * μ[e] for e in eachindex(w))
-    x = -target / μ̄
-    for _ in 1:30
-        s0, s1 = 0.0, 0.0
-        for e in eachindex(w)
-            q = w[e] * exp(-μ[e] * x)
-            s0 += q
-            s1 += q * μ[e]
-        end
-        s0 > 0 || break
-        step = (log(s0) - target) / (s1 / s0)
-        x = max(x + step, 0.0)
-        abs(step) < 1.0e-4 && break
-    end
-    return x
-end
-
-# =============================================================================
-# The scatter of every coarse view
-# =============================================================================
-
-# `rays(v, g)` gives the rays of coarse view `v` and group `g`; `view` is :mean (the geometric mean
-# of the wet and the outline ellipses' scatter) or :wet. Fills `field[column, row, channel, view]`
-# for the channels of `channels[energy, channel]`.
-function _scatter_views!(field::Array{Float64, 4}, p::ScatterPlan, rays, channels::AbstractMatrix; view::Symbol)
-    k = p.kernels
-    n_cv = size(field, 4)
-    n_ch = size(channels, 2)
-    n_g = size(p.row_share, 2)
-    clamped = Threads.Atomic{Int}(0)
-    chunks = collect(Iterators.partition(1:n_cv, cld(n_cv, max(1, Threads.nthreads()))))
-    tasks = map(chunks) do chunk
-        Threads.@spawn begin
-            scratch = _SuperposeScratch(k, n_ch)
-            wet_field = zeros(size(field, 1), size(field, 2), n_ch)
-            outline_field = similar(wet_field)
-            for v in chunk
-                group_rays = [rays(v, g) for g in 1:n_g]
-                fill!(wet_field, 0.0)
-                for (g, r) in enumerate(group_rays)
-                    n = _superpose!(
-                        wet_field,
-                        k,
-                        merge(r, (; ellipse_mm = r.wet_mm)),
-                        Base.view(p.row_share, :, g),
-                        channels,
-                        p.shares,
-                        scratch,
-                    )
-                    Threads.atomic_add!(clamped, n)
-                end
-                if view === :mean && any(r -> r.outline_mm != r.wet_mm, group_rays)
-                    fill!(outline_field, 0.0)
-                    for (g, r) in enumerate(group_rays)
-                        _superpose!(
-                            outline_field,
-                            k,
-                            merge(r, (; ellipse_mm = r.outline_mm)),
-                            Base.view(p.row_share, :, g),
-                            channels,
-                            p.shares,
-                            scratch,
-                        )
+            wet[ray] = w
+            outline[ray] = o
+            plain[ray] = water
+            if !water && w > 0
+                for b in 1:nb
+                    d = zero(T)
+                    for m in 1:n_m
+                        kind[m] == 0 && continue
+                        Lm = 10 * paths[m + n_m * (ray - 1)]
+                        Lm > 0 && (d += (Lm / w) * material_dmu[m, b])
                     end
-                    field[:, :, :, v] .= sqrt.(wet_field .* outline_field)
-                else
-                    field[:, :, :, v] .= wet_field
+                    dmu[b, ray] = d
                 end
             end
         end
     end
-    foreach(wait, tasks)
-    clamped[] > 0 && @warn "scatter: $(clamped[]) rays' ellipses lie outside the kernels' " *
+    return p
+end
+
+# `weights[energy, process, ch, ray]` for the first `n_used` channels: each ray's photons by library
+# energy, process and channel, its materials' scattering against water's at each spectral energy
+# (`plain[ray]`: water, every process alike).
+function _scatter_weights!(p::ScatterPlan, n_used::Int)
+    s, r = p.scratch, p.rays
+    nE_lib, n_ch = size(s.weights, 1), size(s.weights, 3)
+    n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
+    n_m = size(p.paths, 1)
+    let weights = s.weights, wet = s.wet, plain = s.plain, paths = p.paths, water = r.water_photons,
+            photons = r.photons, lib_share = r.lib_share, lib_range = r.lib_range, kind = r.kind, ratio = r.ratio,
+            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, n_m = n_m, n_used = n_used
+        AK.foreachindex(weights) do idx
+            T = eltype(weights)
+            q = idx - 1
+            gl = q % nE_lib + 1
+            q ÷= nE_lib
+            pr = q % 3 + 1
+            q ÷= 3
+            ch = q % n_ch + 1
+            ray = q ÷ n_ch + 1
+            i = (ray - 1) % n_cc + 1
+            g = ((ray - 1) ÷ n_cc) % n_g + 1
+            val = zero(T)
+            if ch <= n_used
+                if plain[ray]
+                    val = water[gl, ch, i, g]
+                elseif wet[ray] > 0
+                    w = wet[ray]
+                    for e in lib_range[1, gl]:lib_range[2, gl]
+                        share = lib_share[e, gl]
+                        share == 0 && continue
+                        f = zero(T)
+                        for m in 1:n_m
+                            kind[m] == 0 && continue
+                            Lm = 10 * paths[m + n_m * (ray - 1)]
+                            Lm > 0 && (f += (Lm / w) * ratio[m, e, pr])
+                        end
+                        val += photons[e, ch, i, g] * share * f
+                    end
+                end
+            end
+            weights[idx] = val
+        end
+    end
+    return p
+end
+
+# The scatter of every coarse view into `out[column, row, ch, view]` (its channels the first of the
+# plan's), the views' ellipses measured from `lengths`, the rays' impacts from `scratch.wet`; with
+# `combine`, the geometric mean of that and what `out` holds. Returns the number of rays outside
+# the library's grids.
+function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray; combine::Bool = false)
+    s, lib, r = p.scratch, p.library, p.rays
+    n_used = size(out, 3)
+    _scatter_ellipses!(s.ellipse, r.xs, r.dxs, lengths)
+    _scatter_ray_shapes!(s.shapes, s.clamped, s.wet, s.ellipse, r.xs, r.angle_deg, lib.grid)
+    _scatter_corners!(
+        s.corner,
+        s.factor,
+        s.mix,
+        s.boxes,
+        s.window,
+        s.shapes,
+        s.weights,
+        s.plain,
+        s.dmu,
+        r.angle,
+        lib,
+        n_used,
+    )
+    _scatter_deposit!(
+        s.rows,
+        s.corner,
+        s.factor,
+        s.mix,
+        s.boxes,
+        s.window,
+        s.shapes,
+        s.plain,
+        lib,
+        length(p.angle_deg),
+        n_used,
+    )
+    _scatter_rows!(out, s.rows, r.row_share; combine)
+    return Int(sum(s.clamped))
+end
+
+function _warn_clamped(p::ScatterPlan, n::Int)
+    k = p.kernels
+    n > 0 && @warn "scatter: $(n) rays' ellipses lie outside the kernels' " *
         "$(first(k.thicknesses_mm))–$(last(k.thicknesses_mm)) mm and aspects " *
         "$(first(k.aspects))–$(last(k.aspects)); the nearest kernels stand in" maxlog = 1
-    return field
+    return n
 end
 
 """
@@ -518,54 +592,97 @@ the device.
 """
 function _scatter_forward!(p::ScatterPlan, phantom)
     extent = hasproperty(phantom, :extent) && phantom.extent !== nothing ? Tuple(Float64.(phantom.extent)) : nothing
-    dd_fast_material_paths!(p.paths, phantom.mask, p.geom; volume_extent = extent)
-    L = Array(p.paths)
-    field = zeros(size(p.field)...)
-    _scatter_views!(field, p, (v, g) -> _phantom_rays(p, L, v, g), p.channels; view = :mean)
-    copyto!(p.field, eltype(p.field).(field))
+    s = p.scratch
+    dd_fast_material_paths!(s.walk_paths, phantom.mask, p.walk; volume_extent = extent)
+    _scatter_join_footprints!(p.paths, s.walk_paths)
+    _scatter_phantom_rays!(p)
+    _scatter_weights!(p, size(p.field, 3))
+    _warn_clamped(p, _superpose!(p.field, p, s.wet))
+    # the geometric mean with the outline's ellipse, where that is another
+    s.outline == s.wet || _superpose!(p.field, p, s.outline; combine = true)
     return p.field
 end
 
-# The value of a field (library bins × channels × coarse views, on the host) at a coarse ray.
-function _field_at_ray(p::ScatterPlan, field::Array{Float64, 4}, ch::Int, i::Int, g::Int, v::Int)
-    c0, c1, wc = p.ray_column[i]
-    r0, r1, wr = p.group_row[g]
-    return (1 - wr) * ((1 - wc) * field[c0, r0, ch, v] + wc * field[c1, r0, ch, v]) +
-        wr * ((1 - wc) * field[c0, r1, ch, v] + wc * field[c1, r1, ch, v])
+# Each coarse ray's water-equivalent length (mm) from its measured signal, `measured / photons`
+# against its air value, less the estimate's scatter at the ray when `subtract`: the length whose
+# transmission through the ray's own spectrum and detector weights is that (Newton's method on the
+# logarithm). Below a millimetre of water the ray is taken to miss the patient (the air
+# calibration's own scale), as the forward model leaves the gases out.
+function _scatter_water_lengths!(p::ScatterPlan, photons::Real, subtract::Bool)
+    s, r = p.scratch, p.rays
+    n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
+    nE = size(r.detected, 1)
+    photons = eltype(s.wet)(photons)
+    let wet = s.wet, measured = p.measured, estimate = p.estimate, air = r.air, detected = r.detected,
+            μ = r.water_mu_per_mm, rc = r.ray_cols, rcw = r.ray_col_w, gr = r.group_rows, grw = r.group_row_w,
+            n_cc = n_cc, n_g = n_g, nE = nE, n_est = size(p.estimate, 3), photons = photons, subtract = subtract
+        AK.foreachindex(wet) do ray
+            T = eltype(wet)
+            o = one(T)
+            q = ray - 1
+            i = q % n_cc + 1
+            g = (q ÷ n_cc) % n_g + 1
+            v = q ÷ (n_cc * n_g) + 1
+            scatter = zero(T)
+            if subtract
+                c0, c1, wc = rc[1, i], rc[2, i], rcw[i]
+                r0, r1, wr = gr[1, g], gr[2, g], grw[g]
+                for ch in 1:n_est
+                    scatter += (o - wr) * ((o - wc) * estimate[c0, r0, ch, v] + wc * estimate[c1, r0, ch, v]) +
+                        wr * ((o - wc) * estimate[c0, r1, ch, v] + wc * estimate[c1, r1, ch, v])
+                end
+            end
+            t = (measured[ray] / photons - scatter) / max(air[i, g], T(1.0e-30))
+            x = zero(T)
+            if t < 1
+                target = log(max(t, T(1.0e-6)))
+                base = nE * (i - 1 + n_cc * (g - 1))
+                μ̄ = zero(T)
+                for e in 1:nE
+                    μ̄ += detected[base + e] * μ[e]
+                end
+                x = -target / μ̄
+                for _ in 1:30
+                    s0, s1 = zero(T), zero(T)
+                    for e in 1:nE
+                        w = detected[base + e] * exp(-μ[e] * x)
+                        s0 += w
+                        s1 += w * μ[e]
+                    end
+                    s0 > 0 || break
+                    step = (log(s0) - target) / (s1 / s0)
+                    x = max(x + step, zero(T))
+                    abs(step) < T(1.0e-4) && break
+                end
+            end
+            wet[ray] = x < 1 ? zero(T) : x
+        end
+    end
+    return p
 end
 
 """
-    _scatter_estimate!(plan, measured) -> plan.estimate
+    _scatter_estimate!(plan, photons = 1) -> plan.estimate
 
-The correction's estimate of the scatter, from the data alone. `measured[column, group, view]` is
-each coarse ray's mean measured signal over its footprint, scatter included, in the units in
-which `plan.air` is its air value and the fields are the scatter (the signal of an energy
-integrator's `S₁`, or a photon counter's counts summed over its bins). Each pass measures every
-ray's water-equivalent length from its transmission less the last estimate, and superposes the
-scatter of that water patient (`view = :wet`). Fills `plan.estimate` on the device, its channels
-the measured signal's: `S₁` alone for an energy integrator, every bin for a photon counter.
+The correction's estimate of the scatter, from the data alone. `plan.measured[column, group,
+view] / photons` is each coarse ray's mean measured signal over its footprint, scatter included,
+in the units in which the plan's air value is its air value and the fields are the scatter (the
+signal of an energy integrator's `S₁`, or a photon counter's counts summed over its bins, per
+incident photon). Each pass measures every ray's water-equivalent length from its transmission
+less the last estimate, and superposes the scatter of that water patient (`view = :wet`). Fills
+`plan.estimate` on the device, its channels the measured signal's: `S₁` alone for an energy
+integrator, every bin for a photon counter.
 """
-function _scatter_estimate!(p::ScatterPlan, measured::AbstractArray)
-    n_cc, n_g, n_cv = size(measured)
-    n_est = size(p.estimate, 3)
-    channels = p.channels[:, 1:n_est]
-    estimate = zeros(size(p.estimate)...)
-    wet = zeros(n_cc, n_g, n_cv)
+function _scatter_estimate!(p::ScatterPlan, photons::Real = 1)
+    s = p.scratch
+    fill!(s.plain, true)
+    _scatter_weights!(p, size(p.estimate, 3))
+    clamped = 0
     for pass in 1:_SCATTER_CORRECTION_PASSES
-        Threads.@threads for v in 1:n_cv
-            for g in 1:n_g, i in 1:n_cc
-                s = pass == 1 ? 0.0 : sum(_field_at_ray(p, estimate, ch, i, g, v) for ch in 1:n_est)
-                t = (Float64(measured[i, g, v]) - s) / max(p.air[i, g], 1.0e-30)
-                x = _water_length(p, t, i, g)
-                # below a millimetre of water the ray is taken to miss the patient (the air calibration's
-                # own scale), as the forward model leaves the gases out
-                wet[i, g, v] = x < 1 ? 0.0 : x
-            end
-        end
-        fill!(estimate, 0.0)
-        _scatter_views!(estimate, p, (v, g) -> _water_rays(p, view(wet, :, :, v), g), channels; view = :wet)
+        _scatter_water_lengths!(p, photons, pass > 1)
+        clamped += _superpose!(p.estimate, p, s.wet)
     end
-    copyto!(p.estimate, eltype(p.estimate).(estimate))
+    _warn_clamped(p, clamped)
     return p.estimate
 end
 

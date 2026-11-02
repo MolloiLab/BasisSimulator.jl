@@ -14,12 +14,13 @@ Each scanner's entry ships as its own Julia artifact (`SCATTER_KERNEL_ARTIFACTS`
 [`scatter_kernels`](@ref) and cached per process. A scanner names its entry with its
 `scatter_kernels` field.
 
-The superposition (`_superpose!`) is BasisMonteCarlo's `library_scan`, ported: each view stands in
-the water ellipse of its rays' water-equivalent lengths; each ray takes the kernel of the impact
-whose chord is its own water-equivalent length, its Compton, wide- and forward-Rayleigh parts scaled
-by its materials' scattering against water's and by how much less of each gets out of them, and is
-moved across the fan to the ray's own angle, column by column as boxes of the width the scatter
-landed with.
+The superposition (the kernels at the end of this file, run by `_superpose!` in `scatter.jl`) is
+BasisMonteCarlo's `library_scan`, ported to run on every coarse ray of every view at once on the
+workspace's backend: each view stands in the water ellipse of its rays' water-equivalent lengths;
+each ray takes the kernel of the impact whose chord is its own water-equivalent length, its
+Compton, wide- and forward-Rayleigh parts scaled by its materials' scattering against water's and
+by how much less of each gets out of them, and is moved across the fan to the ray's own angle,
+column by column as boxes of the width the scatter landed with.
 """
 
 import TOML
@@ -326,97 +327,114 @@ end
 # =============================================================================
 # The kernels' geometry (BasisMonteCarlo's `shape_library.jl`)
 # =============================================================================
+#
+# Generic in the float type: the superposition runs these on the device, in the workspace's type.
 
 # The widest a kernel's ellipse is made (half-width, mm), and the distance from a kernel's focal spot
 # to its ellipse's axis: BasisMonteCarlo's KERNEL_MAX_HALF_WIDTH_MM and KERNEL_SOURCE_MM.
 const _KERNEL_MAX_HALF_WIDTH_MM = 350.0
 const _KERNEL_SOURCE_MM = 600.0
 
-_kernel_half_width(thickness_mm, aspect) = min(aspect * thickness_mm / 2, _KERNEL_MAX_HALF_WIDTH_MM)
+_kernel_half_width(thickness_mm, aspect) = min(aspect * thickness_mm / 2, oftype(thickness_mm, _KERNEL_MAX_HALF_WIDTH_MM))
 
-# The distance (mm) from the axis of the ellipse of semi-axes (b across, a along the view) at which
-# the kernel ray of `impact_fraction` passes it: that fraction of the half-width the tilted ray sees.
-function _kernel_offset(a, b, impact_fraction)
-    offset = impact_fraction * b
+# The half-width of the ellipse of semi-axes (b across, a along the view) across the kernel ray of
+# `impact_fraction`, which passes the axis at that fraction of it: the ray from the focal spot is
+# tilted by the offset it passes at, so the two are found together (a fixed point).
+function _kernel_seen_half_width(a, b, impact_fraction)
+    source = oftype(a, _KERNEL_SOURCE_MM)
+    h = b
     for _ in 1:30
-        s = clamp(offset / _KERNEL_SOURCE_MM, -1.0, 1.0)
-        next = impact_fraction * sqrt(b^2 * (1 - s^2) + a^2 * s^2)
+        s = clamp(impact_fraction * h / source, -one(a), one(a))
+        next = sqrt(b^2 * (1 - s^2) + a^2 * s^2)
         # BasisMonteCarlo runs 30 steps; the fixed point is reached to rounding long before
-        next == offset && return next
-        offset = next
+        next == h && return next
+        h = next
     end
-    return offset
+    return h
 end
 
-function _kernel_direction(a, b, impact_fraction)
-    s = _kernel_offset(a, b, impact_fraction) / _KERNEL_SOURCE_MM
-    return (s, sqrt(1 - s^2))
+# The distance (mm) from the axis at which the kernel ray of `impact_fraction` passes it.
+_kernel_offset(a, b, impact_fraction) = impact_fraction * _kernel_seen_half_width(a, b, impact_fraction)
+
+# The length (mm) of the kernel ray of impact `u` inside its ellipse: a line passing the centre of
+# an ellipse at `u` times its half-width `h` across the line crosses it for 2ab·√(1 − u²)/h.
+# `q = √(1 − u²)` is passed by `_kernel_impact`, exact near the edge where 1 − u² is not.
+_kernel_chord(a, b, u, q = sqrt(max(zero(u), 1 - u^2))) = 2a * b * q / _kernel_seen_half_width(a, b, u)
+
+# `(u, √(1 − u²))` for u = k·2⁻ⁿ, from 1 − u = (2ⁿ − k)·2⁻ⁿ, exact in any float type near the edge.
+@inline function _dyadic_impact(::Type{T}, k::Int, n::Int) where {T}
+    scale = T(2.0^-n)
+    w = T((1 << n) - k) * scale
+    return (T(k) * scale, sqrt(w * (2 - w)))
 end
 
-# Length (mm) of the ray from `origin` along `direction` (x–y plane) inside an ellipse.
-function _ellipse_chord(origin, direction, centre, semi_axes)
-    d = direction ./ hypot(direction[1], direction[2])
-    ox, oy = (origin[1] - centre[1]) / semi_axes[1], (origin[2] - centre[2]) / semi_axes[2]
-    ux, uy = d[1] / semi_axes[1], d[2] / semi_axes[2]
-    a = ux^2 + uy^2
-    b = 2 * (ox * ux + oy * uy)
-    c = ox^2 + oy^2 - 1
-    disc = b^2 - 4a * c
-    disc <= 0 && return 0.0
-    t1, t2 = (-b - sqrt(disc)) / (2a), (-b + sqrt(disc)) / (2a)
-    return max(0.0, t2) - max(0.0, t1)
-end
-
-_kernel_chord(a, b, impact_fraction) = _ellipse_chord(
-    (0.0, -_KERNEL_SOURCE_MM),
-    _kernel_direction(a, b, impact_fraction),
-    (0.0, 0.0),
-    (b, a),
-)
-
-# The impact fraction in (0, 1) whose kernel ray crosses the ellipse (b, a) for `length_mm`
-# (bisection, to 1e-9; 0 when the ray through the axis is no longer than that).
+# The impact fraction `u` in [0, 1) whose kernel ray crosses the ellipse (b, a) for `length_mm`,
+# and `√(1 − u²)`: bisection to 2⁻³⁰ on dyadic steps (BasisMonteCarlo's `kernel_impact`); 0 when
+# the ray through the axis (2a long) is no longer than that.
 function _kernel_impact(a, b, length_mm)
-    _kernel_chord(a, b, 0.0) <= length_mm && return 0.0
-    lo, hi = 0.0, 1.0
+    T = typeof(a)
+    2a <= length_mm && return (zero(T), one(T))
+    lo, hi = 0, 1 << 30
     for _ in 1:30
-        mid = (lo + hi) / 2
-        _kernel_chord(a, b, mid) > length_mm ? (lo = mid) : (hi = mid)
+        mid = (lo + hi) >> 1
+        u, q = _dyadic_impact(T, mid, 30)
+        _kernel_chord(a, b, u, q) > length_mm ? (lo = mid) : (hi = mid)
     end
-    return (lo + hi) / 2
+    return _dyadic_impact(T, lo + hi, 31)
 end
 
 # Linear interpolation weights of `x` on the sorted grid `xs`, clamped: (i, i + 1, weight of i + 1).
 function _bracket(xs, x)
-    x <= first(xs) && return (1, 1, 0.0)
-    x >= last(xs) && return (length(xs), length(xs), 0.0)
-    i = searchsortedlast(xs, x)
-    return (i, i + 1, (x - xs[i]) / (xs[i + 1] - xs[i]))
+    n = length(xs)
+    w = zero(promote_type(eltype(xs), typeof(x)))
+    x <= xs[1] && return (1, 1, w)
+    x >= xs[n] && return (n, n, w)
+    # the last i with xs[i] <= x
+    lo, hi = 1, n
+    while hi - lo > 1
+        mid = (lo + hi) >>> 1
+        xs[mid] <= x ? (lo = mid) : (hi = mid)
+    end
+    return (lo, lo + 1, (x - xs[lo]) / (xs[lo + 1] - xs[lo]))
+end
+
+# The width across the view each ray stands for, from where the rays pass the isocentre.
+_ray_widths(xs) = [
+    i == 1 ? xs[2] - xs[1] : i == length(xs) ? xs[end] - xs[end - 1] : (xs[i + 1] - xs[i - 1]) / 2
+        for i in eachindex(xs)
+]
+
+# `(sum, compensation) + x`, Kahan's: the device sums in single precision.
+@inline function _kahan(sum, c, x)
+    y = x - c
+    t = sum + y
+    return (t, (t - sum) - y)
 end
 
 # The water ellipse of one view: its chords across the view have the patient's water (the zeroth
 # moment of the rays' lengths across the fan), centre (the first) and spread (the second). A ray's
-# place across the view is where it passes the isocentre, `xs = sid · sin(angle)`. Returns the
-# semi-axes along the view (a) and across it (b) and the centre, or `nothing` for an empty view.
-function _view_ellipse(xs, lengths)
+# place across the view is where it passes the isocentre, `xs = sid · sin(angle)`, and the width
+# it stands for `dxs` (`_ray_widths(xs)`). Returns the semi-axes along the view (a) and across it
+# (b) and the centre; `b = 0` for an empty view.
+function _view_ellipse(xs, dxs, lengths)
     n = length(xs)
-    n < 2 && return nothing
-    m0 = 0.0
-    m1 = 0.0
+    R = promote_type(eltype(xs), eltype(lengths))
+    empty = (a = zero(R), b = zero(R), centre = zero(R))
+    n < 2 && return empty
+    m0, c0 = zero(R), zero(R)
+    m1, c1 = zero(R), zero(R)
     for i in 1:n
-        dx = i == 1 ? xs[2] - xs[1] : i == n ? xs[n] - xs[n - 1] : (xs[i + 1] - xs[i - 1]) / 2
-        m0 += lengths[i] * dx
-        m1 += xs[i] * lengths[i] * dx
+        m0, c0 = _kahan(m0, c0, lengths[i] * dxs[i])
+        m1, c1 = _kahan(m1, c1, xs[i] * lengths[i] * dxs[i])
     end
-    m0 > 0 || return nothing
+    m0 > 0 || return empty
     x0 = m1 / m0
-    spread = 0.0
+    spread, c2 = zero(R), zero(R)
     for i in 1:n
-        dx = i == 1 ? xs[2] - xs[1] : i == n ? xs[n] - xs[n - 1] : (xs[i + 1] - xs[i - 1]) / 2
-        spread += (xs[i] - x0)^2 * lengths[i] * dx
+        spread, c2 = _kahan(spread, c2, (xs[i] - x0)^2 * lengths[i] * dxs[i])
     end
     b = 2 * sqrt(spread / m0)
-    b > 0 || return nothing
+    b > 0 || return empty
     return (a = m0 / (π * b), b = b, centre = x0)
 end
 
@@ -453,227 +471,366 @@ function _rayleigh_bins(k::ScatterKernels)
     return (forward = forward, wide = setdiff(eachindex(upper), forward))
 end
 
+
 # =============================================================================
-# The superposition (BasisMonteCarlo's `library_scan`, one view)
+# The superposition (BasisMonteCarlo's `library_scan`), every coarse ray at once
 # =============================================================================
-
-# Scratch of one task: the per-ray weights by library energy, process and channel, the weights of
-# one corner of the grid, that corner's mixed kernel and column moments, how much of each process
-# gets out of the ray's materials, and the scatter of the rays relative to their own row.
-struct _SuperposeScratch
-    W0::Array{Float64, 3}
-    Wc::Matrix{Float32}
-    part::Matrix{Float32}
-    mom::Matrix{Float32}
-    escape::Matrix{Float64}
-    acc::Array{Float64, 3}
-end
-
-function _SuperposeScratch(k::ScatterKernels, n_channels::Int)
-    nc, nr = length(k.column_edges_deg) - 1, length(k.row_edges_mm) - 1
-    nE = length(k.energies_keV)
-    return _SuperposeScratch(
-        zeros(nE, 3, n_channels),
-        zeros(Float32, 4nE, n_channels),
-        zeros(Float32, nr * nc, n_channels),
-        zeros(Float32, 3nc, n_channels),
-        ones(nE, 2),
-        zeros(nr, nc, n_channels),
-    )
-end
-
-# The rays of one view (one z group of it), across the fan in order of angle: `angle_deg`, the
-# water-equivalent length `wet_mm`, the length `ellipse_mm` the view's ellipse is measured from
-# (the water-equivalent length or the outline's), the photons of each spectral energy `spectrum`
-# (energy × ray: the source spectrum through the bowtie, times the ray's share of a library bin),
-# the materials' ratios to water by process at each spectral energy (`compton`, `rayleigh_wide`,
-# `rayleigh_forward`, energy × ray; `nothing` for water) and `delta_mu_per_mm` (band × ray, or
-# `nothing`).
 #
-# Adds the view's scatter to `out[column, row, channel]` (the library's bins): each channel's
-# weight of a photon of each spectral energy is `channels[energy, channel]`, each library row's
-# share of the rays' beam `row_share`. `shares[energy]` places each spectral energy between the
-# library's (`_bracket`). Returns the number of rays clamped onto the library's grid.
-function _superpose!(
-        out::AbstractArray{Float64, 3},
-        k::ScatterKernels,
-        rays,
-        row_share::AbstractVector{Float64},
-        channels::AbstractMatrix{Float64},
-        shares::AbstractVector,
-        scratch::_SuperposeScratch,
-    )
-    cols = k.column_edges_deg
-    nc, nr = length(cols) - 1, length(k.row_edges_mm) - 1
-    nE = length(k.energies_keV)
-    nu, na = length(k.impact_fractions), length(k.aspects)
-    n_ch = size(channels, 2)
-    sid = k.source_to_isocenter_mm
-    w_col = cols[2] - cols[1]
-    mid = (nr + 1) ÷ 2
-    L = nc * nr
-    block = L * nE * 4
-    mblock = 3nc * nE * 4
-    kernels, moments = vec(k.kernels), vec(k.moments)
-    log_aspects = log.(k.aspects)
-    W0, Wc, part, mom, escape, acc = scratch.W0, scratch.Wc, scratch.part, scratch.mom, scratch.escape, scratch.acc
-    nbands = size(k.paths, 1)
-    T_min, T_max = first(k.thicknesses_mm), last(k.thicknesses_mm)
-    u_last = last(k.impact_fractions)
-    # water: every process weighed alike, so the kernel of all the scatter (process 4) serves
-    plain = rays.compton === nothing && rays.rayleigh_wide === nothing &&
-        rays.rayleigh_forward === nothing && rays.delta_mu_per_mm === nothing
-    slots = plain ? ((3nE + 1):(4nE)) : (1:(3nE))
+# Each step is one kernel over all the coarse views and groups, one thread per output, on the
+# backend of its arrays (the device, or Julia's threads on the CPU), in the workspace's float type.
+# A ray is `[column, group, view]` of the coarse rays, linearly; a view-group is `[group, view]`.
+#
+# 1. `_scatter_ellipses!`: each view-group's water ellipse, from its rays' lengths.
+# 2. `_scatter_ray_shapes!`: each ray's own ellipse (thickness, aspect), its impact, and how much of
+#    the nearest kernels it takes.
+# 3. `_scatter_corners!`: for each of the 8 kernels of the grid around a ray (its corners) and each
+#    channel: the weights of the kernel's energies and processes (the ray's photons and how much
+#    less of each process's scatter gets out of its materials than of the kernel's water), and,
+#    for each of the kernel's columns, where it lands once moved to the ray's angle: a box of the
+#    width the scatter landed with (degrees from a library column's left edge, so that single
+#    precision keeps the slivers of it a column takes).
+# 4. `_scatter_deposit!`: each library bin (row relative to the rays' own, column, channel) of each
+#    view-group gathers the boxes over it, each the kernel's column mixed by the corner's weights.
+# 5. `_scatter_rows!`: each library bin of each view, the groups' scatter laid over the rows of
+#    their beams.
 
-    xs = [sid * sind(γ) for γ in rays.angle_deg]
-    ellipse = _view_ellipse(xs, rays.ellipse_mm)
-    ellipse === nothing && return 0
-    a, b, x0 = ellipse.a, ellipse.b, ellipse.centre
-    clamped = 0
-    fill!(acc, 0.0)
+# `a + b` and its rounding error, exactly (Knuth's two-sum).
+@inline function _two_sum(a, b)
+    s = a + b
+    bb = s - a
+    return (s, (a - (s - bb)) + (b - bb))
+end
 
-    for i in eachindex(rays.angle_deg)
-        wet = rays.wet_mm[i]
-        wet > 0 || continue
-        γ = rays.angle_deg[i]
-
-        # The ray's offset from the ellipse's axis, perpendicular to it; the offset whose kernel ray
-        # crosses the ray's own water-equivalent length; a ray longer than the ellipse is thick
-        # gets an ellipse as thick as itself
-        offset = sid * sind(γ) - x0 * cosd(γ)
-        side = offset >= 0 ? 1.0 : -1.0
-        a_ray = max(a, wet / 2)
-        u = _kernel_impact(a_ray, b, wet) * side
-        aspect = b / a_ray
-        T_ray = 2a_ray
-        if !(T_min <= T_ray <= T_max) || !(first(k.aspects) <= aspect <= last(k.aspects))
-            clamped += 1
+# `ellipse[(a, b, centre), group, view]` from `lengths[column, group, view]`, the rays passing the
+# isocentre at `xs` (mm), each standing for a width `dxs`.
+function _scatter_ellipses!(
+        ellipse::AbstractArray{T, 3},
+        xs::AbstractVector,
+        dxs::AbstractVector,
+        lengths::AbstractArray{T, 3},
+    ) where {T}
+    n_cc = size(lengths, 1)
+    let ellipse = ellipse, xs = xs, dxs = dxs, lengths = lengths, n_cc = n_cc
+        _foreachindex(1:(size(lengths, 2) * size(lengths, 3)), AK.get_backend(ellipse)) do gv
+            e = _view_ellipse(xs, dxs, view(lengths, ((gv - 1) * n_cc + 1):(gv * n_cc)))
+            ellipse[3gv - 2] = e.a
+            ellipse[3gv - 1] = e.b
+            ellipse[3gv] = e.centre
         end
+    end
+    return ellipse
+end
 
-        # Below the grid's thinnest ellipse the thinnest kernel stands in, scaled by the water the
-        # ray crosses against what that kernel's own ray crosses
-        amount = 1.0
-        if T_ray < T_min
-            r_node = clamp(aspect, first(k.aspects), last(k.aspects))
-            chord = _kernel_chord(T_min / 2, _kernel_half_width(T_min, r_node), abs(u))
-            amount = min(1.0, wet / max(chord, 1.0))
-        end
+# `shapes[(thickness, aspect, impact, side, weight), ray]`: each ray's own ellipse (as thick as
+# the view's, or as the ray's water-equivalent length `wet` if longer), its signed impact, the side
+# of the axis it passes on, and the weight of the kernels standing in for it (0: no scatter).
+# `clamped[ray]` is 1 for a ray outside the library's grids. `grid` = (thinnest, thickest,
+# narrowest, widest, last impact).
+function _scatter_ray_shapes!(
+        shapes::AbstractMatrix{T},
+        clamped::AbstractArray{Int32},
+        wet::AbstractArray{T, 3},
+        ellipse::AbstractArray{T, 3},
+        xs::AbstractVector{T},
+        angle_deg::AbstractVector{T},
+        grid::NTuple{5, T},
+    ) where {T}
+    n_cc = size(wet, 1)
+    let shapes = shapes, clamped = clamped, wet = wet, ellipse = ellipse, xs = xs, angle_deg = angle_deg,
+            grid = grid, n_cc = n_cc
+        AK.foreachindex(wet) do ray
+            T_min, T_max, r_min, r_max, u_last = grid
+            o = one(T)
+            q = ray - 1
+            i = q % n_cc + 1
+            gv = q ÷ n_cc
+            L = wet[ray]
+            a, b, x0 = ellipse[3gv + 1], ellipse[3gv + 2], ellipse[3gv + 3]
+            thickness, aspect, u, side, weight = zero(T), zero(T), zero(T), o, zero(T)
+            outside = Int32(0)
+            if L > 0 && b > 0
+                # The ray's offset from the ellipse's axis, perpendicular to it; the impact whose
+                # kernel ray crosses the ray's own water-equivalent length; a ray longer than the
+                # ellipse is thick gets an ellipse as thick as itself
+                offset = xs[i] - x0 * cos(deg2rad(angle_deg[i]))
+                side = offset >= 0 ? o : -o
+                a_ray = max(a, L / 2)
+                u, q = _kernel_impact(a_ray, b, L)
+                u *= side
+                aspect = b / a_ray
+                thickness = 2a_ray
+                inside = T_min <= thickness <= T_max && r_min <= aspect <= r_max
+                outside = inside ? Int32(0) : Int32(1)
 
-        # The spectrum and the ray's ratios at each of its energies, gathered onto the library's
-        # energies, by process and channel
-        fill!(W0, 0.0)
-        for e in axes(rays.spectrum, 1)
-            s = rays.spectrum[e, i]
-            s > 0 || continue
-            g1, g2, t = shares[e]
-            fc = rays.compton === nothing ? 1.0 : rays.compton[e, i]
-            fw = rays.rayleigh_wide === nothing ? 1.0 : rays.rayleigh_wide[e, i]
-            ff = rays.rayleigh_forward === nothing ? 1.0 : rays.rayleigh_forward[e, i]
-            for ch in 1:n_ch
-                base = s * channels[e, ch]
-                base == 0 && continue
-                for (g, wt) in ((g1, 1 - t), (g2, t))
-                    wt == 0 && continue
-                    W0[g, 1, ch] += base * wt * fc
-                    W0[g, 2, ch] += base * wt * fw
-                    W0[g, 3, ch] += base * wt * ff
+                # Below the grid's thinnest ellipse the thinnest kernel stands in, scaled by the
+                # water the ray crosses against what that kernel's own ray crosses
+                amount = o
+                if thickness < T_min
+                    r_node = clamp(aspect, r_min, r_max)
+                    chord = _kernel_chord(T_min / 2, _kernel_half_width(T_min, r_node), abs(u), q)
+                    amount = min(o, L / max(chord, o))
                 end
+                graze = abs(u) > u_last ? q / sqrt(o - u_last^2) : o
+                weight = graze * amount
             end
+            shapes[1, ray] = thickness
+            shapes[2, ray] = aspect
+            shapes[3, ray] = u
+            shapes[4, ray] = side
+            shapes[5, ray] = weight
+            clamped[ray] = outside
         end
+    end
+    return shapes
+end
 
-        # The grid's kernels around the ray, each moved so that its own ray lies under this one
-        # before they are blended
-        iT = _bracket(k.thicknesses_mm, T_ray)
-        ir = _bracket(log_aspects, log(aspect))
-        iu = _bracket(k.impact_fractions, abs(u))
-        graze = abs(u) > u_last ? sqrt(max(0.0, 1 - min(abs(u), 1.0)^2)) / sqrt(1 - u_last^2) : 1.0
-        for (tT, wT) in ((iT[1], 1 - iT[3]), (iT[2], iT[3])),
-                (tr, wr) in ((ir[1], 1 - ir[3]), (ir[2], ir[3])),
-                (tu, wu) in ((iu[1], 1 - iu[3]), (iu[2], iu[3]))
+# For each channel `ch <= n_used`, corner `c` (0–7: bits thickness, aspect, impact) and ray:
+# `corner[c, ray]`, the kernel's place in the grid (0-based); `factor[ch, c, ray]`, its weight
+# (0: none); `mix[slot, ch, c, ray]`, the weights of its library energies and processes (`3nE`
+# slots of Compton, wide and forward Rayleigh, or for a ray of water `nE` slots of all the
+# scatter); `boxes[(edge, lo, hi), column, ch, c, ray]`, where each of its columns (in the order
+# of the ray's side) lands, from the left edge of library column `edge` (degrees; `lo = hi = Inf`
+# for none); `window[(min, max), ch, c, ray]`, the offsets of the library columns those boxes
+# reach from their own (one wider each side, for rounding).
+#
+# The library's columns are uniform, `lib.column_width` wide. `angle[(hi, lo), column]` and `node[(hi, lo), kernel]` are the
+# coarse rays' angles and the kernels' own rays' (degrees, from the axis on their side), each the
+# pair of floats that sums to its value: their difference is kept to the rounding of a column's
+# width, not of the fan's.
+#
+# `weights[energy, process, ch, ray]` are the ray's photons by library energy, process and
+# channel; `dmu[band, ray]` its materials' attenuation against water's (not read for a ray of
+# water, `plain[ray]`).
+function _scatter_corners!(
+        corner::AbstractMatrix{Int32},
+        factor::AbstractArray{T, 3},
+        mix::AbstractArray{T, 4},
+        boxes::AbstractArray{T, 5},
+        window::AbstractArray{Int32, 4},
+        shapes::AbstractMatrix{T},
+        weights::AbstractArray{T, 4},
+        plain::AbstractVector{Bool},
+        dmu::AbstractMatrix{T},
+        angle::AbstractMatrix{T},
+        lib,
+        n_used::Int,
+    ) where {T}
+    nE, n_ch = size(weights, 1), size(weights, 3)
+    nc = length(lib.cols) - 1
+    n_cc = size(angle, 2)
+    nu, na = length(lib.impacts), length(lib.log_aspects)
+    nb = size(dmu, 1)
+    let corner = corner, factor = factor, mix = mix, boxes = boxes, window = window, shapes = shapes,
+            weights = weights, plain = plain, dmu = dmu, angle = angle,
+            moments = lib.moments, paths = lib.paths, node = lib.node_deg, thick = lib.thicknesses,
+            log_r = lib.log_aspects, impacts = lib.impacts, w_col = lib.column_width,
+            nE = nE, n_ch = n_ch, nc = nc, n_cc = n_cc, nu = nu, na = na, nb = nb, n_used = n_used
+        AK.foreachindex(factor) do idx
+            o = one(T)
+            q = idx - 1
+            ch = q % n_ch + 1
+            c = (q ÷ n_ch) % 8
+            ray = q ÷ (8n_ch) + 1
+            weight = shapes[5, ray]
+            factor[idx] = zero(T)
+            window[1, ch, c + 1, ray] = Int32(1)
+            window[2, ch, c + 1, ray] = Int32(0)
+            @inbounds if ch <= n_used && weight > 0
+                u = shapes[3, ray]
+                iT = _bracket(thick, shapes[1, ray])
+                ir = _bracket(log_r, log(shapes[2, ray]))
+                iu = _bracket(impacts, abs(u))
+                bT, br, bu = (c >> 2) & 1, (c >> 1) & 1, c & 1
+                tT, wT = bT == 0 ? (iT[1], o - iT[3]) : (iT[2], iT[3])
+                tr, wr = br == 0 ? (ir[1], o - ir[3]) : (ir[2], ir[3])
+                tu, wu = bu == 0 ? (iu[1], o - iu[3]) : (iu[2], iu[3])
+                wg = wT * wr * wu
+                if wg != 0
+                    k = ((tT - 1) * na + (tr - 1)) * nu + (tu - 1)
+                    corner[c + 1, ray] = Int32(k)
 
-            wg = wT * wr * wu
-            wg == 0 && continue
-            corner = ((tT - 1) * na + (tr - 1)) * nu + (tu - 1)
-
-            # this corner's weights: how much less of each process's scatter gets out of the ray's
-            # materials than of the kernel's water
-            if plain
-                for ch in 1:n_ch, g in 1:nE
-                    Wc[3nE + g, ch] = Float32(W0[g, 1, ch])
-                end
-            else
-                if rays.delta_mu_per_mm === nothing
-                    fill!(escape, 1.0)
-                else
-                    for pp in 1:2, g in 1:nE
-                        acc_path = 0.0
-                        for band in 1:nbands
-                            acc_path += k.paths[band, pp, g, tu, tr, tT] * rays.delta_mu_per_mm[band, i]
+                    # this corner's weights: how much less of each process's scatter gets out of the
+                    # ray's materials than of the kernel's water
+                    water = plain[ray]
+                    if water
+                        for g in 1:nE
+                            mix[g, ch, c + 1, ray] = weights[g, 1, ch, ray]
                         end
-                        escape[g, pp] = exp(-acc_path)
+                    else
+                        for pp in 1:2, g in 1:nE
+                            path = zero(T)
+                            base = nb * (pp - 1 + 2 * (g - 1 + nE * k))
+                            for band in 1:nb
+                                path += paths[base + band] * dmu[band, ray]
+                            end
+                            escape = exp(-path)
+                            if pp == 1
+                                mix[g, ch, c + 1, ray] = weights[g, 1, ch, ray] * escape
+                            else
+                                mix[g + nE, ch, c + 1, ray] = weights[g, 2, ch, ray] * escape
+                                mix[g + 2nE, ch, c + 1, ray] = weights[g, 3, ch, ray] * escape
+                            end
+                        end
                     end
-                end
-                for ch in 1:n_ch, p in 1:3, g in 1:nE
-                    Wc[g + (p - 1) * nE, ch] = Float32(W0[g, p, ch] * escape[g, min(p, 2)])
-                end
-            end
+                    slot0, n_slots = water ? (3nE, nE) : (0, 3nE)
 
-            # the mixed kernel and its column moments
-            fill!(part, 0.0f0)
-            fill!(mom, 0.0f0)
-            for j in slots
-                base = corner * block + (j - 1) * L
-                mbase = corner * mblock + (j - 1) * 3nc
-                for ch in 1:n_ch
-                    w = Wc[j, ch]
-                    w == 0 && continue
-                    @inbounds @simd for q in 1:L
-                        part[q, ch] += w * kernels[base + q]
+                    # The ray's angle from this kernel's own ray, seen from this scanner, in whole
+                    # columns and the rest
+                    side = shapes[4, ray]
+                    i = (ray - 1) % n_cc + 1
+                    s_hi, s_err = _two_sum(angle[1, i], -side * node[1, k + 1])
+                    s_lo = s_err + (angle[2, i] - side * node[2, k + 1])
+                    whole = round(s_hi / w_col)
+                    rest = s_hi - whole * w_col
+                    mirror = u < 0
+                    mbase = 3nc * 4nE * k
+                    d_lo, d_hi = typemax(Int32), typemin(Int32)
+
+                    # Each column moved by the ray's angle from the kernel's own, as what it holds:
+                    # the scatter centred where it landed in the column and spread as it landed, a
+                    # box of that width (the mirror image for a ray left of the axis)
+                    for ii in 1:nc
+                        src = mirror ? nc + 1 - ii : ii
+                        m0, m1, m2 = zero(T), zero(T), zero(T)
+                        for j in 1:n_slots
+                            w = mix[j, ch, c + 1, ray]
+                            w == 0 && continue
+                            b = mbase + 3nc * (slot0 + j - 1) + src
+                            m0 += w * moments[b]
+                            m1 += w * moments[b + nc]
+                            m2 += w * moments[b + 2nc]
+                        end
+                        edge, lo, hi = zero(T), T(Inf), T(Inf)
+                        if m0 > 0
+                            centre = (mirror ? -m1 : m1) / m0
+                            spread = sqrt(max(m2 / m0 - centre^2, zero(T)))
+                            # the box's centre from the left edge of column `ii + whole`
+                            x = ((w_col / 2 + centre) + rest) + s_lo
+                            half = min(sqrt(T(3)) * spread, w_col / 2)
+                            lo, hi = x - half, x + half
+                            edge = T(ii) + whole
+                            first_col = max(1, unsafe_trunc(Int, edge + floor(lo / w_col)))
+                            last_col = min(nc, unsafe_trunc(Int, edge + floor(hi / w_col)))
+                            if first_col <= last_col
+                                d_lo = min(d_lo, Int32(first_col - ii - 1))
+                                d_hi = max(d_hi, Int32(last_col - ii + 1))
+                            end
+                        end
+                        boxes[1, ii, ch, c + 1, ray] = edge
+                        boxes[2, ii, ch, c + 1, ray] = lo
+                        boxes[3, ii, ch, c + 1, ray] = hi
                     end
-                    @inbounds @simd for q in 1:(3nc)
-                        mom[q, ch] += w * moments[mbase + q]
-                    end
-                end
-            end
-
-            # this kernel's own ray, seen from this scanner
-            node_angle = asind(clamp(k.node_offsets_mm[tu, tr, tT] / sid, -1.0, 1.0)) * side
-            factor = wg * graze * amount
-
-            # Each column moved by the ray's angle from the kernel's own, as what it holds: the
-            # scatter centred where it landed in the column and spread as it landed, a box of that
-            # width laid over the library's columns (the mirror image for a ray left of the axis)
-            for ch in 1:n_ch, ii in 1:nc
-                src = u < 0 ? nc + 1 - ii : ii
-                m0 = Float64(mom[src, ch])
-                m0 > 0 || continue
-                m1 = (u < 0 ? -1.0 : 1.0) * Float64(mom[nc + src, ch])
-                m2 = Float64(mom[2nc + src, ch])
-                centre = m1 / m0
-                spread = sqrt(max(m2 / m0 - centre^2, 0.0))
-                x = cols[ii] + w_col / 2 + centre + (γ - node_angle)
-                half = min(sqrt(3) * spread, w_col / 2)
-                lo, hi = x - half, x + half
-                for ci in max(1, searchsortedlast(cols, lo)):min(nc, searchsortedlast(cols, hi))
-                    share = hi > lo ? (min(hi, cols[ci + 1]) - max(lo, cols[ci])) / (hi - lo) : 1.0
-                    share > 0 || continue
-                    f = factor * share
-                    q0 = (src - 1) * nr
-                    @inbounds @simd for dr in 1:nr
-                        acc[dr, ci, ch] += f * part[q0 + dr, ch]
+                    if d_lo <= d_hi
+                        window[1, ch, c + 1, ray] = d_lo
+                        window[2, ch, c + 1, ray] = d_hi
+                        factor[idx] = wg * weight
                     end
                 end
             end
         end
     end
+    return factor
+end
 
-    # the rays' scatter, relative to their own row, laid over each row of their beam
-    for r0 in eachindex(row_share)
-        share = row_share[r0]
-        share > 0 || continue
-        for ch in 1:n_ch, ci in 1:nc, ri in max(1, r0 - mid + 1):min(nr, r0 - mid + nr)
-            @inbounds out[ci, ri, ch] += share * acc[ri - r0 + mid, ci, ch]
+# `rows[row, column, ch, group, view]`: the scatter of a view-group's rays relative to their own
+# row, each library bin gathering the corners' boxes over its column.
+function _scatter_deposit!(
+        rows::AbstractArray{T, 5},
+        corner::AbstractMatrix{Int32},
+        factor::AbstractArray{T, 3},
+        mix::AbstractArray{T, 4},
+        boxes::AbstractArray{T, 5},
+        window::AbstractArray{Int32, 4},
+        shapes::AbstractMatrix{T},
+        plain::AbstractVector{Bool},
+        lib,
+        n_cc::Int,
+        n_used::Int,
+    ) where {T}
+    nr, nc, n_ch = size(rows, 1), size(rows, 2), size(rows, 3)
+    nE = size(mix, 1) ÷ 3
+    L = nr * nc
+    block = L * 4nE
+    lanes = 32 * cld(nr, 32)
+    let rows = rows, corner = corner, factor = factor, mix = mix, boxes = boxes, window = window,
+            shapes = shapes, plain = plain, kernels = lib.kernels, w_col = lib.column_width,
+            nr = Int32(nr), nc = Int32(nc), n_ch = Int32(n_ch), nE = Int32(nE), L = Int32(L), block = Int32(block),
+            n_cc = Int32(n_cc), n_used = Int32(n_used), lanes = Int32(lanes)
+        # the rows in whole warps: a warp is one bin's column, all its threads taking the same branches
+        _foreachindex(1:(lanes * nc * n_ch * size(rows, 4) * size(rows, 5)), AK.get_backend(rows)) do idx
+            q = Int32(idx - 1)
+            dr = q % lanes + Int32(1)
+            dr > nr && return
+            q ÷= lanes
+            ci = q % nc + Int32(1)
+            q ÷= nc
+            ch = q % n_ch + Int32(1)
+            gv = q ÷ n_ch
+            acc, comp = zero(T), zero(T)
+            @inbounds if ch <= n_used
+                for i in Int32(1):n_cc
+                    ray = gv * n_cc + i
+                    mirror = shapes[3, ray] < 0
+                    slot0, n_slots = plain[ray] ? (Int32(3) * nE, nE) : (Int32(0), Int32(3) * nE)
+                    for c in Int32(1):Int32(8)
+                        f = factor[ch, c, ray]
+                        f == 0 && continue
+                        base = corner[c, ray] * block + dr + slot0 * L
+                        for ii in max(Int32(1), ci - window[2, ch, c, ray]):min(nc, ci - window[1, ch, c, ray])
+                            # the box from the left edge of this bin's column, and its share of it
+                            off = w_col * (boxes[1, ii, ch, c, ray] - T(ci))
+                            lo, hi = boxes[2, ii, ch, c, ray], boxes[3, ii, ch, c, ray]
+                            l, h = off + lo, off + hi
+                            share = hi > lo ? (min(h, w_col) - max(l, zero(T))) / (hi - lo) :
+                                (zero(T) <= l < w_col ? one(T) : zero(T))
+                            share > 0 || continue
+                            src = mirror ? nc + Int32(1) - ii : ii
+                            kq = base + (src - Int32(1)) * nr
+                            s = zero(T)
+                            for j in Int32(1):n_slots
+                                s += mix[j, ch, c, ray] * kernels[kq + (j - Int32(1)) * L]
+                            end
+                            acc, comp = _kahan(acc, comp, f * share * s)
+                        end
+                    end
+                end
+            end
+            rows[dr + nr * (ci - Int32(1) + nc * (ch - Int32(1) + n_ch * gv))] = acc
         end
     end
-    return clamped
+    return rows
+end
+
+# `out[column, row, ch, view]`: the scatter of each view, its groups' `rows` laid over each row of
+# their beams (`row_share[row, group]`); with `combine`, the geometric mean of that and what `out`
+# holds.
+function _scatter_rows!(
+        out::AbstractArray{T, 4},
+        rows::AbstractArray{T, 5},
+        row_share::AbstractMatrix{T};
+        combine::Bool,
+    ) where {T}
+    nc, nr, n_ch = size(out, 1), size(out, 2), size(out, 3)
+    n_g = size(rows, 4)
+    let out = out, rows = rows, row_share = row_share, nc = nc, nr = nr, n_ch = n_ch, n_g = n_g,
+            mid = (nr + 1) ÷ 2, combine = combine
+        AK.foreachindex(out) do idx
+            q = idx - 1
+            ci = q % nc + 1
+            q ÷= nc
+            ri = q % nr + 1
+            q ÷= nr
+            ch = q % n_ch + 1
+            v = q ÷ n_ch + 1
+            s = zero(T)
+            for g in 1:n_g, r0 in 1:nr
+                share = row_share[r0, g]
+                dr = ri - r0 + mid
+                share > 0 && 1 <= dr <= nr || continue
+                s += share * rows[dr, ci, ch, g, v]
+            end
+            out[idx] = combine ? sqrt(out[idx] * s) : s
+        end
+    end
+    return out
 end

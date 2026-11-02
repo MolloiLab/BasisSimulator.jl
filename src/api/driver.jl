@@ -312,7 +312,7 @@ function simulate!(
             _reduce_footprints!(plan.measured, plan, pcct_sino.bins[b]; i0 = I0, plane = b, accumulate = b > 1)
         end
         photons = compute_detector_I0(geom, protocol, sum(weights))
-        _scatter_estimate!(plan, Array(plan.measured) ./ photons)
+        _scatter_estimate!(plan, photons)
         _pcct_scatter!(pcct_sino.bins, I0, plan, photons, -1)
     end
 
@@ -528,7 +528,7 @@ function simulate!(
     end
     if has_scatter
         _reduce_footprints!(ws.scatter.measured, ws.scatter, ws.sinogram)
-        _scatter_estimate!(ws.scatter, Array(ws.scatter.measured))
+        _scatter_estimate!(ws.scatter)
         _subtract_eict_scatter!(ws.sinogram, ws.scatter, I0v)
     end
 
