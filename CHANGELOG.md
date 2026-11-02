@@ -113,8 +113,8 @@ onward they are written by hand, and releases are cut by hand — see
   Against BasisMonteCarlo's own `library_scan` on the same rays and data (SOMATOM Force, Aquilion ONE; 32 cm cylinder,
   36 × 26 cm ellipse) the superposition agrees to 1e-6 per bin; against `library_scan` on exact rays every 0.05° to
   ≤ 1.7 % per bin (4 % at the patient-edge peak of a 20 cm cylinder on the Aquilion), 0.9 % at the centre.
-- **The scatter correction estimates from the data alone.** The energy integrator's DAS (always) and
-  `PCCTScanner(; scatter_correction = true)` measure every coarse ray's water-equivalent length from its measured
+- **The scatter correction estimates from the data alone.** The energy integrator's DAS and the photon counter
+  (`scatter_correction = true` on either) measure every coarse ray's water-equivalent length from its measured
   transmission (scatter included, inverted through the ray's spectrum), superpose the scatter of that water patient
   (`view = :wet`), subtract it and measure again (two passes). Before, the energy integrator subtracted exactly the
   scatter it had injected and the photon counter re-ran the analytic model; now the correction is realistic, not
@@ -128,8 +128,21 @@ onward they are written by hand, and releases are cut by hand — see
   `SCATTER_KERNEL_ARTIFACTS`), or from a local library with `path`. Outside the library's grid (thickness
   140–500 mm, aspect 0.6–2.5, 20–140 keV) the nearest kernels stand in, with a one-time warning; an ellipse thinner
   than 140 mm takes the thinnest kernel scaled by the water its ray crosses.
-- **`SimOptions(; use_scatter = false)` by default** (was `true`): the kernels are a download. The docs notebooks of
-  the clinical scanners set `use_scatter = true`. `SimOptions(o; kwargs...)` is the copy constructor.
+- **Scatter is on by default: `SimOptions(; use_scatter = true)`**, as on a real scanner. The clinical constants name
+  their kernels; a scanner built from scratch names none (`scatter_kernels = ""`), so simulating it now throws an
+  `ArgumentError` unless its options say `use_scatter = false` (or it starts from a constant, `EICTScanner(SOMATOM_FORCE;
+  …)`). Calibration scans (`calibrate_flat_field`, `calibrate_pileup`) still run without scatter. Until the kernels'
+  release, load a local copy of the library with `scatter_kernels(entry; path = "…/<entry>.toml")` before the first
+  scan. `SimOptions(o; kwargs...)` is the copy constructor.
+- **`EICTScanner(; scatter_correction = true)`**, the same field, meaning and default as `PCCTScanner`'s: the DAS
+  subtracts the scatter it estimates from the measured signal, and `false` leaves the scatter in the data (before, an
+  energy integrator always corrected). **`PCCTScanner`'s `scatter_correction` defaults to `true`** (was `false`).
+  `EICTWorkspace` has a `scatter_correction` field. `PCCTScanner` rejects negative `gain_spread` and
+  `threshold_spread_keV`, as `EICTScanner` does its spreads.
+- **Docs:** notebooks 10 (titanium implant) and 11 (helical), whose generic 540/950 mm scanners have no scatter
+  kernels, scan variants of `REVOLUTION_APEX` at its 625.6/1100 mm, keeping their detectors' rows and columns; the
+  getting-started photon-counting scanner is `PCCTScanner(NAEOTOM_ALPHA; …)`, its narrowed, unbinned, ideal detector
+  kept. The notebooks drop `use_scatter = true`; notebook 06 (CatSim) keeps `use_scatter = false`.
 - **Removed:** `ScatterModel`, `geometry_aware_scatter_model`, `create_scatter_kernel_spatial`,
   `estimate_phantom_diameter_cm`, `estimate_scatter_field!`, `compute_scatter_energy_weights`, `inject_scatter!`,
   `inject_scatter_bins!`, `compute_scatter_bin_weights` and the `SCATTER_REF_*` constants; the `phantom` keyword of

@@ -18,13 +18,8 @@ This file provides two complementary abstractions:
 
 # Workflow
 ```julia
-# Define a scanner with physical parameters
-scanner = EICTScanner(
-    source_to_isocenter = 541.0,  # mm
-    source_to_detector = 949.0,   # mm
-    detector_rows = 64,
-    detector_cols = 900,
-)
+# A clinical scanner, or a variant of one (it keeps its scatter kernels)
+scanner = EICTScanner(SOMATOM_FORCE; detector_rows = 64)
 
 # Create computed geometry for simulation
 geom = CTGeometry(scanner; n_angles = 360, fov_cm = 35.0)
@@ -90,6 +85,11 @@ the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 - `fill_factor_col::T`: Active area fraction (column direction, 0-1) — `EICTScanner` only
 - `detection_gain::T`: Conversion gain (electrons/keV) — `EICTScanner` only
 - `electronic_noise::T`: Electronic noise std dev (electrons) — `EICTScanner` only
+
+# Scatter and Defects (both families, the same names and defaults)
+- `scatter_kernels::String`: the scanner's entry of the Geant4 scatter library (`""` = none)
+- `scatter_correction::Bool`: subtract the scatter estimated from the measured data (`true`)
+- `gain_spread::T`, `defect_seed::Int`: the dexels' gain spread (0) and their fixed pattern (1)
 
 # Construction
 ```julia
@@ -163,7 +163,8 @@ end
 
 An energy-integrating (scintillator) CT scanner: the shared [`ScannerGeometry`](@ref)
 plus the scintillator detection model (material, depth, fill factors, detection
-gain, electronic noise).  Construct with [`EICTScanner(; kwargs...)`](@ref).
+gain, electronic noise), its scatter correction and its dexels' defects.  Construct with
+[`EICTScanner(; kwargs...)`](@ref).
 """
 struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     geometry::ScannerGeometry{T}
@@ -173,6 +174,7 @@ struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     fill_factor_col::T          # 0-1
     detection_gain::T           # electrons/keV
     electronic_noise::T         # electrons
+    scatter_correction::Bool    # subtract the scatter estimated from the measured signal
     gain_spread::T              # relative σ of the dexels' gains (0 = ideal)
     offset_spread_keV::T        # σ of the dexels' offsets, keV per reading (0 = ideal)
     defect_seed::Int            # the fixed pattern of this detector's dexels
@@ -248,18 +250,24 @@ Energy-integrating scanner.  Geometry keywords as [`Scanner`](@ref) (distances i
 mm, detector array, focal spot, gantry, filtration, `detector_shape`) plus the
 scintillator model: `detector_material = :lumex`, `detector_depth = 3.0`,
 `fill_factor_row = 0.9`, `fill_factor_col = 0.9` (each in (0, 1]), `detection_gain = 15.0`
-(electrons/keV), `electronic_noise = 5000.0` (electrons); and the dexels' defects,
-`gain_spread = 0.0` (relative σ), `offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by
-[`calibrate_flat_field`](@ref)). The ideal detector is a copy with the spreads at zero.
+(electrons/keV), `electronic_noise = 5000.0` (electrons); the detector-model toggle
+`scatter_correction = true`; and the dexels' defects, `gain_spread = 0.0` (relative σ),
+`offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref)).
+The ideal detector is a copy with the spreads at zero.
 
 `scatter_kernels = ""` names the scanner's entry of the Geant4 scatter library
-([`scatter_kernels`](@ref), e.g. `"SOMATOM Force"`), which `SimOptions(use_scatter = true)`
-superposes on the patient; `""` has none, and then `use_scatter = true` throws.
+([`scatter_kernels`](@ref), e.g. `"SOMATOM Force"`), which `SimOptions(use_scatter = true)` (the
+default) superposes on the patient; `""` has none, and then `use_scatter = true` throws: start
+from a clinical constant, which names its kernels, or set `use_scatter = false`.
+`scatter_correction` subtracts the scatter the library estimates from the measured signal alone
+(the patient taken as water), as the scanner's DAS does; `false` leaves the scatter in the data.
+Both families share the field and its default.
 """
 function EICTScanner(;
         detector_material::Symbol = :lumex, detector_depth::Real = 3.0,
         fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9, detection_gain::Real = 15.0,
-        electronic_noise::Real = 5000.0, gain_spread::Real = 0.0, offset_spread_keV::Real = 0.0,
+        electronic_noise::Real = 5000.0, scatter_correction::Bool = true,
+        gain_spread::Real = 0.0, offset_spread_keV::Real = 0.0,
         defect_seed::Integer = 1, scatter_kernels::AbstractString = "", kwargs...
     )
     T = Float64
@@ -271,8 +279,8 @@ function EICTScanner(;
     geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
     return EICTScanner{T}(
         geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
-        T(detection_gain), T(electronic_noise), T(gain_spread), T(offset_spread_keV), Int(defect_seed),
-        String(scatter_kernels),
+        T(detection_gain), T(electronic_noise), scatter_correction, T(gain_spread), T(offset_spread_keV),
+        Int(defect_seed), String(scatter_kernels),
     )
 end
 
@@ -282,13 +290,14 @@ end
 Photon-counting scanner.  Geometry keywords as [`Scanner`](@ref) plus the
 direct-conversion detector model: `detector_material = :CdTe`, `detector_depth = 1.6`,
 `energy_thresholds` (keV, ascending; required, among the response table's), `dead_time_ns = 0.0`,
-`binning_factor = 1`; the detector-model toggles `pileup = true`, `scatter_correction = false`,
+`binning_factor = 1`; the detector-model toggles `pileup = true`, `scatter_correction = true`,
 `noise_reduction = 0.0`; and the native dexels' defects, `gain_spread = 0.0` (relative σ),
 `threshold_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref);
 pile-up by [`calibrate_pileup`](@ref)). The ideal detector is a copy with the spreads at zero.
 `scatter_kernels = ""` names its entry of the Geant4 scatter library, as for
-[`EICTScanner`](@ref); `scatter_correction` subtracts the scatter the library estimates from the
-measured counts.
+[`EICTScanner`](@ref) (with `use_scatter = true`, the default, `""` throws); `scatter_correction`
+subtracts the scatter the library estimates from the measured counts alone, as
+[`EICTScanner`](@ref)'s does from its signal.
 
 `detector_col_size` / `detector_row_size` are the pixel's pitch at the isocentre; a native dexel's
 pitch is the pixel's over `binning_factor`. The dexel's aperture, the anti-scatter grid, the
@@ -298,12 +307,13 @@ function PCCTScanner(;
         detector_material::Symbol = :CdTe, detector_depth::Real = 1.6,
         energy_thresholds::AbstractVector{<:Real} = Float64[], dead_time_ns::Real = 0.0,
         binning_factor::Int = 1, pileup::Bool = true,
-        scatter_correction::Bool = false, noise_reduction::Real = 0.0,
+        scatter_correction::Bool = true, noise_reduction::Real = 0.0,
         gain_spread::Real = 0.0, threshold_spread_keV::Real = 0.0, defect_seed::Integer = 1,
         scatter_kernels::AbstractString = "", kwargs...
     )
     T = Float64
     0 <= noise_reduction <= 1 || error("noise_reduction must lie in [0, 1] (got $noise_reduction)")
+    (gain_spread >= 0 && threshold_spread_keV >= 0) || throw(ArgumentError("defect spreads are non-negative"))
     extra = _other_kwargs(kwargs)
     isempty(extra) || throw(ArgumentError("PCCTScanner: unknown keyword(s) $(collect(keys(extra))) — scintillator parameters belong to EICTScanner"))
     isempty(energy_thresholds) && error("PCCT scanner requires energy_thresholds (got empty vector)")

@@ -230,7 +230,6 @@ begin
     ge_opts = BS.SimOptions(
         projector = :dd_fast,
         detector_efficiency_mode = :mc_lut,
-        use_scatter = true,
         view_samples = VIEW_SAMPLES,
     )
     "The same physics switches with one field replaced."

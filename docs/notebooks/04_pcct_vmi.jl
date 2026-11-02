@@ -228,7 +228,6 @@ draw_options(; seed, use_noise) = BS.SimOptions(
     use_focal_spot = true,
     use_heel_effect = false,
     use_lag = false,
-    use_scatter = true,   # the Alpha's Geant4 scatter kernels (`scatter_kernels`)
     view_samples = 5,     # sub-views per view: the arc the gantry turns while a view is read
     view_arc = 1.0,       # a photon-counting detector integrates for the whole view period
 );
