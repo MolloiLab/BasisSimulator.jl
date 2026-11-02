@@ -146,10 +146,11 @@ is passed, and there is no ideal-binning path.
 Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`; it is corrected
 like a scanner corrects it, outside: [`calibrate_pileup`](@ref) → [`apply_pileup!`](@ref), as the
 dexels' defects are by [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref). With
-`SimOptions(use_scatter = true)` the scanner's Geant4 scatter kernels ([`scatter_kernels`](@ref))
-add the patient's scatter to every bin before the noise; the scatter correction
-(`PCCTScanner(; scatter_correction)`) subtracts the scatter estimated from the recorded counts
-alone (the patient taken as water), inside `simulate!`. Bin combination,
+`SimOptions(use_scatter = true)` (the default) the scanner's Geant4 scatter kernels
+([`scatter_kernels`](@ref)) add the patient's scatter to every bin before the noise; the scatter
+correction (`PCCTScanner(; scatter_correction = true)`, the default, as for an energy integrator)
+subtracts the scatter estimated from the recorded counts alone (the patient taken as water),
+inside `simulate!`. Bin combination,
 water BHC and reconstruction are the caller's: the returned per-bin sinograms are
 log-transmissions against the per-ray air response `I0_bins` (`[n_cols, n_rows, n_bins]`), which
 is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
@@ -377,9 +378,10 @@ the detector's response (`m1`, `m2`) and electronic noise (`σ_electronic`) are 
 that point, so `simulate!` no longer needs `scanner`. The signal model is in
 [`EICTWorkspace`](@ref).
 
-With `SimOptions(use_scatter = true)` the scanner's Geant4 scatter kernels
-([`scatter_kernels`](@ref)) add the patient's scatter to `S₁` and `S₂` before the noise, and the DAS
-subtracts the scatter it estimates from the measured signal alone (the patient taken as water).
+With `SimOptions(use_scatter = true)` (the default) the scanner's Geant4 scatter kernels
+([`scatter_kernels`](@ref)) add the patient's scatter to `S₁` and `S₂` before the noise, and with
+`EICTScanner(; scatter_correction = true)` (the default) the DAS subtracts the scatter it estimates
+from the measured signal alone (the patient taken as water), as the photon-counting path does.
 
 Reconstruction is NOT included — handled by the caller via `reconstruct!`.
 """
@@ -491,13 +493,13 @@ function simulate!(
     #      once, as the fraction of the quanta a dexel collects
     #   2. Compound-Poisson quantum noise, variance D·λ (D = S₂/S₁), plus the
     #      electronic noise, variance σ_electronic²
-    #   3. The DAS subtracts the scatter it estimates from the measured signal
-    #      (the patient taken as water) and holds the signal at ≥ 1
+    #   3. With `scatter_correction`, the DAS subtracts the scatter it estimates from
+    #      the measured signal (the patient taken as water); the signal is held at ≥ 1
     # ═══════════════════════════════════════════════════════════════════════
     ff = config.fill_factor === nothing ? 1.0 : effective_fill_factor(config.fill_factor)
     I0v = T(compute_detector_I0(geom, protocol, sum(ws.weights)) * ff)
     σ = sim_opts.use_noise ? ws.σ_electronic : zero(T)
-    has_scatter = ws.scatter !== nothing
+    corrects_scatter = ws.scatter !== nothing && ws.scatter_correction
 
     if sim_opts.use_noise
         # Seeded from sim_opts.seed every call, so same-seed reruns agree.
@@ -514,7 +516,7 @@ function simulate!(
     let sino = ws.sinogram, disp = ws.dispersion, rg = ws.noise_rand_gpu,
             gain = ws.dexel_gain, offset = ws.dexel_offset, ncnr = length(ws.dexel_gain),
             eg = σ > zero(T) ? ws.enoise_rand_gpu : ws.noise_rand_gpu,
-            I0v = I0v, σ = σ, noisy = sim_opts.use_noise, linear = has_scatter
+            I0v = I0v, σ = σ, noisy = sim_opts.use_noise, linear = corrects_scatter
         AK.foreachindex(sino) do idx
             λ = I0v * exp(-sino[idx])
             if noisy
@@ -526,7 +528,7 @@ function simulate!(
             sino[idx] = linear ? λ / I0v : -log(max(λ, one(T)) / I0v)
         end
     end
-    if has_scatter
+    if corrects_scatter
         _reduce_footprints!(ws.scatter.measured, ws.scatter, ws.sinogram)
         _scatter_estimate!(ws.scatter, Array(ws.scatter.measured))
         _subtract_eict_scatter!(ws.sinogram, ws.scatter, I0v)

@@ -22,8 +22,8 @@ energy; a photon counter's is added to each bin's counts, a counted photon split
 the response table splits a photon of its energy (`R(E, b) / η(E)`, the library counting each
 photon the sensor absorbs once).
 
-The correction (`PCCTScanner(; scatter_correction)` for a photon counter; always, in the DAS, for an
-energy integrator) estimates the scatter from the measured data alone: each coarse ray's
+The correction (the scanner's `scatter_correction`, on by default for both families: a photon
+counter's counts, an energy integrator's DAS) estimates the scatter from the measured data alone: each coarse ray's
 water-equivalent length from its measured transmission (scatter included, inverted through the
 ray's own spectrum), the scatter of that water patient superposed, the estimate subtracted and the
 lengths measured again (`_SCATTER_CORRECTION_PASSES` times). It never sees the phantom, so it is

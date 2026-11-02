@@ -317,7 +317,6 @@ begin
     flash_opts = BS.SimOptions(
         projector = :dd_fast,
         use_heel_effect = false,
-        use_scatter = true,
         view_samples = VIEW_SAMPLES,
     )
     "The same physics switches with one field replaced."

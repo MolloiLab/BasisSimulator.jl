@@ -93,7 +93,7 @@ _ts("entering SimOptions testset")
         opts = BS.SimOptions()
         @test opts.use_fill_factor === true
         @test opts.use_detector_efficiency === true
-        @test opts.use_scatter === false             # the kernels are a download: opt in
+        @test opts.use_scatter === true              # scatter is on, as on a real scanner
         # optical_crosstalk defaults to false because no stable post-hoc
         # correction exists yet (see src/api/options.jl).
         @test opts.use_optical_crosstalk === false
@@ -964,11 +964,13 @@ _ts("entering build_physics_config testset")
         sc = _scanner_with_full_hardware()
         # optical_crosstalk defaults to false in :eict preset, opt in explicitly
         # to exercise the type wiring for that field.
-        opts = BS.SimOptions(; use_optical_crosstalk = true)
+        # The scanner names no scatter kernels, so scatter (on by default) is off here; its
+        # wiring is the "scatter: the scanner's kernels" testset's.
+        opts = BS.SimOptions(; use_optical_crosstalk = true, use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
-        @test cfg.scatter === nothing                # off by default
+        @test cfg.scatter === nothing
         @test cfg.optical_crosstalk isa BS.OpticalCrosstalkModel
         @test cfg.focal_spot isa BS.FocalSpot
         @test cfg.lag isa BS.LagModel
@@ -981,7 +983,7 @@ _ts("entering build_physics_config testset")
         es = [40.0, 60.0, 100.0]
         ws = [1.0, 3.0, 1.0]
         expected_mean = sum(es .* ws) / sum(ws)
-        opts = BS.SimOptions(; seed = 4242)
+        opts = BS.SimOptions(; seed = 4242, use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, es, ws)
         @test cfg.energy_keV ≈ expected_mean
         @test cfg.noise_seed == 4242
@@ -989,7 +991,7 @@ _ts("entering build_physics_config testset")
 
     @testset "fill_factor: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()    # 0.85 × 0.92
-        opts = BS.SimOptions()
+        opts = BS.SimOptions(; use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor.row_fill ≈ 0.85
         @test cfg.fill_factor.col_fill ≈ 0.92
@@ -1002,7 +1004,7 @@ _ts("entering build_physics_config testset")
 
     @testset "detector_efficiency: lumex → gemstone branch" begin
         sc = _scanner_with_full_hardware()    # :lumex, depth 3.0
-        opts = BS.SimOptions(; detector_efficiency_mode = :mc_lut)
+        opts = BS.SimOptions(; detector_efficiency_mode = :mc_lut, use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         # gemstone factory tags the material distinctly from a generic
         # `DetectorEfficiency(name, depth, 1.0)` direct ctor.  At minimum the
@@ -1023,14 +1025,14 @@ _ts("entering build_physics_config testset")
             detector_depth = 1.6,
             energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         )
-        opts = BS.SimOptions(; use_focal_spot = false, use_lag = false)
+        opts = BS.SimOptions(; use_focal_spot = false, use_lag = false, use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.detector_efficiency === nothing   # skipped for PCCT
     end
 
     @testset "focal_spot: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions()
+        opts = BS.SimOptions(; use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.focal_spot.width ≈ 1.2
         @test cfg.focal_spot.length ≈ 1.0
@@ -1038,7 +1040,7 @@ _ts("entering build_physics_config testset")
 
     @testset "heel_effect: target_angle pulled from scanner" begin
         sc = _scanner_with_full_hardware()    # 7.5°
-        opts = BS.SimOptions()
+        opts = BS.SimOptions(; use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.heel_effect isa BS.HeelEffect
         @test cfg.heel_effect.anode_angle_deg ≈ 7.5
@@ -1596,7 +1598,7 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
             flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
         )
         protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-        sim_opts = BS.SimOptions()
+        sim_opts = BS.SimOptions(use_scatter = false)   # the scanner names no scatter kernels
         recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
         phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
         phantom = BS.Phantom(

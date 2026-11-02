@@ -560,6 +560,7 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     lag_intensity::A3     # sinogram-sized scratch for lag intensity computation
 
     # ─── Pre-computed physics kernels (GPU-side) ───
+    scatter_correction::Bool                    # EICTScanner.scatter_correction
     scatter::Union{Nothing, ScatterPlan}        # the scatter library on this acquisition's rays (nothing: use_scatter off)
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
@@ -852,7 +853,7 @@ function create_eict_workspace(
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, similar(ref, T, sino_shape), μ_volume, sino_mono, I_transmitted,
         physics_output, lag_intensity,
-        scatter_plan,
+        scanner.scatter_correction, scatter_plan,
         optical_crosstalk_kernel, focal_spot_kernel,
         bowtie_spectral_gpu, air_reference,
         copyto!(similar(ref, T, sino_shape[1], sino_shape[2]), T.(dexel_defects[1])),
