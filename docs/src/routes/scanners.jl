@@ -239,7 +239,11 @@ scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)   # noteboo
                 "dexel piles up on its own, 27 ns of dead time behind a 10 ns shaper (the fit of BasisMonteCarlo ",
                 "notebook 03 to Li 2025's count loss). ",
                 "Four thresholds at 20, 35, 55 and ",
-                "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV."),
+                "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV. ",
+                "It is a realistic unit, defects included: its native dexels' gains spread by 2 % and their ",
+                "thresholds by 0.35 keV (BasisMonteCarlo notebook 03's assumption), a fixed pattern from its ",
+                c("defect_seed"), ", corrected as the scanner does it by ", c("calibrate_flat_field"), " → ",
+                c("apply_flat_field!"), "."),
             CodeBlock("""scanner = BS.NAEOTOM_ALPHA                                         # notebooks 04 · 08"""),
             param_table(BasisSimulator.NAEOTOM_ALPHA),
             P(:class => small,
@@ -250,7 +254,8 @@ scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)   # noteboo
                 "Both notebooks scan at 140 kVp and 174 mA × ", c("DOSE_SCALE"), " (the physical CTDIvol of 10.12 mGy), ",
                 "1200 views in 0.5 s, 5 mm collimation, with the tube's 0.9 mm titanium window as ",
                 c("additional_filters = [(\"Ti\", 0.9)]"), " on top of the 3 mm aluminium, exact Poisson counts, ",
-                "pile-up corrected by ", c("calibrate_pileup"), " → ", c("apply_pileup!"), ", ",
+                "pile-up corrected by ", c("calibrate_pileup"), " → ", c("apply_pileup!"), " and then the flat field by ",
+                c("calibrate_flat_field"), " → ", c("apply_flat_field!"), ", ",
                 "and view integration on the photon-counting path (", c("view_samples = 5"), ")."),
 
             # ── Force ──────────────────────────────────────────────────────────

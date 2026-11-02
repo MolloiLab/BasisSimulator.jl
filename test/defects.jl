@@ -39,6 +39,7 @@ end
     base = BS.PCCTScanner(
         BS.NAEOTOM_ALPHA; detector_rows = 2, detector_cols = 96, detector_col_size = 3.0, detector_row_size = 1.0,
         bowtie_filter = :none, pileup = false, scatter_correction = false,
+        gain_spread = 0.0, threshold_spread_keV = 0.0,              # the ideal detector, for the truth
     )
     defective = BS.PCCTScanner(base; gain_spread = 0.02, threshold_spread_keV = 0.35, defect_seed = 3)
     truth = _scan(base, phantom, protocol, opts).bins
@@ -61,6 +62,7 @@ end
     base = BS.PCCTScanner(
         BS.NAEOTOM_ALPHA; detector_rows = 2, detector_cols = 96, detector_col_size = 3.0, detector_row_size = 1.0,
         bowtie_filter = :large_body, scatter_correction = false,
+        gain_spread = 0.0, threshold_spread_keV = 0.0,              # pile-up alone
     )
     free = _scan(BS.PCCTScanner(base; pileup = false), phantom, protocol, opts).bins
     piled = _scan(base, phantom, protocol, opts)

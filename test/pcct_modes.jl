@@ -21,7 +21,8 @@ end
 
 _quiet(s; kw...) = BS.PCCTScanner(
     s; bowtie_filter = :none, pileup = false,
-    scatter_correction = false, energy_thresholds = [20.0, 35.0, 55.0, 70.0], kw...
+    scatter_correction = false, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+    gain_spread = 0.0, threshold_spread_keV = 0.0, kw...
 )
 
 @testset "NAEOTOM Alpha: standard and UHR modes" begin

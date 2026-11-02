@@ -112,7 +112,9 @@ onward they are written by hand, and releases are cut by hand — see
   `PCCTScanner(; gain_spread, threshold_spread_keV, defect_seed)`: each dexel's own gain and offset (energy
   integrator) or gain and threshold offsets (photon counter, per native dexel, its counts read off the table at
   thresholds `(t + δ)/g`, weighted between the air beam and one behind 20 cm of water by the ray's own line
-  integral). All default to zero: the ideal detector is a copy with the spreads at zero. Corrected by
+  integral). The struct defaults are zero; `NAEOTOM_ALPHA` (and `NAEOTOM_ALPHA_UHR`) is a realistic unit, with
+  `gain_spread = 0.02` and `threshold_spread_keV = 0.35` (BasisMonteCarlo notebook 03), and its docs notebooks
+  calibrate it; an ideal detector is a copy with the spreads at zero. Corrected by
   `calibrate_flat_field` (simulated air scans: two currents for an energy integrator, which separates offset from
   gain; one low-flux scan for a photon counter) → `apply_flat_field!`. Residuals against the ideal detector on a
   20 cm water cylinder: energy integrator (2 % gain, offset σ 2 × 10⁴ keV per reading) < 1e-4 rms, exact as gain and offset are

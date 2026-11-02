@@ -26,6 +26,8 @@ _differing(a, b) = [f for f in (fieldnames(ScannerGeometry)..., fieldnames(typeo
     @test NAEOTOM_ALPHA_UHR.detector_rows == 120 && NAEOTOM_ALPHA_UHR.detector_cols == 2752 && NAEOTOM_ALPHA_UHR.binning_factor == 1
     @test round(NAEOTOM_ALPHA_UHR.detector_row_size * 120; digits = 1) == 23.9 && NAEOTOM_ALPHA_UHR.energy_thresholds == [20.0]
     @test NAEOTOM_ALPHA.energy_thresholds == [20.0, 35.0, 55.0, 70.0] && NAEOTOM_ALPHA.binning_factor == 2
+    @test NAEOTOM_ALPHA.gain_spread == 0.02 && NAEOTOM_ALPHA.threshold_spread_keV == 0.35   # a realistic unit
+    @test NAEOTOM_ALPHA_UHR.gain_spread == NAEOTOM_ALPHA.gain_spread                     # the same dexels
     @test SOMATOM_FORCE.detector_material == :ufc && SOMATOM_FORCE.detector_cols == 920
     @test SOMATOM_DEFINITION_FLASH.detector_material == :ufc_flash && SOMATOM_DEFINITION_FLASH.flat_filter_thickness == 8.4
 

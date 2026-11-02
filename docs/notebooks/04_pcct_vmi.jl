@@ -139,8 +139,10 @@ The documented NAEOTOM Alpha, `NAEOTOM_ALPHA`, in its standard mode: native CdTe
 scan field behind the large-body bowtie, and a 1.6 mm CdTe sensor whose response (absorption,
 charge sharing, electronic noise, the anti-scatter grid) is BasisMonteCarlo's Geant4 table. Each
 native dexel counts on its own, Poisson, sharing photons with its neighbours, and piles up at its
-own rate (27 ns dead time). Scatter is simulated and corrected inside `simulate!`; pile-up is
-corrected after it, with a calibration from simulated air scans. See the
+own rate (27 ns dead time). It is a realistic unit: its native dexels' gains spread by 2 % and
+their thresholds by 0.35 keV, a fixed pattern that would ring the image uncorrected. Scatter is
+simulated and corrected inside `simulate!`; pile-up and then the flat field are corrected after
+it, each with a calibration from simulated air scans. See the
 [scanners page](../../scanners/) for where each value comes from.
 """
 
@@ -253,7 +255,8 @@ projection of every sub-view through the Monte Carlo detector response, scatter 
 the counts of every native dexel (Poisson, neighbours covarying through the photons they share),
 its pile-up, the digital 2 × 2 sum, then scatter correction. The pile-up is corrected after it
 with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated air scans at
-rising tube currents (never from the model's own matrices). It returns
+rising tube currents (never from the model's own matrices), then the dexels' gains with
+`apply_flat_field!`, from a low-flux air scan `calibrate_flat_field`. It returns
 
 - `pcct_sino.bins`: four corrected sinograms ``h_k = -\log(y_k / I_{0,k})``, `[col, row, view]`;
 - `I0_bins`: the air count of every ray in every bin, `[col, row, bin]`;
@@ -276,6 +279,9 @@ acquisition = let
     # pile-up, calibrated as a scanner does: air scans at rising currents (few views: a rate curve)
     pileup = BS.calibrate_pileup(scanner, BS.CTProtocol(protocol; views = 40), recon_opts;
         sim_opts = draw_options(; DRAWS[:reference]...))
+    # the flat field, as a scanner does it: an air scan at low flux gives each pixel's gain per bin
+    flat = BS.calibrate_flat_field(scanner, protocol, recon_opts;
+        sim_opts = draw_options(; DRAWS[:reference]...))
     for name in (:reference, :calibration, :measured)     # the noise-free draw first: it projects
         opts = draw_options(; DRAWS[name]...)
         t0 = time()
@@ -287,6 +293,7 @@ acquisition = let
                 keep_projection = projection === nothing, projection = projection)
             projection === nothing && (projection = sim.projection)
             BS.apply_pileup!(sim.pcct_sino.bins, sim.I0_bins, pileup, protocol)
+            BS.apply_flat_field!(sim.pcct_sino.bins, flat)
             channels[name] = [Array(b) for b in sim.pcct_sino.bins]   # the four corrected bins
             if model === nothing
                 I0 = Float32.(Array(sim.I0_bins))                     # [n_cols, n_rows, n_bins]
