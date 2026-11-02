@@ -146,6 +146,9 @@ onward they are written by hand, and releases are cut by hand — see
   signal's own units.
 - **An empty field scattered** (the EICT scatter was estimated from a sinogram carrying the bowtie and the detector
   response); the library's superposition leaves gases out of the patient, so air scatters nothing.
+- **A large photon-counting scan threw a `BoundsError`** in the fused spectral projectors (`:dd_fast`, `:dd`,
+  Siddon): bin b sits at offset (b − 1) × rays in one flat buffer, and that Int32 offset wrapped once it passed
+  2³¹, as the NAEOTOM Alpha's full detector does at native resolution from 904 views on. The offset is an `Int`.
 
 ### Added
 - **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and
