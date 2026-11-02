@@ -82,10 +82,11 @@ electrode plus its share of the anti-scatter grid's gaps), magnified 1113/610.
   Geant4 library's `"NAEOTOM Alpha"` kernels ([`scatter_kernels`](@ref); the 2-D grid of 4 × 6-dexel
   cells, 10 mm tall), which `NAEOTOM_ALPHA_UHR` shares.
 
-Its dexels are ideal (no gain or threshold spread). BasisMonteCarlo notebook 03 assumes a 2 % gain
-spread and 0.35 keV of threshold spread (unpublished); that detector is
-`PCCTScanner(NAEOTOM_ALPHA; gain_spread = 0.02, threshold_spread_keV = 0.35)`, corrected by
-[`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref).
+It is a realistic unit, defects included: its native dexels' gains spread by 2 % and their
+thresholds by 0.35 keV (BasisMonteCarlo notebook 03's assumption; the vendor's values are
+unpublished), a fixed pattern drawn from its `defect_seed`. Correct them as the scanner does, from
+simulated calibration scans: [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref), and
+pile-up with [`calibrate_pileup`](@ref) → [`apply_pileup!`](@ref).
 
 Its ultra-high-resolution mode is [`NAEOTOM_ALPHA_UHR`](@ref). A different scan is a variant:
 `PCCTScanner(NAEOTOM_ALPHA; pileup = false)`.
@@ -116,6 +117,8 @@ const NAEOTOM_ALPHA = let native_pitch = (0.34, 1.13 * 0.322), sid = 610.0, sdd 
         binning_factor = binning,
         scatter_correction = true,
         noise_reduction = 0.0,
+        gain_spread = 0.02,
+        threshold_spread_keV = 0.35,
         scatter_kernels = "NAEOTOM Alpha",
     )
 end
