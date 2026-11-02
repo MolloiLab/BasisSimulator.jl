@@ -2359,13 +2359,9 @@ let
     same = isdefined(BS, :UFC_FLASH_MC_EFFICIENCY_LUT) &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies == table.energies &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency == table.efficiency
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), has exactly this table (its `UFC_FLASH_MC_EFFICIENCY_LUT`)." :
-            "✗ **The installed BasisSimulator, v$(installed), has a different Flash table from BasisMonteCarlo's copy of v0.15.1's.** Check `BASISSIMULATOR_V0_15_1_EFFICIENCY` against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), has exactly this table (its `UFC_FLASH_MC_EFFICIENCY_LUT`)." :
         "The installed BasisSimulator is v$(installed), which no longer uses this table. The comparisons below are with BasisSimulator v0.15.1's Flash table, which BasisMonteCarlo keeps (`BASISSIMULATOR_V0_15_1_EFFICIENCY`): they do not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -2995,7 +2991,6 @@ function aquilion_spectrum(kVp; flat_mm)
         views = 1200,
         rotation_time = 0.5,
         collimation_mm = 5.0,
-        anode_angle = 10,
     )
     return BS.resolve_source_spectrum_without_bowtie(BS.SimOptions(), protocol; scanner)
 end

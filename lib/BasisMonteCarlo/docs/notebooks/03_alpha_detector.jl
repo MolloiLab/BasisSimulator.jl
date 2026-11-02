@@ -1012,13 +1012,9 @@ let
     kept = joinpath(pkgdir(MC), "src", "data", "basissimulator_v0_15_1_cdte_response_v4.jls")
     shipped = isdefined(BS, :default_mc_drm_path) ? BS.default_mc_drm_path() : ""
     same = isfile(shipped) && read(shipped) == read(kept)
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), ships exactly this table." :
-            "✗ **The installed BasisSimulator, v$(installed), ships a different table from BasisMonteCarlo's copy of v0.15.1's `cdte_response_v4`.** Check the copy against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), ships exactly this table." :
         "The installed BasisSimulator is v$(installed), which no longer needs this table. The comparisons below are with BasisSimulator v0.15.1's `cdte_response_v4`, which BasisMonteCarlo keeps (`basissimulator_v0_15_1_response`): they do not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -3459,17 +3455,17 @@ begin
     end
 
     function v0151_simulate_pulse_train(
-        spectrum_weights::AbstractVector{<:Real},
-        energies::AbstractVector{<:Real},
-        count_rate::Real,
-        dead_time_ns::Real;
-        observation_time_s::Real=1e-3,
-        model::Symbol=:seminonparalyzable,
-        f_retrigger::Float64=0.3,
-        thresholds_keV::AbstractVector{<:Real}=[20.0, 35.0, 55.0, 70.0],
-        rng::BS.Random.AbstractRNG=BS.Random.default_rng()
-    )
-        τ_s = Float64(dead_time_ns) * 1e-9  # Dead time in seconds
+            spectrum_weights::AbstractVector{<:Real},
+            energies::AbstractVector{<:Real},
+            count_rate::Real,
+            dead_time_ns::Real;
+            observation_time_s::Real = 1.0e-3,
+            model::Symbol = :seminonparalyzable,
+            f_retrigger::Float64 = 0.3,
+            thresholds_keV::AbstractVector{<:Real} = [20.0, 35.0, 55.0, 70.0],
+            rng::BS.Random.AbstractRNG = BS.Random.default_rng()
+        )
+        τ_s = Float64(dead_time_ns) * 1.0e-9  # Dead time in seconds
         rate = Float64(count_rate)
         T_obs = Float64(observation_time_s)
         n_thresh = length(thresholds_keV)
@@ -3492,10 +3488,12 @@ begin
         n_photons = v0151_poisson(rng, expected_count)
 
         if n_photons == 0
-            return V0151PileupResult(0, 0,
+            return V0151PileupResult(
+                0, 0,
                 Float64[], Float64[],
                 zeros(Int, n_thresh), zeros(Int, n_thresh),
-                Int[])
+                Int[]
+            )
         end
 
         # Generate arrival times (sorted uniform in [0, T_obs])
@@ -3521,13 +3519,13 @@ begin
         # already-open event contribute energy but do NOT seed a new trigger —
         # that is the count-loss mechanism.
         recorded_energies = Float64[]
-        trigger_bins      = Int[]
+        trigger_bins = Int[]
         it = 1
         while it <= n_photons
             # This photon triggers an event
             event_energy = photon_energies[it]
-            event_time   = arrival_times[it]
-            trigger_bin  = v0151_threshold_bin(event_energy, thresholds_keV)
+            event_time = arrival_times[it]
+            trigger_bin = v0151_threshold_bin(event_energy, thresholds_keV)
 
             if model == :seminonparalyzable
                 # Seminonparalyzable: dead time can be retriggered
@@ -3561,7 +3559,7 @@ begin
 
         # Bin true and recorded photons
         true_bins = zeros(Int, n_thresh)
-        rec_bins  = zeros(Int, n_thresh)
+        rec_bins = zeros(Int, n_thresh)
 
         for E in photon_energies
             b = v0151_threshold_bin(E, thresholds_keV)

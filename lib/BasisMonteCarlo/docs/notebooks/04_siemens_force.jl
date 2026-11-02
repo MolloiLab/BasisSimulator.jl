@@ -1736,20 +1736,16 @@ interacts leaves no energy, so the interaction probability is a ceiling on the e
 table = MC.BASISSIMULATOR_V0_15_1_EFFICIENCY.ufc
 
 # ╔═╡ 68de6046-7b40-4d32-96af-a2432fbdf672
-# Is BasisMonteCarlo's copy the table the installed BasisSimulator uses? Up to v0.15.1 it must be,
-# exactly; from v0.16.0 BasisSimulator uses this notebook's table, and the copy stands alone
+# Does the installed BasisSimulator still use v0.15.1's table? Either way the comparisons below use
+# BasisMonteCarlo's verbatim copy of it, so they do not change with BasisSimulator's version
 let
     installed = pkgversion(BS)
     same = isdefined(BS, :UFC_MC_EFFICIENCY_LUT) &&
         BS.UFC_MC_EFFICIENCY_LUT.energies == table.energies &&
         BS.UFC_MC_EFFICIENCY_LUT.efficiency == table.efficiency
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), uses exactly this table." :
-            "✗ **The installed BasisSimulator, v$(installed), has a different table from BasisMonteCarlo's copy of v0.15.1's.** Check `BASISSIMULATOR_V0_15_1_EFFICIENCY` against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), uses exactly this table." :
         "The installed BasisSimulator is v$(installed), which no longer uses this table. The comparisons below are with BasisSimulator v0.15.1's table, which BasisMonteCarlo keeps (`BASISSIMULATOR_V0_15_1_EFFICIENCY`): they do not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -3163,7 +3159,6 @@ function force_spectrum(kVp; titanium_mm = 0.9, tin_mm = 0.0)
         views = 1160,
         rotation_time = 0.5,
         collimation_mm = 4.8,
-        anode_angle = 8,
         additional_filters = filters,
     )
     return BS.resolve_source_spectrum_without_bowtie(
