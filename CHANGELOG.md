@@ -40,6 +40,45 @@ onward they are written by hand, and releases are cut by hand — see
   (electronic noise ÷ gain, in units of the air beam's mean signal) are new; `bowtie_air_reference` is
   `air_reference` and always built. `keep_projection` keeps the dispersion too.
 
+- **The photon-counting detector is the NAEOTOM Alpha's, read at its native dexels.** Its response is BasisMonteCarlo's
+  Geant4 native-dexel table (`PCCT_NATIVE_TABLE_PATH`, plain data: transported charge, 1.9 keV electronic noise, the
+  2-D anti-scatter grid of 4 × 6-dexel cells, open fraction 0.716), the cell's mean dexel per incident photon. Each
+  native dexel's position in its cell sets its gain (`pcct_position_gain`, folded into the per-ray source
+  transmission, so air still reads zero). v0.15.1's `cdte_response_v4` is test data only (`test/data/`).
+- **Counting noise per native dexel, then a digital 2 × 2 sum** (`pcct_count!`, `pcct_event_classes`): each dexel's
+  unshared counts and, per pair of neighbours and pair of bins, the photons they share, all Poisson. At 120 kV a dexel
+  shares 5.6 % of its counts with each neighbour across the fan, 5.3 % along z and 0.7 % diagonally (24 % in all).
+  Measured in air: a UHR dexel's Fano factor 1.004 and its neighbour correlation 0.052 (as predicted); a standard
+  pixel's Fano factor above 20 keV 1.109, within 3 % of the binned table's; standard counts = 4.000 × UHR counts.
+- **Pile-up per native dexel, before the sum**, re-implemented from the fitted inputs (pulses per photon and their
+  heights, a 10 ns CR-RC shaper, one retriggering comparator per threshold, 27 ns dead time):
+  `compute_mc_pileup_matrix(thresholds, weights, energies, rate, dead_time_ns; n_pulses, seed)` and
+  `pileup_counts!`. Count loss at 140 kV: 2.6 % at 1 Mcps per dexel, 21 % at 10 Mcps.
+- **η once, no cap:** the response is per incident photon (absorption included), so `quantum_efficiency` no longer
+  multiplies the projection, the air response, the scatter weights or `compute_mc_count_moments` (its `η` keyword is
+  gone; `compute_scatter_bin_weights(energies, weights, energy_weights, R, kVp)`); `compute_mc_drm` no longer
+  renormalises rows above one (a shared photon counts in two dexels).
+- **`NAEOTOM_ALPHA` as documented:** pitch 0.373 × 0.399 mm at the isocentre (was 0.301 × 0.353, the electrode
+  without the grid's gaps), 1376 columns (was 1659), 144 rows × 0.4 mm = 57.6 mm, dead time 27 ns (was 5).
+  **`NAEOTOM_ALPHA_UHR`** (new): native dexels, 120 rows of 0.2 mm, 2752 columns, the 20 keV threshold.
+- **`PCCTScanner` fields removed:** `fill_factor_row`, `fill_factor_col` (unused; the dexel's aperture and the grid
+  are the table's), `n_energy_bins` (it is `length(energy_thresholds)`), `energy_resolution`, `charge_sharing_fwhm`
+  (the table's), `pixel_mode` (dead), `native_dexel_col_mm`, `native_dexel_row_mm` (a native dexel's pitch is the
+  pixel's over `binning_factor`; its aperture is the table's). Thresholds must be among the table's 16.
+- **Removed:** `apply_pcct_noise!` (→ `pcct_count!` inside `simulate!`) and `simulate!`'s `noise_rng` (views are
+  drawn in parallel from `(seed, view)` streams), `apply_pcct_pileup!` (→ `pileup_counts!` per native dexel),
+  `simulate_pulse_train`, `PileupResult`; `MCResponseData`'s unused `R_perpixel`, `Var_total` and `Cov_pixpair`.
+
+- **Pile-up is corrected outside `simulate!`, from simulated calibration scans:** `calibrate_pileup` (air scans at
+  1/16 to 2 × the protocol's current, the pile-up-free counts extrapolated linearly from the lowest) →
+  `apply_pileup!`. `PCCTScanner`'s `pileup_correction`, `apply_pcct_pileup_correction!` and the result's `pileup_S`
+  are removed (the correction no longer reads the model's own matrices). On a 20 cm water cylinder at a clinical
+  rate the rms log error against a pile-up-free scan falls from 0.096 to 0.016.
+- **`SimOptions(detector_efficiency_mode)`** is `:mc_lut` (default) or `:beer_lambert`; `:auto` (the same as
+  `:mc_lut`) is gone and anything else throws.
+- **`fill_factor_standard` is removed**, with the fallback it served: an `EICTScanner`'s fill factors must lie in
+  (0, 1] (zero meant "unset").
+
 ### Fixed
 - **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
 - **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
@@ -52,6 +91,17 @@ onward they are written by hand, and releases are cut by hand — see
   (`m₁`).
 
 ### Added
+- **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and
+  `PCCTScanner(; gain_spread, threshold_spread_keV, defect_seed)`: each dexel's own gain and offset (energy
+  integrator) or gain and threshold offsets (photon counter, per native dexel, its counts read off the table at
+  thresholds `(t + δ)/g`, weighted between the air beam and one behind 20 cm of water by the ray's own line
+  integral). All default to zero: the ideal detector is a copy with the spreads at zero. Corrected by
+  `calibrate_flat_field` (simulated air scans: two currents for an energy integrator, which separates offset from
+  gain; one low-flux scan for a photon counter) → `apply_flat_field!`. Residuals against the ideal detector on a
+  20 cm water cylinder: energy integrator (2 % gain, offset σ 2 × 10⁴ keV per reading) < 1e-4 rms, exact as gain and offset are
+  energy-blind; photon counter (2 % gain, 0.35 keV thresholds) 0.0287 → 0.0073 rms log, the rest the offsets'
+  different weight on a hardened beam.
+
 - `eid_signal_moments(model, energies) -> (m₁, m₂)`, and `spectral_basis(ws::EICTWorkspace, protocol)`: the
   one-channel basis of an energy-integrating acquisition, its air response scaled to the noise-equivalent quanta
   `I₀·ff·S₁²/S₂`; `spectral_basis_from_acquisitions` takes these directly for dual-kVp and dual-source pairs.

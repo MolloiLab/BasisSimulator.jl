@@ -102,7 +102,7 @@ _ts("entering SimOptions testset")
         @test opts.use_lag === true
         @test opts.use_heel_effect === true
         @test opts.seed == 42
-        @test opts.detector_efficiency_mode == :auto
+        @test opts.detector_efficiency_mode == :mc_lut
     end
 
     @testset "per-effect kwargs" begin
@@ -131,9 +131,10 @@ _ts("entering SimOptions testset")
     end
 
     @testset "detector_efficiency_mode passes through unchanged" begin
-        for m in (:auto, :mc_lut, :beer_lambert)
+        for m in (:mc_lut, :beer_lambert)
             @test BS.SimOptions(detector_efficiency_mode = m).detector_efficiency_mode == m
         end
+        @test_throws ArgumentError BS.SimOptions(detector_efficiency_mode = :auto)
     end
 
     @testset "projector defaults to :dd_fast, accepts :siddon, validates" begin
@@ -300,7 +301,6 @@ function _toy_pcct_setup(; pileup = true, kwargs...)
         detector_col_size = 1.0,
         detector_material = :CdTe,
         detector_depth = 1.6,
-        n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         dead_time_ns = 25.0,
         pileup = pileup,
@@ -366,18 +366,15 @@ end
         _ts("  running simulate!")
         res = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")
-        # Return tuple — pcct_sino + I0_bins + pileup_S + dose + raw_counts
-        # (combine/scatter decoupled; raw counts captured by default).
-        # pileup_S is `nothing` when pileup=false; dose is the acquisition's DoseReport.
-        @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S, :dose, :raw_counts)
+        # Return tuple — pcct_sino + I0_bins + dose + raw_counts
+        # (combine/scatter decoupled; raw counts captured by default); dose is the acquisition's DoseReport.
+        @test propertynames(res) == (:pcct_sino, :I0_bins, :dose, :raw_counts)
         @test res.dose isa BS.DoseReport && res.dose.ctdi_vol_mGy > 0
         @test BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts; report_dose = false).dose ===
             nothing
         @test length(res.pcct_sino.bins) == 4
         @test size(res.I0_bins, 3) == 4          # per ray: [n_cols, n_rows, n_bins]
         @test all(>(0), Array(res.I0_bins))
-        @test res.pileup_S isa Array{Float64, 3}
-        @test size(res.pileup_S)[1:2] == (4, 4)
         for bin in res.pcct_sino.bins
             @test all(isfinite, Array(bin))
         end
@@ -399,7 +396,7 @@ end
             s.ws, s.phantom, s.protocol, s.sim_opts;
             capture_raw_counts = false,
         )
-        @test propertynames(trimmed) == (:pcct_sino, :I0_bins, :pileup_S, :dose)
+        @test propertynames(trimmed) == (:pcct_sino, :I0_bins, :dose)
 
         # Model-matched config (noise on, pile-up off, nr = 0): raw counts
         # are BIT-EXACT integer Poisson realizations captured at the
@@ -491,7 +488,7 @@ end
     S = BS.compute_mc_pileup_matrix(
         thresholds, weights, energies,
         count_rate, dead_time_ns;
-        n_trials = 2000, seed = 1
+        seed = 1
     )
 
     @test size(S) == (n_bins, n_bins)
@@ -539,7 +536,7 @@ end
     thresholds = [20.0, 35.0, 55.0, 70.0]
     S = BS.compute_mc_pileup_matrix(
         thresholds, weights, energies,
-        1.0e8, 5.0; n_trials = 2000, seed = 1
+        1.0e8, 5.0; seed = 1
     )
 
     # Air ray: pre-pileup counts == truth I0.
@@ -998,25 +995,14 @@ _ts("entering build_physics_config testset")
         @test cfg.fill_factor.col_fill ≈ 0.92
     end
 
-    @testset "fill_factor: zero hardware → factory fallback" begin
-        sc = BS.EICTScanner(
-            source_to_isocenter = 540.0, source_to_detector = 1080.0,
-            detector_rows = 4, detector_cols = 32,
-            detector_row_size = 1.0, detector_col_size = 1.0,
-            detector_material = :lumex, detector_depth = 3.0,
-            fill_factor_row = 0.0, fill_factor_col = 0.0,    # ← unset
-        )
-        opts = BS.SimOptions()
-        cfg = BS.build_physics_config(sc, opts, energies, weights)
-        @test cfg.fill_factor isa BS.FillFactorModel
-        # Factory fill_factor_standard returns a populated model — non-zero.
-        @test cfg.fill_factor.row_fill > 0
-        @test cfg.fill_factor.col_fill > 0
+    @testset "fill_factor: a fill factor is in (0, 1]" begin
+        @test_throws ArgumentError BS.EICTScanner(fill_factor_row = 0.0, fill_factor_col = 0.0)
+        @test_throws ArgumentError BS.EICTScanner(fill_factor_row = 1.2)
     end
 
     @testset "detector_efficiency: lumex → gemstone branch" begin
         sc = _scanner_with_full_hardware()    # :lumex, depth 3.0
-        opts = BS.SimOptions(; detector_efficiency_mode = :auto)
+        opts = BS.SimOptions(; detector_efficiency_mode = :mc_lut)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         # gemstone factory tags the material distinctly from a generic
         # `DetectorEfficiency(name, depth, 1.0)` direct ctor.  At minimum the
@@ -1035,7 +1021,6 @@ _ts("entering build_physics_config testset")
             detector_row_size = 0.5, detector_col_size = 0.5,
             detector_material = :cdte,
             detector_depth = 1.6,
-            n_energy_bins = 4,
             energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         )
         opts = BS.SimOptions(; use_focal_spot = false, use_lag = false)
@@ -1529,8 +1514,8 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 
         # Sinogram-shape buffers match (n_cols, n_rows, n_angles).
         sino_shape = (s.scanner.detector_cols, s.scanner.detector_rows, s.protocol.views)
-        @test length(ws.bins) == s.scanner.n_energy_bins
-        for b in 1:s.scanner.n_energy_bins
+        @test length(ws.bins) == length(s.scanner.energy_thresholds)
+        for b in 1:length(s.scanner.energy_thresholds)
             @test size(ws.bins[b]) == sino_shape
         end
         @test size(ws.sino_buf) == sino_shape
@@ -1538,15 +1523,15 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
         @test size(ws.combined) == sino_shape
 
         # Spectral arrays sized to bin / energy counts.
-        @test size(ws.I0, 3) == s.scanner.n_energy_bins
+        @test size(ws.I0, 3) == length(s.scanner.energy_thresholds)
         @test ndims(ws.I0) == 3 # per ray: (columns, rows, bins)
-        @test length(ws.thresholds_T) == s.scanner.n_energy_bins
-        @test length(ws.η) == length(ws.energies)
+        @test length(ws.thresholds_T) == length(s.scanner.energy_thresholds)
+        @test length(ws.noise_classes.single) == length(s.scanner.energy_thresholds)
 
         # Pile-up wiring (PCCTScanner.pileup default = true).
         @test ws.pileup === true
         @test ws.pileup_S isa Array{Float64, 3}
-        @test size(ws.pileup_S)[1:2] == (s.scanner.n_energy_bins, s.scanner.n_energy_bins) # per count rate
+        @test size(ws.pileup_S)[1:2] == (length(s.scanner.energy_thresholds), length(s.scanner.energy_thresholds)) # per count rate
 
         # Native-res buffers are nothing when binning_factor == 1 (toy default).
         @test s.scanner.binning_factor == 1   # toy uses default
@@ -1557,8 +1542,8 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 
         # Tiled spectral buffers always allocated (the only forward-projection path).
         @test size(ws.μ_table_gpu, 1) == length(ws.mats)
-        @test size(ws.W_matrix_gpu, 2) == s.scanner.n_energy_bins
-        @test length(ws.outputs_flat) == prod(sino_shape) * s.scanner.n_energy_bins
+        @test size(ws.W_matrix_gpu, 2) == length(s.scanner.energy_thresholds)
+        @test length(ws.outputs_flat) == prod(sino_shape) * length(s.scanner.energy_thresholds)
     end
 end
 
@@ -1789,10 +1774,12 @@ _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
         BS.simulate!(on.ws, on.phantom, on.protocol, on.sim_opts)
         sino_on = Array(on.ws.sinogram)
 
-        # Scatter must measurably perturb the line integrals (DAS subtraction
-        # of estimated scatter happens before the −log step, so the sinogram
-        # does not equal the scatter-OFF sinogram).
-        @test maximum(abs.(sino_on .- sino_off)) > 1.0e-6
+        # Noise-free, the DAS subtracts exactly the scatter that was injected (its estimate is the
+        # injected field), so the scatter-ON sinogram is the scatter-OFF one; scatter shows in the
+        # noise it adds, and in the estimate being the object's own (an empty field gets none:
+        # eict_signal.jl).
+        @test maximum(abs.(sino_on .- sino_off)) < 1.0e-4
+        @test on.ws.config.scatter !== nothing && off.ws.config.scatter === nothing
         @test all(isfinite, sino_on)
     end
 end

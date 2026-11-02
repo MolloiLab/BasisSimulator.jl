@@ -21,8 +21,8 @@ export simulate!,
 """
     compute_detector_I0(geom, protocol, spectrum_flux_sum) -> Float64
 
-Expected primary photon count per detector pixel per view (no detector
-quantum efficiency applied — combine with `quantum_efficiency_vector` at the
+Expected primary photon count per detector pixel per view (incident; no
+detector response applied: the detector's response per incident photon multiplies it at the
 call site if needed).
 
     I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_at_detector_mm²
@@ -78,10 +78,61 @@ function _capture_pcct_raw_counts(
     return captured
 end
 
+
+# The photon-counting detection of `simulate!`: the expected counts of every native dexel (the
+# projection's native counts scaled, group by group, to the binned bins, which carry the focal-spot
+# blur and the scatter), their counting noise (`pcct_count!`), their pile-up at each dexel's own
+# rate, and the digital sum to pixels. Writes the bins as `-log(max(N, 1) / I0)` and, when given,
+# the summed counts before that floor into `raw`.
+function _pcct_detect!(ws::PCCTWorkspace, bins, use_noise::Bool, seed, raw)
+    nb = length(bins)
+    bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
+    I0 = ws.I0_cpu
+    expected_binned = [I0[:, :, b] .* exp.(-Float64.(Array(bins[b]))) for b in 1:nb]
+    expected = if bf == 1
+        expected_binned
+    else
+        map(1:nb) do b
+            native = Float64.(Array(ws.native_bins[b]))
+            target = expected_binned[b]
+            for v in axes(native, 3), r in axes(target, 2), c in axes(target, 1)
+                group = view(native, ((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), v)
+                total = sum(group)
+                total > 0 ? (group .*= target[c, r, v] / total) : (group .= target[c, r, v] / bf^2)
+            end
+            native
+        end
+    end
+    if ws.defects !== nothing                       # each dexel's gain and threshold offsets
+        _apply_pcct_defects!(expected, bf == 1 ? I0 : Array{Float64}(ws.I0_native), ws.defects)
+    end
+    counts = use_noise ? pcct_count!([similar(e) for e in expected], expected, ws.noise_classes; seed) : expected
+    if ws.pileup && ws.pileup_S !== nothing
+        pileup_counts!(counts, bf == 1 ? I0 : Array{Float64}(ws.I0_native), ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
+    end
+    nr = ws.noise_reduction
+    for b in 1:nb
+        N = bf == 1 ? counts[b] : _digital_sum(counts[b], bf)
+        use_noise && nr > 0 && (N .= expected_binned[b] .+ (1 - nr) .* (N .- expected_binned[b]))
+        raw === nothing || copyto!(raw[b], eltype(raw[b]).(N))
+        copyto!(bins[b], eltype(bins[b]).(.-log.(max.(N, 1.0) ./ I0[:, :, b])))
+    end
+    return bins
+end
+
+# A 2-D digital sum of `bf × bf` native dexels per pixel, view by view.
+function _digital_sum(native::AbstractArray{<:Real, 3}, bf::Integer)
+    nc, nr = size(native, 1) ÷ bf, size(native, 2) ÷ bf
+    out = zeros(Float64, nc, nr, size(native, 3))
+    for v in axes(native, 3), r in 1:nr, c in 1:nc
+        out[c, r, v] = sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), v])
+    end
+    return out
+end
+
 """
     simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts;
-              capture_raw_counts=true, report_dose=true, dose_kwargs=(;),
-              noise_rng=:serial)
+              capture_raw_counts=true, report_dose=true, dose_kwargs=(;))
 
 Run PCCT simulation using pre-allocated workspace buffers for zero allocations
 on the second and later calls (the first call may JIT-allocate).
@@ -92,9 +143,10 @@ detector model **always** applies the MC-LUT detector response matrix
 (`compute_mc_drm`); `pcct_forward_project` builds it when no precomputed matrix
 is passed, and there is no ideal-binning path.
 
-Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`; its model-based
-correction (`PCCTScanner(; pileup_correction)`) and scatter correction
-(`PCCTScanner(; scatter_correction)`) run inside `simulate!` when enabled. Bin combination,
+Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`; it is corrected
+like a scanner corrects it, outside: [`calibrate_pileup`](@ref) → [`apply_pileup!`](@ref), as the
+dexels' defects are by [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref). The scatter
+correction (`PCCTScanner(; scatter_correction)`) runs inside `simulate!` when enabled. Bin combination,
 water BHC and reconstruction are the caller's: the returned per-bin sinograms are
 log-transmissions against the per-ray air response `I0_bins` (`[n_cols, n_rows, n_bins]`), which
 is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
@@ -103,20 +155,17 @@ is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
 - `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
 - `I0_bins`   — the air response of every ray and bin, `[n_cols, n_rows, n_bins]` (per ray, not
   a per-bin scalar); `I0_bins[:, :, b] .* exp.(-bin_b)` recovers the recorded counts.
-- `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
 - `dose`      — the acquisition's [`DoseReport`](@ref), or `nothing` with `report_dose = false`
-  (`dose_kwargs` reaches [`compute_dose`](@ref); `noise_rng = :threaded` draws the counts in
-  independent per-chunk streams, see [`apply_pcct_noise!`](@ref)).
-- `raw_counts` — captured by default; independent per-bin arrays containing
-  the detector counts immediately before pile-up correction and scatter
-  correction.  With noise on and pile-up off they are captured verbatim at
-  the sampling site: bit-exact integer Poisson realizations with TRUE ZEROS
-  preserved (the floor at 1 applies only to the log-domain sinograms, where
-  a zero count has no finite representation — the simulator imposes no
-  zero-count policy on the counts themselves).  With pile-up on, forward
-  migration (`S × counts`) re-mixes the draws into fractional recorded
-  counts (real detector physics); with noise off, they are the continuous
-  expected counts λ.
+  (`dose_kwargs` reaches [`compute_dose`](@ref)).
+- `raw_counts` — captured by default; independent per-bin arrays of each pixel's counts before
+  the pile-up and scatter corrections: the digital sum of its native dexels' counts. With noise
+  on and pile-up off they are integers, true zeros kept (the floor at 1 applies only to the
+  log-domain sinograms); pile-up (`S × counts` per native dexel) makes them fractional; with noise
+  off they are the expected counts.
+
+The noise is drawn per native dexel, photon class by photon class ([`pcct_count!`](@ref)): each
+dexel Poisson, neighbours covarying through the photons they share, so a 2 × 2 binned pixel's
+variance exceeds its mean. Views are drawn in parallel from streams seeded by `(seed, view)`.
 
 Capturing raw counts allocates one additional full-size array per energy bin;
 pass `capture_raw_counts=false` only when memory-constrained.
@@ -130,7 +179,6 @@ function simulate!(
         capture_raw_counts::Bool = true,
         report_dose::Bool = true,
         dose_kwargs = (;),
-        noise_rng::Symbol = :serial,
         projection = nothing,
         keep_projection::Bool = false,
     ) where {T}
@@ -175,7 +223,7 @@ function simulate!(
                 ws_bins = ws.bins, ws_μ_volume = ws.μ_volume, ws_sino_buf = ws.sino_buf,
                 ws_scratch = ws.scratch,
                 ws_thresholds_T = ws.thresholds_T,
-                ws_η = ws.η, ws_R = ws.R, ws_R_energies = ws.R_energies,
+                ws_R = ws.R, ws_R_energies = ws.R_energies,
                 ws_I0 = ws.I0,
                 ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
                 ws_μ_table = ws.μ_table,
@@ -264,7 +312,7 @@ function simulate!(
             ew = compute_scatter_energy_weights(Float64.(energies))
             bin_weights = compute_scatter_bin_weights(
                 Float64.(energies), Float64.(weights),
-                ew, Float64.(ws.η), ws.R, ws.kVp
+                ew, ws.R, ws.kVp
             )
 
             # Step 4: Inject scatter into each bin
@@ -274,90 +322,26 @@ function simulate!(
         length(projection.bins) == length(ws.bins) && size(first(projection.bins)) == size(first(ws.bins)) ||
             throw(DimensionMismatch("the projection does not match this workspace's bins"))
         pcct_sino = EnergyResolvedSinogram([copy(b) for b in projection.bins], projection.thresholds_keV)
+        if ws.native_bins !== nothing
+            for (dst, src) in zip(ws.native_bins, projection.native_bins)
+                copyto!(dst, src)
+            end
+        end
     end
-    kept = keep_projection ? (bins = [copy(b) for b in pcct_sino.bins], thresholds_keV = pcct_sino.thresholds_keV) : nothing
+    kept = keep_projection ? (
+            bins = [copy(b) for b in pcct_sino.bins],
+            native_bins = ws.native_bins === nothing ? nothing : [copy(b) for b in ws.native_bins],
+            thresholds_keV = pcct_sino.thresholds_keV,
+        ) : nothing
 
-    # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
-    # Exact integer Poisson counts, sampled in the SAME air-cal basis
-    # (ws.I0_bins) the bins are normalized against, so a downstream
-    # `I0 · exp(-h)` recovers the sampled counts exactly.
-    #
-    # When pile-up is off, nothing modifies the bins between the noise draw
-    # and the raw-count capture point, so the capture happens AT the sampling
-    # site (`raw_out`) — the measured counts land in `raw_counts` verbatim,
-    # before the log-domain floor at 1, with TRUE ZEROS preserved.
-    pileup_active = ws.pileup && ws.pileup_S !== nothing
-    raw_from_noise = capture_raw_counts && sim_opts.use_noise && !pileup_active ?
-        [similar(bin) for bin in pcct_sino.bins] : nothing
-    if sim_opts.use_noise
-        apply_pcct_noise!(
-            pcct_sino, ws.I0_cpu;
-            seed = sim_opts.seed,
-            ws_noise_staging = ws.noise_staging,
-            ws_rng = ws.rng,
-            noise_reduction = ws.noise_reduction,
-            raw_out = raw_from_noise,
-            rng_mode = noise_rng,
-        )
-    end
-
-    # ─── MC-LUT pulse pileup — full spectral-migration matrix S ───
-    # S[i,j] = P(true-bin-j count is recorded in bin-i), pre-computed at
-    # workspace creation by `compute_mc_pileup_matrix` (Monte Carlo of
-    # `simulate_pulse_train` with per-event trigger-bin tracking).  Column
-    # sums ≤ 1 — the deficit is the count loss, so a single S × counts
-    # multiply captures inter-bin migration AND count loss in one pass.
-    # No analytical Taguchi / semi-non-paralyzable count factor.
-    #
-    # Per-pixel pipeline (one fused kernel):
-    #   counts[j]   = I0_truth[j] · exp(-bins[j])
-    #   recorded[i] = Σ_j S[i,j] · counts[j]
-    #   bins[i]     = -log(recorded[i] / I0_truth[i])      ←  truth-basis (KEY!)
-    #
-    # **Truth-basis normalization** (NOT recorded-basis): the post-pileup
-    # bin is `-log(recorded / I0_truth)` so the I0 returned to the caller
-    # remains the truth I0 — i.e. `I0_b · exp(-bin) = recorded_count`,
-    # the count-domain math notebooks rely on for scatter correction stays
-    # valid.  Bins for an air ray are no longer exactly 0 but a small
-    # per-bin offset `log(I0_truth / I0_recorded)` reflecting how much of
-    # the bin's air baseline pile-up shifted into other bins — physically
-    # the right thing.
-    #
-    # Why this matters: an earlier draft normalized against I0_recorded
-    # which made an air ray give bins=0 but broke nb04's scatter
-    # subtraction (`N_measured - N_scatter`) by mis-scaling per-bin I0
-    # vs the I0_total used inside scatter — over-corrected bins 1–3,
-    # under-corrected bin 4 → bin-2-only streaks.
-    if ws.pileup && ws.pileup_S !== nothing
-        length(pcct_sino.bins) == 4 || error("MC pile-up application is currently specialized to 4 bins; got $(length(pcct_sino.bins)).")
-        apply_pcct_pileup!(pcct_sino.bins, ws.I0, ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
-    end
-
-    # Snapshot the acquisition output before either correction mutates it.
-    # The correction routines consume counts reconstructed from this exact
-    # truth-I0 log representation, so this captures their actual inputs,
-    # including any count floors already applied by the enabled acquisition
-    # stages. Each array owns its storage and therefore cannot be overwritten
-    # by correction or by a later reuse of the workspace.
-    raw_counts = if raw_from_noise !== nothing
-        # Captured verbatim at the sampling site: exact draws, true zeros.
-        raw_from_noise
-    elseif capture_raw_counts
-        # Pile-up on (fractional recorded counts) or noise off (expected
-        # counts λ): reconstruct the pre-correction count-domain state.
-        _capture_pcct_raw_counts(pcct_sino.bins, ws.I0)
-    else
-        nothing
-    end
-
-    # --- PCCT pileup correction (optional; pileup_correction) ---
-    # Inverts the MC pileup matrix S applied above via apply_pcct_pileup_correction! —
-    # the same model-based un-pileup a clinical recon performs before downstream
-    # processing.  Logically identical to the validated nb08 inline sim_pileup cell.
-    # Runs before scatter correction so the latter re-estimates from un-piled counts.
-    if ws.pileup && ws.pileup_S !== nothing && ws.pileup_correction
-        apply_pcct_pileup_correction!(pcct_sino.bins, ws.I0, ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
-    end
+    # ─── Detection: every native dexel counts, piles up, and the counts are summed ───
+    # The expected counts of each native dexel (primary, focal-spot blur and scatter included),
+    # drawn photon class by photon class (`pcct_count!`: each dexel Poisson, neighbours covarying
+    # through the photons they share), piled up at the dexel's own rate, then summed 2 × 2 after
+    # counting (digital binning), so a binned pixel's variance exceeds its mean. `raw_counts` are
+    # the summed counts before the log-domain floor at one and before any correction.
+    raw_counts = capture_raw_counts ? [similar(b) for b in pcct_sino.bins] : nothing
+    _pcct_detect!(ws, pcct_sino.bins, sim_opts.use_noise, sim_opts.seed, raw_counts)
 
     # --- PCCT scatter correction (optional; scatter_correction) ---
     # Model-based re-estimate-and-subtract, logically identical to the validated
@@ -388,7 +372,7 @@ function simulate!(
         ew_corr = compute_scatter_energy_weights(Float64.(energies))
         bin_weights_corr = compute_scatter_bin_weights(
             Float64.(energies), Float64.(weights),
-            ew_corr, Float64.(ws.η), ws.R, ws.kVp
+            ew_corr, ws.R, ws.kVp
         )
         inject_scatter_bins!(
             pcct_sino.bins, scatter_field_corr, I0, I0_total,
@@ -401,14 +385,10 @@ function simulate!(
     #
     # Returned fields:
     # - `pcct_sino`  : per-bin log-line-integral sinograms.  When pile-up is
-    #                  on these are `-log(recorded / I0_truth)`; running
-    #                  `apply_pcct_pileup_correction!` with `pileup_S` recovers
-    #                  truth-like bins for downstream calibration / decomp.
+    #                  on these are `-log(recorded / I0_truth)`; `apply_pileup!` with a
+    #                  `calibrate_pileup` calibration recovers pile-up-free bins.
     # - `I0_bins`    : truth per-bin air baseline (DRM-weighted, pre-pileup).
     #                  `I0_b · exp(-bin) = recorded count` round-trip identity.
-    # - `pileup_S`   : MC pile-up migration matrix (`nothing` when pile-up off).
-    #                  Pass into `apply_pcct_pileup_correction!` to invert
-    #                  the pile-up degradation in the sinogram domain.
     # - `dose`       : `DoseReport` of this acquisition (CTDIvol, DLP, …) from the simulated
     #                  beam; `nothing` with `report_dose = false`.  Costs a cached Monte Carlo
     #                  (about a second) the first time a given beam is seen, then nothing.
@@ -416,15 +396,10 @@ function simulate!(
     # `dose_kwargs` reaches `compute_dose`'s keywords: the defaults are one tube and the 32 cm
     # body phantom, so a head protocol wants `(; phantom = :head16)` and a dual-source scanner
     # `(; n_tubes = 2)`.
-    #
-    # `noise_rng = :threaded` draws the per-bin counts in fixed chunks with independent streams
-    # instead of one serial stream — 3-4x faster on the noise, a different realisation of the
-    # same distribution, and the same realisation for any thread count.  See
-    # [`apply_pcct_noise!`](@ref).
+
     result = (
         pcct_sino = pcct_sino,
         I0_bins = ws.I0,            # per ray: [n_cols, n_rows, n_bins], the air response of each ray and bin
-        pileup_S = ws.pileup_S,
         dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing,
     )
     result = capture_raw_counts ? merge(result, (; raw_counts)) : result
@@ -623,21 +598,22 @@ function simulate!(
             copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
         end
     end
-    if sim_opts.use_noise || has_scatter
-        let sino = ws.sinogram, disp = ws.dispersion, rg = ws.noise_rand_gpu,
-                eg = σ > zero(T) ? ws.enoise_rand_gpu : ws.noise_rand_gpu,
-                I0v = I0v, σ = σ, noisy = sim_opts.use_noise,
-                sf = sf_kernel, sw = T(scatter_total_weight), do_sc = has_scatter
-            AK.foreachindex(sino) do idx
-                λ = I0v * exp(-sino[idx])
-                if noisy
-                    λ += sqrt(max(disp[idx] * λ, zero(T))) * rg[idx] + σ * eg[idx]
-                end
-                if do_sc
-                    λ -= I0v * sf[idx] * sw
-                end
-                sino[idx] = -log(max(λ, one(T)) / I0v)
+    let sino = ws.sinogram, disp = ws.dispersion, rg = ws.noise_rand_gpu,
+            gain = ws.dexel_gain, offset = ws.dexel_offset, ncnr = length(ws.dexel_gain),
+            eg = σ > zero(T) ? ws.enoise_rand_gpu : ws.noise_rand_gpu,
+            I0v = I0v, σ = σ, noisy = sim_opts.use_noise,
+            sf = sf_kernel, sw = T(scatter_total_weight), do_sc = has_scatter
+        AK.foreachindex(sino) do idx
+            λ = I0v * exp(-sino[idx])
+            if noisy
+                λ += sqrt(max(disp[idx] * λ, zero(T))) * rg[idx] + σ * eg[idx]
             end
+            ray = (idx - 1) % ncnr + 1
+            λ = gain[ray] * λ + offset[ray]          # the dexel's own gain and offset
+            if do_sc
+                λ -= I0v * sf[idx] * sw
+            end
+            sino[idx] = -log(max(λ, one(T)) / I0v)
         end
     end
 
@@ -1102,14 +1078,12 @@ function build_physics_config(
     # --- Physics Pipeline effects (from Scanner fields where available) ---
 
     # Fill factor: use Scanner's row/col fill factors
-    if sim_opts.use_fill_factor
-        row_fill = scanner.fill_factor_row
-        col_fill = scanner.fill_factor_col
-        if row_fill > 0 && col_fill > 0
-            kwargs[:fill_factor] = FillFactorModel(row_fill, col_fill, row_fill ≈ col_fill)
-        else
-            kwargs[:fill_factor] = fill_factor_standard()
-        end
+    if sim_opts.use_fill_factor && scanner isa EICTScanner
+        kwargs[:fill_factor] = FillFactorModel(
+            scanner.fill_factor_row,
+            scanner.fill_factor_col,
+            scanner.fill_factor_row ≈ scanner.fill_factor_col,
+        )
     end
 
     # Detector response (EICT only): the scintillator's Geant4 table, or analytic absorption with

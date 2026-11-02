@@ -336,7 +336,7 @@ does across the fan.  `I0` is the workspace's `[n_cols, n_rows, n_bins]` table; 
 workspace a flat one is built from `_compute_bin_I0` (scaled by `bf²` when the counts were
 binned from native dexels).
 """
-function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, η, thresholds, kVp, I0_phys, R, bf)
+function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, thresholds, kVp, I0_phys, R, bf)
     T = eltype(bins[1])
     n_bins = length(bins)
     nc = Int32(size(bins[1], 1)); nr = Int32(size(bins[1], 2)); ncnr = nc * nr
@@ -345,7 +345,7 @@ function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, η, thr
     else
         flat = similar(bins[1], T, Int(nc), Int(nr), n_bins)
         for b in 1:n_bins
-            fill!(view(flat, :, :, b), T(_compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0_phys); R = R) * bf * bf))
+            fill!(view(flat, :, :, b), T(_compute_bin_I0(detector, energies, weights, thresholds, b, Float64(kVp), Float64(I0_phys); R = R) * bf * bf))
         end
         flat
     end
@@ -369,10 +369,10 @@ Perform polychromatic photon-counting CT forward projection with MC DRM spectral
 This is the main PCCT forward projection API. It:
 1. Computes energy-dependent μ-volumes from mask + materials (per energy)
 2. Forward projects at each energy using Siddon ray-tracing
-3. Applies quantum efficiency η(E) weighting (material-dependent)
-4. Applies spectral response matrix R(E,b) from MC DRM for realistic energy binning
-5. Applies spatial binning if native dexel resolution is used
-6. Returns energy-resolved sinograms in line-integral domain
+3. Applies spectral response matrix R(E,b) from MC DRM (counts per incident photon, absorption
+   included) for realistic energy binning
+4. Applies spatial binning if native dexel resolution is used
+5. Returns energy-resolved sinograms in line-integral domain
 
 All detector physics (charge sharing, fluorescence escape, pileup, anti-coincidence)
 are encoded in the MC DRM R matrix. No separate analytical detector effects are applied.
@@ -394,12 +394,11 @@ are encoded in the MC DRM R matrix. No separate analytical detector effects are 
 # Physics
 
 The per-bin photon count is:
-    N_b = Σ_E R(E,b) × S(E) × η(E) × exp(-∫μ(x,E)dl)
+    N_b = Σ_E R(E,b) × S(E) × exp(-∫μ(x,E)dl)
 
 where:
-- R(E,b) = MC DRM spectral response matrix entry (probability E registers in bin b)
+- R(E,b) = MC DRM spectral response matrix entry (counts in bin b per incident photon of E)
 - S(E) = normalized tube spectrum weight
-- η(E) = quantum detection efficiency of detector crystal
 - ∫μ(x,E)dl = line integral of energy-dependent attenuation
 
 # Example
@@ -437,7 +436,6 @@ function pcct_forward_project(
     ws_scratch = nothing,
     ws_thresholds_T = nothing,
     # Pre-computed spectral data (optional — compute internally if not provided)
-    ws_η = nothing,           # quantum efficiency vector (n_energies)
     ws_R = nothing,           # spectral response matrix (n_energies × n_bins)
     ws_R_energies = nothing,  # energy grid for R
     ws_I0 = nothing,           # per-ray air response [n_cols, n_rows, n_bins] (binned resolution) for normalization
@@ -492,7 +490,6 @@ function pcct_forward_project(
     proj_geom = use_native ? native_geom : geom
 
     # Pre-compute quantum efficiency for all energies (CPU, scalar values)
-    η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
 
     # MC-LUT detector response matrix R(E, bin).  Either passed in via
     # `ws_R` (workspace pre-compute) or built here from `compute_mc_drm`.
@@ -636,7 +633,7 @@ function pcct_forward_project(
 
         # Convert from photon counts to line-integral domain against each ray's own air
         # response: sino = -log(N / I₀[col, row, b])
-        _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, η, thresholds, kVp, I0, R, use_native ? bf : 1)
+        _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, thresholds, kVp, I0, R, use_native ? bf : 1)
 
         # Thresholds
         thresh_T = if ws_thresholds_T !== nothing
@@ -720,11 +717,10 @@ function pcct_forward_project(
             volume_extent=volume_extent)
 
         # Weight by spectrum and quantum efficiency
-        η_E = T(η[e_idx])
         w_T = T(w)
         I0_T = T(I0)
 
-        # Spectrum × QE × MC-LUT DRM column for each bin: wt = I0 · w(E) · η(E) · R(E, b).
+        # Spectrum × MC-LUT DRM column for each bin: wt = I0 · w(E) · R(E, b).
         # The MC DRM is the single source of detector physics (charge sharing,
         # fluorescence escape, Compton escape, Fano broadening) — ideal-bin
         # fallback is intentionally absent.
@@ -737,14 +733,14 @@ function pcct_forward_project(
                 continue
             end
             if ws_source_spectral === nothing
-                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
+                let wt = I0_T * w_T * R_val, ba = accum_bins[b]
                     AK.foreachindex(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
             else
                 # the source transmission at this ray and energy (bowtie × heel), as the fused path
-                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b], bt = ws_source_spectral,
+                let wt = I0_T * w_T * R_val, ba = accum_bins[b], bt = ws_source_spectral,
                         m = Int32(size(sino_buf, 1) * size(sino_buf, 2)), off = Int32(e_idx - 1) * Int32(size(sino_buf, 1) * size(sino_buf, 2))
                     AK.foreachindex(sino_buf) do idx
                         ray = (Int32(idx - 1) % m) + Int32(1)
@@ -763,7 +759,7 @@ function pcct_forward_project(
     end
 
     # Convert from photon counts to line-integral domain against each ray's own air response
-    _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, η, thresholds, kVp, I0, R, use_native ? bf : 1)
+    _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, thresholds, kVp, I0, R, use_native ? bf : 1)
 
     # Use workspace thresholds if provided, otherwise allocate
     thresh_T = if ws_thresholds_T !== nothing
@@ -778,18 +774,18 @@ function pcct_forward_project(
 end
 
 """
-    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R) -> Float64
+    _compute_bin_I0(detector, energies, weights, thresholds, bin_idx, kVp, I0; R) -> Float64
 
 Reference photon count I₀ for one energy bin (the unattenuated count expected
 in `bin_idx` — the denominator for the `-log(N / I0)` step in
 `pcct_forward_project`).
 
 `R` is the MC-LUT detector response matrix (`compute_mc_drm`).  Mapping
-each spectrum energy onto its R-row and summing `I0 · w(E) · η(E) · R(E, bin_idx)`
+each spectrum energy onto its R-row and summing `I0 · w(E) · R(E, bin_idx)` (R per incident photon: absorption included)
 keeps this consistent with the forward-projection accumulator and guarantees
 the `-log(N / I0)` normalization produces well-defined line integrals.
 """
-function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R)
+function _compute_bin_I0(detector, energies, weights, thresholds, bin_idx, kVp, I0; R)
     n_energies = length(energies)
     n_R = size(R, 1)
     I0_bin = 0.0
@@ -802,7 +798,7 @@ function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, k
         # Map spectrum energy to DRM grid index
         r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
         R_val = R[r_idx, bin_idx]
-        I0_bin += I0 * w * η[e_idx] * R_val
+        I0_bin += I0 * w * R_val
     end
     return max(I0_bin, 1.0)  # Avoid division by zero
 end
@@ -811,146 +807,6 @@ end
 # PCCT Noise Model (PCCT-NOISE-DECOMP)
 # =============================================================================
 
-"""
-    apply_pcct_noise!(sino::EnergyResolvedSinogram, I0;
-                      seed=nothing, ws_noise_staging=nothing, ws_rng=nothing,
-                      noise_reduction=0.0) -> EnergyResolvedSinogram
-
-Draw exact per-bin Poisson count realizations in-place.
-
-Incident photons are Poisson distributed and the MC-LUT detector response
-(quantum efficiency + spectral migration) acts as independent per-photon
-thinning, so the recorded counts in each bin are exactly Poisson with the
-DRM-shaped expected counts as their mean.  Charge-sharing double counting
-across bins is the one residual effect outside this model.  NO electronic
-noise — eliminated by the counting thresholds, the fundamental PCCT
-advantage.
-
-`I0_bins` must be the SAME per-bin air calibration the sinograms are
-normalized against (`ws.I0`, per ray), so a downstream `I0 · exp(-h)` recovers
-the sampled integer counts exactly.
-
-For each bin `b` and ray:
-1. expected counts `λ = I0[col, row, b] · exp(-h)`;
-2. `N ~ Poisson(λ)` — exact integer sampling at every λ (`_poisson_sample`);
-3. optional `noise_reduction` blend `λ + (1 - nr)·(N - λ)`; any nonzero value
-   leaves the strict Poisson count model (vendor-denoising surrogate only);
-4. the measured count is written verbatim to `raw_out[b]` when provided
-   (TRUE ZEROS preserved), then floored at 1 ONLY for the log-domain bins —
-   a zero count has no finite log line integral — and stored back as
-   `h = -log(max(N, 1) / I0[col, row, b])`.
-
-The simulator imposes no zero-count policy on the counts product: any
-epsilon/interpolation convention for zeros is a downstream (user) choice.
-
-# Arguments
-- `sino::EnergyResolvedSinogram`: per-bin log line integrals, mutated in place.
-- `I0`: the air response per ray and bin, `[n_cols, n_rows, n_bins]` (the workspace's `I0_cpu`).
-
-# Keyword Arguments
-- `seed::Union{Nothing,Int}`: RNG seed for reproducibility.
-- `ws_noise_staging`: optional pre-allocated sinogram-shaped CPU buffer.
-- `ws_rng`: optional pre-allocated RNG (re-seeded each call).
-- `noise_reduction::Float64`: 0.0 = exact Poisson counts (default).
-- `raw_out`: optional vector of per-bin arrays (same backend/shape as the
-  bins) that receives the measured counts BEFORE the log-domain floor.
-  With `noise_reduction = 0` these are the exact integer draws.
-- `rng_mode::Symbol`: `:serial` (default) draws every element from one
-  `MersenneTwister` in index order, which is the stream earlier versions
-  produced and the one an oracle test can reproduce.  `:threaded` splits the
-  sinogram into a fixed number of chunks with an independent stream each, and
-  is 10-15x faster on a clinical photon-counting scan (the serial draw is
-  about 78 % of such a `simulate!`: 16 s of 20 s at 1195 x 62 x 1200 x 4
-  bins).  It gives a DIFFERENT realisation of the same distribution, and the
-  same one for any thread count.
-"""
-function apply_pcct_noise!(
-    sino::EnergyResolvedSinogram{T,A},
-    I0::AbstractArray{<:Real, 3};
-    seed::Union{Nothing,Int} = nothing,
-    ws_noise_staging = nothing,
-    ws_rng = nothing,
-    noise_reduction::Float64 = 0.0,
-    raw_out = nothing,
-    rng_mode::Symbol = :serial,
-) where {T, A}
-    rng_mode in (:serial, :threaded) ||
-        throw(ArgumentError("rng_mode must be :serial or :threaded, got :$(rng_mode)"))
-    length(sino.bins) == size(I0, 3) ||
-        throw(DimensionMismatch("one I0 plane [n_cols, n_rows] is required per PCCT bin"))
-    size(I0, 1) == size(sino.bins[1], 1) && size(I0, 2) == size(sino.bins[1], 2) ||
-        throw(DimensionMismatch("I0 must be [n_cols, n_rows, n_bins] at the sinogram's resolution"))
-    n_rays = size(I0, 1) * size(I0, 2)
-    raw_out === nothing || length(raw_out) == length(sino.bins) ||
-        throw(DimensionMismatch("one raw_out array is required per PCCT bin"))
-
-    rng = if ws_rng !== nothing
-        Random.seed!(ws_rng, isnothing(seed) ? 0 : seed)
-        ws_rng
-    else
-        isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
-    end
-
-    cpu_buf = ws_noise_staging !== nothing ? ws_noise_staging : Array(sino.bins[1])
-    nr_scale = 1.0 - noise_reduction
-
-    for (b, bin) in enumerate(sino.bins)
-        I0_b = Float64.(vec(view(I0, :, :, b)))     # per ray, [n_cols·n_rows]
-
-        # Bulk GPU→CPU transfer (reuses pre-allocated buffer)
-        copyto!(cpu_buf, bin)
-
-        # Pass 1: measured counts (pre-floor; exact integers when nr = 0)
-        if rng_mode === :serial
-            @inbounds for idx in eachindex(cpu_buf)
-                λ = I0_b[(idx - 1) % n_rays + 1] * exp(-Float64(cpu_buf[idx]))
-                N = Float64(_poisson_sample(rng, λ))
-                if nr_scale != 1.0
-                    N = λ + nr_scale * (N - λ)
-                end
-                cpu_buf[idx] = T(N)
-            end
-        else
-            # One stream per chunk, seeded from (seed, bin, chunk). The chunk COUNT is fixed,
-            # not `nthreads()`, so the realisation is a property of the seed alone and two runs
-            # on differently loaded machines agree exactly.
-            n = length(cpu_buf)
-            per_chunk = cld(n, _PCCT_NOISE_CHUNKS)
-            # `nothing` means unseeded, so it has to stay unseeded here too: taking a fixed 0
-            # would make every "unseeded" threaded run produce the same counts.
-            base = isnothing(seed) ? rand(Random.default_rng(), UInt64) : UInt64(seed)
-            Threads.@threads for chunk in 1:_PCCT_NOISE_CHUNKS
-                lo = (chunk - 1) * per_chunk + 1
-                lo > n && continue
-                hi = min(chunk * per_chunk, n)
-                rng_chunk = Random.Xoshiro(hash((base, b, chunk)))
-                @inbounds for idx in lo:hi
-                    λ = I0_b[(idx - 1) % n_rays + 1] * exp(-Float64(cpu_buf[idx]))
-                    N = Float64(_poisson_sample(rng_chunk, λ))
-                    if nr_scale != 1.0
-                        N = λ + nr_scale * (N - λ)
-                    end
-                    cpu_buf[idx] = T(N)
-                end
-            end
-        end
-        raw_out === nothing || copyto!(raw_out[b], cpu_buf)
-
-        # Pass 2: floor at 1 for the log domain only, convert back in place
-        @inbounds for idx in eachindex(cpu_buf)
-            cpu_buf[idx] = T(-log(Float64(max(cpu_buf[idx], one(T))) / I0_b[(idx - 1) % n_rays + 1]))
-        end
-
-        # Bulk CPU→GPU transfer
-        copyto!(bin, cpu_buf)
-    end
-
-    return sino
-end
-
-# Chunks of the sinogram that `rng_mode = :threaded` draws independently. Fixed, so the
-# realisation does not depend on how many threads happen to be available.
-const _PCCT_NOISE_CHUNKS = 64
 
 # log(k!) for k = 0…20 exactly; Stirling–de Moivre series beyond (rel. error
 # < 1e-10 at k = 21, decreasing with k — far below rejection-test resolution).
@@ -1241,4 +1097,3 @@ export pcct_forward_project
 export get_detector_material_properties, get_detector_material_attenuation
 export quantum_efficiency, quantum_efficiency_vector
 export spatial_bin!
-export apply_pcct_noise!

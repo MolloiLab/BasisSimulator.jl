@@ -45,7 +45,6 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     noise_staging::Array{T, 3}  # CPU buffer for GPU↔CPU noise transfer
 
     # ─── Pre-computed CPU vectors/matrices ───
-    η::Vector{Float64}          # quantum efficiency vector (n_energies)
     R::Matrix{Float64}          # spectral response matrix (n_energies × n_bins)
     R_energies::Vector{Float64} # energy grid for R matrix
     # ─── Air response, per ray ───
@@ -106,9 +105,10 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # rate (linear in rate, as the loss is) and the correction inverts that same per-ray matrix, so the bins
     # stay `-log(recorded / I0[col, row, b])` and `I0 · exp(-bin) = recorded count` holds per ray.
     pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
-    pileup_correction::Bool                            # PCCTScanner.pileup_correction
+    defects::Union{Nothing, NamedTuple}                # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`)
     scatter_correction::Bool                           # PCCTScanner.scatter_correction
     noise_reduction::Float64                           # PCCTScanner.noise_reduction
+    noise_classes::NamedTuple                          # the photons neighbouring native dexels share (`pcct_event_classes`)
     pileup_S::Union{Nothing, Array{Float64, 3}}        # (n_bins × n_bins × n_rates), nothing when pileup off
     pileup_rates::Vector{Float64}                      # the count rates (photons / s / dexel) of pileup_S
     pileup_rate_air::Float64                           # the brightest ray's incident count rate per dexel (the grid's top)
@@ -197,16 +197,15 @@ function create_workspace(
         kVp = Float64(maximum(energies))
         thresholds = pcct_detector.energy_thresholds_keV
         # Pre-compute spectral response data
-        η_vec = quantum_efficiency_vector(pcct_detector.material, pcct_detector.thickness_mm, energies)
         R_mat = compute_mc_drm(pcct_detector, kVp)
         R_energies_vec = collect(range(1.0, Float64(kVp), length = size(R_mat, 1)))
 
         # BHC, scatter correction, and pile-up correction are all decoupled —
         # applied at the notebook level via dedicated `apply_*` functions.
 
-        # Pre-compute per-bin I0 (DRM-weighted spectrum × η) in PHYSICAL counts.
+        # Pre-compute per-bin I0 (DRM-weighted spectrum) in PHYSICAL counts.
         # `_I0_anchor` is the protocol-derived incident photons per ray per view
-        # divided by the raw spectrum sum, so N_air(b) = I0_phys·Σ(ŵ·η·R) — true
+        # divided by the raw spectrum sum, so N_air(b) = I0_phys·Σ(ŵ·R) — true
         # detected counts.  The SAME anchor scales the forward W matrix below;
         # the two sites are a coupled invariant (a global count-unit rescale):
         # change them TOGETHER or the -log(N/I0) round trip breaks.  Previously
@@ -255,8 +254,9 @@ function create_workspace(
         bf = scanner.binning_factor
         if bf > 1
             magnification = scanner.source_to_detector / scanner.source_to_isocenter
-            native_col_iso_mm = scanner.native_dexel_col_mm / magnification
-            native_row_iso_mm = scanner.native_dexel_row_mm / magnification
+            # a native dexel's pitch: the pixel's over the binning
+            native_col_iso_mm = scanner.detector_col_size / bf
+            native_row_iso_mm = scanner.detector_row_size / bf
             # Build native geometry directly — same source/detector positions as binned
             # but with bf× more cols and rows at native dexel pitch
             _native_n_cols = geom.n_cols * bf
@@ -308,7 +308,7 @@ function create_workspace(
         fill!(_μ_table_gpu, zero(T))
         copyto!(view(_μ_table_gpu, :, 1:n_energies), μ_table)
 
-        # Build W matrix: W[e, b] = I0 * w[e] * η[e] * R[e, b]
+        # Build W matrix: W[e, b] = I0 * w[e] * R[e, b] (R per incident photon, absorption included)
         # SAME physical anchor as I0_bins_norm_vec above (coupled invariant).
         _I0 = _I0_anchor
         n_R = size(R_mat, 1)
@@ -321,7 +321,7 @@ function create_workspace(
             end
             r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
             for b in 1:n_bins
-                W_cpu[e_idx, b] = T(_I0 * w * η_vec[e_idx] * R_mat[r_idx, b])
+                W_cpu[e_idx, b] = T(_I0 * w * R_mat[r_idx, b])
             end
         end
         # `W_cpu` is the detected response per BINNED pixel (the anchor is photons per binned pixel
@@ -337,11 +337,19 @@ function create_workspace(
         # The bowtie's flux profile across the fan is its purpose (full beam at the centre, a small
         # fraction at the edge); it enters the fused spectral kernel per ray, and the air response
         # per ray below is what the bins are normalised against.
-        _bt_table(g) = let
+        # At the projection's resolution (native when binned) it carries the grid's shadow too:
+        # each native dexel's gain in its 4 × 6 cell (`pcct_position_gain`), the response being
+        # the cell's mean.
+        _bt_table(g; grid::Bool) = let
             bt = bowtie_filter !== nothing && bowtie_filter.name != "none" ?
                 compute_bowtie_attenuation_spectral(bowtie_filter, g, Float64.(energies)) : nothing
             heel = config.heel_effect !== nothing ? compute_heel_spectral(config.heel_effect, g, Float64.(energies)) : nothing
             trans = bt === nothing ? heel : (heel === nothing ? bt : bt .* heel)
+            if grid
+                gain = pcct_position_gain(energies)
+                cell = [gain[mod1(c, 4), mod1(r, 6), e] for c in 1:g.n_cols, r in 1:g.n_rows, e in 1:n_energies]
+                trans = trans === nothing ? cell : trans .* cell
+            end
             trans === nothing && return nothing
             padded = zeros(T, size(trans, 1), size(trans, 2), n_energies_padded)
             padded[:, :, 1:n_energies] .= T.(trans)
@@ -350,8 +358,8 @@ function create_workspace(
             (out, trans)
         end
         bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
-        _bt_binned = _bt_table(geom)
-        _bt_native = bf > 1 ? _bt_table(_native_geom) : nothing
+        _bt_binned = _bt_table(geom; grid = bf == 1)
+        _bt_native = bf > 1 ? _bt_table(_native_geom; grid = true) : nothing
         _bowtie_spectral_gpu = _bt_binned === nothing ? nothing : _bt_binned[1]
         _native_bowtie_spectral_gpu = _bt_native === nothing ? nothing : _bt_native[1]
 
@@ -439,7 +447,7 @@ function create_workspace(
             for k in 2:length(_pileup_rates)
                 S[:, :, k] = compute_mc_pileup_matrix(
                     pcct_detector.energy_thresholds_keV, w_norm, Float64.(energies), _pileup_rates[k], _τ_ns;
-                    n_trials = 5000, seed = 42 + k,
+                    seed = 42 + k,
                 )
             end
             S
@@ -471,14 +479,17 @@ function create_workspace(
             bins, μ_volume, sino_buf, scratch,
             combined,
             noise_staging,
-            η_vec, R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec, rng,
+            R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec, rng,
             μ_lut_cpu, μ_lut_gpu, μ_table,
             geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
             _native_bins, _native_sino_buf,
             _native_geom, _n_src, _n_det, _n_u, _n_v,
             tube_scratch, _pcct_focal_kernel,
             _μ_table_gpu, _W_matrix_gpu, _bowtie_spectral_gpu, _native_bowtie_spectral_gpu, _outputs_flat, _native_outputs_flat,
-            _use_pileup, scanner.pileup_correction, scanner.scatter_correction, Float64(scanner.noise_reduction), _pileup_S,
+            _use_pileup,
+            _pcct_dexel_defects(scanner, (bf > 1 ? _native_geom : geom).n_cols, (bf > 1 ? _native_geom : geom).n_rows, energies, weights_vec),
+            scanner.scatter_correction, Float64(scanner.noise_reduction),
+            pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec), _pileup_S,
             _pileup_rates, _count_rate_air,
             geom, energies, weights_vec, config, pcct_detector, mats,
             kVp, dose_source(scanner, protocol)
@@ -533,6 +544,8 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
     bowtie_spectral::Union{Nothing, A3}         # [n_cols, n_rows, n_energies] spectral transmission
     air_reference::A2                           # [n_cols, n_rows] air signal S₁ of each dexel
+    dexel_gain::A2                              # [n_cols, n_rows] each dexel's gain (1: ideal)
+    dexel_offset::A2                            # [n_cols, n_rows] each dexel's offset, units of E_ref (0: ideal)
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
 
     # ─── Noise (CPU + GPU) ───
@@ -737,7 +750,7 @@ function create_eict_workspace(
     end
 
     # Upload μ_table to GPU, padded to multiple of 16 for tiled projection (SPEED-BUILD-V2-002)
-    # Extra columns are zero-filled — zero wη weights ensure they contribute nothing.
+    # Extra columns are zero-filled — zero weights ensure they contribute nothing.
     n_energies_padded = cld(n_energies, 16) * 16
     μ_table_gpu = similar(ref, T, n_regions, n_energies_padded)
     fill!(μ_table_gpu, zero(T))
@@ -815,6 +828,7 @@ function create_eict_workspace(
 
     # The electronic noise in signal units: electrons → keV (the gain) → E_ref
     σ_electronic = T(scanner.electronic_noise / scanner.detection_gain / E_ref)
+    dexel_defects = _eict_dexel_defects(scanner, sino_shape[1], sino_shape[2], E_ref)
 
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, similar(ref, T, sino_shape), μ_volume, sino_mono, I_transmitted,
@@ -822,7 +836,10 @@ function create_eict_workspace(
         scatter_kernel,
         scatter_kernel_1d, scatter_temp,
         optical_crosstalk_kernel, focal_spot_kernel,
-        bowtie_spectral_gpu, air_reference, lag_coeffs_buf,
+        bowtie_spectral_gpu, air_reference,
+        copyto!(similar(ref, T, sino_shape[1], sino_shape[2]), T.(dexel_defects[1])),
+        copyto!(similar(ref, T, sino_shape[1], sino_shape[2]), T.(dexel_defects[2])),
+        lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, m1, m2, wm1_gpu, wm2_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
@@ -949,7 +966,7 @@ end
     calibrate_pcct_poly_bhc(ws; order=5, max_path_cm=50, n_points=100)
 
 Build water BHC for an I₀-weighted combination of all PCCT bins from the
-workspace's exact detected spectrum (`source × η × DRM × bowtie`). The same
+workspace's exact detected spectrum (`source × DRM × bowtie`). The same
 per-column model and `μ_water_ref` contract as [`calibrate_bhc_water`](@ref)
 is returned.
 """

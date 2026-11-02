@@ -18,7 +18,6 @@
 #   bhc_image_domain: apply_bhc_image_domain
 #   radial_cupping: apply_radial_cupping_correction!
 #   calibration:    low_signal_correction_gpu!
-#   pcct_pileup:    apply_pcct_pileup_correction!
 
 # Helper: build a (Scanner, geom, protocol) matching the bowtie-aware
 # test_api.jl pattern — small but clinically-shaped enough for BHC realism.
@@ -80,89 +79,6 @@ end
     end
 end
 
-# -----------------------------------------------------------------------------
-# PCCT pile-up correction — `t̂ = S \ r` forward substitution.
-# -----------------------------------------------------------------------------
-@testset "apply_pcct_pileup_correction!" begin
-    # Build a physically-plausible 4-bin S matrix (lower-triangular, diagonals
-    # in [0.7, 0.95] = clinical aτ regime, mass conservation): each column
-    # represents how a unit "truth" count in bin c distributes across recorded
-    # bins r ≤ c.
-    S = [
-        0.92  0.0   0.0   0.0
-        0.05  0.88  0.0   0.0
-        0.02  0.08  0.85  0.0
-        0.01  0.04  0.1  0.8
-    ]
-
-    n_col, n_row, n_view = 8, 4, 6
-    I0_bins = [1.0e6, 8.0e5, 5.0e5, 3.0e5]
-    I0 = Float32.(reshape(repeat(Float32.(I0_bins), inner = n_col * n_row), n_col, n_row, 4))
-    # the per-ray form takes S on a count-rate grid; two identical matrices make S(rate) ≡ S
-    grid(M) = cat(M, M; dims = 3)
-    rates = [0.0, 1.0e6]; rate_air = 1.0e6      # a linear grid whose two matrices are the same S
-
-    @testset "shape contract — 4-bin specialized" begin
-        # 3-bin should error (only 4-bin is supported).
-        bins3 = [Array{Float32}(undef, n_col, n_row, n_view) for _ in 1:3]
-        for b in bins3
-            fill!(b, 0.1f0)
-        end
-        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins3, I0[:, :, 1:3], grid(S[1:3, 1:3]), rates, rate_air)
-
-        # S of wrong shape
-        bins4 = [Array{Float32}(undef, n_col, n_row, n_view) for _ in 1:4]
-        for b in bins4
-            fill!(b, 0.1f0)
-        end
-        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins4, I0, grid(S[1:3, 1:3]), rates, rate_air)
-        # Wrong I0_bins length
-        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins4, I0[:, :, 1:3], grid(S), rates, rate_air)
-    end
-
-    @testset "round-trip: build sino as -log(S·t / I0), correct → recover -log(t/I0)" begin
-        # Construct a known truth-domain bin sinogram (per-bin log-line-integrals).
-        Random.seed!(2026)
-        t_truth = [Float32.(0.2 .+ 0.6 .* rand(n_col, n_row, n_view)) for _ in 1:4]
-
-        # Forward pile-up: r = S · t per pixel, then bins = -log(r / I0_truth).
-        # The recorded counts at bin b for pixel idx are r_b = Σ_c S[b, c] · t_c.
-        # Truth counts t_c = I0_truth[c] · exp(-t_truth_log[c]).
-        bins = Vector{Array{Float32, 3}}(undef, 4)
-        for b in 1:4
-            bins[b] = similar(t_truth[1])
-        end
-        for idx in eachindex(t_truth[1])
-            t_counts = ntuple(c -> I0_bins[c] * exp(-t_truth[c][idx]), 4)
-            for b in 1:4
-                r_b = 0.0
-                for c in 1:b
-                    r_b += S[b, c] * t_counts[c]
-                end
-                bins[b][idx] = Float32(-log(max(r_b, 1.0e-12) / I0_bins[b]))
-            end
-        end
-
-        # Correct in place — should undo the pile-up and return values close
-        # to t_truth (within float roundoff).
-        BS.apply_pcct_pileup_correction!(bins, I0, grid(S), rates, rate_air)
-
-        for b in 1:4
-            @test maximum(abs.(bins[b] .- t_truth[b])) < 1.0e-3
-        end
-    end
-
-    @testset "identity case: S = I → output ≈ input" begin
-        Random.seed!(7)
-        bins = [Float32.(0.1 .+ 0.5 .* rand(n_col, n_row, n_view)) for _ in 1:4]
-        bins_in = [copy(b) for b in bins]
-        I = Matrix{Float64}(LinearAlgebra.I, 4, 4)
-        BS.apply_pcct_pileup_correction!(bins, I0, grid(I), rates, rate_air)
-        for b in 1:4
-            @test maximum(abs.(bins[b] .- bins_in[b])) < 1.0e-5
-        end
-    end
-end
 
 # -----------------------------------------------------------------------------
 # Polynomial helpers: fit_polynomial + generate_water_calibration_curve.
@@ -232,7 +148,7 @@ end
     scanner = _toy_bhc_scanner()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; )
+    sim_opts = BS.SimOptions()
     n_col = scanner.detector_cols
 
     bhc = BS.calibrate_bhc_two_material(
@@ -320,7 +236,7 @@ end
     scanner = _toy_bhc_scanner()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; )
+    sim_opts = BS.SimOptions()
 
     μ0 = BS.compute_polychromatic_μ_water(
         sim_opts, protocol;
@@ -348,7 +264,7 @@ end
 
     pcct_scanner = BS.PCCTScanner(
         detector_material = :cdte,
-        n_energy_bins = 4, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
     )
     pcct_geom = BS.CTGeometry(pcct_scanner; n_angles = 16)
     @test_throws ArgumentError BS.compute_polychromatic_μ_water(
@@ -364,7 +280,7 @@ end
     scanner = _toy_bhc_scanner()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; )
+    sim_opts = BS.SimOptions()
 
     bhc = BS.calibrate_bhc_two_material(
         sim_opts, protocol;
@@ -410,7 +326,7 @@ end
         scanner = _toy_bhc_scanner()
         protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
         geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-        sim_opts = BS.SimOptions(; )
+        sim_opts = BS.SimOptions()
 
         bhc = BS.calibrate_bhc_two_material(
             sim_opts, protocol;

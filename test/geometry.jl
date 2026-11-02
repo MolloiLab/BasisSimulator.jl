@@ -16,11 +16,10 @@
     @test s.detector_cols == 900
     @test s isa BS.EICTScanner
     @test s.geometry isa BS.ScannerGeometry
-    # native dexel (PCCT) auto-derived = pixel * (SDD/SAD) / binning.
-    p = BS.PCCTScanner(energy_thresholds = [20.0, 50.0])
+    # a native dexel's pitch at the detector = pixel × (SDD/SAD) / binning
+    p = BS.PCCTScanner(energy_thresholds = [20.0, 50.0], binning_factor = 2)
     mag = p.source_to_detector / p.source_to_isocenter
-    @test p.native_dexel_col_mm ≈ p.detector_col_size * mag / p.binning_factor
-    @test p.native_dexel_row_mm ≈ p.detector_row_size * mag / p.binning_factor
+    @test BS._build_pcct_detector(p).pixel_size_mm == (p.detector_row_size, p.detector_col_size) .* (mag / 2)
 end
 
 @testset "Scanner — flat-panel-style geometry kwargs" begin
@@ -32,13 +31,10 @@ end
     @test s.detector_cols == 512
 end
 
-@testset "Scanner — explicit native_dexel override wins over inference" begin
-    s = BS.PCCTScanner(
-        detector_col_size = 1.0, detector_row_size = 1.0, energy_thresholds = [20.0, 50.0],
-        native_dexel_col_mm = 0.4, native_dexel_row_mm = 0.4,
-    )
-    @test s.native_dexel_col_mm == 0.4
-    @test s.native_dexel_row_mm == 0.4
+@testset "Scanner — the removed photon-counting keywords are refused" begin
+    for kw in (:native_dexel_col_mm, :pixel_mode, :energy_resolution, :charge_sharing_fwhm, :n_energy_bins, :fill_factor_row)
+        @test_throws Exception BS.PCCTScanner(; energy_thresholds = [20.0, 50.0], (kw => 1)...)
+    end
 end
 
 # -----------------------------------------------------------------------------
@@ -46,30 +42,19 @@ end
 # -----------------------------------------------------------------------------
 @testset "Scanner — PCCT validation" begin
     pcct_kwargs = (;
-        n_energy_bins = 4,
         energy_thresholds = [20.0, 50.0, 80.0, 110.0],
-        energy_resolution = 5.0,
-        charge_sharing_fwhm = 0.05,
         dead_time_ns = 20.0,
-        pixel_mode = :standard,
     )
 
     @testset "valid PCCT scanner constructs" begin
         s = BS.PCCTScanner(; pcct_kwargs...)
         @test s isa BS.PCCTScanner
         @test s.energy_thresholds == [20.0, 50.0, 80.0, 110.0]
-        @test s.energy_resolution == 5.0
     end
 
     @testset "empty energy_thresholds errors" begin
         @test_throws ErrorException BS.PCCTScanner(;
-            pcct_kwargs..., energy_thresholds = Float64[], n_energy_bins = 0,
-        )
-    end
-
-    @testset "n_energy_bins ≠ length(energy_thresholds) errors" begin
-        @test_throws ErrorException BS.PCCTScanner(;
-            pcct_kwargs..., n_energy_bins = 3,  # but 4 thresholds supplied
+            pcct_kwargs..., energy_thresholds = Float64[],
         )
     end
 
@@ -77,10 +62,6 @@ end
         @test_throws ErrorException BS.PCCTScanner(;
             pcct_kwargs..., energy_thresholds = [50.0, 20.0, 80.0, 110.0],
         )
-    end
-
-    @testset "unknown pixel_mode errors" begin
-        @test_throws ErrorException BS.PCCTScanner(; pcct_kwargs..., pixel_mode = :nonsense)
     end
 
     @testset "family-specific keywords are rejected by the other family" begin
@@ -147,8 +128,10 @@ end
             detector_col_size = 0.3015274034141959,
         )
         @test BS.required_axial_detector_rows(pcct; fov_cm = 35.0, z_cm = 0.5) == 20
-        g = BS.CTGeometry(pcct; n_angles = 8, fov_cm = 35.0, z_cm = 0.5,
-                          collimation_mm = 5.0)
+        g = BS.CTGeometry(
+            pcct; n_angles = 8, fov_cm = 35.0, z_cm = 0.5,
+            collimation_mm = 5.0
+        )
         @test g.n_rows == 20
         @test g.fov[3] == 0.5 # guard acquisition never changes the saved z grid
     end
@@ -170,9 +153,11 @@ end
     @testset "extended_collimation bypasses cap with @warn" begin
         # 32 rows × 1.0 mm = 32 mm physical max; ask for 80 mm extended.
         local g
-        @test_logs (:warn, r"EXTENDED-COLLIMATION MODE"i) match_mode=:any begin
-            g = BS.CTGeometry(s; n_angles = 8, collimation_mm = 80.0,
-                              extended_collimation = true)
+        @test_logs (:warn, r"EXTENDED-COLLIMATION MODE"i) match_mode = :any begin
+            g = BS.CTGeometry(
+                s; n_angles = 8, collimation_mm = 80.0,
+                extended_collimation = true
+            )
         end
         @test g.n_rows == 80   # round(80 / 1.0)
         # Mutual-exclusion still holds in extended mode.
@@ -237,12 +222,8 @@ end
 # -----------------------------------------------------------------------------
 @testset "_build_pcct_detector" begin
     pcct_kwargs = (;
-        n_energy_bins = 4,
         energy_thresholds = [20.0, 50.0, 80.0, 110.0],
-        energy_resolution = 5.0,
-        charge_sharing_fwhm = 0.05,
         dead_time_ns = 20.0,
-        pixel_mode = :standard,
         binning_factor = 2,
     )
 
@@ -255,27 +236,15 @@ end
         d = BS._build_pcct_detector(s)
         @test d.thickness_mm == s.detector_depth
         @test d.energy_thresholds_keV == s.energy_thresholds
-        @test d.energy_resolution_keV == s.energy_resolution
-        @test d.charge_sharing_fwhm_mm == s.charge_sharing_fwhm
         @test d.dead_time_ns == s.dead_time_ns
         @test d.binning_factor == s.binning_factor
-        # PCCT eliminates electronic noise via thresholding.
-        @test d.electronic_noise_keV == 0.0
-        # Pile-up + charge-sharing toggles derived from non-zero values.
         @test d.enable_pile_up == true
-        @test d.enable_charge_sharing == true
     end
 
-    @testset "zero charge_sharing_fwhm / dead_time_ns ⇒ effects disabled" begin
-        s = BS.PCCTScanner(;
-            detector_material = :cdte,
-            pcct_kwargs...,
-            charge_sharing_fwhm = 0.0,
-            dead_time_ns = 0.0,
-        )
+    @testset "zero dead_time_ns ⇒ no pile-up" begin
+        s = BS.PCCTScanner(; detector_material = :cdte, pcct_kwargs..., dead_time_ns = 0.0)
         d = BS._build_pcct_detector(s)
         @test d.enable_pile_up == false
-        @test d.enable_charge_sharing == false
     end
 end
 
@@ -419,30 +388,34 @@ end
 
     @testset "helical trajectory: feed, centering, total views" begin
         # 32 rows × 1.0 mm at iso = 3.2 cm collimation; pitch 1 → feed 3.2 cm/rot
-        g = BS.CTGeometry(scanner; n_angles = 90, fov_cm = 20.0,
-            pitch = 1.0, n_rotations = 4.0)
+        g = BS.CTGeometry(
+            scanner; n_angles = 90, fov_cm = 20.0,
+            pitch = 1.0, n_rotations = 4.0
+        )
         @test BS.is_helical(g)
         @test g.pitch == 1.0
         @test g.table_feed ≈ 3.2
         @test g.n_angles == 360                          # 90 × 4 total views
         @test length(g.angles) == 360
-        @test g.angles[end] ≈ 2π * 4 * (1 - 1 / 360) atol = 1e-9
+        @test g.angles[end] ≈ 2π * 4 * (1 - 1 / 360) atol = 1.0e-9
         # helix centred on isocentre: z spans ±travel/2
         travel = g.table_feed * 4
         @test g.source_positions[3, 1] ≈ -travel / 2
-        @test g.source_positions[3, end] ≈ travel / 2 - g.table_feed / 90 atol = 1e-9
+        @test g.source_positions[3, end] ≈ travel / 2 - g.table_feed / 90 atol = 1.0e-9
         # source and detector translate TOGETHER
         @test g.source_positions[3, :] == g.detector_centers[3, :]
         # z ramps linearly in view index (uniform sampling)
         dz = diff(g.source_positions[3, :])
-        @test maximum(abs.(dz .- dz[1])) < 1e-12
+        @test maximum(abs.(dz .- dz[1])) < 1.0e-12
         # default recon z-extent = travel − collimation
         @test g.fov[3] ≈ travel - 3.2
     end
 
     @testset "half pitch halves the feed" begin
-        g = BS.CTGeometry(scanner; n_angles = 90, fov_cm = 20.0,
-            pitch = 0.5, n_rotations = 2.0)
+        g = BS.CTGeometry(
+            scanner; n_angles = 90, fov_cm = 20.0,
+            pitch = 0.5, n_rotations = 2.0
+        )
         @test g.table_feed ≈ 1.6
     end
 
@@ -450,17 +423,23 @@ end
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 1)
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, pitch = 0.0)
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, pitch = -0.5)
-        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90,
-            pitch = 1.0, n_rotations = 0.5)
-        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90,
-            collimation_mm = 0.0)
+        @test_throws ArgumentError BS.CTGeometry(
+            scanner; n_angles = 90,
+            pitch = 1.0, n_rotations = 0.5
+        )
+        @test_throws ArgumentError BS.CTGeometry(
+            scanner; n_angles = 90,
+            collimation_mm = 0.0
+        )
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, n_rows = 0)
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, n_cols = 0)
     end
 
     @testset "subset geometry carries helical metadata" begin
-        g = BS.CTGeometry(scanner; n_angles = 90, fov_cm = 20.0,
-            pitch = 1.0, n_rotations = 2.0)
+        g = BS.CTGeometry(
+            scanner; n_angles = 90, fov_cm = 20.0,
+            pitch = 1.0, n_rotations = 2.0
+        )
         sub = BS.create_subset_geometry(g, collect(1:5:180))
         @test BS.is_helical(sub)
         @test sub.pitch == g.pitch
@@ -481,8 +460,10 @@ end
         detector_row_size = 1.0,
         detector_col_size = 1.0,
     )
-    geom = BS.CTGeometry(scanner; n_angles = 96, fov_cm = 12.8,
-        pitch = 1.0, n_rotations = 3.0)      # feed 1.6 cm/rot, travel 4.8 cm
+    geom = BS.CTGeometry(
+        scanner; n_angles = 96, fov_cm = 12.8,
+        pitch = 1.0, n_rotations = 3.0
+    )      # feed 1.6 cm/rot, travel 4.8 cm
 
     nx, nz = 64, 48
     vol_extent = (12.8, 12.8, 6.4)
@@ -524,7 +505,8 @@ end
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 16, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_shape = :arc)
+        detector_shape = :arc
+    )
 
     nx, nz = 64, 48
     vol = zeros(Float32, nx, nx, nz)
@@ -548,8 +530,10 @@ end
     end
 
     @testset "helical WFBP on arc: z-uniformity" begin
-        geom = BS.CTGeometry(scanner; n_angles = 96, fov_cm = 12.8,
-            pitch = 1.0, n_rotations = 3.0)
+        geom = BS.CTGeometry(
+            scanner; n_angles = 96, fov_cm = 12.8,
+            pitch = 1.0, n_rotations = 3.0
+        )
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_forward_project!(sino, vol, geom; volume_extent = (12.8, 12.8, 9.6))
         rec = BS.fdk_reconstruct(sino, geom, (64, 64, 24))
@@ -591,7 +575,7 @@ end
         g = permutedims(reshape(W[2] * reshape(permutedims(g, (2, 1, 3)), size(g, 2), :), matrix[2], matrix[1], size(g, 3)), (2, 1, 3))
         Float32.(permutedims(reshape(W[3] * reshape(permutedims(g, (3, 1, 2)), size(g, 3), :), matrix[3], matrix[1], matrix[2]), (2, 3, 1)))
     end
-    @test BS.resample_field_to_recon(tall, vox, origin, geom, matrix) ≈ ref rtol = 1e-6
+    @test BS.resample_field_to_recon(tall, vox, origin, geom, matrix) ≈ ref rtol = 1.0e-6
     @test all(≈(1.0f0), air)
 
     # a step at x = 0.05 cm (between field columns 100 and 101 — off a recon voxel edge): the recon

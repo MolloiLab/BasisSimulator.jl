@@ -51,14 +51,6 @@ function FillFactorModel(fill::Float64)
 end
 
 """
-    fill_factor_standard()
-
-Standard CT detector fill factor (90%) — third-generation default,
-used as the driver fallback when scanner row/col fill fields are 0.
-"""
-fill_factor_standard() = FillFactorModel(0.9)
-
-"""
     effective_fill_factor(model::FillFactorModel)
 
 Effective (total) fill factor = `row_fill × col_fill`.
@@ -70,5 +62,4 @@ effective_fill_factor(model::FillFactorModel) = model.row_fill * model.col_fill
 # =============================================================================
 
 export FillFactorModel
-export fill_factor_standard
 export effective_fill_factor

@@ -58,33 +58,40 @@ const REVOLUTION_APEX = EICTScanner(;
 """
     NAEOTOM_ALPHA
 
-The Siemens NAEOTOM Alpha's photon-counting detector A in its standard mode: CdTe dexels of
-0.275 × 0.322 mm at the detector face (Flohr & Schmidt 2023; Li 2025), binned 2 × 2, which at the
-1113/610 mm magnification gives 0.301 × 0.353 mm pixels at the isocentre; 144 rows; 1659 columns
-spanning the 50 cm scan field.
+The Siemens NAEOTOM Alpha's photon-counting detector A in its standard mode: 2 × 2 native CdTe
+dexels summed digitally after counting, 1376 pixel columns (2752 native) over the 50 cm field and
+144 rows (288 native), 57.6 mm along z. The pixel pitch at the isocentre is 0.373 × 0.399 mm
+(0.68 × 0.727 mm at the detector, the native pitch 0.34 × 0.364 mm: the 0.275 × 0.322 mm
+electrode plus its share of the anti-scatter grid's gaps), magnified 1113/610.
 
 - Source–isocentre 610 mm, source–detector 1113 mm: Li 2025; Hennemann 2026.
-- CdTe 1.6 mm: Flohr & Schmidt 2023.
+- Pitch 0.37 × 0.40 mm at the isocentre: Li 2025, Table 1. 144 × 0.4 mm, 1376 columns (2752
+  native): K243523, Tables 3–4.
+- CdTe 1.6 mm, the 2-D grid of 4 × 6 dexel cells, the transported charge (16 µm) and 1.9 keV of
+  electronic noise: the response table, [`PCCT_NATIVE_TABLE_PATH`](@ref) (Geant4, BasisMonteCarlo
+  notebook 03; Flohr & Schmidt 2023; Zhan 2026).
 - Thresholds 20, 35, 55 and 70 keV (bins 20–35, 35–55, 55–70, > 70 keV): Sartoretti 2023.
-- Energy resolution 10 keV FWHM, charge cloud 0.08 mm FWHM, dead time 5 ns, fill factor
-  0.95 × 0.95: the documentation notebooks' detector model (Monte Carlo response `cdte_response_v4`).
+- Dead time 27 ns per native dexel, retriggering comparators after a 10 ns CR-RC shaper: the fit
+  of notebook 03 to Li 2025's count loss.
 - Focal spot 0.4 × 0.5 mm, 7° anode geometry, 3 mm Al, large-body bowtie, 820 mm bore: the notebooks.
-- Pile-up and scatter corrections on, exact Poisson counts: the notebooks' detector toggles.
+- Scatter correction on, exact Poisson counts: the notebooks' detector toggles.
 
-Its ultra-high-resolution mode (native dexels, 120 × 0.2 mm) is planned as its own constant,
-`NAEOTOM_ALPHA_UHR`, once the photon-counting model reads both modes. A different scan is a variant:
-`PCCTScanner(NAEOTOM_ALPHA; pileup_correction = false)`.
+Its dexels are ideal (no gain or threshold spread). BasisMonteCarlo notebook 03 assumes a 2 % gain
+spread and 0.35 keV of threshold spread (unpublished); that detector is
+`PCCTScanner(NAEOTOM_ALPHA; gain_spread = 0.02, threshold_spread_keV = 0.35)`, corrected by
+[`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref).
+
+Its ultra-high-resolution mode is [`NAEOTOM_ALPHA_UHR`](@ref). A different scan is a variant:
+`PCCTScanner(NAEOTOM_ALPHA; pileup = false)`.
 """
-const NAEOTOM_ALPHA = let native_col = 0.275, native_row = 0.322, sid = 610.0, sdd = 1113.0, binning = 2
-    col_at_isocenter = native_col * binning / (sdd / sid)   # 0.301 mm
-    row_at_isocenter = native_row * binning / (sdd / sid)   # 0.353 mm
+const NAEOTOM_ALPHA = let native_pitch = (0.34, 1.13 * 0.322), sid = 610.0, sdd = 1113.0, binning = 2
     PCCTScanner(;
         source_to_isocenter = sid,
         source_to_detector = sdd,
         detector_rows = 144,
-        detector_cols = ceil(Int, 500.0 / col_at_isocenter),   # the 50 cm scan field
-        detector_row_size = row_at_isocenter,
-        detector_col_size = col_at_isocenter,
+        detector_cols = 1376,
+        detector_row_size = native_pitch[2] * binning * sid / sdd,   # 0.399 mm
+        detector_col_size = native_pitch[1] * binning * sid / sdd,   # 0.373 mm
         detector_shape = :arc,
         detector_col_offset = 0.25,
         focal_spot_width = 0.4,
@@ -98,21 +105,34 @@ const NAEOTOM_ALPHA = let native_col = 0.275, native_row = 0.322, sid = 610.0, s
         bowtie_filter = :large_body,
         detector_material = :CdTe,
         detector_depth = 1.6,
-        fill_factor_row = 0.95,
-        fill_factor_col = 0.95,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution = 10.0,
-        charge_sharing_fwhm = 0.08,
-        dead_time_ns = 5.0,
-        pixel_mode = :standard,
-        native_dexel_col_mm = native_col,
-        native_dexel_row_mm = native_row,
+        dead_time_ns = 27.0,
         binning_factor = binning,
-        pileup_correction = true,
         scatter_correction = true,
         noise_reduction = 0.0,
     )
 end
+
+"""
+    NAEOTOM_ALPHA_UHR
+
+The NAEOTOM Alpha in its ultra-high-resolution mode: every native dexel read on its own,
+0.186 × 0.199 mm at the isocentre, 120 rows of 0.2 mm (24 mm along z) and 2752 columns. A native
+dexel's counts are Poisson; its neighbours covary through the photons they share. Each dexel
+piles up at its own rate, a quarter of a standard pixel's.
+
+The mode reads one threshold at native resolution, 20 keV; the other thresholds are read binned
+(standard mode, [`NAEOTOM_ALPHA`](@ref)).
+"""
+const NAEOTOM_ALPHA_UHR = PCCTScanner(
+    NAEOTOM_ALPHA;
+    detector_rows = 120,
+    detector_cols = 2752,
+    detector_row_size = NAEOTOM_ALPHA.detector_row_size / 2,
+    detector_col_size = NAEOTOM_ALPHA.detector_col_size / 2,
+    binning_factor = 1,
+    energy_thresholds = [20.0],
+)
 
 """
     SOMATOM_FORCE
@@ -234,4 +254,4 @@ notebook 12 does.
 """
 const SOMATOM_DEFINITION_FLASH_B = EICTScanner(SOMATOM_DEFINITION_FLASH; detector_cols = 480, scan_diameter = 334.0)
 
-export REVOLUTION_APEX, NAEOTOM_ALPHA, SOMATOM_FORCE, SOMATOM_FORCE_B, SOMATOM_DEFINITION_FLASH, SOMATOM_DEFINITION_FLASH_B
+export REVOLUTION_APEX, NAEOTOM_ALPHA, NAEOTOM_ALPHA_UHR, SOMATOM_FORCE, SOMATOM_FORCE_B, SOMATOM_DEFINITION_FLASH, SOMATOM_DEFINITION_FLASH_B

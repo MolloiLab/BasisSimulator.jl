@@ -377,7 +377,7 @@ function inject_scatter_bins!(
 end
 
 """
-    compute_scatter_bin_weights(energies, weights, energy_weights, η, R) -> Vector{Float64}
+    compute_scatter_bin_weights(energies, weights, energy_weights, R, kVp) -> Vector{Float64}
 
 Compute per-bin scatter weights from per-energy weights convolved through the DRM.
 
@@ -385,14 +385,13 @@ This replaces the old `compute_scatter_bin_fractions` with an explicit energy_we
 input, making the per-energy scatter model visible and pluggable.
 
 The per-bin weight for bin `b` is:
-    `w_b = Σ_E  weights[E] × energy_weights[E] × η[E] × R[E, b]`
+    `w_b = Σ_E  weights[E] × energy_weights[E] × R[E, b]` (R per incident photon)
 normalized to sum to 1.0.
 
 # Arguments
 - `energies`: Photon energies (keV)
 - `weights`: Tube spectrum weights (photons per energy bin)
 - `energy_weights`: Per-energy Compton scatter fractions from `compute_scatter_energy_weights`
-- `η`: Quantum detection efficiency per energy
 - `R`: Detector response matrix (n_energies × n_bins)
 
 # Returns
@@ -402,7 +401,6 @@ function compute_scatter_bin_weights(
     energies::Vector{Float64},
     weights::Vector{Float64},
     energy_weights::Vector{Float64},
-    η::Vector{Float64},
     R::Matrix{Float64},
     kVp::Float64
 )
@@ -419,7 +417,7 @@ function compute_scatter_bin_weights(
         r_idx = clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
 
         for b in 1:n_bins
-            scatter_I0_per_bin[b] += w * ew * η[e_idx] * R[r_idx, b]
+            scatter_I0_per_bin[b] += w * ew * R[r_idx, b]
         end
     end
 
