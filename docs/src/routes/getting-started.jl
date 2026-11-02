@@ -339,11 +339,13 @@ enhancement = after .- before"""),
                  c("[(\"Sn\", 0.4)]"), " in millimetres, with a decimal point."),
             ),
             p(c("SimOptions"), " holds the physics. Everything a clinical acquisition does is on by default: the detector's ",
-              "efficiency and fill factor, the focal spot, the heel effect, lag, and quantum and electronic noise, ",
-              "drawn in the counts before the log, where a real detector produces them. Scatter is the exception: ",
-              c("use_scatter = true"), " superposes the scanner's Geant4 scatter kernels (", c("scatter_kernels"),
-              ", a download of about 250 MB per scanner, cached) on the patient's own rays, and the scanner's constant ",
-              "names its kernels. Three settings are yours to choose:"),
+              "efficiency and fill factor, the patient's scatter, the focal spot, the heel effect, lag, and quantum and ",
+              "electronic noise, drawn in the counts before the log, where a real detector produces them. The scatter is the ",
+              "scanner's Geant4 scatter kernels (", c("scatter_kernels"), ", a download of about 250 MB per scanner, cached; ",
+              c("BS.scatter_kernels(entry; path)"), " reads a local copy instead) superposed on the patient's own rays, and the ",
+              "detector subtracts the scatter it estimates from its own data (", c("scatter_correction = true"), " on both ",
+              "scanner families). Each clinical constant names its kernels, so start from one: a scanner built from scratch ",
+              "has none and needs ", c("use_scatter = false"), ". Three settings are yours to choose:"),
             bullets(
                 (b(c("seed")), ": every independent acquisition needs its own. ", c("simulate!"), " restarts the noise from ",
                  c("seed"), " each time, so two tubes, two kVp, a before and after, or a hundred repeat scans with one seed ",
@@ -354,7 +356,7 @@ enhancement = after .- before"""),
                  "example uses it; leave it at 1 while you iterate."),
                 (b(c("projector")), ": ", c(":dd_fast"), " (the default, distance-driven) or ", c(":siddon"), ". Leave it."),
             ),
-            p("The physics switches are read when the workspace is built. To turn scatter on, say, build a new workspace ",
+            p("The physics switches are read when the workspace is built. To turn scatter off, say, build a new workspace ",
               "with the new options; changing them before ", c("simulate!"), " does nothing."),
             H3(:class => h3_cls, "Dose"),
             p("Every scan reports its CTDIvol and DLP, from a Monte Carlo of the simulated beam in the 32 cm body CTDI phantom:"),
@@ -421,24 +423,27 @@ end"""),
             H2(:id => "spectral", :class => h2_cls, "4 · Spectral Imaging"),
             p("A photon-counting detector sorts every photon by its energy into bins. ", c("PCCTScanner"), " adds that ",
               "detector: its energy thresholds and dead time, with the scatter correction applied inside ",
-              c("simulate!"), " when the scan simulates scatter (", c("use_scatter = true"), ", the kernels of the entry ",
-              "the scanner names) and the pile-up corrected after it, from a calibration of simulated air scans. This one ",
-              "counts in four bins, with a detector narrowed to the phantom to save memory:"),
+              c("simulate!"), " (the Geant4 kernels of the scanner's entry, as for the energy integrator) and the pile-up ",
+              "and the dexels' flat field corrected after it, each from a calibration of simulated air scans. This one is the NAEOTOM Alpha's detector, ",
+              "four bins and 27 ns of dead time, read one native dexel per pixel and narrowed to the phantom to save memory:"),
             julia(raw"""scanner_pc = BS.PCCTScanner(
-    source_to_isocenter = 610.0, source_to_detector = 1113.0,
-    detector_rows = 32, detector_cols = 1200, # 1200 × 0.3 mm = 36 cm
-    detector_row_size = 0.35, detector_col_size = 0.3,
-    energy_thresholds = [20.0, 35.0, 55.0, 70.0], # four counting bins, keV
-    dead_time_ns = 27.0, # pile-up is modelled once there is a dead time
-    scatter_correction = true,
-    scatter_kernels = "NAEOTOM Alpha", # the scatter library's entry for this geometry
-)
+    BS.NAEOTOM_ALPHA; # its geometry, thresholds 20/35/55/70 keV, dead time and scatter kernels
+    detector_rows = 32,
+    detector_cols = 1200, # 1200 × 0.3 mm = 36 cm
+    detector_row_size = 0.35,
+    detector_col_size = 0.3,
+    binning_factor = 1, # one native dexel per pixel (the Alpha sums 2 × 2)
+) # a realistic unit, like the Alpha: its dexels' gains and thresholds spread
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
 res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 
 # pile-up, calibrated as a scanner does it: air scans at rising currents (few views suffice)
 pileup = BS.calibrate_pileup(scanner_pc, BS.CTProtocol(protocol; views = 40), recon; sim_opts)
-BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)"""),
+BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
+
+# then the flat field: a low-flux air scan gives every pixel's gain in every bin
+flat = BS.calibrate_flat_field(scanner_pc, protocol, recon; sim_opts)
+BS.apply_flat_field!(res_pc.pcct_sino.bins, flat)"""),
             p("The pile-up model simulates shaped pulses on the CPU at the count rates this scan will see; it takes ",
               "seconds and is memoised for the session. Set ", c("dead_time_ns = 0"), " to skip pile-up while you iterate."),
             p("The decomposition needs the detector's response, and the workspace has it: it is the model that made ",
@@ -787,7 +792,7 @@ SETUP
 
 THE CHAIN
 - phantom = BS.Phantom(device(labels), Dict(label => BS.XA.Materials.x, ...), (dx_cm, dy_cm, dz_cm))
-- scanner = a documented constant (BS.REVOLUTION_APEX, BS.NAEOTOM_ALPHA, BS.SOMATOM_FORCE / BS.SOMATOM_FORCE_B, BS.SOMATOM_DEFINITION_FLASH / BS.SOMATOM_DEFINITION_FLASH_B) or BS.EICTScanner(...) / BS.PCCTScanner(...; energy_thresholds). A variant copies a scanner and replaces keywords: BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48); CTProtocol(protocol; kVp = 140) likewise. NEVER write or ask for a preset function or a mode keyword; a different mode is a different constant.
+- scanner = a documented constant (BS.REVOLUTION_APEX, BS.NAEOTOM_ALPHA, BS.SOMATOM_FORCE / BS.SOMATOM_FORCE_B, BS.SOMATOM_DEFINITION_FLASH / BS.SOMATOM_DEFINITION_FLASH_B) or BS.EICTScanner(...) / BS.PCCTScanner(...; energy_thresholds). Scatter is on by default (SimOptions(use_scatter = true), each constant names its Geant4 kernels, scatter_correction = true on both families); a scanner built from scratch names none and throws unless use_scatter = false, so start from a constant. A variant copies a scanner and replaces keywords: BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48); CTProtocol(protocol; kVp = 140) likewise. NEVER write or ask for a preset function or a mode keyword; a different mode is a different constant.
 - Dual source = one acquisition per tube/detector chain (SOMATOM_FORCE + SOMATOM_FORCE_B), each with its own protocol and seed; rapid kVp switching = two protocols on one scanner. Combine them with spectral_basis_from_acquisitions.
 - protocol = BS.CTProtocol(kVp = 80|100|120|140, mA, views, rotation_time, collimation_mm, additional_filters = [("Al", 4.5)], pitch)
 - sim_opts = BS.SimOptions(seed = k, view_samples = 1|5); recon = BS.ReconOptions(matrix_size, fov_cm, z_cm)

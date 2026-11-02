@@ -98,21 +98,21 @@ end
     e = collect(20.0:10.0:140.0)
     w = ones(length(e))
     for s in (BS.SOMATOM_FORCE, BS.SOMATOM_DEFINITION_FLASH, BS.REVOLUTION_APEX)
-        model = BS.build_physics_config(s, BS.SimOptions(), e, w).detector_efficiency
+        model = BS.build_physics_config(s, BS.SimOptions(use_scatter = false), e, w).detector_efficiency
         @test model.material === s.detector_material
         @test model.thickness_mm == s.detector_depth
         @test model.mode == BS.MC_LUT
     end
-    bl = BS.SimOptions(detector_efficiency_mode = :beer_lambert)
+    bl = BS.SimOptions(detector_efficiency_mode = :beer_lambert, use_scatter = false)
     @test BS.build_physics_config(BS.SOMATOM_FORCE, bl, e, w).detector_efficiency.mode == BS.BEER_LAMBERT
-    off = BS.build_physics_config(BS.SOMATOM_FORCE, BS.SimOptions(use_detector_efficiency = false), e, w)
+    off = BS.build_physics_config(BS.SOMATOM_FORCE, BS.SimOptions(use_detector_efficiency = false, use_scatter = false), e, w)
     @test off.detector_efficiency === nothing
     # a depth the table was not made at, and a material with no model, are refused
     @test_throws ArgumentError BS.build_physics_config(
-        BS.EICTScanner(BS.SOMATOM_FORCE; detector_depth = 1.0), BS.SimOptions(), e, w
+        BS.EICTScanner(BS.SOMATOM_FORCE; detector_depth = 1.0), BS.SimOptions(use_scatter = false), e, w
     )
     @test_throws ArgumentError BS.build_physics_config(
-        BS.EICTScanner(detector_material = :unobtainium), BS.SimOptions(), e, w
+        BS.EICTScanner(detector_material = :unobtainium), BS.SimOptions(use_scatter = false), e, w
     )
 end
 

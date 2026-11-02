@@ -679,7 +679,7 @@ function dd_fused_spectral_project!(
 
     nx = Int32(size(mask, 1)); ny = Int32(size(mask, 2)); nz = Int32(size(mask, 3))
     n_cols = Int32(size(pilot, 1)); n_rows = Int32(size(pilot, 2)); n_angles = Int32(size(pilot, 3))
-    n_elem = n_cols * n_rows * n_angles
+    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
 
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
     vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)

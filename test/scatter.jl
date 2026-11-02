@@ -123,7 +123,9 @@ end
     @test BS.SOMATOM_FORCE_B.scatter_kernels == BS.SOMATOM_FORCE.scatter_kernels == "SOMATOM Force"
     @test BS.NAEOTOM_ALPHA_UHR.scatter_kernels == "NAEOTOM Alpha"
     @test BS.EICTScanner().scatter_kernels == ""
-    @test !BS.SimOptions().use_scatter
+    @test BS.SimOptions().use_scatter                                            # on by default
+    # so the default options on a scanner without kernels throw the same clear error
+    @test_throws ArgumentError BS.create_workspace(plain, protocol, BS.SimOptions(), _SCATTER_RECON, phantom)
 end
 
 @testset "superposition: symmetry, linearity in mAs, units" begin
@@ -160,6 +162,23 @@ end
     k = BS.scatter_kernels(_SCATTER_TEST_ENTRY)
     @test plan.channels[:, 1] ≈ fill(1 / sum(on.ws.weights_norm .* on.ws.m1), length(on.ws.energies)) rtol = 1.0e-5
     @test plan.channels[:, 2] ./ plan.channels[:, 1] ≈ (on.ws.m2 ./ on.ws.m1) ./ sum(on.ws.weights_norm .* on.ws.m1) rtol = 1.0e-5
+end
+
+@testset "the energy integrator's scatter correction, on and off" begin
+    phantom = _scatter_phantom(; a_cm = 30.0)
+    corrected = _eict_scatter_scan(_SCATTER_EICT, phantom)
+    kept = _eict_scatter_scan(BS.EICTScanner(_SCATTER_EICT; scatter_correction = false), phantom)
+    free = _eict_scatter_scan(_SCATTER_EICT, phantom; use_scatter = false)
+    @test corrected.ws.scatter_correction && !kept.ws.scatter_correction
+    # the same scatter reaches the detector either way
+    @test Array(kept.ws.scatter.field) == Array(corrected.ws.scatter.field)
+    # on: the scatter-corrected projection is near the scatter-free one; off: the scatter stays
+    # (the line integrals fall behind the patient, most where the primary is weakest)
+    before = maximum(abs.(kept.sinogram .- free.sinogram))
+    after = maximum(abs.(corrected.sinogram .- free.sinogram))
+    @test before > 0.005
+    @test all(kept.sinogram .<= free.sinogram .+ 1.0e-6)
+    @test after < before / 4
 end
 
 @testset "an empty field gets no scatter" begin

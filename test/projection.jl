@@ -375,6 +375,52 @@ end
 end
 
 # -----------------------------------------------------------------------------
+# The fused spectral projectors write bin b at idx + (b − 1)·n_elem of one flat buffer. The
+# NAEOTOM Alpha's full detector at native resolution (2752 × 288 dexels, four bins) passes
+# typemax(Int32) in the fourth bin's offset from 904 views on: an Int32 offset wrapped negative
+# there and threw a BoundsError in the kernel. 11.5 GB of device memory; GPU only (716 M rays).
+# -----------------------------------------------------------------------------
+@testset "fused spectral projectors: bin offsets past typemax(Int32)" begin
+    if !HAS_GPU
+        @info "Skipping the fused spectral Int32-offset test: no GPU backend"
+    else
+        geom = _toy_proj_geom(
+            n_cols = 2752,
+            n_rows = 288,
+            n_angles = 904,
+        )
+        n_bins = 4
+        ne = geom.n_cols * geom.n_rows * geom.n_angles
+        @test (n_bins - 1) * ne > typemax(Int32)
+        K = 8
+        mask = to_gpu(ones(UInt8, 4, 4, 4))
+        μ_table = to_gpu(zeros(Float32, 2, K))       # μ = 0: every ray reads its bin's Σ W
+        W_cpu = Float32[e + 10 * b for e in 1:K, b in 1:n_bins]
+        W = to_gpu(W_cpu)
+        out = similar(mask, Float32, n_bins * ne)
+        # the pilot only sizes the launch: the first bin's segment, rather than another 2.9 GB
+        pilot = reshape(
+            view(out, 1:ne),
+            geom.n_cols,
+            geom.n_rows,
+            geom.n_angles,
+        )
+        for project! in (
+                BS.dd_fast_fused_spectral_project!,
+                BS.dd_fused_spectral_project!,
+                BS.siddon_fused_spectral_project!,
+            )
+            fill!(out, 0.0f0)
+            project!(pilot, out, Int32(n_bins), mask, geom, μ_table, W, Val(K), Int32(1))
+            for b in 1:n_bins
+                s = sum(W_cpu[:, b])
+                @test extrema(view(out, ((b - 1) * ne + 1):(b * ne))) == (s, s)
+            end
+        end
+    end
+end
+
+# -----------------------------------------------------------------------------
 # create_μ_volume! — label → material → μ at energy mapping.
 # -----------------------------------------------------------------------------
 @testset "create_μ_volume!" begin

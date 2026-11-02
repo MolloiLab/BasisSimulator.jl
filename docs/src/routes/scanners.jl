@@ -115,7 +115,9 @@ protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols
             P(:class => prose,
                 "Every keyword has a default (a CatSim-like research scanner), so ", c("EICTScanner()"),
                 " alone is valid; ", c("PCCTScanner"), " additionally requires ", c("energy_thresholds"),
-                ". Distances are in mm, detector sizes are at the isocentre."),
+                ". Distances are in mm, detector sizes are at the isocentre. A scanner built from the defaults ",
+                "names no scatter kernels, so it simulates only with ", c("SimOptions(use_scatter = false)"),
+                "; a variant of a clinical constant keeps the constant's kernels."),
             H3(:class => h3_cls, "Geometry — both families"),
             table(["Keyword", "Default", "Meaning"], [
                 ["source_to_isocenter", "540.0", "source-to-isocentre distance (SID), mm"],
@@ -141,6 +143,8 @@ protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols
                 ["electronic_noise", "5000.0", "DAS noise σ, electrons (÷ gain: keV), added to the signal before the log"],
                 ["gain_spread / offset_spread_keV", "0.0 / 0.0", "dexel-to-dexel gain (relative σ) and offset (keV); corrected by calibrate_flat_field"],
                 ["defect_seed", "1", "the fixed pattern of the dexels' defects"],
+                ["scatter_kernels", "\"\"", "its entry of the Geant4 scatter library (\"\" = none: use_scatter = true, the default, throws)"],
+                ["scatter_correction", "true", "the DAS subtracts the scatter it estimates from the measured signal (the patient taken as water)"],
             ]; mono = [1, 2]),
             H3(:class => h3_cls, "PCCTScanner — direct conversion"),
             table(["Keyword", "Default", "Meaning"], [
@@ -151,7 +155,8 @@ protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols
                 ["pileup", "true", "pile-up per native dexel (needs dead_time_ns > 0); corrected by calibrate_pileup → apply_pileup!"],
                 ["gain_spread / threshold_spread_keV", "0.0 / 0.0", "native dexels' gain (relative σ) and threshold offsets (keV); corrected by calibrate_flat_field"],
                 ["defect_seed", "1", "the fixed pattern of the dexels' defects"],
-                ["scatter_correction", "false", "subtract the scatter estimated from the recorded counts (the Geant4 kernels, the patient taken as water)"],
+                ["scatter_kernels", "\"\"", "its entry of the Geant4 scatter library, as for EICTScanner"],
+                ["scatter_correction", "true", "subtract the scatter estimated from the recorded counts (the Geant4 kernels, the patient taken as water)"],
                 ["noise_reduction", "0.0", "count-noise blend, 0 = Poisson counts … 1 = expected counts"],
             ]; mono = [1, 2]),
 
@@ -187,7 +192,7 @@ protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols
                 "the transported charge, 1.9 keV electronic noise, the anti-scatter grid of 4 × 6-dexel cells), ",
                 "the counts of every native dexel (Poisson, neighbours covarying through the photons they share), ",
                 "their pile-up (retriggering comparators after a 10 ns shaper), then the digital sum to pixels and ",
-                "the optional scatter correction. Pile-up and the dexels' defects are corrected outside ",
+                "the scatter correction (", c("scatter_correction"), ", on by default as on the energy integrator). Pile-up and the dexels' defects are corrected outside ",
                 c("simulate!"), ", from simulated calibration scans (", c("calibrate_pileup"), ", ",
                 c("calibrate_flat_field"), ")."),
             H3(:class => h3_cls, "Bowtie filters"),
@@ -379,19 +384,19 @@ protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 182.0 * DOSE_SCALE,
             # ── Research geometries ────────────────────────────────────────────
             H2(:id => "research-scanners", :class => h2_cls, "Research geometries"),
             P(:class => prose,
-                "Two notebooks use generic geometries and leave the rest at the defaults: the titanium-implant ",
-                "study (a compact 16-row scanner) and the helical study (a 256 × 0.625 mm, 16 cm wide-cone ",
-                "volume scanner, scanned with 20 mm collimation at pitch 1.0)."),
+                "Two notebooks need a detector no clinical scanner has, so they use variants of ",
+                c("REVOLUTION_APEX"), " that keep its distances (and with them its scatter kernels, which are ",
+                "made for one scanner's source–isocentre and source–detector distances): the titanium-implant ",
+                "study (a compact 16-row detector) and the helical study (the Apex's own 256 × 0.625 mm, 16 cm ",
+                "wide-cone rows, scanned with 20 mm collimation at pitch 1.0). Both keep 512 one-millimetre columns."),
             CodeBlock("""scanner_implant = BS.EICTScanner(            # notebook 10
-    source_to_isocenter = 540.0, source_to_detector = 950.0,
+    BS.REVOLUTION_APEX;
     detector_rows = 16, detector_cols = 512,
     detector_row_size = 1.0, detector_col_size = 1.0,
-    detector_material = :lumex, detector_depth = 3.0,
 )
 scanner_helical = BS.EICTScanner(            # notebook 11
-    source_to_isocenter = 541.0, source_to_detector = 949.0,
-    detector_rows = 256, detector_cols = 512,
-    detector_row_size = 0.625, detector_col_size = 1.0,
+    BS.REVOLUTION_APEX;
+    detector_cols = 512, detector_col_size = 1.0,
 )
 helical = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.5,
                         collimation_mm = 20.0, pitch = 1.0, n_rotations = 16)"""),
@@ -401,7 +406,7 @@ helical = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.
             P(:class => prose, "What a new system needs, in three tiers."),
             table(["Tier", "Where", "What"], [
                 ["A — required", "a documented constant of EICTScanner / PCCTScanner",
-                    "SID and SDD; physical rows × columns and element size at the isocentre (column size at iso = pitch at the detector ÷ magnification); detector shape; focal spot and anode angle; rotation time, scan field, bore; flat filter and bowtie; the detector material, which must map to an existing η(E) table (or a new Monte Carlo run); fill factors; for photon counting, the thresholds, resolution, charge sharing, dead time, native dexel and binning."],
+                    "SID and SDD; physical rows × columns and element size at the isocentre (column size at iso = pitch at the detector ÷ magnification); detector shape; focal spot and anode angle; rotation time, scan field, bore; flat filter and bowtie; the detector material, which must map to an existing η(E) table (or a new Monte Carlo run); fill factors; for photon counting, the thresholds, resolution, charge sharing, dead time, native dexel and binning; its scatter kernels (an entry of BasisMonteCarlo's Geant4 scatter library at its SID and SDD, named by scatter_kernels: scatter is on by default)."],
                 ["B — protocol", "CTProtocol",
                     "kVp list; mA range; rotation time; views per rotation; collimation options; mode-dependent added filters (e.g. tin); pitch range."],
                 ["C — unpublished", "documented assumptions",

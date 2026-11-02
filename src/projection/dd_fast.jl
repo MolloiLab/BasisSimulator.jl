@@ -242,7 +242,7 @@ function _dd_fused_spectral_plen!(
         mask, μ_table_gpu, W_gpu, _bt, has_src_spectral::Bool,
         sp, dc, du, dv,
         vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32, n_elem::Int32,
+        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32, n_elem::Int,
         mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
         arc_det::Bool, dγ::T,
     ) where {M, T <: AbstractFloat}
@@ -464,7 +464,7 @@ function dd_fast_fused_spectral_project!(
         T, size(mask), (size(pilot, 1), size(pilot, 2)), geom, volume_extent, mask,
         ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
     )
-    n_elem = g.nc_nr * Int32(size(pilot, 3))
+    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
     has_src_spectral = ws_bowtie_spectral !== nothing
     _bt = has_src_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 

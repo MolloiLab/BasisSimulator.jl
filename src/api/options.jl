@@ -17,8 +17,10 @@ is set by the keyword constructor.
 - `use_fill_factor::Bool`: Enable detector fill factor.
 - `use_detector_efficiency::Bool`: Enable energy-dependent detector efficiency.
 - `use_scatter::Bool`: Superpose the scanner's Geant4 scatter kernels on the patient
-  ([`scatter_kernels`](@ref); the scanner's `scatter_kernels` field names them). Off by default:
-  the kernels are a download of about 250 MB per scanner.
+  ([`scatter_kernels`](@ref); the scanner's `scatter_kernels` field names them). On by default,
+  as on a real scanner: the clinical constants name their kernels (a download of about 250 MB
+  per scanner, cached), and a scanner that names none throws unless this is `false`. The
+  scanner's `scatter_correction` decides whether its detector subtracts what it estimates.
 - `use_optical_crosstalk::Bool`: Enable optical crosstalk.
 - `use_focal_spot::Bool`: Enable focal spot blur.
 - `use_noise::Bool`: Enable noise.  PCCT: exact per-bin integer Poisson count
@@ -64,11 +66,11 @@ end
 """
     SimOptions(; kwargs...)
 
-Physics toggles common to every detector family (all `true` except
-`use_optical_crosstalk` and `use_scatter`), the noise `seed`, the detector-efficiency mode and the
-projector.  Detector-specific physics lives on the scanner: its scatter kernels, pile-up, scatter
-correction and the count-noise blend are fields of [`PCCTScanner`](@ref) (the kernels of
-[`EICTScanner`](@ref) too); the scintillator lag model applies to [`EICTScanner`](@ref) only.
+Physics toggles common to every detector family (all `true` except `use_optical_crosstalk`),
+the noise `seed`, the detector-efficiency mode and the projector.  Detector-specific physics lives
+on the scanner: its scatter kernels and scatter correction are fields of both
+[`EICTScanner`](@ref) and [`PCCTScanner`](@ref), pile-up and the count-noise blend of
+[`PCCTScanner`](@ref); the scintillator lag model applies to [`EICTScanner`](@ref) only.
 A variant is the copy constructor, `SimOptions(o; use_noise = false)`.
 
 - `use_fill_factor`, `use_detector_efficiency`, `use_scatter`, `use_optical_crosstalk`,
@@ -90,7 +92,7 @@ A variant is the copy constructor, `SimOptions(o; use_noise = false)`.
 function SimOptions(;
         use_fill_factor::Bool = true,
         use_detector_efficiency::Bool = true,
-        use_scatter::Bool = false,
+        use_scatter::Bool = true,
         use_optical_crosstalk::Bool = false,
         use_focal_spot::Bool = true,
         use_noise::Bool = true,
