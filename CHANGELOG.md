@@ -12,7 +12,130 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+### Breaking
+- **The energy-integrating detector integrates energy.** Each photon of energy `E` leaves a mean signal
+  `m₁ = E·efficiency` and a mean square `m₂ = m₁²/dqe0` (`eid_signal_moments`). One projector walk forms both
+  spectral sums of every ray, `S₁ = Σ w̄ m₁ B e^{−L}` and `S₂ = Σ w̄ m₂ B e^{−L}`; the detector reads
+  `λ = I₀·ff·S₁` with Gaussian noise of variance `I₀·ff·S₂ + σ_electronic²`. Before, it counted photons
+  (`Σ w̄ η B e^{−L}`, Poisson variance = mean) and applied η twice (in the sum and again in `I₀`). In air the noise
+  σ falls by 2.7 % (SOMATOM Force, 120 kV: η̄² = 0.788 → DQE(0) = 0.832), 2.2 % (Force, 80 kV), 7.0 % (Definition
+  Flash) and 2.8 % (Revolution Apex); behind water it now rises with the dispersion `S₂/S₁` (Force, 120 kV: 1.203 in
+  air, 1.429 behind 20 cm and 1.501 behind 30 cm, all relative to the air beam's mean signal), so behind 30 cm σ is
+  ≈ 9 % above v0.15.1. Mean CT numbers of non-water materials change through the energy weighting (`m₁ ∝ E`).
+- **The Geant4 detector tables replace the MCNP ones**: `GEMSTONE_MC_EFFICIENCY_LUT`, `UFC_MC_EFFICIENCY_LUT` and
+  `UFC_FLASH_MC_EFFICIENCY_LUT` now hold BasisMonteCarlo's flat-field Geant4 runs (`energies`, `efficiency`,
+  `dqe0`, `thickness_mm`), copied in as plain data: Gemstone at 6.40 g/cm³ and 3.0 mm, UFC at 7.31 g/cm³ and
+  1.4 mm for both Siemens scanners. `SOMATOM_DEFINITION_FLASH.detector_depth` is 1.4 mm (was 1.0). A table is
+  made at one depth, so `DetectorEfficiency(material, thickness_mm, MC_LUT)` refuses another;
+  `detector_efficiency_mode = :beer_lambert` models any depth (`m₁ = E·q`, `m₂ = E²·q`). The Beer–Lambert
+  attenuation tables are scaled to the same densities.
+- **Removed:** `compute_eid_efficiency_vector`, `get_gemstone_mc_efficiency`, `get_ufc_mc_efficiency`,
+  `get_ufc_flash_mc_efficiency` (the tables are the exported `*_MC_EFFICIENCY_LUT`s; the response is internal); `detector_efficiency_gemstone`, `detector_efficiency_ufc`,
+  `detector_efficiency_ufc_flash` (→ `DetectorEfficiency(material, thickness_mm, mode)` with the scanner's own
+  `detector_material` and `detector_depth`; its `fill_factor` field is gone, the scanner's is the one);
+  `apply_fill_factor!` (the fill factor scales the quanta once, in the noise); `get_scintillator_mu`'s silent
+  Gemstone fallback for an unknown material (it throws) and its aliases (`"lumex"`, `"GOS"`, `"UFC_Flash"`, …).
+- **`EICTWorkspace` fields:** `η_vec`, `wη_gpu`, `η_eff`, `σ_e_photon` and `air_scan` are gone; `m1`, `m2` (keV,
+  keV²), `wm1_gpu`, `wm2_gpu`, `dispersion` (the per-ray `S₂/S₁` of the last projection) and `σ_electronic`
+  (electronic noise ÷ gain, in units of the air beam's mean signal) are new; `bowtie_air_reference` is
+  `air_reference` and always built. `keep_projection` keeps the dispersion too.
+
+- **The photon-counting detector is the NAEOTOM Alpha's, read at its native dexels.** Its response is BasisMonteCarlo's
+  Geant4 native-dexel table (`PCCT_NATIVE_TABLE_PATH`, plain data: transported charge, 1.9 keV electronic noise, the
+  2-D anti-scatter grid of 4 × 6-dexel cells, open fraction 0.716), the cell's mean dexel per incident photon. Each
+  native dexel's position in its cell sets its gain (`pcct_position_gain`, folded into the per-ray source
+  transmission, so air still reads zero). v0.15.1's `cdte_response_v4` is test data only (`test/data/`).
+- **Counting noise per native dexel, then a digital 2 × 2 sum** (`pcct_count!`, `pcct_event_classes`): each dexel's
+  unshared counts and, per pair of neighbours and pair of bins, the photons they share, all Poisson. At 120 kV a dexel
+  shares 5.6 % of its counts with each neighbour across the fan, 5.3 % along z and 0.7 % diagonally (24 % in all).
+  Measured in air: a UHR dexel's Fano factor 1.004 and its neighbour correlation 0.052 (as predicted); a standard
+  pixel's Fano factor above 20 keV 1.109, within 3 % of the binned table's; standard counts = 4.000 × UHR counts.
+- **Pile-up per native dexel, before the sum**, re-implemented from the fitted inputs (pulses per photon and their
+  heights, a 10 ns CR-RC shaper, one retriggering comparator per threshold, 27 ns dead time):
+  `compute_mc_pileup_matrix(thresholds, weights, energies, rate, dead_time_ns; n_pulses, seed)` and
+  `pileup_counts!`. Count loss at 140 kV: 2.6 % at 1 Mcps per dexel, 21 % at 10 Mcps.
+- **η once, no cap:** the response is per incident photon (absorption included), so `quantum_efficiency` no longer
+  multiplies the projection, the air response, the scatter weights or `compute_mc_count_moments` (its `η` keyword is
+  gone; `compute_scatter_bin_weights(energies, weights, energy_weights, R, kVp)`); `compute_mc_drm` no longer
+  renormalises rows above one (a shared photon counts in two dexels).
+- **`NAEOTOM_ALPHA` as documented:** pitch 0.373 × 0.399 mm at the isocentre (was 0.301 × 0.353, the electrode
+  without the grid's gaps), 1376 columns (was 1659), 144 rows × 0.4 mm = 57.6 mm, dead time 27 ns (was 5).
+  **`NAEOTOM_ALPHA_UHR`** (new): native dexels, 120 rows of 0.2 mm, 2752 columns, the 20 keV threshold.
+- **`PCCTScanner` fields removed:** `fill_factor_row`, `fill_factor_col` (unused; the dexel's aperture and the grid
+  are the table's), `n_energy_bins` (it is `length(energy_thresholds)`), `energy_resolution`, `charge_sharing_fwhm`
+  (the table's), `pixel_mode` (dead), `native_dexel_col_mm`, `native_dexel_row_mm` (a native dexel's pitch is the
+  pixel's over `binning_factor`; its aperture is the table's). Thresholds must be among the table's 16.
+- **Removed:** `apply_pcct_noise!` (→ `pcct_count!` inside `simulate!`) and `simulate!`'s `noise_rng` (views are
+  drawn in parallel from `(seed, view)` streams), `apply_pcct_pileup!` (→ `pileup_counts!` per native dexel),
+  `simulate_pulse_train`, `PileupResult`; `MCResponseData`'s unused `R_perpixel`, `Var_total` and `Cov_pixpair`.
+
+- **Pile-up is corrected outside `simulate!`, from simulated calibration scans:** `calibrate_pileup` (air scans at
+  1/16 to 2 × the protocol's current, the pile-up-free counts extrapolated linearly from the lowest) →
+  `apply_pileup!`. `PCCTScanner`'s `pileup_correction`, `apply_pcct_pileup_correction!` and the result's `pileup_S`
+  are removed (the correction no longer reads the model's own matrices). On a 20 cm water cylinder at a clinical
+  rate the rms log error against a pile-up-free scan falls from 0.096 to 0.016.
+- **`SimOptions(detector_efficiency_mode)`** is `:mc_lut` (default) or `:beer_lambert`; `:auto` (the same as
+  `:mc_lut`) is gone and anything else throws.
+- **`fill_factor_standard` is removed**, with the fallback it served: an `EICTScanner`'s fill factors must lie in
+  (0, 1] (zero meant "unset").
+
+- **One anode angle, the scanner's.** `CTProtocol`'s `anode_angle` field and keyword are removed: the anode is
+  hardware, `scanner.target_angle`, which now also picks the spectrum (the bundled IPEM table at the nearest
+  tabulated angle, 8° or 10°). `resolve_source_spectrum_without_bowtie` requires `scanner`. `NAEOTOM_ALPHA`'s
+  anode is 8° (documented; was 7° geometry with a 10° spectrum); the SOMATOM Definition Flash (7°) and the
+  default `EICTScanner`/`PCCTScanner` (7°) now read the 8° table where a protocol defaulted to 10°.
+- **`PhotonCountingDetector`** keeps only what is read: `material`, `thickness_mm`, `pixel_size_mm`,
+  `energy_thresholds_keV`, `dead_time_ns`, `binning_factor` (gone: `energy_resolution_keV`,
+  `charge_sharing_fwhm_mm`, `enable_charge_sharing`, `enable_pile_up`, `enable_anti_coincidence`,
+  `coincidence_window_ns`, `electronic_noise_keV`, `seed`, all informational).
+- **Public names against v0.15.1:** added `calibrate_flat_field`, `apply_flat_field!`, `calibrate_pileup`,
+  `apply_pileup!`, `NAEOTOM_ALPHA_UHR` (and a `spectral_basis` method); removed `PileupResult`, `apply_fill_factor!`,
+  `apply_pcct_noise!`, `apply_pcct_pileup!`, `apply_pcct_pileup_correction!`, `compute_eid_efficiency_vector`,
+  `detector_efficiency_gemstone`, `detector_efficiency_ufc`, `detector_efficiency_ufc_flash`,
+  `fill_factor_standard`, `get_gemstone_mc_efficiency`, `get_ufc_flash_mc_efficiency`, `get_ufc_mc_efficiency`,
+  `simulate_pulse_train`. The new plumbing (`eid_signal_moments`, the native table, `pcct_count!`,
+  `pcct_event_classes`, `pcct_position_gain`, `pileup_counts!`) is internal.
+
+### Fixed
+- **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
+- **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
+  applied once, to the quanta (`I₀·ff`).
+- **The electronic noise** was converted to photons with the spectrum's mean energy; it is in keV (÷ gain), in the
+  signal's own units.
+- **EICT scatter** was estimated from a sinogram that carried the bowtie and the detector response, so an empty
+  field scattered; the scatter source is each ray's primary times the object's own line integral (the sinogram
+  less its air value, `estimate_scatter_field!(…; air_reference)`), and the spectral weight is signal-weighted
+  (`m₁`).
+
+### Added
+- **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and
+  `PCCTScanner(; gain_spread, threshold_spread_keV, defect_seed)`: each dexel's own gain and offset (energy
+  integrator) or gain and threshold offsets (photon counter, per native dexel, its counts read off the table at
+  thresholds `(t + δ)/g`, weighted between the air beam and one behind 20 cm of water by the ray's own line
+  integral). All default to zero: the ideal detector is a copy with the spreads at zero. Corrected by
+  `calibrate_flat_field` (simulated air scans: two currents for an energy integrator, which separates offset from
+  gain; one low-flux scan for a photon counter) → `apply_flat_field!`. Residuals against the ideal detector on a
+  20 cm water cylinder: energy integrator (2 % gain, offset σ 2 × 10⁴ keV per reading) < 1e-4 rms, exact as gain and offset are
+  energy-blind; photon counter (2 % gain, 0.35 keV thresholds) 0.0287 → 0.0073 rms log, the rest the offsets'
+  different weight on a hardened beam.
+
+- `spectral_basis(ws::EICTWorkspace, protocol)`: the
+  one-channel basis of an energy-integrating acquisition, its air response scaled to the noise-equivalent quanta
+  `I₀·ff·S₁²/S₂`; `spectral_basis_from_acquisitions` takes these directly for dual-kVp and dual-source pairs.
+- Tests (`test/eict_signal.jl`, CPU): the air scan's variance against `S₂/(I₀·ff·S₁²)` with and without a bowtie
+  (ratio 1 ± 0.02); NEQ in air = ff·N·DQE(0) to 2 % (Force, 120 kV: DQE(0) = 0.832); the variance behind 20 and
+  30 cm of water against `D/λ` and the rising dispersion; the electronic term; water BHC against a 70 keV scan
+  (< 1 HU, cupping < 2 HU); an empty field's scatter (< 1e-5); and a noise-free dual-kVp decomposition returning
+  the water path.
+
 ### Documented
+- **The notebooks and the scanners page follow v0.16:** every documentation notebook uses the scanner constants
+  (01/02/05 `REVOLUTION_APEX`; 03/06/07 `EICTScanner(REVOLUTION_APEX; electronic_noise = 0.0)`; 04/08
+  `NAEOTOM_ALPHA`; 09 `SOMATOM_FORCE`; 12 `SOMATOM_DEFINITION_FLASH`) instead of hand-copied blocks; the
+  dual-energy notebooks build their bases with `spectral_basis(ws, protocol)`; the photon-counting notebooks
+  correct pile-up with `calibrate_pileup` → `apply_pileup!`; 09 and 12 describe the Geant4 tables (the Flash at
+  1.4 mm, within 0.5 % of the Force); the scanners page and the guide drop the removed keywords and the
+  protocol's anode angle.
 - **Getting Started rewritten as the package's guide**, for readers from a first-time user to a contributor:
   install, a first scan, then the phantom, the scan, reconstruction and spectral imaging in order, with the why of
   each setting, a units table, an anatomical chest scanned with and without iodine contrast, memory, notebooks and

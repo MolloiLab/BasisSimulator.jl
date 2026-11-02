@@ -20,9 +20,12 @@ _differing(a, b) = [f for f in (fieldnames(ScannerGeometry)..., fieldnames(typeo
 
     # the values the documentation's notebooks use
     @test REVOLUTION_APEX.detector_material == :lumex && REVOLUTION_APEX.detector_rows == 256 && REVOLUTION_APEX.electronic_noise == 3500.0
-    @test NAEOTOM_ALPHA.detector_col_size ≈ 0.275 * 2 / (1113 / 610) && NAEOTOM_ALPHA.detector_cols == 1659
+    # the documented Alpha: pitch 0.37 × 0.40 mm at the isocentre, 1376 columns, 144 × 0.4 mm, 27 ns
+    @test round(NAEOTOM_ALPHA.detector_col_size; digits = 2) == 0.37 && round(NAEOTOM_ALPHA.detector_row_size; digits = 2) == 0.4
+    @test NAEOTOM_ALPHA.detector_cols == 1376 && NAEOTOM_ALPHA.detector_rows == 144 && NAEOTOM_ALPHA.dead_time_ns == 27.0
+    @test NAEOTOM_ALPHA_UHR.detector_rows == 120 && NAEOTOM_ALPHA_UHR.detector_cols == 2752 && NAEOTOM_ALPHA_UHR.binning_factor == 1
+    @test round(NAEOTOM_ALPHA_UHR.detector_row_size * 120; digits = 1) == 23.9 && NAEOTOM_ALPHA_UHR.energy_thresholds == [20.0]
     @test NAEOTOM_ALPHA.energy_thresholds == [20.0, 35.0, 55.0, 70.0] && NAEOTOM_ALPHA.binning_factor == 2
-    @test NAEOTOM_ALPHA.native_dexel_col_mm == 0.275 && NAEOTOM_ALPHA.native_dexel_row_mm == 0.322
     @test SOMATOM_FORCE.detector_material == :ufc && SOMATOM_FORCE.detector_cols == 920
     @test SOMATOM_DEFINITION_FLASH.detector_material == :ufc_flash && SOMATOM_DEFINITION_FLASH.flat_filter_thickness == 8.4
 
@@ -43,12 +46,11 @@ end
     @test_throws ArgumentError EICTScanner(SOMATOM_FORCE; energy_thresholds = [20.0])
     @test_throws ErrorException EICTScanner(SOMATOM_FORCE; detector_shape = :sphere)
 
-    # photon counting: new thresholds set the bin count afresh; the native dexel is the sensor's own
+    # photon counting: the thresholds are the bins
     p = PCCTScanner(NAEOTOM_ALPHA; energy_thresholds = [20.0, 70.0])
-    @test p.n_energy_bins == 2 && Set(_differing(NAEOTOM_ALPHA, p)) == Set([:energy_thresholds, :n_energy_bins])
-    @test_throws ErrorException PCCTScanner(NAEOTOM_ALPHA; energy_thresholds = [20.0, 70.0], n_energy_bins = 4)
+    @test _differing(NAEOTOM_ALPHA, p) == [:energy_thresholds]
     p = PCCTScanner(NAEOTOM_ALPHA; binning_factor = 1)
-    @test p.native_dexel_col_mm == NAEOTOM_ALPHA.native_dexel_col_mm && _differing(NAEOTOM_ALPHA, p) == [:binning_factor]
+    @test _differing(NAEOTOM_ALPHA, p) == [:binning_factor]
     @test_throws ErrorException PCCTScanner(NAEOTOM_ALPHA; noise_reduction = 2.0)
 
     # a variant never shares the thresholds with its original
@@ -59,12 +61,12 @@ end
 
 @testset "protocol variants: the copy constructor" begin
     low = CTProtocol(
-        kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5, collimation_mm = 4.8, anode_angle = 8,
+        kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5, collimation_mm = 4.8,
         additional_filters = [("Ti", 0.9)]
     )
     @test CTProtocol(low) == low && hash(CTProtocol(low)) == hash(low)
     high = CTProtocol(low; kVp = 140, mA = 190.0, additional_filters = [("Ti", 0.9), ("Sn", 0.6)])
-    @test high.kVp == 140 && high.mA == 190.0 && high.views == 1160 && high.collimation_mm == 4.8 && high.anode_angle == 8
+    @test high.kVp == 140 && high.mA == 190.0 && high.views == 1160 && high.collimation_mm == 4.8
     @test high.additional_filters == [("Ti", 0.9), ("Sn", 0.6)] && low.additional_filters == [("Ti", 0.9)]
     # a new mAs sets the current afresh; a variant keeps an axial scan axial
     @test CTProtocol(low; mAs = 100.0).mA == 200.0

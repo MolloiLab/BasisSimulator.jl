@@ -1,8 +1,10 @@
 # EICTScanner / PCCTScanner over a shared ScannerGeometry: the abstract `Scanner{T}` is the
 # interface every consumer dispatches on; each family carries only its own detector model.
 @testset "Scanner families: EICTScanner / PCCTScanner" begin
-    e = EICTScanner(source_to_isocenter = 626.0, detector_rows = 8, detector_cols = 256, detector_material = :lumex,
-        detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0)
+    e = EICTScanner(
+        source_to_isocenter = 626.0, detector_rows = 8, detector_cols = 256, detector_material = :lumex,
+        detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0
+    )
     @test e isa Scanner{Float64} && e isa EICTScanner
     @test e.geometry isa ScannerGeometry{Float64}
     @test e.source_to_isocenter == 626.0 && e.detector_rows == 8 && e.detector_shape == :arc     # geometry reachable directly
@@ -10,12 +12,13 @@
     @test :source_to_isocenter in propertynames(e) && :detection_gain in propertynames(e) && !(:energy_thresholds in propertynames(e))
     @test_throws FieldError e.energy_thresholds                                          # not part of an EICT detector
     @test_throws ArgumentError EICTScanner(energy_thresholds = [20.0, 40.0])             # PCCT kwarg on an EICT scanner
-    p = PCCTScanner(source_to_isocenter = 540.0, detector_rows = 8, detector_cols = 64, detector_material = :CdTe,
-        detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0], dead_time_ns = 25.0)
+    p = PCCTScanner(
+        source_to_isocenter = 540.0, detector_rows = 8, detector_cols = 64, detector_material = :CdTe,
+        detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0], dead_time_ns = 25.0
+    )
     @test p isa Scanner{Float64} && p isa PCCTScanner
-    @test p.n_energy_bins == 4 && p.energy_thresholds == [20.0, 35.0, 55.0, 70.0] && p.dead_time_ns == 25.0
-    @test p.pileup && !p.pileup_correction && !p.scatter_correction && p.noise_reduction == 0.0   # detector-model defaults
-    @test p.native_dexel_col_mm ≈ 1.0 * (950.0 / 540.0)                                # inferred: pixel × magnification / binning
+    @test length(p.energy_thresholds) == 4 && p.energy_thresholds == [20.0, 35.0, 55.0, 70.0] && p.dead_time_ns == 25.0
+    @test p.pileup && !p.scatter_correction && p.noise_reduction == 0.0   # detector-model defaults
     @test_throws FieldError p.detection_gain                                             # not part of a PCCT detector
     @test_throws ErrorException PCCTScanner()                                            # thresholds required
     @test_throws ErrorException PCCTScanner(energy_thresholds = [70.0, 20.0])

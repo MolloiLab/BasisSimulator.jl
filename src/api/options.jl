@@ -25,8 +25,8 @@ is set by the keyword constructor.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
-- `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
-  `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
+- `detector_efficiency_mode::Symbol`: an energy integrator's response, `:mc_lut` (default, its Geant4
+  table) or `:beer_lambert` (analytic absorption).
 - `projector::Symbol`: Forward-projection ray tracer.  `:dd_fast` (default) = distance-driven,
   anti-aliased footprint integration with single-pass per-material path-length fused kernels —
   the full spectrum runs in ONE volume walk (measured 47x faster than the per-energy tiled
@@ -52,7 +52,7 @@ struct SimOptions
     use_heel_effect::Bool
     # --- General ---
     seed::Union{Int, Nothing}
-    detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
+    detector_efficiency_mode::Symbol   # :mc_lut, :beer_lambert
     projector::Symbol                  # :dd_fast (default), :siddon (comparison)
     # --- Acquisition ---
     view_samples::Int                  # angular samples per view across its integration arc (1 = instantaneous)
@@ -72,9 +72,8 @@ only.
 - `use_fill_factor`, `use_detector_efficiency`, `use_scatter`, `use_optical_crosstalk`,
   `use_focal_spot`, `use_noise`, `use_lag`, `use_heel_effect::Bool`
 - `seed::Union{Int, Nothing} = 42` — noise RNG seed. `nothing` leaves the energy-integrating
-  path unseeded; the photon-counting path seeds with 0, because its workspace always carries an
-  RNG to reseed (`apply_pcct_noise!`).
-- `detector_efficiency_mode::Symbol = :auto` — `:auto`, `:mc_lut`, `:beer_lambert`
+  path unseeded; the photon-counting path draws a fresh seed (`pcct_count!`).
+- `detector_efficiency_mode::Symbol = :mc_lut` — `:mc_lut`, `:beer_lambert`
 - `projector::Symbol = :dd_fast` — `:dd_fast` or `:siddon`; anything else throws an `ArgumentError`
 - `view_samples::Int = 1` — gantry rotation during a view: the detector integrates while the gantry
   turns through the view's arc, so a view records the transmitted intensity averaged over that arc,
@@ -96,17 +95,22 @@ function SimOptions(;
         use_lag::Bool = true,
         use_heel_effect::Bool = true,
         seed::Union{Int, Nothing} = 42,
-        detector_efficiency_mode::Symbol = :auto,
+        detector_efficiency_mode::Symbol = :mc_lut,
         projector::Symbol = :dd_fast,
         view_samples::Integer = 1,
         view_arc::Real = 1.0,
     )
     _validate_projector(projector)
+    detector_efficiency_mode in (:mc_lut, :beer_lambert) || throw(
+        ArgumentError("detector_efficiency_mode must be :mc_lut or :beer_lambert, got :$(detector_efficiency_mode)")
+    )
     view_samples >= 1 || throw(ArgumentError("view_samples must be at least 1, got $(view_samples)"))
     0 < view_arc <= 1 || throw(ArgumentError("view_arc must be in (0, 1], got $(view_arc)"))
-    return SimOptions(use_fill_factor, use_detector_efficiency, use_scatter, use_optical_crosstalk,
+    return SimOptions(
+        use_fill_factor, use_detector_efficiency, use_scatter, use_optical_crosstalk,
         use_focal_spot, use_noise, use_lag, use_heel_effect, seed, detector_efficiency_mode, projector,
-        Int(view_samples), Float64(view_arc))
+        Int(view_samples), Float64(view_arc)
+    )
 end
 
 """

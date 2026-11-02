@@ -169,7 +169,6 @@ include("correction/radial_cupping.jl")
 include("correction/radial_capping_basis.jl")
 
 # PCCT pulse-pileup correction (inverse of the MC pile-up applied by simulate!)
-include("correction/pcct_pileup_correction.jl")
 
 # =============================================================================
 # Unified Physics Pipeline
@@ -232,6 +231,7 @@ include("detector/photon_counting.jl")
 
 # MC-based detector response matrix (replaces analytical DRM)
 include("detector/pcct/mc_response.jl")
+include("detector/pcct/native_table.jl")
 
 # MC-based pulse pileup model (replaces analytical Taguchi model)
 include("detector/pcct/mc_pileup.jl")
@@ -244,6 +244,7 @@ include("api/options.jl")
 include("api/workspace.jl")
 include("api/view_integration.jl")
 include("api/driver.jl")
+include("correction/flat_field.jl")
 
 # =============================================================================
 # Spectral VMI building blocks

@@ -223,49 +223,21 @@ detector distances, detector array, focal spot, gantry, flat filter, bowtie):
 
 - `EICTScanner`: an energy-integrating scintillator detector (material, depth, fill factors,
   detection gain, electronic noise);
-- `PCCTScanner`: a photon-counting detector (sensor, energy thresholds, energy resolution,
-  charge sharing, dead time and pile-up, pixel binning).
+- `PCCTScanner`: a photon-counting detector (sensor, energy thresholds, dead time and pile-up,
+  pixel binning; its charge sharing and noise are its Geant4 response table's).
 
 Each constructor rejects the other family's keywords, so a photon-counting parameter can't end
 up on a scintillator by accident. Geometry fields read the same on both: `scanner.detector_rows`.
 
-The values below model the GE Revolution Apex Elite: 256 rows of 0.625 mm, 834 columns, a curved
-(arc) Lumex detector and GE's large-body bowtie. Distances are in mm; the detector pitch is given
-at the isocentre.
+A clinical scanner is a documented constant. `REVOLUTION_APEX` models the GE Revolution Apex
+Elite: 256 rows of 0.625 mm, 834 columns, a curved (arc) Gemstone detector, GE's large-body bowtie
+and a clinical DAS (3500 e⁻ of electronic noise at 10 e⁻/keV). Its docstring gives the source of
+every value. A different scan is a variant, `EICTScanner(REVOLUTION_APEX; detector_rows = 64)`:
+every parameter copied, the keywords given replaced.
 """
 
 # ╔═╡ 03000002-0000-4000-8000-000000000001
-scanner = BS.EICTScanner(
-    # Geometry (mm)
-    source_to_isocenter = 625.6,
-    source_to_detector = 1100.0,
-
-    # Detector array (pitch at the isocentre, mm)
-    detector_rows = 256,
-    detector_cols = 834,
-    detector_row_size = 0.625,
-    detector_col_size = 0.6,
-
-    # Focal spot
-    focal_spot_width = 1.0,
-    focal_spot_length = 1.0,
-    target_angle = 10.0,
-
-    # Filtration
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-
-    # Scintillator
-    detector_material = :lumex,
-    detector_depth = 3.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-
-    # Data-acquisition electronics: added to the counts before the log, as a real DAS does
-    electronic_noise = 3500.0,   # e⁻ rms
-    detection_gain = 10.0,       # e⁻ / keV
-);
+scanner = BS.REVOLUTION_APEX
 
 # ╔═╡ 03000003-0000-4000-8000-000000000001
 Markdown.parse("""

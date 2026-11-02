@@ -193,7 +193,7 @@ CM.save("gammex_fbp.png", fig)"""),
               "(plain filtered back-projection) to 100 in steps of 10. Give it the scan's air reference, so its ",
               "statistical weights know where the bowtie thins the beam:"),
             julia(raw"""hir = BS.create_hir_recon_workspace(sino, ws.geom, recon.matrix_size; strength = 60)
-volume = BS.reconstruct!(hir, sino, ws.geom; air_reference = ws.bowtie_air_reference)
+volume = BS.reconstruct!(hir, sino, ws.geom; air_reference = ws.air_reference)
 hu_hir = BS.to_hounsfield(Array(volume); μ_water = bhc.μ_water_ref)"""),
             figure("gs_gammex_fbp_hir.png", "Gammex 472 reconstructed by FBP and by hybrid IR at strength 60",
                 "The scan above: filtered back-projection (left) and hybrid iterative reconstruction at strength 60 (right). The rods are calcium (bright) and iodine; the window is 400 HU wide around 40 HU."),
@@ -417,21 +417,25 @@ end"""),
             # ── 4 · Spectral ─────────────────────────────────────────────────
             H2(:id => "spectral", :class => h2_cls, "4 · Spectral Imaging"),
             p("A photon-counting detector sorts every photon by its energy into bins. ", c("PCCTScanner"), " adds that ",
-              "detector: its energy thresholds and dead time, with the pile-up and scatter corrections applied inside ",
-              c("simulate!"), ". This one counts in four bins, with a detector narrowed to the phantom to save memory:"),
+              "detector: its energy thresholds and dead time, with the scatter correction applied inside ",
+              c("simulate!"), " and the pile-up corrected after it, from a calibration of simulated air scans. This one ",
+              "counts in four bins, with a detector narrowed to the phantom to save memory:"),
             julia(raw"""scanner_pc = BS.PCCTScanner(
     source_to_isocenter = 610.0, source_to_detector = 1113.0,
     detector_rows = 32, detector_cols = 1200, # 1200 × 0.3 mm = 36 cm
     detector_row_size = 0.35, detector_col_size = 0.3,
     energy_thresholds = [20.0, 35.0, 55.0, 70.0], # four counting bins, keV
-    dead_time_ns = 5.0, # pile-up is modelled once there is a dead time
-    pileup_correction = true, scatter_correction = true,
+    dead_time_ns = 27.0, # pile-up is modelled once there is a dead time
+    scatter_correction = true,
 )
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
-res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)"""),
-            p("The first photon-counting workspace of a session takes about two minutes: the pile-up model is a Monte ",
-              "Carlo run on the CPU for the count rates this scan will see. Every scan after that takes seconds. Set ",
-              c("dead_time_ns = 0"), " to skip pile-up while you iterate."),
+res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
+
+# pile-up, calibrated as a scanner does it: air scans at rising currents (few views suffice)
+pileup = BS.calibrate_pileup(scanner_pc, BS.CTProtocol(protocol; views = 40), recon; sim_opts)
+BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)"""),
+            p("The pile-up model simulates shaped pulses on the CPU at the count rates this scan will see; it takes ",
+              "seconds and is memoised for the session. Set ", c("dead_time_ns = 0"), " to skip pile-up while you iterate."),
             p("The decomposition needs the detector's response, and the workspace has it: it is the model that made ",
               "the counts, so no calibration scan is needed. ", c("vmi_pipeline"), " separates water from iodine in every ",
               "ray, reconstructs both and makes virtual monoenergetic images in HU:"),
@@ -451,10 +455,10 @@ vmi.images # the water and iodine images"""),
               link("$(BASE)/examples/09_siemens_force_ufc_dual_source_vmi/", "dual-source"), " examples build them in full, ",
               "with the SpectralHYPR denoiser and each scanner's reconstruction windows."),
             note("What the photon-counting model covers",
-                P("The detector response is a Monte Carlo model of cadmium telluride, with charge sharing and K-fluorescence. ",
-                  c("energy_resolution"), " and ", c("charge_sharing_fwhm"), " are recorded on the scanner but do not change ",
-                  "the physics, and ", c("detector_material = :CZT"), " or ", c(":Si"), " changes only the detection ",
-                  "efficiency. Pile-up is modelled for four bins; with another number of bins, set ", c("dead_time_ns = 0"), "."),
+                P("The detector response is the NAEOTOM Alpha's cadmium telluride, simulated in Geant4 at its native ",
+                  "dexels (charge sharing, K-fluorescence, electronic noise, the anti-scatter grid), so the thresholds ",
+                  "must be among the table's sixteen (20 to 90 keV). Every native dexel counts on its own and piles up ",
+                  "on its own; a binned pixel sums its dexels after counting."),
                 P("Counts are integer Poisson draws, as a real counter's are. ", c("use_noise = false"), " gives the expected ",
                   "counts, for a noise-free reference. Leave ", c("noise_reduction"), " at 0: it scales the noise and is not physics."),
                 P("Two materials, water and iodine, cannot represent calcium exactly. At 40 keV, bone and calcium are less ",
@@ -588,9 +592,9 @@ julia --project=docs -t auto -e 'using Pluto; Pluto.run()'"""),
                 edge("\"kVp must be one of (80, 100, 120, 140)\"",
                     ("Spectra exist for those four tube voltages."),
                     ("Use the nearest of them; 150 kVp is not available, so Sn150 protocols use Sn140.")),
-                edge("\"anode_angle must be one of (8, 10)\", or a heel-effect error about the half-cone angle",
-                    ("There are two angles. ", c("CTProtocol(anode_angle)"), " (8° or 10°) picks the spectrum; the scanner's ",
-                     c("target_angle"), " (default 7°) drives the heel effect, and it must exceed the beam's half-cone angle."),
+                edge("A heel-effect error about the half-cone angle",
+                    ("The anode is the scanner's ", c("target_angle"), " (default 7°): it drives the heel effect, which needs ",
+                     "it to exceed the beam's half-cone angle, and picks the spectrum (the IPEM table at the nearest of 8° and 10°)."),
                     ("Set ", c("target_angle"), " to the scanner's anode angle (10° on the Scanners page), or collimate the beam.")),
                 edge("Changing the scanner's rotation time changes nothing",
                     (c("gantry_rotation_time"), ", ", c("scan_diameter"), " and ", c("gantry_aperture"), " on the scanner are ",
@@ -631,7 +635,7 @@ julia --project=docs -t auto -e 'using Pluto; Pluto.run()'"""),
                     ("Calibrate with the same ", c("SimOptions"), ", scanner and ", c("ws.geom"), " as the scan.")),
                 edge("Hybrid IR is noisier at the body's edge",
                     ("Without the air reference, its statistical weights ignore the bowtie."),
-                    (c("reconstruct!(hir, sino, geom; air_reference = ws.bowtie_air_reference)"), ".")),
+                    (c("reconstruct!(hir, sino, geom; air_reference = ws.air_reference)"), ".")),
                 edge("\"HIR strength must be 0-100 in steps of 10\"",
                     ("Strength is a percentage; the old levels 1 to 5 were replaced."),
                     ("Level n is strength 20n.")),
@@ -785,7 +789,7 @@ THE CHAIN
 - ws = BS.create_workspace(scanner, protocol, sim_opts, recon, phantom); result = BS.simulate!(ws, phantom, protocol, sim_opts) -> ws.sinogram (cols, rows, views), result.dose.ctdi_vol_mGy
 - bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = ws.geom); sino = BS.apply_bhc_water(ws.sinogram, bhc)
 - fbp = BS.create_fdk_recon_workspace(sino, ws.geom, recon.matrix_size); hu = BS.to_hounsfield(Array(BS.reconstruct!(fbp, sino, ws.geom)); μ_water = bhc.μ_water_ref)
-- hir = BS.create_hir_recon_workspace(sino, ws.geom, recon.matrix_size; strength = 0:10:100); BS.reconstruct!(hir, sino, ws.geom; air_reference = ws.bowtie_air_reference)
+- hir = BS.create_hir_recon_workspace(sino, ws.geom, recon.matrix_size; strength = 0:10:100); BS.reconstruct!(hir, sino, ws.geom; air_reference = ws.air_reference)
 - PCCT: res = BS.simulate!(ws_pc, ...); basis = BS.spectral_basis(ws_pc; I0 = res.I0_bins); vmi = BS.vmi_pipeline(; channels = [Array(b) for b in res.pcct_sino.bins], basis, geom = ws_pc.geom, to_backend = device, matrix_size) -> vmi.vmis (x, y, z, energy) in HU
 - Anatomy: BS.load_xcat_male_slab / _chest(; materials = BS.xcat_default_materials() with edits); contrast = base material with iodine (Z = 53) added by mass fraction mg_per_mL / (1000 * density_g_cm3).
 - Free GPU memory: copy results with Array(...), then BS.release_backend!(ws).
@@ -798,7 +802,7 @@ RULES
 - Every label needs a material (missing -> air silently). Phantom voxel <= recon voxel. Whole body cross-section in the volume, z margin beyond the recon slab; the volume is centred at the isocentre (origin does not move it). <= 64 materials for the fast projector (compact_materials; dithered iodine quantization; never merge across measured regions).
 - Detector must cover the body: detector_cols * detector_col_size (mm) > body width. Even views per rotation for helical. Measure inside the inscribed FOV circle.
 - Water on a Gammex centre ROI reads about +20 HU (calcium hardening); judge water on a water phantom. HU per mg/mL iodine depends on body size; calibrate on the scanned body.
-- PCCT: GPU only in practice; first workspace ~2 min (CPU pile-up Monte Carlo); pile-up needs exactly 4 bins; energy_resolution/charge_sharing_fwhm are informational; noise_reduction stays 0.
+- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, CTProtocol(protocol; views = 40), recon; sim_opts), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
 - reconstruct! returns the workspace's buffer: copy before the next call. vmi_pipeline(recon_method = :hir) cannot use PairFilter or image HYPR.
 - Pluto: simulate! mutates in place (return values from cells); restart after package updates; one heavy scan at a time (a full chest/head scan peaks at 10-11 GB).
 - Record seed, scanner, protocol, options and pkgversion(BasisSimulator) with every output. Never present a downscaled run (fewer views, coarser phantom) as the real scan.

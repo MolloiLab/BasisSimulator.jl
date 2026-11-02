@@ -23,14 +23,14 @@ md"""
 The **second-generation dual-source** scanner (2008, FDA K082220; Stellar
 detector K113342) as a complete simulated system: **two STRATON tubes + two
 UFC detectors at 95°**, its published geometry and filtration, and the
-**Flash-specific Monte-Carlo detector LUT**, exercised through *both* of the
+**Flash's own Geant4 detector table**, exercised through *both* of the
 scanner's signature acquisition classes in one notebook. The scanner, its
 physics switches, the dual-energy protocol and the VMI chain are the Flash of
 the basis-spectral-denoising paper, carried over unchanged.
 
 ```
-Flash UFC MC η(E) LUT  (BS.UFC_FLASH_MC_EFFICIENCY_LUT, 1–140 keV)
-        │ via EICTScanner(detector_material = :ufc_flash)
+Flash UFC Geant4 table  (BS.UFC_FLASH_MC_EFFICIENCY_LUT, 1–140 keV)
+        │ via SOMATOM_DEFINITION_FLASH (detector_material = :ufc_flash)
         ▼
 ┌─ REGULAR (dual power): 120 kVp on BOTH tubes ──────────────────────────┐
 │  one projection, two independent noise draws → per-tube η-aware BHC    │
@@ -50,14 +50,13 @@ Flash UFC MC η(E) LUT  (BS.UFC_FLASH_MC_EFFICIENCY_LUT, 1–140 keV)
    bias against the noise-free reference, the chain, per-rod regression)
 ```
 
-!!! danger "The Flash is NOT the Force — measured, not assumed"
-    The Flash uses the same UFC Gd₂O₂S:Pr,Ce *material* as the Force, but
-    Hamid Khodajou-Chokami's dedicated Flash MC (2026-08-26) shows a
-    **distinctly thinner crystal**: η identical below 30 keV, −4.6% at
-    50 keV, −8% at 100 keV, **−28% at 140 keV (0.588 vs 0.816)**.  This
-    notebook therefore runs `detector_material = :ufc_flash`
-    (`BS.UFC_FLASH_MC_EFFICIENCY_LUT`), never `:ufc`.  §1 plots the
-    difference; `test/detector.jl` forbids aliasing the two LUTs.
+!!! note "The Flash's detector table"
+    The Flash uses the same UFC Gd₂O₂S:Pr,Ce ceramic as the Force. Its table,
+    `BS.UFC_FLASH_MC_EFFICIENCY_LUT` (`detector_material = :ufc_flash`), is its own Geant4
+    run (the Flash's pitch and 1-D grid) at 1.4 mm, the only UFC thickness Siemens quotes:
+    the Flash's depth is unpublished. BasisSimulator v0.15.1's MCNP table implied a thinner
+    crystal (0.588 at 140 keV against the Force's 0.816); at a documented depth the two
+    scanners collect the same fraction to within 0.5 %. §1 plots both.
 
 !!! note "Spec provenance"
     Every published number below comes from the sourced
@@ -104,47 +103,41 @@ md"""
 
 # ╔═╡ 12000002-0000-4000-8000-000000000001
 md"""
-## 1. The Flash UFC Monte-Carlo Efficiency LUT
+## 1. The Flash UFC Geant4 Detector Table
 
-Per-energy absorbed fraction η(E) for the **Definition Flash** UFC Gd₂O₂S
-scintillator, from a full Monte-Carlo transport simulation of the Flash
-detector.
+The flat-field response of the **Definition Flash**'s UFC Gd₂O₂S scintillator, from Geant4
+(BasisMonteCarlo notebook `05_siemens_flash.jl`, 100 000 photons per energy):
+`BS.UFC_FLASH_MC_EFFICIENCY_LUT`, per keV from 1 to 140 keV, with the Force's
+`BS.UFC_MC_EFFICIENCY_LUT` beside it. The `efficiency` is the energy collected per photon
+landing on a dexel, divided by the photon's energy, with every dexel illuminated; `dqe0` adds
+the spread of the collected energy (the Swank factor) to the absorption.
 
-**Provenance**: a Monte-Carlo transport simulation of the Definition Flash
-detector by Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
-Laboratory), `flash_efficiency_results.csv`, 2026-08-26.  The table ships in
-the package as `BS.UFC_FLASH_MC_EFFICIENCY_LUT`
-(`src/detector/detector_efficiency.jl`): 140 values on a 1-keV grid
-(1–140 keV), verbatim from that dataset, next to the Force
-`BS.UFC_MC_EFFICIENCY_LUT`.
+**Physics signatures** (fluorescence escape, which Beer–Lambert absorption *cannot* model):
 
-**Physics signatures** (MC-only features Beer-Lambert *cannot* model):
-
-1. **Gd K-edge fluorescence escape at 50.24 keV**: η drops
-   `0.925 → 0.739` between 50 and 51 keV — Gd Kα fluorescence (~43 keV)
-   escapes the crystal, so the *deposited* fraction falls even though
-   attenuation rises.
+1. **Gd K-edge fluorescence escape at 50.24 keV**: the efficiency drops `0.936 → 0.791`
+   between 50 and 51 keV: Gd Kα fluorescence (~43 keV) partly escapes the crystal, so the
+   *collected* fraction falls even though attenuation rises.
 2. **Gd L-edge structure near 7–8 keV** (L₃ 7.24 / L₂ 7.93 / L₁ 8.38 keV).
-3. **Steep high-energy roll-off** (0.825 at 100 keV → **0.588 at 140 keV**)
-   — the Flash-vs-Force fingerprint.  The thinner Flash crystal transmits
-   more high-energy primaries; below ~30 keV, where everything is absorbed
-   near the entrance surface, the two scanners are indistinguishable.
+3. **High-energy roll-off** (0.858 at 100 keV → 0.610 at 140 keV) from primary transmission
+   through 1.4 mm and Compton escape. No source gives the Flash's crystal depth; 1.4 mm is the
+   only UFC thickness Siemens quotes, so the Flash and Force tables are the same ceramic at the
+   same depth and differ only by their grids' geometry (by less than 0.5 % at every energy).
 """
 
 # ╔═╡ 12000002-0000-4000-8000-000000000030
 let
-    Es = collect(1.0:0.25:140.0)
-    η_flash = BS.get_ufc_flash_mc_efficiency.(Es)
-    η_force = BS.get_ufc_mc_efficiency.(Es)
-    η_gem = BS.get_gemstone_mc_efficiency.(Es)
+    Es = BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies
+    η_flash = BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency
+    η_force = BS.UFC_MC_EFFICIENCY_LUT.efficiency
+    η_gem = BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency
 
     fig = Mke.Figure(size = (1180, 580))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "MC Detector Efficiency",
-        subtitle = "Flash UFC vs Force UFC vs Gemstone — same Gd₂O₂S, thinner Flash crystal",
+        title = "Geant4 Detector Efficiency",
+        subtitle = "Flash UFC vs Force UFC vs Gemstone — the same UFC at 1.4 mm",
         xlabel = "Photon Energy (keV)",
-        ylabel = "Absorbed Fraction η(E)",
+        ylabel = "Collected Fraction η(E)",
         titlesize = 32, subtitlesize = 24,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
@@ -160,7 +153,7 @@ let
         color = [:crimson, :gray35], markersize = 12)
     Mke.text!(
         ax, 104.0, 0.52;
-        text = "140 keV: Flash $(round(η_flash[end]; digits = 3)), Force $(round(η_force[end]; digits = 3))\n($(round(Int, 100 * (η_flash[end] / η_force[end] - 1)))% for the Flash)",
+        text = "140 keV: Flash $(round(η_flash[end]; digits = 3)), Force $(round(η_force[end]; digits = 3))\n($(round(100 * (η_flash[end] / η_force[end] - 1); digits = 1)) % for the Flash)",
         fontsize = 16, align = (:left, :bottom), color = :crimson,
     )
 
@@ -212,7 +205,7 @@ at 95°** in the same gantry.  Every value below is sourced in the
 | Detector B channels | 480 (33 cm FOV) | Siemens datasheet 30,720 el / 64 rows |
 | Rows | 64 × 0.6 mm at iso (38.4 mm z-coverage) | Siemens datasheet; FDA K173630 |
 | Column pitch at iso | 0.70473 mm (1.2858 mm at detector / 1.8245× mag) | LDCT-PD |
-| Scintillator | UFC Gd₂O₂S:Pr,Ce → **`:ufc_flash` MC LUT** | Siemens datasheet + Khodajou MC |
+| Scintillator | UFC Gd₂O₂S:Pr,Ce → **`:ufc_flash` Geant4 table** | Siemens datasheet; BasisMonteCarlo notebook 05 |
 | Tube (STRATON MX P) | 2 × 100 kW, 80/100/120/140 kV, ≤800 mA each | Siemens datasheet |
 | Focal spots (IEC 60336) | 0.7 × 0.7 mm and 0.9 × 1.1 mm, **anode 7°** | Siemens datasheet |
 | Flat filtration | **8.4 mm Al equivalent** (6.8 tube + 1.6 BLD) | Siemens datasheet |
@@ -220,24 +213,24 @@ at 95°** in the same gantry.  Every value below is sourced in the
 | Rotation | 0.28 s min (0.5 s routine) | Siemens datasheet |
 | Projections | 1152 / rotation per focal-spot position (2304 with z-FFS) | Siemens datasheet; AAPM LDCT |
 
-`flash_scanner` below is the Flash of the basis-spectral-denoising paper
-(basis-vmi's `flash_scanner`), verbatim.
+`flash_scanner` below is the documented constant `SOMATOM_DEFINITION_FLASH` (tube/detector A;
+`SOMATOM_DEFINITION_FLASH_B` is detector B's 480 channels).
 
 !!! warning "Documented modeling assumptions (no public source exists)"
     - **Anode angle in the spectrum model**: the Flash's anode is a
       *published* 7°, but the bundled IPEM spectra come only in 8°/10° →
-      protocols use the closest available **8°** (`anode_angle = 8`);
-      the `EICTScanner`'s `target_angle` keeps the true 7.0° (heel-effect metadata,
-      inert with `use_heel_effect = false`).
+      spectra are read at the closest available **8°**; the scanner's `target_angle`
+      keeps the true 7.0° (the anode is one field: the spectrum reads the nearest
+      tabulated angle, the heel effect the true one, inert with `use_heel_effect = false`).
     - **Bowtie**: Siemens form-filter shape is unpublished → CatSim
       **large-body** profile as stand-in (same convention as notebooks 04, 08 and 09).
     - **Flat-filter composition**: only the **Al equivalent** is published
       (8.4 mm) → modeled as 8.4 mm of aluminum.  Unlike notebook 09's Force
       (assumed Al+Ti stack), this figure is a *measured* datasheet value.
-    - **Scintillator thickness 1.0 mm / fill factor 0.9**: proprietary;
-      thickness is inert here (η comes from the Flash MC LUT; the MC
-      high-energy roll-off implies a Beer-Lambert-effective ≈1.07 mm),
-      fill factor auto-cancels in the air-scan calibration.
+    - **Scintillator thickness 1.4 mm / fill factor 0.9**: proprietary;
+      1.4 mm is the only UFC thickness Siemens quotes and the depth of the
+      Flash's Geant4 table. The fill factor scales the quanta a dexel collects,
+      so it sets the noise, and cancels in the air calibration.
     - **Electronic noise = 1500 e⁻** (≈2.1 photon-equivalents at 70 keV
       with the 10 e⁻/keV gain): modeling the Stellar (K113342) build.
       Siemens publishes no absolute figure for either build, but a hard
@@ -283,32 +276,9 @@ at 95°** in the same gantry.  Every value below is sourced in the
 """
 
 # ╔═╡ 12000004-0000-4000-8000-000000000010
-# Siemens SOMATOM Definition Flash: basis-spectral-denoising's `flash_scanner`, verbatim. Both
-# tubes run on detector A's arc so the two channels stay co-registered ray by ray (see md above).
-flash_scanner = BS.EICTScanner(
-    source_to_isocenter = 595.0,
-    source_to_detector = 1085.6,
-    detector_rows = 64,
-    detector_cols = 736,
-    detector_row_size = 0.6,
-    detector_col_size = 0.70473,
-    detector_shape = :arc,
-    focal_spot_width = 0.7,
-    focal_spot_length = 0.7,
-    target_angle = 7.0,
-    gantry_rotation_time = 0.5,
-    scan_diameter = 500.0,
-    gantry_aperture = 780.0,
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 8.4,          # 6.8 mm Al tube assembly + 1.6 mm beam limiter
-    bowtie_filter = :large_body,
-    detector_material = :ufc_flash,       # the Flash's own Monte Carlo table (NOT :ufc)
-    detector_depth = 1.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-    electronic_noise = 1500,              # e⁻ — Stellar DAS floor; pre-2011 build ≈ 3500 (§3)
-    detection_gain = 10.0,
-);
+# Siemens SOMATOM Definition Flash, tube/detector A. Both tubes run on detector A's arc so the
+# two channels stay co-registered ray by ray (see md above).
+flash_scanner = BS.SOMATOM_DEFINITION_FLASH;
 
 # ╔═╡ 12000006-0000-4000-8000-000000000001
 md"""
@@ -318,12 +288,11 @@ md"""
 paper, verbatim: every effect of the EICT forward model on, the heel effect
 off as there, and **view integration**.
 
-- **Detector efficiency.** `use_detector_efficiency = true` (the default)
-  routes through the Flash UFC MC LUT: `build_physics_config` sees
-  `EICTScanner(detector_material = :ufc_flash)` and dispatches to
-  `detector_efficiency_ufc_flash()`, so every energy is weighted by
-  `w(E) · η_Flash(E)` and the detected flux, and therefore the Poisson
-  noise, reflects the Flash absorption.
+- **Detector response.** `use_detector_efficiency = true` (the default)
+  reads the Flash's Geant4 table for `detector_material = :ufc_flash`: every
+  energy is weighted by its signal per photon `m₁ = E·efficiency(E)`, and the
+  noise is compound Poisson, variance `Σ w m₂ e^{-∫μ dl}` with `m₂ = m₁²/dqe0`,
+  so its variance per unit signal rises as the beam hardens.
 - **Heel effect off** (`use_heel_effect = false`) keeps the forward spectral
   model exactly equal to the η-folded response the spectral basis inverts
   (with 4.8 mm collimation the heel is a small row-direction effect).
@@ -397,7 +366,7 @@ protocol it runs.
 # exposure: a shared seed would correlate the two channels' noise.
 FLASH = (name = "Siemens SOMATOM Flash", mechanism = "dual source", kind = :eict,
     scanner = flash_scanner, opts = flash_opts, views = 1152, rotation_time = 0.5,
-    collimation_mm = 4.8, slice_mm = 1.0, n_slices = 4, fov_cm = 33.0, anode_angle = 8,
+    collimation_mm = 4.8, slice_mm = 1.0, n_slices = 4, fov_cm = 33.0,
     clinical_recon = "DE monoenergetic, D40f, 1.0 mm, 330 mm", ctdi_vol_mGy = 10.01,
     exposures = [
         (label = "80 kVp", kVp = 80, mA = 470.0, view_arc = 1.0, seed = 1234, filters = Tuple{String, Float64}[]),
@@ -410,7 +379,6 @@ begin
     exposure_protocol(s, e; mA_scale = 1.0) = BS.CTProtocol(;
         kVp = e.kVp, mA = e.mA * mA_scale, views = s.views, rotation_time = s.rotation_time,
         collimation_mm = s.collimation_mm, additional_filters = e.filters,
-        (s.anode_angle === nothing ? (;) : (; anode_angle = s.anode_angle))...,
     )
     "Reconstruction grid of scanner `s`: its clinical series' slices, field of view and 512²."
     recon_options(s) = BS.ReconOptions(
@@ -434,7 +402,7 @@ begin
     # regular (dual power): 120 kVp, 420 mA on each tube, on the same simulated tube
     protocol_reg = BS.CTProtocol(
         kVp = 120, mA = 420.0 * DOSE_SCALE, views = FLASH.views, rotation_time = FLASH.rotation_time,
-        collimation_mm = FLASH.collimation_mm, anode_angle = FLASH.anode_angle,
+        collimation_mm = FLASH.collimation_mm,
     )
 end;
 
@@ -474,14 +442,16 @@ roi_labels = BS.create_gammex_472(
     flash_detected_spectrum(protocol) -> (e, w_eta)
 
 Display helper: tube spectrum × flat filtration × protocol filters
-(IPEM, absolute flux) with the src Flash UFC MC η(E) folded in — what the
-detector actually integrates (centered ray, no bowtie).
+(IPEM, absolute flux) × the Flash UFC's signal per photon, `E·efficiency(E)` —
+what the detector actually integrates (centered ray, no bowtie).
 """
 function flash_detected_spectrum(protocol)
     e, w = BS.resolve_source_spectrum_without_bowtie(
         flash_opts, protocol; scanner = flash_scanner,
     )
-    return e, Float64.(w) .* BS.get_ufc_flash_mc_efficiency.(e)
+    t = BS.UFC_FLASH_MC_EFFICIENCY_LUT                    # 1 keV grid: index = energy
+    eff(E) = (i = clamp(floor(Int, E), 1, 139); f = E - i; (1 - f) * t.efficiency[i] + f * t.efficiency[i + 1])
+    return e, Float64.(w) .* e .* eff.(e)
 end;
 
 # ╔═╡ 12000006-0000-4000-8000-000000000040
@@ -766,10 +736,10 @@ afresh.  Three draws share the projection:
   reconstruction's pair (§10); nothing is measured on it.
 
 Each draw keeps the two corrected log sinograms.  The first also keeps what
-the spectral basis needs: the per-ray air counts `I0_ray` (detector air count
-× bowtie air profile) and the per-ray detected spectrum from
-`resolve_source_spectrum_full` (source × filtration × bowtie × Flash η), the
-model the forward projector applied.  The basis does not depend on the
+the spectral basis needs, the tube's one-channel basis `spectral_basis(ws, protocol)`:
+each ray's detected spectrum (source × filtration × bowtie × the Flash's signal per photon
+`m₁`), the model the forward projector applied, scaled to the ray's noise-equivalent
+quanta in air.  The basis does not depend on the
 noise, so every draw shares it.
 """
 
@@ -811,14 +781,7 @@ function acquire(draws)
                 projection === nothing && (projection = result.projection)
                 channels[r] = Array(ws.sinogram)
                 if model === nothing
-                    air = ws.bowtie_air_reference === nothing ?
-                        ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-                        Float32.(Array(ws.bowtie_air_reference))
-                    I0 = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * Float64(ws.η_eff)
-                    energies, response = BS.resolve_source_spectrum_full(
-                        opts, protocol; scanner = FLASH.scanner, geom = ws.geom)
-                    model = (geom = ws.geom, I0_ray = Float32.(I0 .* air),
-                        energies = Float64.(energies), response = Float32.(response))
+                    model = (geom = ws.geom, basis = BS.spectral_basis(ws, protocol))
                 end
             finally
                 BS.release_backend!(ws)
@@ -829,8 +792,7 @@ function acquire(draws)
         (; channels, seconds, model...)
     end
     GC.gc(true)
-    basis = BS.spectral_basis_from_acquisitions(acquisitions = [
-        (energies = p.energies, response = p.response, I0_ray = p.I0_ray) for p in parts])
+    basis = BS.spectral_basis_from_acquisitions(acquisitions = [p.basis for p in parts])
     Dict(r => (draw = r, channels = [p.channels[r] for p in parts], basis = basis,
                geom = first(parts).geom, seconds = [p.seconds[r] for p in parts])
          for r in draws)
@@ -1088,11 +1050,11 @@ md"""
 
 `acquire` built the basis with `spectral_basis_from_acquisitions`, which merges
 the two tubes' energy grids onto their union and scales each tube's per-ray
-detected spectrum by its own air counts, so the likelihood sees the absolute
-response ``\Phi_k(E)`` of every ray and channel: **source × flat filter ×
-bowtie × Flash UFC η(E)**, the identical model the forward projector applied
-(it is resolved from the same `build_physics_config`, and therefore the same
-Flash table, that `simulate!` used).  No calibration scan is involved, and
+detected spectrum by its own noise-equivalent quanta in air (`I₀·ff·S₁²/S₂`), so
+the likelihood sees the absolute response ``\Phi_k(E)`` of every ray and channel:
+**source × flat filter × bowtie × the Flash UFC's signal per photon `m₁(E)`**, the
+identical model the forward projector applied (`spectral_basis(ws, protocol)` reads it
+from the workspace that `simulate!` used).  No calibration scan is involved, and
 the noise-free, measured and calibration draws all share it.
 """
 
@@ -1997,8 +1959,8 @@ md"""
 ## Summary
 
 ```
-Flash UFC MC η(E) LUT (BS.UFC_FLASH_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
-   → EICTScanner(detector_material = :ufc_flash) → detector_efficiency_ufc_flash()
+Flash UFC Geant4 table (BS.UFC_FLASH_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
+   → SOMATOM_DEFINITION_FLASH (detector_material = :ufc_flash): m₁ = E·efficiency, m₂ = m₁²/dqe0
    flash_opts: view_samples = 5 (view_arc 1.0 per tube), heel effect off
 REGULAR: 120 kVp × 2 tubes, one projection, two seeds
    → per-tube η-aware BHC → FDK → HU → (A+B)/2
@@ -2035,12 +1997,10 @@ DUAL ENERGY: 80 kVp (A) + Sn140 kVp (B, 0.4 mm Sn), × DOSE_SCALE
    remaining gaps on the parity checklist of the
    [SOMATOM Definition Flash entry of the scanners page](../../scanners/#somatom-definition-flash).
 
-**src status:** `UFC_FLASH_MC_EFFICIENCY_LUT`,
-`get_ufc_flash_mc_efficiency`, `detector_efficiency_ufc_flash()`, and the
-`:ufc_flash` branches in `compute_eid_efficiency_vector` +
-`build_physics_config` live in `src/detector/detector_efficiency.jl` /
-`src/api/driver.jl`, covered by `test/detector.jl` (including a
-never-alias-the-Force regression test).
+**src status:** `UFC_FLASH_MC_EFFICIENCY_LUT` (Geant4, plain data in
+`src/detector/eid_response_tables.jl`) and `SOMATOM_DEFINITION_FLASH`
+(`src/geometry/clinical_scanners.jl`), covered by `test/detector.jl` and
+`test/eict_signal.jl`.
 """
 
 # ╔═╡ Cell order:

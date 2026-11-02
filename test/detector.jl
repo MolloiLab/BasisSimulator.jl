@@ -8,7 +8,7 @@
 #                          estimate_phantom_diameter_cm
 #   detector_efficiency  → DetectorEfficiency (+ Gemstone factory + modes),
 #                          MC LUT lookups, Beer-Lambert vector, μ-data
-#   fill_factor.jl       → FillFactorModel, fill_factor_standard,
+#   fill_factor.jl       → FillFactorModel,
 #                          apply_fill_factor!, effective_fill_factor
 #   optical_crosstalk    → OpticalCrosstalkModel, optical_crosstalk_typical,
 #                          create_optical_crosstalk_kernel, apply_optical_crosstalk!
@@ -16,9 +16,10 @@
 #                          apply_lag!
 #   photon_counting.jl   → PhotonCountingDetector, EnergyResolvedSinogram,
 #                          quantum_efficiency(+vector), get_detector_material_*,
-#                          spatial_bin!, apply_pcct_noise!
+#                          spatial_bin!
 #   pcct/mc_response.jl  → load_mc_response, compute_mc_drm, mc_cumulative_to_bins
-#   pcct/mc_pileup.jl    → simulate_pulse_train, compute_mc_pileup_matrix
+#   pcct/mc_pileup.jl    → compute_mc_pileup_matrix, pileup_counts!
+#   pcct/native_table.jl → pcct_event_classes, pcct_count!
 #
 # Coverage policy: every exported symbol from src/detector/ is exercised with
 # a real behavioral assertion (no smoke tests).  GPU-only paths inside the
@@ -33,32 +34,32 @@ import AcceleratedKernels  # workspace kernels are AK-based; loading here for pa
 @testset "PhysicsConfig — default + populated" begin
     @testset "default_physics_config — all effects nothing" begin
         cfg = BS.default_physics_config()
-        @test cfg.fill_factor          === nothing
-        @test cfg.scatter              === nothing
-        @test cfg.optical_crosstalk    === nothing
-        @test cfg.focal_spot           === nothing
-        @test cfg.detector_efficiency  === nothing
-        @test cfg.lag                  === nothing
-        @test cfg.heel_effect          === nothing
-        @test cfg.noise_seed           === nothing
+        @test cfg.fill_factor === nothing
+        @test cfg.scatter === nothing
+        @test cfg.optical_crosstalk === nothing
+        @test cfg.focal_spot === nothing
+        @test cfg.detector_efficiency === nothing
+        @test cfg.lag === nothing
+        @test cfg.heel_effect === nothing
+        @test cfg.noise_seed === nothing
         @test cfg.energy_keV == 60.0
     end
 
     @testset "default_physics_config — populated kwargs propagate" begin
         cfg = BS.default_physics_config(;
-            fill_factor       = BS.fill_factor_standard(),
-            scatter           = BS.geometry_aware_scatter_model(BS.EICTScanner()),
+            fill_factor = BS.FillFactorModel(0.9),
+            scatter = BS.geometry_aware_scatter_model(BS.EICTScanner()),
             optical_crosstalk = BS.optical_crosstalk_typical(),
-            detector_efficiency = BS.detector_efficiency_gemstone(),
-            lag               = BS.lag_gadox(),
-            noise_seed        = 7,
-            energy_keV        = 75.0,
+            detector_efficiency = BS.DetectorEfficiency(:lumex, 3.0, BS.MC_LUT),
+            lag = BS.lag_gadox(),
+            noise_seed = 7,
+            energy_keV = 75.0,
         )
-        @test cfg.fill_factor          isa BS.FillFactorModel
-        @test cfg.scatter              isa BS.ScatterModel
-        @test cfg.optical_crosstalk    isa BS.OpticalCrosstalkModel
-        @test cfg.detector_efficiency  isa BS.DetectorEfficiency
-        @test cfg.lag                  isa BS.LagModel
+        @test cfg.fill_factor isa BS.FillFactorModel
+        @test cfg.scatter isa BS.ScatterModel
+        @test cfg.optical_crosstalk isa BS.OpticalCrosstalkModel
+        @test cfg.detector_efficiency isa BS.DetectorEfficiency
+        @test cfg.lag isa BS.LagModel
         @test cfg.noise_seed == 7
         @test cfg.energy_keV == 75.0
     end
@@ -71,7 +72,7 @@ end
     @testset "geometry_aware_scatter_model scales with air gap" begin
         ref = BS.EICTScanner(
             source_to_isocenter = BS.SCATTER_REF_SID_MM,
-            source_to_detector  = BS.SCATTER_REF_SDD_MM,
+            source_to_detector = BS.SCATTER_REF_SDD_MM,
         )
         ref_model = BS.geometry_aware_scatter_model(ref)
         @test ref_model isa BS.ScatterModel
@@ -161,14 +162,13 @@ end
     n_bins = 4
     R = zeros(n_E, n_bins)
     for (i, E) in enumerate(energies)
-        b = E <  35 ? 1 :
-            E <  55 ? 2 :
-            E <  70 ? 3 : 4
+        b = E < 35 ? 1 :
+            E < 55 ? 2 :
+            E < 70 ? 3 : 4
         R[i, b] = 1.0
     end
-    η = ones(n_E)
     ew = BS.compute_scatter_energy_weights(energies)
-    bw = BS.compute_scatter_bin_weights(energies, weights, ew, η, R, 120.0)
+    bw = BS.compute_scatter_bin_weights(energies, weights, ew, R, 120.0)
     @test length(bw) == n_bins
     @test sum(bw) ≈ 1.0  atol = 1.0e-12
     @test all(>=(0), bw)
@@ -183,10 +183,10 @@ end
     n_bins = 4
     bins_before = [fill(Float32(2.0), nc, nr, nv) for _ in 1:n_bins]
     bins = deepcopy(bins_before)
-    sf   = fill(Float32(0.01), nc, nr, nv)
-    I0  = fill(Float32(1.0e5), nc, nr, n_bins)           # per ray, per bin
+    sf = fill(Float32(0.01), nc, nr, nv)
+    I0 = fill(Float32(1.0e5), nc, nr, n_bins)           # per ray, per bin
     I0_all = fill(Float32(4.0e5), nc, nr)                # per ray, all bins
-    bw = [0.40, 0.30, 0.20, 0.10]
+    bw = [0.4, 0.3, 0.2, 0.1]
 
     BS.inject_scatter_bins!(bins, sf, I0, I0_all, bw)
     for b in 1:n_bins
@@ -219,264 +219,69 @@ end
 end
 
 # -----------------------------------------------------------------------------
-# detector_efficiency.jl — GE Gemstone MC LUT + Beer-Lambert fallback
+# detector_efficiency.jl — the Geant4 tables, Beer–Lambert, the model's checks
+# (the signal moments themselves: eict_signal.jl)
 # -----------------------------------------------------------------------------
-@testset "DetectorEfficiency — Gemstone MC LUT" begin
-    @testset "detector_efficiency_gemstone factory" begin
-        model = BS.detector_efficiency_gemstone()
-        @test model.material == "Gemstone"
-        @test model.thickness_mm == 3.0
-        @test model.fill_factor == 0.9
-        @test model.mode == BS.MC_LUT
-
-        bl = BS.detector_efficiency_gemstone(mode = :beer_lambert)
-        @test bl.mode == BS.BEER_LAMBERT
+@testset "EICT detector tables: K-edge escape, 1–140 keV, one per scintillator" begin
+    g, u, f = BS.GEMSTONE_MC_EFFICIENCY_LUT, BS.UFC_MC_EFFICIENCY_LUT, BS.UFC_FLASH_MC_EFFICIENCY_LUT
+    for t in (g, u, f)
+        @test t.energies == collect(1.0:140.0)
+        @test length(t.efficiency) == length(t.dqe0) == 140
+        @test all(0 .< t.efficiency .<= 1)
     end
-
-    @testset "get_gemstone_mc_efficiency captures Tb K-edge fluorescence drop" begin
-        η52 = BS.get_gemstone_mc_efficiency(52.0)
-        η53 = BS.get_gemstone_mc_efficiency(53.0)
-        # MC LUT: at the K-edge (52→53 keV) η drops from ~0.956 to ~0.807
-        # because Tb-Kα fluorescence escapes the crystal.
-        @test η52 > 0.9
-        @test η53 < 0.82
-        @test η52 - η53 > 0.10
-    end
-
-    @testset "get_gemstone_mc_efficiency captures Lu K-edge fluorescence drop" begin
-        η63 = BS.get_gemstone_mc_efficiency(63.0)
-        η64 = BS.get_gemstone_mc_efficiency(64.0)
-        # ~0.846 → ~0.762 at the Lu K-edge
-        @test η63 > 0.83
-        @test η64 < 0.78
-        @test η63 - η64 > 0.06
-    end
-
-    @testset "MC LUT linear interpolation at non-integer keV" begin
-        η_60_5 = BS.get_gemstone_mc_efficiency(60.5)
-        @test BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[61] < η_60_5 < BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[60] + 1.0e-12 ||
-              BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[60] < η_60_5 < BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[61] + 1.0e-12
-    end
-
-    @testset "MC LUT clamps below 1 keV and above 140 keV" begin
-        @test BS.get_gemstone_mc_efficiency(0.5) == BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[1]
-        @test BS.get_gemstone_mc_efficiency(200.0) == BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency[end]
-    end
-
-    @testset "compute_eid_efficiency_vector — MC routes to LUT" begin
-        model = BS.detector_efficiency_gemstone()
-        energies = [30.0, 52.0, 53.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(model, energies)
-        @test length(η) == length(energies)
-        @test η[3] < η[2]                    # Tb K-edge fluorescence drop
-        @test η ≈ [BS.get_gemstone_mc_efficiency(E) for E in energies]
-    end
-
-    @testset "compute_eid_efficiency_vector — Beer-Lambert path" begin
-        bl = BS.detector_efficiency_gemstone(mode = :beer_lambert)
-        energies = [30.0, 60.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(bl, energies)
-        @test length(η) == length(energies)
-        @test all(0 .<= η .<= 1)
-        # Beer-Lambert η decreases monotonically with energy (above K-edge data).
-        # Across 60-140 keV this is monotonic since no K-edge in that range.
-        @test η[2] > η[4]
-    end
+    @test (g.thickness_mm, u.thickness_mm, f.thickness_mm) == (3.0, 1.4, 1.4)
+    # fluorescence escape: the efficiency DROPS across the K-edge (Tb 52.0, Lu 63.3, Gd 50.2 keV)
+    @test g.efficiency[51] - g.efficiency[52] > 0.1
+    @test g.efficiency[63] - g.efficiency[64] > 0.05
+    @test u.efficiency[50] - u.efficiency[51] > 0.1
+    @test f.efficiency[50] - f.efficiency[51] > 0.1
+    # the Force and Flash ceramics are the same UFC at the same depth, from separate runs
+    @test u.efficiency != f.efficiency
+    @test maximum(abs.(u.efficiency .- f.efficiency)) < 0.01
 end
 
-@testset "DetectorEfficiency — UFC MC LUT (Siemens Force Gd₂O₂S)" begin
-    @testset "detector_efficiency_ufc factory" begin
-        model = BS.detector_efficiency_ufc()
-        @test model.material == "UFC"
-        @test model.thickness_mm == 1.4
-        @test model.fill_factor == 0.9
-        @test model.mode == BS.MC_LUT
-
-        bl = BS.detector_efficiency_ufc(mode = :beer_lambert)
-        @test bl.mode == BS.BEER_LAMBERT
-    end
-
-    @testset "LUT shape + provenance values" begin
-        @test length(BS.UFC_MC_EFFICIENCY_LUT.energies) == 140
-        @test length(BS.UFC_MC_EFFICIENCY_LUT.efficiency) == 140
-        # Spot-check verbatim values from Khodajou-Chokami efficiency_results.csv
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[1] ≈ 9.90863305e-01
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[50] ≈ 9.69026725e-01
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[51] ≈ 7.41154644e-01
-        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[140] ≈ 8.15971281e-01
-    end
-
-    @testset "get_ufc_mc_efficiency captures Gd K-edge fluorescence drop" begin
-        η50 = BS.get_ufc_mc_efficiency(50.0)
-        η51 = BS.get_ufc_mc_efficiency(51.0)
-        # MC LUT: at the Gd K-edge (50.24 keV) η drops ~0.969 → ~0.741
-        # because Gd-Kα fluorescence (~43 keV) escapes the crystal.
-        @test η50 > 0.95
-        @test η51 < 0.78
-        @test η50 - η51 > 0.20
-    end
-
-    @testset "get_ufc_mc_efficiency captures Gd L-edge dip near 8 keV" begin
-        @test BS.get_ufc_mc_efficiency(8.0) < BS.get_ufc_mc_efficiency(7.0)
-    end
-
-    @testset "MC LUT linear interpolation + clamping" begin
-        η_60_5 = BS.get_ufc_mc_efficiency(60.5)
-        lo = min(BS.UFC_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_MC_EFFICIENCY_LUT.efficiency[61])
-        hi = max(BS.UFC_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_MC_EFFICIENCY_LUT.efficiency[61])
-        @test lo - 1.0e-12 < η_60_5 < hi + 1.0e-12
-
-        @test BS.get_ufc_mc_efficiency(0.5) == BS.UFC_MC_EFFICIENCY_LUT.efficiency[1]
-        @test BS.get_ufc_mc_efficiency(200.0) == BS.UFC_MC_EFFICIENCY_LUT.efficiency[end]
-    end
-
-    @testset "compute_eid_efficiency_vector — MC routes to UFC LUT" begin
-        model = BS.detector_efficiency_ufc()
-        energies = [30.0, 50.0, 51.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(model, energies)
-        @test length(η) == length(energies)
-        @test η[3] < η[2]                    # Gd K-edge fluorescence drop
-        @test η ≈ [BS.get_ufc_mc_efficiency(E) for E in energies]
-    end
-
-    @testset "compute_eid_efficiency_vector — UFC Beer-Lambert path" begin
-        bl = BS.detector_efficiency_ufc(mode = :beer_lambert)
-        energies = [30.0, 49.0, 51.0, 100.0]
-        η = BS.compute_eid_efficiency_vector(bl, energies)
-        @test length(η) == length(energies)
-        @test all(0 .<= η .<= 1)
-        # Beer-Lambert predicts η RISES just above the Gd K-edge (more
-        # absorption) — the opposite of the MC LUT's fluorescence-escape
-        # drop.  That contrast is the whole point of the MC path.
-        @test η[3] > η[2]
-    end
-
-    @testset "build_physics_config routes :ufc to the UFC factory" begin
-        scanner = BS.EICTScanner(detector_material = :ufc, detector_depth = 1.4)
-        sim_opts = BS.SimOptions()
-        e = collect(20.0:10.0:140.0)
-        w = ones(length(e))
-        config = BS.build_physics_config(scanner, sim_opts, e, w)
-        @test config.detector_efficiency !== nothing
-        @test config.detector_efficiency.material == "UFC"
-        @test config.detector_efficiency.mode == BS.MC_LUT
-
-        # Unknown EICT material errors with a clear message
-        bad = BS.EICTScanner(detector_material = :unobtainium)
-        @test_throws ErrorException BS.build_physics_config(bad, sim_opts, e, w)
-    end
+@testset "Beer–Lambert absorption rises across the K-edge, the table's escape falls" begin
+    E = [49.0, 51.0]
+    bl, _ = BS.eid_signal_moments(BS.DetectorEfficiency(:ufc, 1.4, BS.BEER_LAMBERT), E)
+    mc, _ = BS.eid_signal_moments(BS.DetectorEfficiency(:ufc, 1.4, BS.MC_LUT), E)
+    @test bl[2] / E[2] > bl[1] / E[1]
+    @test mc[2] / E[2] < mc[1] / E[1]
 end
 
-@testset "DetectorEfficiency — UFC Flash MC LUT (Siemens Definition Flash Gd₂O₂S)" begin
-    @testset "detector_efficiency_ufc_flash factory" begin
-        model = BS.detector_efficiency_ufc_flash()
-        @test model.material == "UFC_Flash"
-        @test model.thickness_mm == 1.0
-        @test model.fill_factor == 0.9
+@testset "build_physics_config: the scanner's scintillator and depth" begin
+    e = collect(20.0:10.0:140.0)
+    w = ones(length(e))
+    for s in (BS.SOMATOM_FORCE, BS.SOMATOM_DEFINITION_FLASH, BS.REVOLUTION_APEX)
+        model = BS.build_physics_config(s, BS.SimOptions(), e, w).detector_efficiency
+        @test model.material === s.detector_material
+        @test model.thickness_mm == s.detector_depth
         @test model.mode == BS.MC_LUT
-
-        bl = BS.detector_efficiency_ufc_flash(mode = :beer_lambert)
-        @test bl.mode == BS.BEER_LAMBERT
     end
-
-    @testset "LUT shape + provenance values" begin
-        @test length(BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies) == 140
-        @test length(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency) == 140
-        # Spot-check verbatim values from Khodajou-Chokami flash_efficiency_results.csv
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[1] ≈ 9.90863305e-01
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[50] ≈ 9.24938847e-01
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[51] ≈ 7.39476107e-01
-        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[140] ≈ 5.87915529e-01
-    end
-
-    @testset "get_ufc_flash_mc_efficiency captures Gd K-edge fluorescence drop" begin
-        η50 = BS.get_ufc_flash_mc_efficiency(50.0)
-        η51 = BS.get_ufc_flash_mc_efficiency(51.0)
-        # MC LUT: at the Gd K-edge (50.24 keV) η drops ~0.925 → ~0.739
-        # because Gd-Kα fluorescence (~43 keV) escapes the crystal.
-        @test η50 > 0.90
-        @test η51 < 0.78
-        @test η50 - η51 > 0.15
-    end
-
-    @testset "get_ufc_flash_mc_efficiency captures Gd L-edge dip near 8 keV" begin
-        @test BS.get_ufc_flash_mc_efficiency(8.0) < BS.get_ufc_flash_mc_efficiency(7.0)
-    end
-
-    @testset "MC LUT linear interpolation + clamping" begin
-        η_60_5 = BS.get_ufc_flash_mc_efficiency(60.5)
-        lo = min(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[61])
-        hi = max(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[61])
-        @test lo - 1.0e-12 < η_60_5 < hi + 1.0e-12
-
-        @test BS.get_ufc_flash_mc_efficiency(0.5) == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[1]
-        @test BS.get_ufc_flash_mc_efficiency(200.0) == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[end]
-    end
-
-    @testset "Flash is a distinct detector from the Force UFC" begin
-        # Same Gd₂O₂S physics (L-edge, K-edge), thinner crystal → steeper
-        # high-energy roll-off.  Guards against ever aliasing the two LUTs.
-        @test BS.get_ufc_flash_mc_efficiency(140.0) < 0.65   # Force: 0.816
-        @test BS.get_ufc_mc_efficiency(140.0) > 0.80
-        @test BS.get_ufc_flash_mc_efficiency(100.0) < BS.get_ufc_mc_efficiency(100.0)
-    end
-
-    @testset "compute_eid_efficiency_vector — MC routes to Flash LUT" begin
-        model = BS.detector_efficiency_ufc_flash()
-        energies = [30.0, 50.0, 51.0, 100.0, 140.0]
-        η = BS.compute_eid_efficiency_vector(model, energies)
-        @test length(η) == length(energies)
-        @test η[3] < η[2]                    # Gd K-edge fluorescence drop
-        @test η ≈ [BS.get_ufc_flash_mc_efficiency(E) for E in energies]
-    end
-
-    @testset "compute_eid_efficiency_vector — Flash Beer-Lambert path" begin
-        bl = BS.detector_efficiency_ufc_flash(mode = :beer_lambert)
-        energies = [30.0, 49.0, 51.0, 100.0]
-        η = BS.compute_eid_efficiency_vector(bl, energies)
-        @test length(η) == length(energies)
-        @test all(0 .<= η .<= 1)
-        # Beer-Lambert predicts η RISES just above the Gd K-edge — the
-        # opposite of the MC LUT's fluorescence-escape drop.
-        @test η[3] > η[2]
-    end
-
-    @testset "build_physics_config routes :ufc_flash to the Flash factory" begin
-        scanner = BS.EICTScanner(detector_material = :ufc_flash, detector_depth = 1.0)
-        sim_opts = BS.SimOptions()
-        e = collect(20.0:10.0:140.0)
-        w = ones(length(e))
-        config = BS.build_physics_config(scanner, sim_opts, e, w)
-        @test config.detector_efficiency !== nothing
-        @test config.detector_efficiency.material == "UFC_Flash"
-        @test config.detector_efficiency.mode == BS.MC_LUT
-    end
-
+    bl = BS.SimOptions(detector_efficiency_mode = :beer_lambert)
+    @test BS.build_physics_config(BS.SOMATOM_FORCE, bl, e, w).detector_efficiency.mode == BS.BEER_LAMBERT
+    off = BS.build_physics_config(BS.SOMATOM_FORCE, BS.SimOptions(use_detector_efficiency = false), e, w)
+    @test off.detector_efficiency === nothing
+    # a depth the table was not made at, and a material with no model, are refused
+    @test_throws ArgumentError BS.build_physics_config(
+        BS.EICTScanner(BS.SOMATOM_FORCE; detector_depth = 1.0), BS.SimOptions(), e, w
+    )
+    @test_throws ArgumentError BS.build_physics_config(
+        BS.EICTScanner(detector_material = :unobtainium), BS.SimOptions(), e, w
+    )
 end
 
 @testset "get_scintillator_mu — Gemstone + CdTe" begin
     # CdTe K-edges: Cd at 26.7 keV, Te at 31.8 keV.
-    μ_cdte_25 = BS.get_scintillator_mu("CdTe", 25.0)
-    μ_cdte_27 = BS.get_scintillator_mu("CdTe", 27.0)
-    @test μ_cdte_27 > μ_cdte_25     # Just above Cd K-edge → bigger μ
-
-    # Gemstone @ 60 keV ~32.7 cm⁻¹ (NIST XCOM table)
-    μ_gem_60 = BS.get_scintillator_mu("Gemstone", 60.0)
-    @test 28 < μ_gem_60 < 38
-
-    # Alias resolves to Gemstone table
-    μ_lumex_60 = BS.get_scintillator_mu("lumex", 60.0)
-    @test μ_lumex_60 ≈ μ_gem_60  atol = 1.0e-12
-
-    # Unknown material → warning + Gemstone fallback (no crash)
-    μ_unknown = BS.get_scintillator_mu("nonexistent", 60.0)
-    @test μ_unknown ≈ μ_gem_60  atol = 1.0e-12
+    @test BS.get_scintillator_mu("CdTe", 27.0) > BS.get_scintillator_mu("CdTe", 25.0)
+    # Gemstone @ 60 keV: 32.7 cm⁻¹ at 7.0 g/cm³ (NIST XCOM), scaled to 6.40 g/cm³
+    @test BS.get_scintillator_mu("Gemstone", 60.0) ≈ 32.7 * 6.4 / 7.0 rtol = 1.0e-6
+    @test_throws ArgumentError BS.get_scintillator_mu("nonexistent", 60.0)
 end
 
 # -----------------------------------------------------------------------------
 # fill_factor.jl
 # -----------------------------------------------------------------------------
-@testset "FillFactorModel + apply_fill_factor!" begin
+@testset "FillFactorModel" begin
     @testset "effective_fill_factor multiplies row × col" begin
         m = BS.FillFactorModel(0.9, 0.8, true)
         @test BS.effective_fill_factor(m) ≈ 0.72  atol = 1.0e-12
@@ -487,26 +292,6 @@ end
         @test m.row_fill ≈ 0.9  atol = 1.0e-12
         @test m.col_fill ≈ 0.9  atol = 1.0e-12
         @test BS.effective_fill_factor(m) ≈ 0.81  atol = 1.0e-12
-    end
-
-    @testset "fill_factor_standard = 90%" begin
-        m = BS.fill_factor_standard()
-        @test BS.effective_fill_factor(m) ≈ 0.9  atol = 1.0e-12
-    end
-
-    @testset "apply_fill_factor!  adds −log(ff) in projection domain" begin
-        m = BS.fill_factor_standard()
-        sino = ones(Float32, 16, 4, 8)
-        BS.apply_fill_factor!(sino, m)
-        @test sino ≈ ones(Float32, 16, 4, 8) .+ Float32(-log(0.9))  atol = 1.0e-6
-    end
-
-    @testset "ff ≈ 1.0 short-circuits (no-op)" begin
-        m = BS.FillFactorModel(1.0, 1.0, true)
-        sino = ones(Float32, 8, 2, 4)
-        sino_before = copy(sino)
-        BS.apply_fill_factor!(sino, m)
-        @test sino == sino_before
     end
 
     @testset "1-arg constructor rejects ff outside (0, 1]" begin
@@ -522,7 +307,7 @@ end
     @testset "optical_crosstalk_typical = CatSim defaults" begin
         m = BS.optical_crosstalk_typical()
         @test m.row_coeff ≈ 0.045
-        @test m.col_coeff ≈ 0.040
+        @test m.col_coeff ≈ 0.04
     end
 
     @testset "create_optical_crosstalk_kernel sums to 1, center is (1-2α)(1-2β)" begin
@@ -616,9 +401,8 @@ end
     @test det.material == BS.CDTE_MATERIAL
     @test det.thickness_mm == 1.6
     @test det.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
-    @test det.enable_charge_sharing
-    @test det.enable_pile_up
-    @test det.enable_anti_coincidence
+    @test fieldnames(BS.PhotonCountingDetector) ==
+        (:material, :thickness_mm, :pixel_size_mm, :energy_thresholds_keV, :dead_time_ns, :binning_factor)
 end
 
 @testset "EnergyResolvedSinogram contract" begin
@@ -673,7 +457,7 @@ end
 # pcct/mc_response.jl — MC Detector Response Matrix
 # -----------------------------------------------------------------------------
 @testset "MC DRM — load + cumulative→bins + compute_mc_drm" begin
-    @testset "load_mc_response — bundled cdte_response_v4.jls" begin
+    @testset "load_mc_response — the native table's cell mean" begin
         mc = BS.load_mc_response(BS.default_mc_drm_path())
         @test mc isa BS.MCResponseData
         @test !isempty(mc.energies_keV)
@@ -703,10 +487,14 @@ end
         )
         D = BS.compute_mc_drm(det, 120.0; n_energy_points = 100)
         @test size(D) == (100, 4)
-        # Probabilities in [0, 1]
-        @test all(0 .<= D .<= 1)
-        # Row sums ≤ 1
-        @test maximum(sum(D; dims = 2)) <= 1.0 + 1.0e-9
+        # Counts per incident photon are never negative; behind the grid (open fraction 0.72)
+        # they stay below one
+        @test all(D .>= 0)
+        @test 0.5 < maximum(sum(D; dims = 2)) < 1.0
+        # v0.15.1's response (test data): a shared photon counts in two dexels, so a row is not
+        # capped at one — v0.15.1 renormalised it
+        legacy = joinpath(pkgdir(BS), "test", "data", "cdte_response_v4.jls")
+        @test maximum(sum(BS.compute_mc_drm(det, 120.0; npz_path = legacy, n_energy_points = 100); dims = 2)) > 1.0
         # Below the lowest threshold (≤20 keV) → near-zero registration in all bins
         @test sum(D[1, :]) < 0.05
     end
@@ -735,9 +523,11 @@ end
         @test minimum(eigvals(Symmetric(moments.covariance))) >= -1.0e-10
 
         @test_throws DimensionMismatch BS.compute_mc_count_moments(
-            det, energies, weights[1:end-1])
+            det, energies, weights[1:(end - 1)]
+        )
         @test_throws ArgumentError BS.compute_mc_count_moments(
-            det, energies, zeros(length(energies)))
+            det, energies, zeros(length(energies))
+        )
     end
 end
 
@@ -774,158 +564,55 @@ end
     @test draw(7) != draw(8)
 end
 
-@testset "apply_pcct_noise! — Poisson counts in the air-cal basis" begin
-    thresholds = Float32[20, 35, 55, 70]
-    I0_vec = Float64[40_000, 60_000, 30_000, 10_000]
-    I0_bins = reshape(repeat(I0_vec, inner = 32 * 4), 32, 4, 4)     # per ray, per bin
-    # Uniform log line integral h = 2 → expected counts λ_b = I0_b·e⁻²
-    make_sino() = BS.EnergyResolvedSinogram(
-        [fill(Float32(2), 32, 4, 25) for _ in 1:4], thresholds)
-
-    sino = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 11)
-    for (b, bin) in enumerate(sino.bins)
-        counts = I0_vec[b] .* exp.(-Float64.(bin))
-        # Integer realizations survive the Float32 log round trip
-        @test maximum(abs.(counts .- round.(counts))) < 0.1
-        λ = I0_vec[b] * exp(-2.0)
-        @test mean(counts) ≈ λ rtol = 0.01
-        @test std(counts)^2 ≈ λ rtol = 0.15
-    end
-
-    # Same seed → identical realization; different seed → different one
-    s1 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42)
-    s2 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42)
-    s3 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 43)
-    @test all(s1.bins[b] == s2.bins[b] for b in 1:4)
-    @test any(s1.bins[b] != s3.bins[b] for b in 1:4)
-
-    # noise_reduction = 1 collapses to the noiseless expectation exactly
-    # (any nonzero value leaves the strict Poisson count model)
-    s4 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42, noise_reduction = 1.0)
-    @test all(all(isapprox.(Array(bin), 2f0; atol = 2f-5)) for bin in s4.bins)
-
-    # raw_out: measured counts captured verbatim at the sampling site —
-    # TRUE ZEROS preserved; the floor at 1 lives only in the log bins
-    lo_I0 = reshape(repeat(Float64[2, 3, 2, 4], inner = 32 * 4), 32, 4, 4)   # λ = I0·e⁻² ≈ 0.27–0.54 → many zeros
-    s5 = make_sino()
-    raw5 = [similar(b) for b in s5.bins]
-    BS.apply_pcct_noise!(s5, lo_I0; seed = 5, raw_out = raw5)
-    @test sum(count(==(0f0), r) for r in raw5) > 0
-    for (b, r) in enumerate(raw5)
-        @test all(isinteger, r)
-        enc = lo_I0[:, :, b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
-        @test all(abs.(enc .- max.(Float64.(r), 1.0)) .< 1e-4)
-    end
-
-    @test_throws DimensionMismatch BS.apply_pcct_noise!(make_sino(), I0_bins[:, :, 1:3])
-    @test_throws DimensionMismatch BS.apply_pcct_noise!(
-        make_sino(), I0_bins; raw_out = [zeros(Float32, 32, 4, 25)])
-end
-
-# -----------------------------------------------------------------------------
-# pcct/mc_pileup.jl
-# -----------------------------------------------------------------------------
-@testset "MC pile-up — simulate_pulse_train + compute_mc_pileup_matrix" begin
-    @testset "simulate_pulse_train — low rate: recorded ≈ true" begin
-        Random.seed!(42)
-        thresholds = [20.0, 35.0, 55.0, 70.0]
-        energies = collect(20.0:5.0:120.0)
-        weights = ones(length(energies))
-        # Low rate, short window → almost no pile-up
-        res = BS.simulate_pulse_train(
-            weights, energies, 1.0e5, 5.0;
-            observation_time_s = 1.0e-3,
-            thresholds_keV = thresholds,
-        )
-        @test res isa BS.PileupResult
-        @test res.n_true >= 0
-        @test res.n_recorded <= res.n_true              # pile-up can only lose counts
-        @test sum(res.true_bin_counts) == res.n_true
-        @test length(res.trigger_bins) == res.n_recorded
-        @test all(0 .<= res.trigger_bins .<= length(thresholds))
-    end
-
-    @testset "compute_mc_pileup_matrix — shape contract + col-sums ≤ 1" begin
-        thresholds = [20.0, 35.0, 55.0, 70.0]
-        energies = collect(20.0:5.0:120.0)
-        weights = ones(length(energies))
-        S = BS.compute_mc_pileup_matrix(
-            thresholds, weights, energies, 5.0e7, 5.0;
-            n_trials = 200, observation_time_s = 1.0e-4, seed = 7,
-        )
-        @test size(S) == (4, 4)
-        @test all(0 .<= S .<= 1)
-        # Column sums ≤ 1 (count loss in each true bin's deficit)
-        col_sums = sum(S; dims = 1)
-        @test all(col_sums .<= 1.0 + 1.0e-9)
-        # Lower triangular: pile-up only pushes counts UP in energy
-        for j in 1:4, i in 1:(j - 1)
-            @test S[i, j] < 0.05   # very small upward leakage
-        end
-    end
-
-    @testset "compute_mc_pileup_matrix — zero rate ⇒ identity columns" begin
-        thresholds = [20.0, 35.0, 55.0, 70.0]
-        energies = collect(20.0:5.0:120.0)
-        weights = ones(length(energies))
-        S = BS.compute_mc_pileup_matrix(
-            thresholds, weights, energies, 1.0, 5.0;   # 1 photon/sec ⇒ no pileup
-            n_trials = 50, observation_time_s = 1.0e-6, seed = 7,
-        )
-        # Zero pileup: each true bin maps mostly to itself
-        for j in 1:4
-            if sum(S[:, j]) > 0   # bin has data
-                @test S[j, j] > 0.9 * sum(S[:, j])
-            end
-        end
-    end
-end
-
-# -----------------------------------------------------------------------------
-# apply_pcct_noise! — the threaded Poisson mode
-# -----------------------------------------------------------------------------
-@testset "apply_pcct_noise! rng_mode" begin
-    n_bins = 3
-    shape = (40, 4, 30)
-    I0 = reshape(repeat(Float64[2.0e4, 8.0e3, 1.5e3], inner = 40 * 4), 40, 4, 3)   # per ray, per bin
-    thresholds = Float32[20, 50, 80]
-    build() = BS.EnergyResolvedSinogram(
-        [fill(Float32(0.35 + 0.1b), shape) for b in 1:n_bins], thresholds
+@testset "pcct_count!: Poisson dexels, shared photons covary, the digital sum is over-dispersed" begin
+    e, w = BS.resolve_source_spectrum_without_bowtie(
+        BS.SimOptions(), BS.CTProtocol(kVp = 120.0, mAs = 100.0, views = 10); scanner = BS.NAEOTOM_ALPHA,
     )
+    classes = BS.pcct_event_classes([20.0], e, w)
+    @test 0.6 < classes.single[1] < 0.95                    # charge sharing: a fifth of the counts shared
+    @test all(p -> p.c1 > 0 && p.c2 > 0, classes.pairs)
+    λ = 400.0
+    expected = [fill(λ, 64, 64, 40)]
+    a = BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 1)[1]
+    b = BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 2)[1]
+    @test BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 1)[1] == a   # a seed fixes it
+    @test all(isinteger, a)
+    d = (a .- b) ./ sqrt(2)
+    @test sum(a) / length(a) ≈ λ rtol = 2.0e-3                # the mean is kept, edges included
+    @test sum(abs2, d) / length(d) / λ ≈ 1 atol = 0.02        # each dexel Poisson
+    # neighbours across the fan covary by the photons they share
+    shared_x = sum(p.c1 for p in classes.pairs if (p.dx, p.dy) == (1, 0))
+    corr = sum(d[1:(end - 1), :, :] .* d[2:end, :, :]) / sum(abs2, d[1:(end - 1), :, :])
+    @test corr ≈ shared_x atol = 0.01
+    # 2 × 2 digital sum: the pairs inside the group count twice
+    inside = 2 * sum(
+        p.c1 for p in classes.pairs if (p.dx, p.dy) in ((1, 0), (0, 1), (1, 1), (1, -1)) &&
+            !(p.dx == 1 && p.dy == -1)
+    ) + 2 * sum(p.c1 for p in classes.pairs if (p.dx, p.dy) == (1, -1))
+    binned = BS._digital_sum(d, 2)
+    @test sum(abs2, binned) / length(binned) / (4λ) ≈ 1 + inside / 2 atol = 0.03
+    @test_throws ArgumentError BS.pcct_event_classes([22.0], e, w)    # not among the table's
+end
 
-    serial = build()
-    BS.apply_pcct_noise!(serial, I0; seed = 7)
-    again = build()
-    BS.apply_pcct_noise!(again, I0; seed = 7)
-    @test all(serial.bins[b] == again.bins[b] for b in 1:n_bins)      # a seed is a seed
-
-    threaded = build()
-    BS.apply_pcct_noise!(threaded, I0; seed = 7, rng_mode = :threaded)
-    # a different realisation, but of the same distribution
-    @test any(threaded.bins[b] != serial.bins[b] for b in 1:n_bins)
-    for b in 1:n_bins
-        λ = I0[1, 1, b] * exp(-(0.35 + 0.1b))        # I0 is flat across the fan in this test
-        counts(bin) = I0[:, :, b] .* exp.(-Float64.(bin))
-        for bin in (serial.bins[b], threaded.bins[b])
-            c = counts(bin)
-            @test mean(c) ≈ λ rtol = 0.02                  # unbiased
-            @test (std(c)^2) / λ ≈ 1 rtol = 0.15               # Fano ≈ 1
-        end
-    end
-    # the realisation is a property of the seed, not of the thread count: the chunking is fixed
-    @test BS._PCCT_NOISE_CHUNKS > 1
-    repeat_threaded = build()
-    BS.apply_pcct_noise!(repeat_threaded, I0; seed = 7, rng_mode = :threaded)
-    @test all(repeat_threaded.bins[b] == threaded.bins[b] for b in 1:n_bins)
-    other_seed = build()
-    BS.apply_pcct_noise!(other_seed, I0; seed = 8, rng_mode = :threaded)
-    @test any(other_seed.bins[b] != threaded.bins[b] for b in 1:n_bins)
-
-    @test_throws ArgumentError BS.apply_pcct_noise!(build(), I0; rng_mode = :parallel)
-
-    # `seed = nothing` means unseeded on both paths: the threaded draw must not quietly pin
-    # itself to a fixed stream just because it needs a number to derive its chunks from.
-    unseeded_a = build(); BS.apply_pcct_noise!(unseeded_a, I0; rng_mode = :threaded)
-    unseeded_b = build(); BS.apply_pcct_noise!(unseeded_b, I0; rng_mode = :threaded)
-    @test any(unseeded_a.bins[b] != unseeded_b.bins[b] for b in 1:n_bins)
+@testset "compute_mc_pileup_matrix: retriggering comparators on shaped pulses" begin
+    e = collect(20.0:1.0:140.0)
+    w = ones(length(e)) ./ length(e)
+    thresholds = [20.0, 35.0, 55.0, 70.0]
+    S0 = BS.compute_mc_pileup_matrix(thresholds, w, e, 0.0, 27.0)
+    @test S0 == Matrix(1.0I, 4, 4)
+    low = BS.compute_mc_pileup_matrix(thresholds, w, e, 1.0e4, 27.0; seed = 3)
+    @test low ≈ Matrix(1.0I, 4, 4) atol = 0.01                  # no overlap at low rate
+    S = BS.compute_mc_pileup_matrix(thresholds, w, e, 5.0e6, 27.0; seed = 3)
+    @test all(sum(S; dims = 1) .< 1)                            # counts are lost
+    @test all(sum(S; dims = 1) .> 0.5)
+    @test S[4, 1] > 0                                           # piled-up pulses rise into higher bins
+    @test BS.compute_mc_pileup_matrix(thresholds, w, e, 5.0e6, 27.0; seed = 3) == S   # memoised, exact
+    # the loss grows with the rate × dead time
+    S2 = BS.compute_mc_pileup_matrix(thresholds, w, e, 1.0e7, 27.0; seed = 3)
+    @test sum(S2) < sum(S)
+    # pileup_counts!: an air dexel at the grid's top rate takes the top matrix
+    I0 = fill(1000.0, 2, 2, 4)
+    counts = [fill(1000.0, 2, 2, 1) for _ in 1:4]
+    BS.pileup_counts!(counts, I0, cat(Matrix(1.0I, 4, 4), S; dims = 3), [0.0, 5.0e6], 5.0e6)
+    @test [counts[i][1, 1, 1] for i in 1:4] ≈ S * fill(1000.0, 4)
 end
