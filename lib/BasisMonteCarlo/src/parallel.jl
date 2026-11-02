@@ -58,8 +58,17 @@ The worker processes [`start_workers`](@ref) started (empty when sweeps run in t
 workers() = copy(WORKER_POOL)
 
 """
+    checkpoint_directory(name) -> String
+
+A directory of BasisMonteCarlo's scratch space (in the Julia depot, not the repository) for a
+sweep's `checkpoint`, made if needed. Remove it with `rm(checkpoint_directory(name); recursive =
+true)` to start the sweep afresh.
+"""
+checkpoint_directory(name::AbstractString) = @get_scratch!("sweep_" * name)
+
+"""
     simulate_sweep(jobs; n = 100_000, beam = PencilBeam(), physics = PhysicsSettings(), seed = 1,
-                   readout = nothing) -> Vector
+                   readout = nothing, checkpoint = nothing, checkpoint_batch = 256) -> Vector
 
 Run every job in `jobs`, in order, and return one result per job. A job is
 `(detector, energy_keV)`, `(detector, spectrum)` with a [`Spectrum`](@ref), or either with a
@@ -72,6 +81,12 @@ Each result is the [`MonoenergeticRun`](@ref), or, given a readout, the run redu
 ran, so only the small result travels back: a [`DexelReadout`](@ref) gives a
 [`DexelResponse`](@ref), an [`ArcReadout`](@ref) an [`ArcCounts`](@ref).
 
+With `checkpoint` a directory, the jobs run in batches of `checkpoint_batch`, each saved there
+as it finishes; run again, the sweep reads back the batches it has and runs only the rest, with
+the same results (every job carries its own seed). A batch is rerun when its jobs, `n`, `beam`,
+`physics`, `seed` or `readout` change, but not when the package's code does: delete the directory
+then.
+
 Grouping the jobs by detector keeps Geant4 from rebuilding a geometry it already has; a sweep
 whose detector changes with energy (a thickness rule, say) rebuilds it for every run, which
 costs a fraction of a second each (a whole scanner's detector, a few seconds).
@@ -83,6 +98,8 @@ function simulate_sweep(
         physics::PhysicsSettings = PhysicsSettings(),
         seed::Integer = 1,
         readout = nothing,
+        checkpoint::Union{Nothing, AbstractString} = nothing,
+        checkpoint_batch::Integer = 256,
     )
     function run_one(job)
         detector, source = job[1], job[2]
@@ -117,8 +134,36 @@ function simulate_sweep(
         return reduce_run(run, readout)
     end
 
-    isempty(WORKER_POOL) && return [run_one(job) for job in jobs]
+    run_all(batch) = if isempty(WORKER_POOL)
+        [run_one(job) for job in batch]
+    else
+        Distributed.pmap(run_one, Distributed.WorkerPool(WORKER_POOL), batch)
+    end
 
-    pool = Distributed.WorkerPool(WORKER_POOL)
-    return Distributed.pmap(run_one, pool, collect(jobs))
+    checkpoint === nothing && return run_all(collect(jobs))
+
+    # Batches of jobs, each saved once it is done and read back instead of rerun: a sweep that
+    # dies resumes where it stopped. A batch's file is named by everything its results depend on
+    # (its jobs, the defaults they fall back to, the readout and the physics), so changing any of
+    # them reruns it; changing the package's own code does not, so delete the directory after that.
+    mkpath(checkpoint)
+    all_jobs = collect(jobs)
+    results = Vector{Any}(undef, length(all_jobs))
+    for first_job in 1:checkpoint_batch:length(all_jobs)
+        range = first_job:min(first_job + checkpoint_batch - 1, length(all_jobs))
+        key = hash((repr(all_jobs[range]), n, repr(beam), repr(physics), seed, repr(readout)))
+        file = joinpath(checkpoint, "batch_$(lpad(first_job, 8, '0'))_$(string(key; base = 16)).jls")
+        batch = if isfile(file)
+            Serialization.deserialize(file)
+        else
+            done = run_all(all_jobs[range])
+            # written whole, then renamed: a batch file is complete or absent
+            partial = file * ".partial"
+            Serialization.serialize(partial, done)
+            mv(partial, file; force = true)
+            done
+        end
+        results[range] .= batch
+    end
+    return [r for r in results]
 end

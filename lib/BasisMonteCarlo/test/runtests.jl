@@ -89,6 +89,27 @@ using BasisMonteCarlo
         @test isempty(workers())
     end
 
+    @testset "a checkpointed sweep resumes with the same photons" begin
+        jobs = [(det, E) for E in (40.0, 60.0, 80.0)]
+        plain = simulate_sweep(jobs; n = 2_000, seed = 5)
+        dir = mktempdir()
+
+        first = simulate_sweep(jobs; n = 2_000, seed = 5, checkpoint = dir, checkpoint_batch = 2)
+        @test length(filter(endswith(".jls"), readdir(dir))) == 2
+        @test all(a.edep_keV == b.edep_keV for (a, b) in zip(plain, first))
+
+        # a sweep that died after its first batch: only the second is rerun
+        rm(joinpath(dir, last(sort(readdir(dir)))))
+        resumed = simulate_sweep(jobs; n = 2_000, seed = 5, checkpoint = dir, checkpoint_batch = 2)
+        @test all(a.edep_keV == b.edep_keV for (a, b) in zip(plain, resumed))
+
+        # other photons are other batches
+        other = simulate_sweep(jobs; n = 1_000, seed = 5, checkpoint = dir, checkpoint_batch = 2)
+        @test length(filter(endswith(".jls"), readdir(dir))) == 4
+        @test sum(other[1].edep_keV) != sum(plain[1].edep_keV)
+        @test !any(endswith(".partial"), readdir(dir))
+    end
+
     @testset "a material can leave the geometry and come back" begin
         # Regression: Geant4 crashed in the electron multiple scattering when a material returned
         gos = DetectorMaterial(:Gd2O2S)

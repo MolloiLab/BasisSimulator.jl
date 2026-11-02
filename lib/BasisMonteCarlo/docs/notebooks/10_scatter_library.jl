@@ -564,7 +564,8 @@ kernel_seed(T, r, u, half = 1) = 200_000 + round(Int, 1000 * T + 100_000_000 * r
 kernel_grid = [(T, r, u, E) for T in thicknesses_mm for r in aspects for u in impact_fractions for E in energies_keV]
 
 # ╔═╡ 254033b1-90b6-5df7-8582-b5aba5fe9e46
-# Every kernel in two independent halves (one after the other)
+# Every kernel in two independent halves (one after the other), saved in batches as they finish:
+# rerun after a crash, the sweep picks up where it stopped
 kernel_halves = MC.simulate_sweep(
     [
         (MC.kernel_phantom(T, r), E, kernel_seed(T, r, u, half), MC.kernel_ray(T, r, u), photons_per_half(T, r))
@@ -572,6 +573,7 @@ kernel_halves = MC.simulate_sweep(
     ];
     physics,
     readout,
+    checkpoint = MC.checkpoint_directory("scatter_library_v2"),
 )
 
 # ╔═╡ 673d1dfc-4b31-4673-a44e-e5255186ea3b

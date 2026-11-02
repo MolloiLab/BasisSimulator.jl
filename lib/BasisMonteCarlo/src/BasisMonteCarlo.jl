@@ -72,7 +72,7 @@ export write_scatter_library, read_scatter_library
 export Check, check_relative, check_below, check_range, scorecard
 export BASISSIMULATOR_V0_15_1_EFFICIENCY, basissimulator_v0_15_1_response
 export cell_pitch, cell_count, face_size_mm, fan_angle_deg, dexel_centre, dexel_edges
-export start_workers, stop_workers, workers, simulate_sweep
+export start_workers, stop_workers, workers, simulate_sweep, checkpoint_directory
 export DexelEnergyReadout, DexelEnergy, dexel_energy, dexel_efficiency, dexel_swank
 export DexelReadout, DexelResponse, dexel_response, dexel_beam, threshold_counts, dexel_spectrum, DepositLog,
     response_table
