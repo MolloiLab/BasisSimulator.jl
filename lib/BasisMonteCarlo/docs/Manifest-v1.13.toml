@@ -177,7 +177,7 @@ uuid = "18cc8868-cbac-4acf-b575-c8ff214dc66f"
 version = "1.4.0"
 
 [[deps.BasisMonteCarlo]]
-deps = ["Distributed", "Geant4", "Libdl", "Random", "Scratch", "Serialization", "SpecialFunctions", "Statistics", "Unitful", "XrayAttenuation"]
+deps = ["Distributed", "Geant4", "Libdl", "Random", "Scratch", "Serialization", "SpecialFunctions", "Statistics", "TOML", "Unitful", "XrayAttenuation"]
 path = ".."
 uuid = "0b891c0b-e8e1-4e40-a495-80b72b146dae"
 version = "0.1.0"

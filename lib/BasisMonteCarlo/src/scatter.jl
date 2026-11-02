@@ -89,7 +89,19 @@ scattered and of unscattered photons (keV for an energy-integrating detector, ph
 counting one), and `scatter_spectrum[k]`, the detected scattered photons by energy (1-keV bins).
 `analog_scatter` is the scatter counted photon by photon: the same array as `scatter` from a
 [`ScatterReadout`](@ref); from a [`ForcedScatterReadout`](@ref), an independent estimate of what
-`scatter` estimates by forced detection, to check it against.
+`scatter` estimates by forced detection, to check it against. `rayleigh` is the part of `scatter`
+whose last scattering, the one that sent the photon to the detector, was a Rayleigh scattering
+(the rest's was a Compton scattering); forced detection knows it, counting does not (zeros).
+`angles[process, bin]` is the detected scatter by that last scattering's process (1 Compton,
+2 Rayleigh) and angle, in the bins of `SCATTER_ANGLE_EDGES_DEG` (forced detection only).
+`column_moments[k, column]` is the scatter times its angle's distance (degrees) from the centre of
+its column, to the power k (1, 2; forced detection only): where in each column it landed.
+`forward` is the part of `rayleigh` whose Rayleigh scattering turned the photon by less than
+`FORWARD_RAYLEIGH_DEG`. `paths[process, band]` is the detected scatter times the length (mm) the
+photon travelled in the phantom with an energy in each band of `PATH_ENERGY_EDGES_KEV`, over its
+whole way from entering to leaving (forced detection only): divided by the scatter of that
+process, the mean such length, which says how much a material that attenuates otherwise than water
+at those energies changes the scatter.
 """
 struct ScatterTally
     scanner::String
@@ -101,7 +113,41 @@ struct ScatterTally
     primary::Matrix{Float64}
     scatter_spectrum::Vector{Float64}
     analog_scatter::Matrix{Float64}
+    rayleigh::Matrix{Float64}
+    angles::Matrix{Float64}
+    forward::Matrix{Float64}
+    paths::Matrix{Float64}
+    column_moments::Matrix{Float64}
 end
+
+"""The scattering angles (degrees) that bin [`ScatterTally`](@ref)'s `angles`."""
+const SCATTER_ANGLE_EDGES_DEG = [0.0, 2.5, 5.0, 10.0, 20.0, 40.0, 90.0, 180.0]
+
+"""Rayleigh scatterings by less than this angle (degrees) are [`ScatterTally`](@ref)'s `forward`."""
+const FORWARD_RAYLEIGH_DEG = 10.0
+
+"""The photon energies (keV) that band [`ScatterTally`](@ref)'s `paths`."""
+const PATH_ENERGY_EDGES_KEV = collect(0.0:5.0:150.0)
+
+"""The band of `PATH_ENERGY_EDGES_KEV` holding `E` keV."""
+path_band(E) = clamp(floor(Int, E / 5) + 1, 1, length(PATH_ENERGY_EDGES_KEV) - 1)
+
+ScatterTally(scanner, n, photon_keV, cols, rows, scatter, primary, spectrum, analog) = ScatterTally(
+    scanner,
+    n,
+    photon_keV,
+    cols,
+    rows,
+    scatter,
+    primary,
+    spectrum,
+    analog,
+    zeros(size(scatter)),
+    zeros(2, length(SCATTER_ANGLE_EDGES_DEG) - 1),
+    zeros(size(scatter)),
+    zeros(2, length(PATH_ENERGY_EDGES_KEV) - 1),
+    zeros(2, size(scatter, 1)),
+)
 
 Base.:+(a::ScatterTally, b::ScatterTally) = ScatterTally(
     a.scanner,
@@ -113,6 +159,11 @@ Base.:+(a::ScatterTally, b::ScatterTally) = ScatterTally(
     a.primary .+ b.primary,
     a.scatter_spectrum .+ b.scatter_spectrum,
     a.analog_scatter .+ b.analog_scatter,
+    a.rayleigh .+ b.rayleigh,
+    a.angles .+ b.angles,
+    a.forward .+ b.forward,
+    a.paths .+ b.paths,
+    a.column_moments .+ b.column_moments,
 )
 
 """

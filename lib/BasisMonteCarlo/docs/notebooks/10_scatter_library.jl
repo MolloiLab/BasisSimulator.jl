@@ -7,7 +7,7 @@ using InteractiveUtils
 
 # ╔═╡ be56f13c-5abb-5ce4-9011-3964bb0223d3
 md"""
-# A Scatter Library over Water-Equivalent Diameter
+# A Scatter Library over Patient Shape
 
 Scatter is the x rays a patient deflects onto the detector: it adds a low, smooth signal under
 every projection and, uncorrected, cups and streaks the image. BasisSimulator models it today with
@@ -15,30 +15,49 @@ one analytic convolution, a single 50 mm Gaussian scaled by a single patient dia
 anti-scatter grid, no collimation width and no scatter spectrum.
 
 This notebook builds what replaces it: a library of **pencil-beam scatter kernels**, simulated in
-Geant4, for water cylinders of every water-equivalent diameter from **20 to 50 cm in 1 cm steps**,
-for every ray through them and every photon energy, scored at once on the detectors of six
-scanners (with their own grids and efficiencies, from notebooks 03–08). DukeSim reruns its Monte
-Carlo for every patient; a library computed once serves any patient in this size range in seconds,
-and keeps the energy of every scattered photon, which a photon-counting detector needs.
+Geant4, in **water elliptical cylinders** from **14 to 50 cm thick in 2 cm steps and from 0.6 to
+2.5 times as wide as thick**, for every ray through them and every photon energy, scored at once
+on the detectors of six scanners (with their own grids and efficiencies, from notebooks 03–08). A
+scan stands each view of the patient in the water ellipse that matches it, ray by ray: thick and
+narrow from the side, thin and wide from the front. The library keeps apart the scatter last sent
+by a **Compton** and by a **Rayleigh** scattering (and, of the Rayleigh, what it turned by less than
+10°), and how far the detected photons travelled at each energy, so a patient that is not water (solid water,
+bone, iodine) has each part scaled by what its own materials make.
+
+DukeSim reruns its Monte Carlo through every patient; this library is computed once and serves any
+patient in seconds, primary by ray tracing and scatter from the kernels, and keeps the energy of
+every scattered photon, which a photon-counting detector needs. It is version 2: version 1 stood
+every ray in a water cylinder of the patient's water-equivalent diameter, and was 12–19 % off at
+the centre of non-round patients (notebook 11).
 
 Every claim here is checked: the notebook ends with a scorecard of quantitative pass/fail checks
 (the library's own noise, symmetry, forced detection against counting photon by photon, held-out
-diameters, and the library against direct Monte Carlo of whole fan beams), saved with the library.
+thicknesses, aspects and energies, version 1 where the two overlap, and the library against direct
+Monte Carlo of whole fan beams through round and non-round patients), saved with the library.
 """
 
 # ╔═╡ 9e90d4ca-5f06-5847-bb8d-aabdf1f2c9b2
 md"""
 ## How One Kernel Serves Every Scanner
 
-A ray through a cylinder crosses it along the same path whatever direction it comes from: only its
-distance from the axis matters, the **impact** `b`. So the Monte Carlo fires one ray at impact `b`
-through a water cylinder and logs every photon that leaves the cylinder, where and in which
-direction. Outside the patient a photon travels in a straight line, so for each scanner the focal
-spot is put back on the ray's line, at that scanner's source-to-isocentre distance, and every
-photon is followed to that scanner's detector arc, through its anti-scatter grid, into its
-detector. One simulation, six scanners.
-"""
+A ray along the thickness of an elliptical cylinder crosses it along a path fixed by its offset
+from the axis, the **impact**: a fraction of the ellipse's half-width *as that ray sees it*, so
+that 1 grazes the edge whatever the shape (a ray tilted toward the side, as the rays of a fan are,
+sees an ellipse that is wider than thick as a little narrower, and one thicker than wide as a little
+wider). So the Monte Carlo fires one ray at an impact through a water ellipse and logs every photon
+that leaves it, where and in which direction. Outside the patient a
+photon travels in a straight line, so for each scanner the focal spot is put back on the ray's
+line, at that scanner's source-to-isocentre distance, and every photon is followed to that
+scanner's detector arc, through its anti-scatter grid, into its detector. One simulation, six
+scanners.
 
+A scan puts each kernel under its own ray, moved across the fan by the ray's angle from the
+kernel's. The detector's columns are 2° wide, and the scatter of a ray near a patient's edge is
+mostly a sharp forward peak at the ray itself: moved by part of a column and shared between two,
+that peak would smear across the steepest part of the scan. So the kernels also keep where in each
+column their scatter landed (its mean and spread), and a column is moved as what it holds: a peak
+lands whole, scatter spread over its column is shared as before.
+"""
 
 # ╔═╡ e0e565df-c3ed-4b6d-b27f-66226d58c2ce
 md"""
@@ -209,7 +228,8 @@ ray.
 """
 
 # ╔═╡ 7848689c-0a69-53f7-b7fd-88f3413a4176
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ bdcc54a3-c0f5-5800-8c85-896244e8d07d
 # The energy-integrating detectors' flat-field efficiencies, 1–140 keV, as notebooks 04–08 saved them
@@ -447,15 +467,17 @@ end
 md"""
 ## 2. The Kernels
 
-Water cylinders from 20 to 50 cm in 1 cm steps; rays at 21 impacts from the axis to the edge
-(0 to 0.95 of the radius in steps of 0.05, and 0.99); photons of 20 to 140 keV in 10 keV steps:
-8463 kernels. A larger patient lets less through, so the photons per kernel grow with the square of
-its diameter: about 160,000 at 20 cm, 500,000 at 35 cm and a million at 50 cm (about four hours on
-eight cores). Each kernel is simulated in two independent halves with their own seeds: the library
-is their sum, and the difference between the halves measures the library's noise (section 3). Any
-one kernel can be rerun alone, and more halves added, without changing the rest.
+Water ellipses from 14 to 50 cm thick in 2 cm steps, each 0.6, 0.8, 1, 1.25, 1.6, 2 and 2.5 times
+as wide as thick (but never more than 70 cm wide: the grid's widest corners are no one's, and
+are made 70 cm wide); rays at 21 impacts from the axis to the edge (0 to 0.95 of the half-width in steps of
+0.05, and 0.99); photons of 20 to 140 keV in 10 keV steps: 36,309 kernels. The steps were chosen
+from version 1's finer grid: dropping every other 1 cm diameter and interpolating it back errs by
+at most 1.9 %, while 0.1 steps in impact (up to 17 %) and 20 keV steps in energy (up to 60 %,
+across the detectors' K-edges) do not, and are kept at 0.05 and 10 keV. A larger patient lets
+less through, so the photons per kernel grow with its area. Each kernel is simulated in two
+independent halves with their own seeds: the library is their sum, and the difference between
+the halves measures the library's noise (section 3).
 """
-
 
 # ╔═╡ aa74500e-69bb-45dc-9b84-b97d02d12150
 md"""
@@ -516,7 +538,11 @@ let
     fig
 end
 # ╔═╡ 420ca537-a700-5d72-8901-ab9c5fdcb42f
-diameters_mm = collect(200.0:10.0:500.0)
+thicknesses_mm = collect(140.0:20.0:500.0)
+
+# ╔═╡ b9a80ff7-7b0f-4929-bcf0-4b61ab73283a
+# Width ÷ thickness of the water ellipses (1: a cylinder)
+aspects = [0.6, 0.8, 1.0, 1.25, 1.6, 2.0, 2.5]
 
 # ╔═╡ 0191eb88-a4aa-593b-8d18-32f5fab725cb
 impact_fractions = vcat(collect(0.0:0.05:0.95), 0.99)
@@ -526,27 +552,27 @@ energies_keV = collect(20.0:10.0:140.0)
 
 # ╔═╡ 490c427d-a22a-5ea9-87af-256758fd46cf
 # Photons per kernel in each of its two halves: more for a larger patient, which lets less through
-photons_per_half(D) = 10_000 * cld(round(Int, 250_000 * (D / 350)^2), 10_000)
+# (by its area, through the diameter of the circle of the same area)
+photons_per_half(T, r) = 10_000 * cld(round(Int, 0.5 * 250_000 * (2 * MC.kernel_half_width(T, r) * T / 350^2)), 10_000)
 
 # ╔═╡ 9fd96be0-2511-59f0-873c-440d74415297
-# Each kernel half's own seed, from its cylinder, ray and half
-kernel_seed(D, u, half = 1) = 100_000 + round(Int, 1000 * D + 100 * u) + 1_000_000 * (half - 1)
-
+# Each kernel half's own seed, from its ellipse, ray and half
+kernel_seed(T, r, u, half = 1) = 200_000 + round(Int, 1000 * T + 100_000_000 * r + 100 * u) + 1_000_000_000 * (half - 1)
 
 # ╔═╡ df41e785-c04b-4d8a-b2f1-ab5d1e49a130
 # Every kernel, in the order the library stores them
-kernel_grid = [(D, u, E) for D in diameters_mm for u in impact_fractions for E in energies_keV]
+kernel_grid = [(T, r, u, E) for T in thicknesses_mm for r in aspects for u in impact_fractions for E in energies_keV]
+
 # ╔═╡ 254033b1-90b6-5df7-8582-b5aba5fe9e46
 # Every kernel in two independent halves (one after the other)
 kernel_halves = MC.simulate_sweep(
     [
-        (MC.CylinderPhantom(D), E, kernel_seed(D, u, half), MC.kernel_ray(D, u), photons_per_half(D))
-            for (D, u, E) in kernel_grid for half in 1:2
+        (MC.kernel_phantom(T, r), E, kernel_seed(T, r, u, half), MC.kernel_ray(T, r, u), photons_per_half(T, r))
+            for (T, r, u, E) in kernel_grid for half in 1:2
     ];
     physics,
     readout,
 )
-
 
 # ╔═╡ 673d1dfc-4b31-4673-a44e-e5255186ea3b
 # Each kernel: its two halves added
@@ -560,42 +586,44 @@ water_mu, water_compton, water_rayleigh = [
 ]
 
 # ╔═╡ b680104b-e544-5afd-94b3-e6a92fc42960
-library = MC.scatter_library(
+library = MC.shape_scatter_library(
     kernel_tallies,
     scanners,
-    diameters_mm,
+    thicknesses_mm,
+    aspects,
     impact_fractions,
     energies_keV;
     water_mu_per_mm = water_mu,
     metadata = Dict{String, Any}(
-        "photons_per_kernel" => Dict(D => 2 * photons_per_half(D) for D in diameters_mm),
+        "photons_per_kernel" => Dict(string(T, " mm × ", r) => 2 * photons_per_half(T, r) for T in thicknesses_mm for r in aspects),
         "physics" => string(physics),
-        "scoring" => "forced detection, first scattering integrated along the ray",
+        "scoring" => "forced detection, first scattering integrated along the ray; Rayleigh part and its forward (< 10°) part kept apart; detected photons' path lengths by energy band",
         "source" => "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 10_scatter_library.jl",
     ),
 )
 
-
 # ╔═╡ c36e2624-afa7-44a0-a0b2-bbb1a66211a1
 # The two halves as libraries of their own, to measure the library's noise
 library_halves = [
-    MC.scatter_library(
+    MC.shape_scatter_library(
             kernel_halves[half:2:end],
             scanners,
-            diameters_mm,
+            thicknesses_mm,
+            aspects,
             impact_fractions,
             energies_keV;
             water_mu_per_mm = water_mu,
         )
         for half in 1:2
 ]
+
 # ╔═╡ 77f080ef-da2b-5ce5-81a0-0ee4ae8f5310
 let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1400, 620))
     for (k, (name, u)) in enumerate((("SOMATOM Force", 0.0), ("SOMATOM Force", 0.8), ("Aquilion ONE", 0.8)))
         s = scanners[findfirst(x -> x.name == name, scanners)]
-        kernel, _ = MC.library_kernel(library, name, 300.0, u, 70.0)
+        kernel, _ = MC.library_kernel(library, name, 300.0, 1.0, u, 70.0)
         cols, rows = MC.column_edges(s), MC.row_edges(s)
         ax = Mke.Axis(
             fig[1, k];
@@ -654,11 +682,11 @@ let
         PALETTE.photon,
     )
     for (k, s) in enumerate(scanners)
-        total = [sum(MC.library_kernel(library, s.name, D, 0.0, 70.0)[1]) for D in diameters_mm]
+        total = [sum(MC.library_kernel(library, s.name, T, 1.0, 0.0, 70.0)[1]) for T in thicknesses_mm]
         per = s.energy_weighted ? total ./ 70.0 : total
         Mke.scatterlines!(
             ax,
-            diameters_mm ./ 10,
+            thicknesses_mm ./ 10,
             per;
             color = colors[k],
             markersize = 7,
@@ -673,29 +701,31 @@ end
 md"""
 ## 3. The Checks
 
-Five kinds, each a number with a target:
+Six kinds, each a number with a target:
 
 - **The library's noise.** Each kernel's two halves are independent estimates; half their difference
   is the noise of their sum. It is measured where the library is used: on single rays of a 120 kV
   beam (each ray's kernels over the beam's energies) and on whole scans predicted from each half of
   the library.
 - **Symmetry.** A ray through the axis scatters equally to both sides of the fan: summed over
-  every diameter and energy, the two sides must agree to well within what noise allows.
+  every thickness, aspect and energy, the two sides must agree to well within what noise allows.
 - **Forced detection against counting.** Over every kernel, the scatter by forced detection and the
   scatter counted photon by photon, from the same photons, must agree.
-- **Held-out diameters and energies.** Kernels simulated at diameters and an energy *between* the
-  library's grid points (23.5, 31.5 and 44.5 cm; 75 keV), each with eight times the library's
-  photons, must match the library's interpolation: this is what decides whether 1 cm steps in
-  water-equivalent diameter are fine enough.
-- **Whole scans.** A fan beam from a 120 kV tube through cylinders of 27.5 and 43.5 cm (between
-  grid points) is simulated directly, every photon, and its scatter on the Force's and the
-  Aquilion ONE's detectors compared with the library's prediction from its pencil kernels: at the
-  centre, across the fan and along z.
+- **Held-out thicknesses, aspects and energies.** Kernels simulated *between* the library's grid
+  points (23, 33 and 45 cm thick; 0.7, 1.1, 1.4 and 2.2 times as wide; 75 keV), each with eight times
+  the library's photons, must match the library's interpolation.
+- **Version 1, where they overlap.** At aspect 1 the ellipses are version 1's cylinders: the two
+  libraries, built from independent photons, must agree there within their noise.
+- **Whole scans.** A fan beam from a 120 kV tube through two cylinders (27.5 and 43.5 cm) and two
+  ellipses (38 × 27 cm, wide and thin; 26 × 35 cm, tall and narrow), all between the grid's
+  points, is simulated directly, every photon, and its scatter on the Force's and the Aquilion
+  ONE's detectors compared with the library's prediction from its pencil kernels: at the centre,
+  across the fan and along z.
 """
 
 # ╔═╡ 494c2134-fd68-51de-bef2-eea2ca1d5b91
-# Rays at three sizes: through the axis, halfway out and near the edge
-noise_cases = [(D, u) for D in (200.0, 350.0, 500.0) for u in (0.0, 0.5, 0.9)]
+# Rays at three sizes and three shapes: through the axis, halfway out and near the edge
+noise_cases = [(T, r, u) for T in (200.0, 340.0, 500.0) for r in (0.6, 1.0, 1.6) for u in (0.0, 0.5, 0.9)]
 
 # ╔═╡ b3cf4ace-0f65-5679-b861-da072652ac64
 """Relative difference of two kernels: of their totals, and rms over the bins above 10 % of the peak."""
@@ -709,15 +739,16 @@ end
 
 # ╔═╡ 0bdb1f8f-17d8-45ac-a652-e509f89d422b
 """The kernel of one ray of the 120 kV beam: each energy's kernel, weighted by the beam's photons."""
-function beam_kernel(lib, name, D, u)
+function beam_kernel(lib, name, T, r, u)
     energies, weights = scan_spectrum
-    kernel = zero(MC.library_kernel(lib, name, D, u, 70.0)[1])
+    kernel = zero(MC.library_kernel(lib, name, T, r, u, 70.0)[1])
     for (E, w) in zip(energies, weights)
         w > 0 || continue
-        kernel .+= w / sum(weights) .* MC.library_kernel(lib, name, D, u, E)[1]
+        kernel .+= w / sum(weights) .* MC.library_kernel(lib, name, T, r, u, E)[1]
     end
     return kernel
 end
+
 # ╔═╡ f32a0349-3698-55f3-ab6f-966791eea928
 # The noise of each ray's kernel: half the difference of the library's two halves
 noise_differences = [
@@ -735,14 +766,14 @@ noise_differences = [
 energy_noise = [
     (
             scanner = s.name,
-            D = D,
+            D = T,
             E = E,
             total = kernel_difference(
-                MC.library_kernel(library_halves[1], s.name, D, 0.0, E)[1],
-                MC.library_kernel(library_halves[2], s.name, D, 0.0, E)[1],
+                MC.library_kernel(library_halves[1], s.name, T, 1.0, 0.0, E)[1],
+                MC.library_kernel(library_halves[2], s.name, T, 1.0, 0.0, E)[1],
             ).total / 2,
         )
-        for D in (400.0, 450.0, 500.0) for E in (50.0, 70.0, 90.0) for s in scanners
+        for T in (400.0, 460.0, 500.0) for E in (50.0, 70.0, 90.0) for s in scanners
 ]
 
 # ╔═╡ f09afb2f-b189-44ff-b632-9b230b731275
@@ -762,9 +793,11 @@ let
     )
 end
 # ╔═╡ fc4b31b5-83a1-5f18-8570-4be1f5c7985a
+# Kernels between the grid's points: thicknesses, aspects and an energy the library interpolates
 held_out_cases = vcat(
-    [(D, u, 70.0) for D in (235.0, 315.0, 445.0) for u in (0.0, 0.5)],
-    [(300.0, 0.5, 75.0)],
+    [(T, 1.0, u, 70.0) for T in (230.0, 330.0, 450.0) for u in (0.0, 0.5)],
+    [(320.0, r, u, 70.0) for r in (0.7, 1.1, 1.4, 2.2) for u in (0.0, 0.5)],
+    [(300.0, 1.0, 0.5, 75.0)],
 )
 
 # ╔═╡ 9bc53a5c-830c-5637-b25a-ee344fedfe95
@@ -773,13 +806,13 @@ held_out_runs = let
     runs = MC.simulate_sweep(
         [
             (
-                    MC.CylinderPhantom(D),
+                    MC.kernel_phantom(T, r),
                     E,
-                    kernel_seed(D, u) + 11 + 1000 * chunk,
-                    MC.kernel_ray(D, u),
-                    2 * photons_per_half(D),
+                    kernel_seed(T, r, u) + 11 + 1000 * chunk,
+                    MC.kernel_ray(T, r, u),
+                    2 * photons_per_half(T, r),
                 )
-                for (D, u, E) in held_out_cases for chunk in 1:8
+                for (T, r, u, E) in held_out_cases for chunk in 1:8
         ];
         physics,
         readout,
@@ -798,33 +831,34 @@ held_out_differences = [
 
 # ╔═╡ 61cc2a1d-bcb8-446b-91bf-099cee6f17ba
 # The kernels' Monte Carlo primaries against Beer–Lambert, where enough primaries got through to
-# measure (at least a thousand): a check of the transport and of the scoring together
+# measure them to 1 % (at least ten thousand, so that 5 % is five times their noise): a check of
+# the transport and of the scoring together
 primary_differences = let
     s = scanners[1]
-    cases = [(D, u, E) for D in (200.0, 300.0) for u in (0.0, 0.5) for E in (60.0, 80.0, 100.0, 120.0)]
+    cases = [(T, u, E) for T in (140.0, 200.0, 300.0) for u in (0.0, 0.5, 0.9, 0.95) for E in (60.0, 80.0, 100.0, 120.0)]
     differences = Float64[]
-    for (D, u, E) in cases
-        iD, iu, iE = findfirst(==(D), diameters_mm), findfirst(==(u), impact_fractions), findfirst(==(E), energies_keV)
-        chord = D * sqrt(1 - u^2)
+    for (T, u, E) in cases
+        iT, ir, iu, iE = findfirst(==(T), thicknesses_mm), findfirst(==(1.0), aspects), findfirst(==(u), impact_fractions), findfirst(==(E), energies_keV)
+        chord = T * sqrt(1 - u^2)
         k = round(Int, E)
         transmission = exp(-water_mu[k] * chord)
-        transmission * 2 * photons_per_half(D) >= 1000 || continue
+        transmission * 2 * photons_per_half(T, 1.0) >= 10_000 || continue
         expected = transmission * s.efficiency[k] * E
-        push!(differences, abs(library.primary[s.name][iu, iD, iE] / expected - 1))
+        push!(differences, abs(library.primary[s.name][iu, ir, iT, iE] / expected - 1))
     end
     differences
 end
 
 # ╔═╡ db13c422-a859-5bc4-a784-ce63d23bbf34
-# Rays through the axis: the scatter on the two halves of the fan, summed over every diameter and
-# energy (each kernel then counts by its signal, the precise ones most)
+# Rays through the axis: the scatter on the two halves of the fan, summed over every thickness, aspect
+# and energy (each kernel then counts by its signal, the precise ones most)
 symmetry = [
     let sides = [
-                let kernel = MC.library_kernel(library, s.name, D, 0.0, E)[1]
+                let kernel = MC.library_kernel(library, s.name, T, r, 0.0, E)[1]
                     half = size(kernel, 1) ÷ 2
                     (sum(kernel[1:half, :]), sum(kernel[(end - half + 1):end, :]))
             end
-                for D in diameters_mm for E in energies_keV
+                for T in thicknesses_mm for r in aspects for E in energies_keV
             ]
             abs(log(sum(first, sides) / sum(last, sides)))
     end
@@ -833,15 +867,38 @@ symmetry = [
 
 # ╔═╡ 96dc3864-3035-4923-9f2d-ffd51cd56032
 # Forced detection against the photon-by-photon count of the same photons: each scanner's total over
-# every kernel, for the patients up to 35 cm and those above
+# every kernel, for the patients up to 34 cm thick and those above
 forced_vs_analog = [
-    let kernels = [j for (j, (D, u, E)) in enumerate(kernel_grid) if (D <= 350) == small]
+    let kernels = [j for (j, (T, r, u, E)) in enumerate(kernel_grid) if (T <= 340) == small]
             forced = sum(sum(kernel_tallies[j][k].scatter) / kernel_tallies[j][k].n for j in kernels)
             analog = sum(sum(kernel_tallies[j][k].analog_scatter) / kernel_tallies[j][k].n for j in kernels)
-            (scanner = s.name, sizes = small ? "20–35 cm" : "36–50 cm", difference = abs(forced / analog - 1))
+            (scanner = s.name, sizes = small ? "14–34 cm" : "36–50 cm", difference = abs(forced / analog - 1))
     end
         for (k, s) in enumerate(scanners) for small in (true, false)
 ]
+
+# ╔═╡ 291e5bbe-1f89-4661-b4ac-408ba79e75a8
+# Version 1, where the two libraries overlap: the cylinders (aspect 1) at every thickness of version 2
+# within version 1's diameters, on rays of the 120 kV beam at five impacts; nothing if version 1's file is not here
+regression = let
+    path = joinpath(table_dir, "scatter_library_geant4.jls")
+    if isfile(path)
+        previous = Serialization.deserialize(path)
+        energies, weights = scan_spectrum
+        old_beam(name, D, u) = sum(
+            w / sum(weights) .* MC.library_kernel(previous, name, D, u, E)[1] for (E, w) in zip(energies, weights) if w > 0
+        )
+        [
+            (scanner = s.name, T = T, u = u, difference = kernel_difference(beam_kernel(library, s.name, T, 1.0, u), old_beam(s.name, T, u)))
+                for s in scanners
+                for T in thicknesses_mm if first(previous.diameters_mm) <= T <= last(previous.diameters_mm)
+                for u in (0.0, 0.3, 0.5, 0.7, 0.9)
+        ]
+    else
+        nothing
+    end
+end
+
 # ╔═╡ bcab3e26-0dd7-5534-ac6b-33e841a2109b
 md"""
 **Whole scans.** The tube: BasisSimulator's IPEM spectrum at 120 kV through 9.2 mm of aluminium (the
@@ -884,14 +941,25 @@ scan_spectrum = let
 end
 
 # ╔═╡ 3e855498-7f7a-51c1-a26a-89a2469ad324
-scan_cases = [(name = name, D = D) for name in ("SOMATOM Force", "Aquilion ONE") for D in (275.0, 435.0)]
+# Fan beams through two cylinders (between the grid's thicknesses) and two ellipses (between its
+# thicknesses and its aspects): wide and thin, and tall and narrow
+scan_cases = [
+    (name = name, label = label, semi_axes_mm = axes)
+        for name in ("SOMATOM Force", "Aquilion ONE")
+        for (label, axes) in (
+            ("cylinder, 27.5 cm", (137.5, 137.5)),
+            ("cylinder, 43.5 cm", (217.5, 217.5)),
+            ("ellipse, 38 × 27 cm", (190.0, 135.0)),
+            ("ellipse, 26 × 35 cm", (130.0, 175.0)),
+        )
+]
 
 # ╔═╡ 048f71d8-7293-522d-acec-51433e592c41
 # Every photon of the fan beam, 64 independent chunks of 1.5 million per case
 direct_scans = [
     let s = scanners[findfirst(x -> x.name == case.name, scanners)]
-            phantom = MC.CylinderPhantom(
-                case.D;
+            phantom = MC.CylinderPhantom(;
+                semi_axes_mm = case.semi_axes_mm,
                 centre_mm = (0.0, s.source_to_isocenter_mm),
             )
             beam = MC.FocalSpot(;
@@ -912,30 +980,21 @@ direct_scans = [
 
 # ╔═╡ aded6c40-7771-5e42-ad5c-3ab591c1a356
 # The library's prediction from rays every 0.1° across the fan, each crossing its chord of the
-# centred cylinder; from the whole library and from each of its halves, and the rows every ray's
-# kernel reaches whole
+# patient; from the whole library and from each of its halves, and the rows every ray's kernel
+# reaches whole
 library_scans = [
     let s = scanners[findfirst(x -> x.name == case.name, scanners)]
             cols = MC.column_edges(s)
-            R = case.D / 2
+            centre = (0.0, s.source_to_isocenter_mm)
             rays = [
                 (
                     angle_deg = γ,
-                    wet_mm = let b = s.source_to_isocenter_mm * sind(γ)
-                        abs(b) < R ? 2 * sqrt(R^2 - b^2) : 0.0
-                end,
+                    wet_mm = MC.ellipse_chord((0.0, 0.0), (sind(γ), cosd(γ)), centre, case.semi_axes_mm),
                     weight = abs(γ) <= s.fan_deg / 2 ? 0.1 / s.fan_deg : 0.0,
                 )
                 for γ in (cols[1] + 0.05):0.1:cols[end]
             ]
-            predict(lib) = MC.library_scan(
-                lib,
-                s.name,
-                case.D,
-                rays;
-                collimation_mm = 40.0,
-                spectrum = scan_spectrum,
-            )
+            predict(lib) = MC.library_scan(lib, s.name, rays; collimation_mm = 40.0, spectrum = scan_spectrum)
             whole = predict(library)
             (
                 all = whole.scatter,
@@ -986,7 +1045,9 @@ scan_differences = [
 # ╔═╡ 3859e670-2f6e-5ed3-b726-b46b803a977b
 let
     Mke.set_theme!(THEME)
-    fig = Mke.Figure(size = (1400, 900))
+    fig = Mke.Figure(size = (1700, 1500))
+    names = unique(case.name for case in scan_cases)
+    labels = unique(case.label for case in scan_cases)
     for (j, case) in enumerate(scan_cases)
         t = direct_scans[j].all
         s = scanners[findfirst(x -> x.name == case.name, scanners)]
@@ -996,11 +1057,15 @@ let
         col_centres = (cols[1:(end - 1)] .+ cols[2:end]) ./ 2
         row_centres = (rows[1:(end - 1)] .+ rows[2:end]) ./ 2
         beam = findall(z -> abs(z) < 20.0 * s.source_to_detector_mm / s.source_to_isocenter_mm, row_centres)
+
+        # one pair of rows per scanner, one column per patient
+        top = 2 * findfirst(==(case.name), names) - 1
+        column = findfirst(==(case.label), labels)
         ax = Mke.Axis(
-            fig[1, j];
-            title = "$(case.name), $(round(case.D / 10; digits = 2)) cm",
-            xlabel = "angle across the fan (°)",
-            ylabel = j == 1 ? "scatter in the beam's rows,\nper photon (keV)" : "",
+            fig[top, column];
+            title = column == 1 ? "$(case.name): $(titlecase(case.label))" : titlecase(case.label),
+            xlabel = "Angle Across the Fan (°)",
+            ylabel = column == 1 ? "Scatter in the Beam's Rows\n(keV per Photon)" : "",
         )
         Mke.lines!(
             ax,
@@ -1008,7 +1073,7 @@ let
             vec(sum(direct[:, beam]; dims = 2));
             color = PALETTE.ink,
             linewidth = 3,
-            label = "direct Monte Carlo",
+            label = "Direct Monte Carlo",
         )
         Mke.lines!(
             ax,
@@ -1017,13 +1082,14 @@ let
             color = PALETTE.kept,
             linewidth = 3,
             linestyle = :dash,
-            label = "library",
+            label = "Library",
         )
-        j == 1 && Mke.axislegend(ax; position = :ct, framevisible = false)
+        j == 1 && Mke.axislegend(ax; position = :ct, framevisible = true, backgroundcolor = (:white, 0.8))
+
         ax2 = Mke.Axis(
-            fig[2, j];
-            xlabel = "z at the detector (mm)",
-            ylabel = j == 1 ? "scatter summed across the fan,\nper photon (keV)" : "",
+            fig[top + 1, column];
+            xlabel = "z at the Detector (mm)",
+            ylabel = column == 1 ? "Scatter Summed Across\nthe Fan (keV per Photon)" : "",
         )
         complete = library_scans[j].complete
         Mke.lines!(
@@ -1042,6 +1108,8 @@ let
             linestyle = :dash,
         )
     end
+    Mke.rowgap!(fig.layout, 1, 8)
+    Mke.rowgap!(fig.layout, 3, 8)
     fig
 end
 
@@ -1087,7 +1155,7 @@ checks = vcat(
                 "symmetry, $(s.name): rays through the axis, left against right (log ratio)",
                 symmetry[k],
                 0.005;
-                source = "geometry, every diameter and energy",
+                source = "geometry, every thickness, aspect and energy",
             )
             for (k, s) in enumerate(scanners)
     ],
@@ -1101,17 +1169,31 @@ checks = vcat(
             for d in forced_vs_analog
     ],
     MC.check_below(
-        "held-out diameters and energy: kernel totals (largest relative error)",
+        "held-out thicknesses, aspects and energy: kernel totals (largest relative error)",
         maximum(d.total for d in held_out_differences),
         0.03;
         source = "kernels simulated between grid points, eight times the photons",
     ),
     MC.check_below(
-        "held-out diameters and energy: strong bins (median rms relative error)",
+        "held-out thicknesses, aspects and energy: strong bins (median rms relative error)",
         median([d.bins for d in held_out_differences]),
         0.12;
         source = "kernels simulated between grid points, eight times the photons",
     ),
+    regression === nothing ? MC.Check[] : [
+            MC.check_below(
+                "aspect 1 against version 1, 120 kV rays: totals (median)",
+                median([d.difference.total for d in regression]),
+                0.015;
+                source = "version 1's cylinders, the same thicknesses",
+            ),
+            MC.check_below(
+                "aspect 1 against version 1, 120 kV rays: totals (largest)",
+                maximum(d.difference.total for d in regression),
+                0.06;
+                source = "version 1's cylinders, the same thicknesses",
+            ),
+        ],
     MC.check_below(
         "whole scans: the direct simulation's own noise at the centre (largest)",
         maximum(d.direct_noise_centre for d in scan_differences),
@@ -1120,7 +1202,7 @@ checks = vcat(
     ),
     [
         MC.check_below(
-                "whole scan, $(case.name), $(case.D / 10) cm: scatter at the centre",
+                "whole scan, $(case.name), $(case.label): scatter at the centre",
                 scan_differences[j].centre,
                 0.05;
                 source = "direct Monte Carlo of the fan beam",
@@ -1129,7 +1211,7 @@ checks = vcat(
     ],
     [
         MC.check_below(
-                "whole scan, $(case.name), $(case.D / 10) cm: across the fan (rms)",
+                "whole scan, $(case.name), $(case.label): across the fan (rms)",
                 scan_differences[j].across,
                 0.06;
                 source = "direct Monte Carlo of the fan beam",
@@ -1138,7 +1220,7 @@ checks = vcat(
     ],
     [
         MC.check_below(
-                "whole scan, $(case.name), $(case.D / 10) cm: along z, the rows covered whole (rms)",
+                "whole scan, $(case.name), $(case.label): along z, the rows covered whole (rms)",
                 scan_differences[j].along,
                 0.08;
                 source = "direct Monte Carlo of the fan beam",
@@ -1154,29 +1236,49 @@ Markdown.parse(MC.scorecard(checks))
 md"""
 ## Saving the Library
 
-One file in `lib/BasisMonteCarlo/tables/`: the kernels of all six scanners, their grids of
-diameters, impacts and energies, the scanners as modelled, the photons per kernel, and the
-scorecard above, so that whoever uses the library sees what it passed.
+Three files in `lib/BasisMonteCarlo/tables/`, all made here:
+
+- `scatter_library_v2.toml` and `scatter_library_v2.bin`: what BasisSimulator reads, with nothing
+  of BasisMonteCarlo. The binary file is the arrays, little-endian Float32 in Julia's
+  column-major order, one after another: for each scanner its `scatter` and `rayleigh` kernels
+  (column, row, impact, aspect, thickness, energy) and its `primary` (impact, aspect, thickness,
+  energy), per incident photon. The TOML header gives each array's shape and byte offset, the
+  axes and their values, each scanner's geometry and bins, Geant4's attenuation of water on a
+  1-keV grid, how the library was made and the scorecard above. `read_scatter_library` reads it
+  with Base and TOML alone; BasisSimulator keeps its own copy of that reader.
+- `scatter_library_v2.jls`: the same library as BasisMonteCarlo's type, for notebook 11.
 """
 
 # ╔═╡ 657db79e-fdde-5587-9858-798b66066db7
 saved = let
-    path = joinpath(table_dir, "scatter_library_geant4.jls")
+    path = joinpath(table_dir, "scatter_library_v2")
     library.metadata["scorecard"] = MC.scorecard(checks)
     library.metadata["checks_passed"] = count(c -> c.passed, checks)
     library.metadata["checks_total"] = length(checks)
-    Serialization.serialize(path, library)
+    Serialization.serialize(path * ".jls", library)
+    MC.write_scatter_library(
+        path,
+        library;
+        scorecard = MC.scorecard(checks),
+        provenance = Dict{String, Any}(
+            "source" => "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 10_scatter_library.jl",
+            "physics" => string(physics),
+            "checks" => "$(count(c -> c.passed, checks)) of $(length(checks)) pass",
+        ),
+    )
     path
-end
+end;
 
 # ╔═╡ 84c11691-4e90-5bb2-92d8-e22f90fcf4ab
+# Read back as BasisSimulator will: the TOML header and the plain arrays, no BasisMonteCarlo types
 let
-    reloaded = Serialization.deserialize(saved)
+    reloaded = MC.read_scatter_library(saved * ".toml")
+    force = reloaded["arrays"]["SOMATOM Force"]
     (
-        file = basename(saved),
-        megabytes = round(filesize(saved) / 1.0e6; digits = 1),
-        scanners = [s.name for s in reloaded.scanners],
-        kernels = length(reloaded.diameters_mm) * length(reloaded.impact_fractions) * length(reloaded.energies_keV),
+        files = [basename(saved) * ext for ext in (".toml", ".bin", ".jls")],
+        megabytes = round(filesize(saved * ".bin") / 1.0e6; digits = 1),
+        scanners = collect(keys(reloaded["arrays"])),
+        same_as_built = force["scatter"] == library.scatter["SOMATOM Force"] && force["rayleigh"] == library.rayleigh["SOMATOM Force"],
     )
 end
 
@@ -1210,6 +1312,7 @@ end
 # ╠═a285f955-c394-41f8-a94b-65861e8a9bee
 # ╟─ecd65b8c-d0f6-4502-80f0-7c417e498baa
 # ╠═420ca537-a700-5d72-8901-ab9c5fdcb42f
+# ╠═b9a80ff7-7b0f-4929-bcf0-4b61ab73283a
 # ╠═0191eb88-a4aa-593b-8d18-32f5fab725cb
 # ╠═1ca0b7d9-8065-5e30-9fad-7e035e483d95
 # ╠═490c427d-a22a-5ea9-87af-256758fd46cf
@@ -1236,6 +1339,7 @@ end
 # ╠═61cc2a1d-bcb8-446b-91bf-099cee6f17ba
 # ╠═db13c422-a859-5bc4-a784-ce63d23bbf34
 # ╠═96dc3864-3035-4923-9f2d-ffd51cd56032
+# ╠═291e5bbe-1f89-4661-b4ac-408ba79e75a8
 # ╟─bcab3e26-0dd7-5534-ac6b-33e841a2109b
 # ╠═1a500ca1-cd75-531b-89ee-5498b1477e6b
 # ╠═3e855498-7f7a-51c1-a26a-89a2469ad324

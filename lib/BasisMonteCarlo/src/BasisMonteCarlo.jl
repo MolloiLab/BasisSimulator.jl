@@ -35,6 +35,7 @@ using SpecialFunctions: erf
 using Scratch: @get_scratch!
 import Libdl
 import Serialization
+import TOML
 import Distributed
 
 include("materials.jl")
@@ -50,6 +51,8 @@ include("beam.jl")
 include("phantom.jl")
 include("scatter.jl")
 include("forced.jl")
+include("shape_library.jl")
+include("library_format.jl")
 include("checks.jl")
 include("basissimulator_v0_15_1.jl")
 
@@ -64,6 +67,8 @@ export RayBeam, PhantomInsert, CylinderPhantom, material_lengths, water_equivale
 export ScatterScanner, ScatterReadout, ScatterTally, scatter_tally, merge_tallies, column_edges, row_edges
 export ForcedScatterReadout, VertexLog, forced_attenuation, scattering_tables, exit_length
 export ScatterLibrary, kernel_ray, scatter_library, library_kernel, library_scan
+export ShapeScatterLibrary, shape_scatter_library, kernel_phantom, view_ellipse, process_ratios
+export write_scatter_library, read_scatter_library
 export Check, check_relative, check_below, check_range, scorecard
 export BASISSIMULATOR_V0_15_1_EFFICIENCY, basissimulator_v0_15_1_response
 export cell_pitch, cell_count, face_size_mm, fan_angle_deg, dexel_centre, dexel_edges

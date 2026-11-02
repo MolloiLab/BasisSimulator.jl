@@ -9,14 +9,18 @@ using InteractiveUtils
 md"""
 # Validating the Scatter Library Beyond Water Cylinders
 
-The scatter library of notebook 10 was built from water cylinders. Patients are not water cylinders:
-they are elliptical, off-centre, and made of lung, bone and soft tissue. The library treats every
-patient, ray by ray, as the water cylinder of the patient's **water-equivalent diameter** (WED,
-AAPM Report 220) that the ray crosses for the same water-equivalent length. This notebook measures
-how well that holds: five phantoms that are not water cylinders, each simulated directly in Geant4
-(every photon of the fan beam, every scattering scored by forced detection), against the library's
-prediction and against BasisSimulator's current model, on a scanner with a 2-D grid (the SOMATOM
-Force) and one with a 1-D grid (the Aquilion ONE). Every comparison is a number with a target; the notebook ends with its scorecard.
+The scatter library of notebook 10 (version 2) was built from water elliptical cylinders, with the
+scatter last sent by a Compton and by a Rayleigh scattering kept apart. Patients are not water:
+they are elliptical, off-centre, and made of lung, bone and soft tissue. The library stands every
+view of a patient in a water ellipse as thick and as wide as the patient's water there, takes each
+ray's kernel at the offset whose chord is the ray's water-equivalent length, and scales the
+kernel's Compton and Rayleigh parts by how much of each scattering the ray's own materials make
+into the angles the detector sees. This notebook measures how well that holds: six phantoms that
+are not water cylinders, each simulated directly in Geant4 (every photon of the fan beam, every
+scattering scored by forced detection), against the library's prediction and against
+BasisSimulator's current model, on a scanner with a 2-D grid (the SOMATOM Force) and one with a
+1-D grid (the Aquilion ONE). The second thorax is held out: it was not used to choose anything.
+Every comparison is a number with a target; the notebook ends with its scorecard.
 """
 
 # ╔═╡ 6c441e5d-e5e6-59ee-ab46-e7bb118e71b5
@@ -152,11 +156,12 @@ end
 physics = MC.PhysicsSettings(; production_cut_um = 1000.0, electron_step_um = 1000.0)
 
 # ╔═╡ 17d722cd-bfe7-55b7-9543-462bec58e049
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ 997fd0c7-f40b-5436-87a1-6b85407c0c61
 # The library notebook 10 saved, with its own scorecard
-library = Serialization.deserialize(joinpath(table_dir, "scatter_library_geant4.jls"))
+library = Serialization.deserialize(joinpath(table_dir, "scatter_library_v2.jls"))
 
 # ╔═╡ 9ae13765-5bf9-5316-9464-18955d2d91df
 Markdown.parse("**The library's own checks (notebook 10):**\n\n" * library.metadata["scorecard"])
@@ -247,6 +252,33 @@ phantoms = let
                 ],
             ),
         ),
+        (
+            name = "thorax, held out",
+            phantom = MC.CylinderPhantom(;
+                material = water,
+                semi_axes_mm = (190.0, 135.0),
+                inserts = [
+                    MC.PhantomInsert(;
+                        material = MC.DetectorMaterial(:Lung),
+                        x_mm = -85.0,
+                        y_mm = 0.0,
+                        semi_axes_mm = (65.0, 90.0),
+                    ),
+                    MC.PhantomInsert(;
+                        material = MC.DetectorMaterial(:Lung),
+                        x_mm = 85.0,
+                        y_mm = 0.0,
+                        semi_axes_mm = (65.0, 90.0),
+                    ),
+                    MC.PhantomInsert(;
+                        material = MC.DetectorMaterial(:CorticalBone),
+                        x_mm = 0.0,
+                        y_mm = 105.0,
+                        semi_axes_mm = (20.0, 16.0),
+                    ),
+                ],
+            ),
+        ),
     ]
 end
 
@@ -311,12 +343,12 @@ isocentre, no bowtie, one view (the beam along +y). The direct simulation fires 
 each phantom placed at the scanner's isocentre, 48 million photons per case in 32 independent chunks
 (whose spread gives its own noise), and scores every scattering on the scanner's detector by forced
 detection (notebook 10), in whatever material it happened: water, lung, bone or a rod. The
-library's prediction takes rays every 0.1° across the fan, each ray's water-equivalent length
-through the phantom and the phantom's water-equivalent diameter from the same projection, and sums
-the kernels. A ray longer than the WED (along the tall ellipse's long axis, through the Gammex
-phantom's rods, through the thorax's spine) cannot cross a cylinder of that diameter for its own
-length, so it is given its own cylinder, as wide as it is long, and crosses it through the axis. BasisSimulator's current model is run on the same projection, one ray per column of
-the detector, with its size scaling at the same diameter.
+library's prediction takes rays every 0.1° across the fan, each with its water-equivalent length,
+its length through the outline and its materials' scattering and attenuation against water's;
+stands the view in its water ellipse; and sums the kernels, each at the offset whose chord is the
+ray's own water-equivalent length (a ray longer than the ellipse is thick gets an ellipse as thick
+as itself). BasisSimulator's current model is run on the same projection, one ray per column of
+the detector, with its size scaling at the phantom's water-equivalent diameter.
 """
 
 # ╔═╡ 3ddaaa30-9111-50c0-9836-f278f92809fa
@@ -365,12 +397,29 @@ cases = [(phantom = case, scanner = name) for case in phantoms for name in scann
 
 
 # ╔═╡ f67c80e6-ec4d-43e1-aaa7-b674a8ee268d
-# Geant4's attenuation of every material in the phantoms, for forced detection
+# Geant4's attenuation of water and of every material in the phantoms, for forced detection and for
+# the library's ratios
 attenuation = MC.forced_attenuation(
     unique(
         m -> m.name,
-        [m for case in phantoms for m in vcat(case.phantom.material, [i.material for i in case.phantom.inserts])],
-    ),
+        vcat(
+            MC.DetectorMaterial(:Water),
+            [m for case in phantoms for m in vcat(case.phantom.material, [i.material for i in case.phantom.inserts])],
+        ),
+    );
+    physics,
+)
+
+# ╔═╡ b05546de-9cdf-4e60-a955-c04520149d6f
+# How much each material scatters into the angles each scanner's detector sees, by process, against
+# water: from the library's own profile of the angles its kernels' scatter arrived at
+angular = Dict(
+    s.name => MC.angular_factors(
+            [MC.DetectorMaterial(:Water); [m for case in phantoms for m in vcat(case.phantom.material, [i.material for i in case.phantom.inserts])]],
+            library.angles[s.name],
+            library.energies_keV,
+        )
+        for s in library.scanners
 )
 
 # ╔═╡ 56dcfda7-4d44-5201-8424-15fbdc7859cc
@@ -398,17 +447,28 @@ direct_chunks = [
 direct = [reduce(+, chunks) for chunks in direct_chunks]
 
 # ╔═╡ 8a34c98b-99fc-5892-a874-9edad32772de
-# For each case: the ray of each column of the detector and rays every 0.1° across the fan, each
-# with its water-equivalent length; and the phantom's WED
+# For each case: the ray of each column of the detector and rays every 0.1° across the fan, each with
+# its water-equivalent length, its length through the outline, and its materials' Compton and
+# Rayleigh scattering against water's
 projections = [
     let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
             p = at_isocenter(case.phantom.phantom, s)
             cols = MC.column_edges(s)
-            ray(γ, width_deg) = (
-                angle_deg = γ,
-                wet_mm = MC.water_equivalent_length(p, (0.0, 0.0), (sind(γ), cosd(γ))),
-                weight = abs(γ) <= s.fan_deg / 2 ? width_deg / s.fan_deg : 0.0,
-            )
+            function ray(γ, width_deg)
+                d = (sind(γ), cosd(γ))
+                wet = MC.water_equivalent_length(p, (0.0, 0.0), d)
+                r = MC.process_ratios(p, (0.0, 0.0), d, attenuation, wet; angular = angular[s.name])
+                return (
+                    angle_deg = γ,
+                    wet_mm = wet,
+                    outline_mm = MC.ellipse_chord((0.0, 0.0), d, p.centre_mm, p.semi_axes_mm),
+                    weight = abs(γ) <= s.fan_deg / 2 ? width_deg / s.fan_deg : 0.0,
+                    compton_ratio = r.compton,
+                    rayleigh_ratio = r.rayleigh,
+                    rayleigh_forward_ratio = r.rayleigh_forward,
+                    delta_mu_per_mm = r.delta_mu_per_mm,
+                )
+        end
             (
                 rays = [ray(γ, s.column_bin_deg) for γ in (cols[1:(end - 1)] .+ cols[2:end]) ./ 2],
                 fine_rays = [ray(γ, 0.1) for γ in (cols[1] + 0.05):0.1:cols[end]],
@@ -423,10 +483,10 @@ predicted = [
     MC.library_scan(
             library,
             case.scanner,
-            projections[j].wed_mm,
             projections[j].fine_rays;
             collimation_mm = 40.0,
             spectrum,
+            view = :mean,
         )
         for (j, case) in enumerate(cases)
 ]
@@ -608,58 +668,48 @@ end
 
 # ╔═╡ e67c62ed-d243-4525-ba94-b49b4c3a2b5d
 md"""
-### The Thorax: Which WED?
+### Lungs: Which Ellipse?
 
-The thorax's lungs lower its water-equivalent diameter well below that of its outline, while the
-central ray crosses soft tissue and spine. A comparison, **not** the method the library uses: the
-same prediction with the WED of the thorax's outer contour (the lungs taken as water), against the
-same direct simulation.
+A view's water ellipse can be read from the rays' water-equivalent lengths (the lungs count by
+their water, so the ellipse is thin) or from their lengths through the outline (the lungs count as
+water, so it is as large as the body). The scatter that reaches the detector crosses the lungs
+cheaply, as the first reading says, but is made all through the body's volume, as the second
+says. The library takes the geometric mean of the two predictions, bin by bin. Both thoraxes, the
+second held out, against the direct simulation under each reading:
 """
 
 # ╔═╡ 06281871-fe7c-4cf1-b442-c871693bf24e
-# The library's prediction for the thorax with the WED of its outline, every insert taken as the body
-thorax_outline = [
-    let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
-            p = at_isocenter(case.phantom.phantom, s)
-            outline = MC.CylinderPhantom(;
-                material = p.material,
-                semi_axes_mm = p.semi_axes_mm,
-                length_mm = p.length_mm,
-                centre_mm = p.centre_mm,
-            )
-            wed = MC.water_equivalent_diameter(outline; fan_deg = s.fan_deg)
-            l = MC.library_scan(library, case.scanner, wed, projections[j].fine_rays; collimation_mm = 40.0, spectrum).scatter
-            d = direct[j].scatter ./ direct[j].n
+# The library's prediction for every case with lungs under each reading of the view's ellipse
+view_comparison = [
+    let d = direct[j].scatter ./ direct[j].n
             r = (size(d, 2) + 1) ÷ 2
             middle = ((size(d, 1) + 1) ÷ 2 - 1):((size(d, 1) + 1) ÷ 2 + 1)
             inside = comparison[j].inside
-            (
-                scanner = case.scanner,
-                wed_mm = wed,
-                centre = abs(sum(l[middle, r]) / sum(d[middle, r]) - 1),
-                library_rms = sqrt(sum(abs2, l[inside, r] ./ d[inside, r] .- 1) / length(inside)),
-            )
+            errors = map((:wet, :outline, :mean)) do v
+                l = MC.library_scan(library, case.scanner, projections[j].fine_rays; collimation_mm = 40.0, spectrum, view = v).scatter
+                (
+                    view = v,
+                    centre = abs(sum(l[middle, r]) / sum(d[middle, r]) - 1),
+                    library_rms = sqrt(sum(abs2, l[inside, r] ./ d[inside, r] .- 1) / length(inside)),
+                )
+        end
+            (phantom = case.phantom.name, scanner = case.scanner, errors = errors)
     end
-        for (j, case) in enumerate(cases) if case.phantom.name == "thorax"
+        for (j, case) in enumerate(cases) if startswith(case.phantom.name, "thorax")
 ]
 
 # ╔═╡ 10db6197-a1f6-43cb-bcbf-7e1f33290858
 let
-    rows = [
-        let j = findfirst(c -> c.phantom.name == "thorax" && c.scanner == o.scanner, cases)
-                "| $(o.scanner) | $(round(projections[j].wed_mm / 10; digits = 1)) cm: $(round(100comparison[j].centre; digits = 1)) %, $(round(100comparison[j].library_rms; digits = 1)) % | $(round(o.wed_mm / 10; digits = 1)) cm: $(round(100o.centre; digits = 1)) %, $(round(100o.library_rms; digits = 1)) % |"
-        end
-            for o in thorax_outline
-    ]
+    cell(e) = "$(round(100e.centre; digits = 1)) %, $(round(100e.library_rms; digits = 1)) %"
+    rows = ["| $(v.phantom) | $(v.scanner) | $(join(cell.(v.errors), " | ")) |" for v in view_comparison]
     Markdown.parse(
         """
-        | thorax | the patient's WED (the method): centre, across the fan | the outline's WED (comparison): centre, across the fan |
-        |---|---|---|
+        | phantom | scanner | water-equivalent lengths: centre, across the fan | outline | geometric mean (the method) |
+        |---|---|---|---|---|
         $(join(rows, "\n"))
 
-        **Not settled.** One phantom favouring the outline is a hint, not a rule: lungs are the case where
-        the two definitions part most, and a rule for them needs more than one thorax (a range of lung
-        sizes, positions and densities) before the library's method changes.
+        The mean was chosen on the first thorax, in the pilot; the held-out thorax, larger and with larger
+        lungs, tests it.
         """
     )
 end
@@ -669,78 +719,96 @@ md"""
 ### The Gammex Phantom: Its Solid Water Is Not Water
 
 Water-equivalence matches attenuation, not every kind of scattering. Gammex's solid water is mostly
-carbon, water mostly oxygen: at the same total attenuation, its Rayleigh scattering (the gentle,
-forward kind that a grid lets through most) is weaker. The plain body of the phantom, a 33 cm
-cylinder with no rods, settles how much of the Gammex error that explains: the same cylinder in
-water and in solid water, simulated directly and predicted by the library, with forced detection
-checked against counting photon by photon on the same photons.
+carbon, water mostly oxygen: at the same total attenuation its Rayleigh scattering (the gentle,
+forward kind that a grid lets through most) is 15 % weaker, and its calcium absorbs more of the
+lower-energy photons that scattering leaves. The plain body of the phantom, a 33 cm cylinder with
+no rods, measures how well the library's material correction follows: the same cylinder in water
+and in solid water on both scanners, simulated directly and predicted by the library from water
+kernels alone and with its correction, with forced detection checked against counting photon by
+photon on the same photons.
 """
 
 # ╔═╡ 46a9849d-76ec-4238-8d63-8fe8db2118cc
-# A 33 cm cylinder of water and of Gammex solid water, no rods: direct (16 chunks) against the library
-gammex_body = let
-    s = library.scanners[findfirst(x -> x.name == "SOMATOM Force", library.scanners)]
-    solid = MC.DetectorMaterial(BS.solid_water)
-    water = MC.DetectorMaterial(:Water)
-    beam = MC.FocalSpot(; distance_mm = s.source_to_isocenter_mm, fan_deg = s.fan_deg, z_half_mm = 20.0)
-    cols = MC.column_edges(s)
-    [
-        let p = at_isocenter(MC.CylinderPhantom(; material, semi_axes_mm = (165.0, 165.0)), s)
-                chunks = [
-                    only(c) for c in MC.simulate_sweep(
-                        [(p, MC.Spectrum(spectrum...), 9900 + chunk, beam) for chunk in 1:16];
-                        n = 1_500_000,
-                        physics,
-                        readout = MC.ForcedScatterReadout([s]; attenuation),
-                    )
-                ]
-                t = reduce(+, chunks)
-                r = (size(t.scatter, 2) + 1) ÷ 2
-                middle = ((size(t.scatter, 1) + 1) ÷ 2 - 1):((size(t.scatter, 1) + 1) ÷ 2 + 1)
-                wed = MC.water_equivalent_diameter(p; fan_deg = s.fan_deg)
-                rays = [
-                    (
-                        angle_deg = γ,
-                        wet_mm = MC.water_equivalent_length(p, (0.0, 0.0), (sind(γ), cosd(γ))),
-                        weight = abs(γ) <= s.fan_deg / 2 ? 0.1 / s.fan_deg : 0.0,
-                    )
-                    for γ in (cols[1] + 0.05):0.1:cols[end]
-                ]
-                l = MC.library_scan(library, s.name, wed, rays; collimation_mm = 40.0, spectrum).scatter
-                forced_over_analog = [sum(c.scatter) / sum(c.analog_scatter) for c in chunks]
+# A 33 cm cylinder of water and of Gammex solid water, no rods, on both scanners: direct (16 chunks)
+# against the library, from water kernels alone and with its material correction
+gammex_body = [
+    let s = library.scanners[findfirst(x -> x.name == name, library.scanners)]
+            beam = MC.FocalSpot(; distance_mm = s.source_to_isocenter_mm, fan_deg = s.fan_deg, z_half_mm = 20.0)
+            cols = MC.column_edges(s)
+            p = at_isocenter(MC.CylinderPhantom(; material, semi_axes_mm = (165.0, 165.0)), s)
+            chunks = [
+                only(c) for c in MC.simulate_sweep(
+                    [(p, MC.Spectrum(spectrum...), 9900 + chunk, beam) for chunk in 1:16];
+                    n = 1_500_000,
+                    physics,
+                    readout = MC.ForcedScatterReadout([s]; attenuation),
+                )
+            ]
+            t = reduce(+, chunks)
+            r = (size(t.scatter, 2) + 1) ÷ 2
+            middle = ((size(t.scatter, 1) + 1) ÷ 2 - 1):((size(t.scatter, 1) + 1) ÷ 2 + 1)
+            rays = map((cols[1] + 0.05):0.1:cols[end]) do γ
+                d = (sind(γ), cosd(γ))
+                wet = MC.water_equivalent_length(p, (0.0, 0.0), d)
+                x = MC.process_ratios(p, (0.0, 0.0), d, attenuation, wet; angular = angular[s.name])
                 (
-                    material = material.name,
-                    wed_mm = wed,
-                    library_over_direct = sum(l[middle, r]) / (sum(t.scatter[middle, r]) / t.n),
-                    centre_per_photon = sum(t.scatter[middle, r]) / t.n,
-                    forced_over_analog = mean(forced_over_analog),
-                    forced_over_analog_error = std(forced_over_analog) / sqrt(length(forced_over_analog)),
+                    angle_deg = γ,
+                    wet_mm = wet,
+                    outline_mm = MC.ellipse_chord((0.0, 0.0), d, p.centre_mm, p.semi_axes_mm),
+                    weight = abs(γ) <= s.fan_deg / 2 ? 0.1 / s.fan_deg : 0.0,
+                    compton_ratio = x.compton,
+                    rayleigh_ratio = x.rayleigh,
+                    rayleigh_forward_ratio = x.rayleigh_forward,
+                    delta_mu_per_mm = x.delta_mu_per_mm,
                 )
         end
-            for material in (water, solid)
-    ]
-end
+            plain = [(angle_deg = x.angle_deg, wet_mm = x.wet_mm, outline_mm = x.outline_mm, weight = x.weight) for x in rays]
+            centre(rays) = sum(MC.library_scan(library, s.name, rays; collimation_mm = 40.0, spectrum, view = :mean).scatter[middle, r])
+            direct_centre = sum(t.scatter[middle, r]) / t.n
+            forced_over_analog = [sum(c.scatter) / sum(c.analog_scatter) for c in chunks]
+            (
+                scanner = name,
+                material = material.name,
+                wed_mm = MC.water_equivalent_diameter(p; fan_deg = s.fan_deg),
+                water_kernels_over_direct = centre(plain) / direct_centre,
+                library_over_direct = centre(rays) / direct_centre,
+                centre_per_photon = direct_centre,
+                rayleigh_share = sum(t.rayleigh[middle, r]) / sum(t.scatter[middle, r]),
+                forced_over_analog = mean(forced_over_analog),
+                forced_over_analog_error = std(forced_over_analog) / sqrt(length(forced_over_analog)),
+            )
+    end
+        for name in ("SOMATOM Force", "Aquilion ONE") for material in (MC.DetectorMaterial(:Water), MC.DetectorMaterial(BS.solid_water))
+]
 
 # ╔═╡ 8c16e306-3a3a-46b4-bc4a-6d08a6a7bab8
 let
-    w, sw = gammex_body
     solid, water = MC.DetectorMaterial(BS.solid_water).name, MC.DetectorMaterial(:Water).name
     ratio(kind, E) = getproperty(attenuation[solid], kind)[E] / getproperty(attenuation[water], kind)[E]
+    rows = [
+        "| $(g.scanner) | $(g.material == water ? "water" : "Gammex solid water") | $(round(g.wed_mm / 10; digits = 1)) cm | $(round(100g.rayleigh_share; digits = 0)) % | $(round(g.water_kernels_over_direct; digits = 3)) | $(round(g.library_over_direct; digits = 3)) | $(round(g.forced_over_analog; digits = 4)) ± $(round(g.forced_over_analog_error; digits = 4)) |"
+            for g in gammex_body
+    ]
+    drop(name) = let w = only(g for g in gammex_body if g.scanner == name && g.material == water),
+            sw = only(g for g in gammex_body if g.scanner == name && g.material == solid)
+        round(100 * (1 - sw.centre_per_photon / w.centre_per_photon); digits = 0)
+    end
     Markdown.parse(
         """
-        | 33 cm cylinder, no rods | WED | library over direct, at the centre | forced detection over counting (whole detector) |
-        |---|---|---|---|
-        | water | $(round(w.wed_mm / 10; digits = 1)) cm | $(round(w.library_over_direct; digits = 3)) | $(round(w.forced_over_analog; digits = 4)) ± $(round(w.forced_over_analog_error; digits = 4)) |
-        | Gammex solid water | $(round(sw.wed_mm / 10; digits = 1)) cm | $(round(sw.library_over_direct; digits = 3)) | $(round(sw.forced_over_analog; digits = 4)) ± $(round(sw.forced_over_analog_error; digits = 4)) |
+        | scanner | 33 cm cylinder, no rods | WED | Rayleigh share at the centre | water kernels over direct | library over direct | forced detection over counting |
+        |---|---|---|---|---|---|---|
+        $(join(rows, "\n"))
 
-        The two cylinders have the same WED and the same total and Compton attenuation within half a
-        percent (at 70 keV: $(round(ratio(:total, 70); digits = 3)) and $(round(ratio(:compton, 70); digits = 3)) of water's), but solid water's Rayleigh
-        scattering is $(round(100 * (1 - ratio(:rayleigh, 70)); digits = 0)) % weaker, and the scatter reaching the centre of the detector is
-        $(round(100 * (1 - sw.centre_per_photon / w.centre_per_photon); digits = 0)) % lower. Forced detection agrees with counting photon by photon in both, so the
-        difference is physics, not the scoring. The library, built in water, cannot see it: **for this
-        phantom it is limited by its body material, and its Gammex checks stay failing** (the target is
-        not loosened). A material correction (Rayleigh and Compton kernels kept apart, each scaled by the
-        material's own cross-section) would be the fix; it is not built.
+        The two cylinders have the same WED and nearly the same total and Compton attenuation (at 70 keV
+        $(round(ratio(:total, 70); digits = 3)) and $(round(ratio(:compton, 70); digits = 3)) of water's), but solid water's Rayleigh scattering is
+        $(round(100 * (1 - ratio(:rayleigh, 70)); digits = 0)) % weaker, and the scatter reaching the centre of the detector is $(drop("SOMATOM Force")) % lower on the
+        Force and $(drop("Aquilion ONE")) % on the Aquilion. Forced detection agrees with counting photon by photon, so
+        the difference is physics, not the scoring. Water kernels alone miss it; the material correction
+        (Compton, wide and forward Rayleigh scaled by the material's own cross-sections into the angles
+        the detector sees, and the detected photons' paths by energy against the material's extra
+        attenuation there) takes most of it back. What is left is largest on the Aquilion, whose 1-D grid
+        lets in more scatter that has scattered more than once, which a correction by the last
+        scattering's cross-sections and by the mean path describes least well.
         """
     )
 end
@@ -753,11 +821,7 @@ For every phantom and scanner: the library's scatter at the centre within 10 % o
 simulation, its scatter-to-primary ratio across the fan within 15 % (rms, over every column whose
 ray crosses the phantom), and closer to the direct simulation than BasisSimulator's current model;
 and the direct simulation precise enough to judge that (its own noise at the centre within 2 %).
-
-The SPR across the fan used to be judged only where the scatter was above a fifth of its peak. That
-left out the most attenuated rays, the very ones the library got wrong (rays longer than the WED,
-which it shortened to fit), so the tall ellipse passed across the fan while its centre was off by a
-factor of two. Every column inside the phantom now counts.
+Every column inside the phantom counts, the most attenuated rays included.
 """
 
 # ╔═╡ 9c1da4a7-b08d-5601-950d-b06473a0e538
@@ -805,7 +869,8 @@ md"""
 ## Saving the Results
 
 One file in `lib/BasisMonteCarlo/tables/`: every case's water-equivalent diameter, the three
-scatter-to-primary profiles, the errors and the scorecard.
+scatter-to-primary profiles, the errors, the comparison of the ellipse's readings, the Gammex body
+and the scorecard.
 """
 
 # ╔═╡ 921f3ab8-b2ce-5f87-817b-12f511e52128
@@ -816,14 +881,14 @@ saved = let
         Dict{String, Any}(
             "cases" => [(phantom = case.phantom.name, scanner = case.scanner, wed_mm = projections[j].wed_mm) for (j, case) in enumerate(cases)],
             "comparison" => comparison,
-            "thorax_outline_wed" => thorax_outline,
+            "view_comparison" => view_comparison,
             "gammex_body" => gammex_body,
             "scorecard" => MC.scorecard(checks),
             "source" => "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 11_scatter_validation.jl",
         ),
     )
     path
-end
+end;
 
 # ╔═╡ Cell order:
 # ╟─9e0038f2-df07-5bc8-b36f-25eae12e74eb
@@ -854,6 +919,7 @@ end
 # ╠═f980cfd3-0d1d-51dd-915c-88ca48712a60
 # ╠═f7a2b1b9-2d25-5025-97ff-e9d379d4788a
 # ╠═f67c80e6-ec4d-43e1-aaa7-b674a8ee268d
+# ╠═b05546de-9cdf-4e60-a955-c04520149d6f
 # ╠═56dcfda7-4d44-5201-8424-15fbdc7859cc
 # ╠═26def491-0406-41b8-94a9-a816b529c240
 # ╠═8a34c98b-99fc-5892-a874-9edad32772de

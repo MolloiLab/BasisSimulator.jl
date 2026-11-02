@@ -272,7 +272,8 @@ Melnyk states the full filtration; this beam's half-value layer is a typical cli
 """
 
 # ╔═╡ 13a73b8b-3056-5fc8-82f1-8e41bd653cd3
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ 427593d5-fe51-570c-bcde-6992223e3900
 # The detectors' flat-field efficiencies, 1–140 keV, as notebooks 04–08 saved them
@@ -663,7 +664,7 @@ end
 
 # ╔═╡ 76692a1d-befe-45d6-acf2-72418d43cefb
 # The scatter library of notebook 10, for the bowtie's effect on Kyriakou's large phantom
-library = Serialization.deserialize(joinpath(table_dir, "scatter_library_geant4.jls"))
+library = Serialization.deserialize(joinpath(table_dir, "scatter_library_v2.jls"))
 
 # ╔═╡ 0b011d62-d42a-4784-8356-b8df9cb4f78f
 # BasisSimulator's large-body bowtie: its aluminium at each fan angle (the other materials are zero)
@@ -694,7 +695,14 @@ function library_central_spr(name, diameter_mm, collimation_mm; bowtie_on)
         t = bowtie_on ? bowtie.aluminium_mm[argmin(abs.(bowtie.angles_deg .- γ))] : 0.0
         filtered = [wk * exp(-μ_al[clamp(round(Int, Ek), 1, 150)] * t) for (Ek, wk) in zip(e, w)]
         ray = (angle_deg = γ, wet_mm = 2 * sqrt(R^2 - b^2), weight = 0.1 / s.fan_deg * sum(filtered) / sum(w))
-        scan = MC.library_scan(library, name, diameter_mm, [ray]; collimation_mm, spectrum = (e, filtered))
+        scan = MC.library_scan(
+            library,
+            name,
+            [ray];
+            collimation_mm,
+            spectrum = (e, filtered),
+            ellipse = (thickness_mm = diameter_mm, width_mm = diameter_mm, centre_mm = 0.0),
+        )
         c, r = (size(scan.scatter, 1) + 1) ÷ 2, (size(scan.scatter, 2) + 1) ÷ 2
         S += scan.scatter[c, r]
         P += scan.primary[c, r]
@@ -922,7 +930,7 @@ saved = let
         ),
     )
     path
-end
+end;
 
 # ╔═╡ Cell order:
 # ╟─d2de6a58-bec8-56b2-8689-bf65472c34ac

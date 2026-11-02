@@ -331,10 +331,9 @@ end
 
 """
 The fraction of photons of `E` keV that get out of `p` from `r` along the unit vector `ω` without
-interacting: through the body, and through each insert on the way.
+interacting: through the body, and through each insert on the way (`t_exit` mm in all).
 """
-function escape_attenuation(p::CylinderPhantom, media, r, ω, E)
-    t_exit = exit_length(p, r, ω)
+function escape_attenuation(p::CylinderPhantom, media, r, ω, E; t_exit = exit_length(p, r, ω))
     isempty(p.inserts) && return exp(-on_kev_grid(media[1].attenuation.total, E) * t_exit)
     μL = 0.0
     body = t_exit
@@ -345,6 +344,37 @@ function escape_attenuation(p::CylinderPhantom, media, r, ω, E)
         body -= len
     end
     return exp(-μL - on_kev_grid(media[1].attenuation.total, E) * max(body, 0.0))
+end
+
+"""
+Each scattering's way in, for the lengths a detected photon travelled at each energy: the length
+of the leg that ended at it (from the scattering before it, or from where the photon entered `p`),
+the band of `PATH_ENERGY_EDGES_KEV` the photon's energy on that leg was in, and the scattering
+before it on the same photon (0 for none). A scattering follows the one before it in `v` when they
+are the same event's and the photon's direction into it points from that one; otherwise (the
+incident photon's first scattering, or a fluorescence photon's) its leg is taken back to where its
+line enters `p`.
+"""
+function vertex_history(v::VertexLog, p::CylinderPhantom)
+    n = length(v)
+    leg_mm = zeros(Float32, n)
+    band = zeros(Int8, n)
+    previous = zeros(Int32, n)
+    for i in 1:n
+        r, d = v.position_mm[i], v.direction[i]
+        band[i] = path_band(v.energy_keV[i])
+        if i > 1 && v.event[i] == v.event[i - 1]
+            w = r .- v.position_mm[i - 1]
+            len = sqrt(sum(abs2, w))
+            if len > 0 && sum(w .* d) / len > 0.999
+                leg_mm[i] = len
+                previous[i] = i - 1
+                continue
+            end
+        end
+        leg_mm[i] = exit_length(p, r, .-d)
+    end
+    return (leg_mm = leg_mm, band = band, previous = previous)
 end
 
 """The path from the point `r` inside `p` out toward the point `l` (x, y) at the height z = 0 (mm)."""
@@ -377,11 +407,12 @@ function forced_scatter_tally(run::MonoenergeticRun, readout::ForcedScatterReado
     # sampled ones left out
     integrate_first = run.beam isa RayBeam && run.photon_energy_keV === nothing && isempty(phantom.inserts) &&
         !isempty(media[1].attenuation.compton) && !isempty(media[1].attenuation.rayleigh)
+    history = vertex_history(run.vertices, phantom)
     if integrate_first
-        forced_detection!(frames, subset(run.vertices, .!run.vertices.first), phantom, media, readout, rng)
+        forced_detection!(frames, run.vertices, phantom, media, readout, rng; history, keep = .!run.vertices.first)
         first_scatter!(frames, run, phantom, media, readout, rng)
     else
-        forced_detection!(frames, run.vertices, phantom, media, readout, rng)
+        forced_detection!(frames, run.vertices, phantom, media, readout, rng; history)
     end
     return [
         ScatterTally(
@@ -394,6 +425,11 @@ function forced_scatter_tally(run::MonoenergeticRun, readout::ForcedScatterReado
                 analog[k].primary,
                 frames[k].spectrum,
                 analog[k].scatter,
+                frames[k].rayleigh,
+                frames[k].angles,
+                frames[k].forward,
+                frames[k].paths,
+                frames[k].column_moments,
             )
             for (k, s) in enumerate(readout.scanners)
     ]
@@ -426,7 +462,15 @@ function detector_frame(s::ScatterScanner, run, phantom, analog::ScatterTally)
         area = R * deg2rad(cols[end] - cols[1]) * (rows[end] - rows[1]),
         landmarks = (on_arc(0.0), on_arc(s.fan_deg / 2), on_arc(-s.fan_deg / 2)),
         scatter = zeros(length(cols) - 1, length(rows) - 1),
+        rayleigh = zeros(length(cols) - 1, length(rows) - 1),
+        angles = zeros(2, length(SCATTER_ANGLE_EDGES_DEG) - 1),
+        forward = zeros(length(cols) - 1, length(rows) - 1),
+        paths = zeros(2, length(PATH_ENERGY_EDGES_KEV) - 1),
+        column_moments = zeros(2, length(cols) - 1),
         spectrum = zeros(length(analog.scatter_spectrum)),
+        # one scattering's detected signal by process, and its signal times its way out by band
+        vertex_signal = zeros(2),
+        vertex_escape = zeros(2, length(PATH_ENERGY_EDGES_KEV) - 1),
     )
 end
 
@@ -434,9 +478,9 @@ end
 Score one direction `ω` from a scattering at `r` that meets the detector of `frame` at `h`, `dist2`
 away: the integrand (the scattering's chance per steradian `p_scatter` toward `ω`, the way out
 `escape`, the grid and the detector) over the density of the draws: `K` points uniform over the
-detector and `L` directions from the scattering.
+detector and `L` directions from the scattering. `t_exit` is the way out (mm).
 """
-function score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boost)
+function score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boost, process = VERTEX_COMPTON, cosθ = 1.0, t_exit = 0.0)
     n_xy = ((h[1] - frame.f[1]) / frame.R, (h[2] - frame.f[2]) / frame.R)
     c = frame.c
     γ = rad2deg(atan(n_xy[1] * c[2] - n_xy[2] * c[1], c[1] * n_xy[1] + c[2] * n_xy[2]))
@@ -448,7 +492,20 @@ function score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boost)
     gη > 0 || return nothing
     p_uniform = dist2 / (frame.area * abs(n_xy[1] * ω[1] + n_xy[2] * ω[2]))
     reach = p_scatter * escape / (K * p_uniform + L * p_scatter) * boost
-    frame.scatter[ci, ri] += reach * gη * (s.energy_weighted ? E′ : 1.0)
+    signal = reach * gη * (s.energy_weighted ? E′ : 1.0)
+    frame.scatter[ci, ri] += signal
+    δ = γ - (frame.γ_lo + (ci - 0.5) * frame.γ_step)
+    frame.column_moments[1, ci] += signal * δ
+    frame.column_moments[2, ci] += signal * δ^2
+    θ = acosd(clamp(cosθ, -1.0, 1.0))
+    if process == VERTEX_RAYLEIGH
+        frame.rayleigh[ci, ri] += signal
+        θ < FORWARD_RAYLEIGH_DEG && (frame.forward[ci, ri] += signal)
+    end
+    slot = process == VERTEX_RAYLEIGH ? 2 : 1
+    frame.angles[slot, clamp(searchsortedlast(SCATTER_ANGLE_EDGES_DEG, θ), 1, size(frame.angles, 2))] += signal
+    frame.vertex_signal[slot] += signal
+    frame.vertex_escape[slot, path_band(E′)] += signal * t_exit
     frame.spectrum[k] += reach * gη
     return nothing
 end
@@ -499,7 +556,8 @@ function first_scatter!(frames, run, phantom, media, readout, rng)
             fill(Float32.(d), M),
         )
         weights = [run.n * μ_process * exp(-μ * t) * chord / M for t in depths]
-        forced_detection!(frames, virtual, phantom, media, readout, rng; weights, points = K, directions = K)
+        history = (leg_mm = Float32.(depths), band = fill(Int8(path_band(E)), M), previous = zeros(Int32, M))
+        forced_detection!(frames, virtual, phantom, media, readout, rng; weights, points = K, directions = K, history)
     end
     return frames
 end
@@ -509,6 +567,8 @@ Forced detection of every scattering in `vertices` onto every detector in `frame
 `weights` (1 if `nothing`), with `points` uniform points per detector and, at a Rayleigh
 scattering, `directions` directions from its cone; each scattering by the tables of the medium it
 happened in. The directions serve all the detectors; the points drawn on each detector, that one.
+Only the scatterings where `keep` is true, if given. `history` ([`vertex_history`](@ref)) gives
+each scattering's way in, for the frames' `paths`.
 """
 function forced_detection!(
         frames,
@@ -520,11 +580,15 @@ function forced_detection!(
         weights = nothing,
         points = readout.points,
         directions = readout.directions,
+        history = vertex_history(vertices, phantom),
+        keep = nothing,
     )
     K = points
     μ_body = media[1].attenuation.total
     boosts = zeros(length(frames))
+    way_in = zeros(length(PATH_ENERGY_EDGES_KEV) - 1)
     for i in eachindex(vertices.event)
+        keep === nothing || keep[i] || continue
         r = vertices.position_mm[i]
         d0 = vertices.direction[i]
         E = Float64(vertices.energy_keV[i])
@@ -544,6 +608,18 @@ function forced_detection!(
         end
         any(>(0), boosts) || continue
 
+        # The lengths the photon travelled to get here, by energy
+        way_in .= 0
+        j = i
+        while j > 0
+            way_in[history.band[j]] += history.leg_mm[j]
+            j = history.previous[j]
+        end
+        for frame in frames
+            frame.vertex_signal .= 0
+            frame.vertex_escape .= 0
+        end
+
         # At a Rayleigh scattering, directions drawn from its cone, followed to each detector arc
         L = process == VERTEX_RAYLEIGH ? directions : 0
         for _ in 1:L
@@ -553,14 +629,15 @@ function forced_detection!(
             a > 1.0e-12 || continue
             E′ = process == VERTEX_COMPTON ? E / (1 + E / ELECTRON_REST_KEV * (1 - μ)) : E
             p_scatter = scattering_pdf(tables, process, E, μ)
-            escape = escape_attenuation(phantom, media, r, ω, E′)
+            t_exit = exit_length(phantom, r, ω)
+            escape = escape_attenuation(phantom, media, r, ω, E′; t_exit)
             for (j, frame) in enumerate(frames)
                 boosts[j] > 0 || continue
                 q = (r[1] - frame.f[1], r[2] - frame.f[2])
                 b = q[1] * ω[1] + q[2] * ω[2]
                 t = (-b + sqrt(b^2 - a * (q[1]^2 + q[2]^2 - frame.R^2))) / a
                 h = (r[1] + t * ω[1], r[2] + t * ω[2], r[3] + t * ω[3])
-                score!(frame, ω, h, t^2, E′, p_scatter, escape, K, L, boosts[j])
+                score!(frame, ω, h, t^2, E′, p_scatter, escape, K, L, boosts[j], process, μ, t_exit)
             end
         end
 
@@ -582,9 +659,15 @@ function forced_detection!(
                 μ = d0[1] * ω[1] + d0[2] * ω[2] + d0[3] * ω[3]
                 E′ = process == VERTEX_COMPTON ? E / (1 + E / ELECTRON_REST_KEV * (1 - μ)) : E
                 p_scatter = scattering_pdf(tables, process, E, μ)
-                escape = escape_attenuation(phantom, media, r, ω, E′)
-                score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boosts[j])
+                t_exit = exit_length(phantom, r, ω)
+                escape = escape_attenuation(phantom, media, r, ω, E′; t_exit)
+                score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boosts[j], process, μ, t_exit)
             end
+        end
+
+        # This scattering's detected signal times the lengths it travelled, in and out
+        for frame in frames, p in 1:2, b in eachindex(way_in)
+            frame.paths[p, b] += frame.vertex_signal[p] * way_in[b] + frame.vertex_escape[p, b]
         end
     end
     return frames

@@ -297,6 +297,187 @@ using BasisMonteCarlo
         @test sum(scan(300.0, tall).scatter) ≈ 0.1 * (300.0 + 400.0) rtol = 1.0e-5
     end
 
+    @testset "scatter library v2: water ellipses, Compton and Rayleigh apart" begin
+        # A view's water ellipse from its rays' chords: an ellipse of water gives itself back
+        ellipse = CylinderPhantom(; semi_axes_mm = (130.0, 180.0), centre_mm = (20.0, 600.0))
+        rays = [
+            (angle_deg = γ, wet_mm = BasisMonteCarlo.ellipse_chord((0.0, 0.0), (sind(γ), cosd(γ)), ellipse.centre_mm, ellipse.semi_axes_mm))
+                for γ in -25:0.02:25
+        ]
+        e = view_ellipse(rays, 600.0)
+        @test e.thickness_mm ≈ 360.0 rtol = 0.01
+        @test e.width_mm ≈ 260.0 rtol = 0.03
+        @test e.centre_mm ≈ 20.0 atol = 0.5
+
+        # The kernels' geometry: an ellipse thickness × aspect × thickness; the ray from a focal spot,
+        # passing the axis at its impact of the half-width the tilted ray sees, tilted as a fan's ray
+        # is; and the impact of a given chord
+        @test kernel_phantom(300.0, 1.25).semi_axes_mm == (187.5, 150.0)
+        ray = kernel_ray(300.0, 1.25, 0.4)
+        o, d = ray.origin_mm, ray.direction
+        offset = abs(o[1] * d[2] - o[2] * d[1])
+        t = asin(offset / BasisMonteCarlo.KERNEL_SOURCE_MM)
+        @test offset ≈ 0.4 * sqrt(187.5^2 * cos(t)^2 + 150.0^2 * sin(t)^2) rtol = 1.0e-6
+        @test d[1] ≈ offset / BasisMonteCarlo.KERNEL_SOURCE_MM
+        # impact 1 grazes the edge and 0.99 still crosses it, for ellipses wider and thicker than wide
+        for (a, b) in ((130.0, 260.0), (175.0, 130.0), (130.0, 130.0))
+            @test BasisMonteCarlo.kernel_chord(a, b, 1.0) < 1.0e-3 * a
+            @test BasisMonteCarlo.kernel_chord(a, b, 0.99) > 0.1 * a
+        end
+        @test BasisMonteCarlo.kernel_chord(150.0, 187.5, 0.0) ≈ 300.0
+        u = BasisMonteCarlo.kernel_impact(150.0, 187.5, 200.0)
+        @test BasisMonteCarlo.kernel_chord(150.0, 187.5, u) ≈ 200.0 rtol = 1.0e-6
+
+        # Forced detection keeps the Rayleigh part apart: part of the scatter, never more
+        water = DetectorMaterial(:Water)
+        s = ScatterScanner(;
+            name = "test",
+            source_to_isocenter_mm = 600.0,
+            source_to_detector_mm = 1080.0,
+            fan_deg = 50.0,
+            z_half_mm = 100.0,
+        )
+        a = forced_attenuation([water])[water.name]
+        readout = ForcedScatterReadout(
+            [s];
+            water_mu_per_mm = a.total,
+            water_compton_per_mm = a.compton,
+            water_rayleigh_per_mm = a.rayleigh,
+        )
+        run = simulate_monoenergetic(kernel_phantom(150.0, 0.8), 60.0; n = 20_000, beam = kernel_ray(150.0, 0.8, 0.3), seed = 7, record_vertices = true)
+        tally = only(BasisMonteCarlo.reduce_run(run, readout))
+        @test 0 < sum(tally.rayleigh) < sum(tally.scatter)
+        @test all(tally.rayleigh .<= tally.scatter .+ 1.0e-9)
+        @test 0 < sum(tally.forward) < sum(tally.rayleigh)
+        @test all(tally.forward .<= tally.rayleigh .+ 1.0e-9)
+
+        # The lengths the detected photons travelled: the incident leg in the band of 60 keV, none
+        # above it (a scattering never adds energy), and on average about the ellipse's size
+        band = BasisMonteCarlo.path_band(60.0)
+        @test all(tally.paths[:, (band + 1):end] .== 0)
+        @test tally.paths[1, band] > 0
+        mean_path = sum(tally.paths[1, :]) / (sum(tally.scatter) - sum(tally.rayleigh))
+        @test 50 < mean_path < 600
+
+        # Where in its column the scatter landed: within the column, on average and in spread
+        mass = vec(sum(tally.scatter; dims = 2))
+        hit = findall(>(0), mass)
+        @test all(abs.(tally.column_moments[1, hit] ./ mass[hit]) .<= s.column_bin_deg / 2)
+        @test all(tally.column_moments[2, hit] ./ mass[hit] .<= (s.column_bin_deg / 2)^2)
+
+        # A ray through water makes exactly the scattering its kernel stands for: every ratio 1, and
+        # it attenuates as water at every energy
+        p = CylinderPhantom(200.0; centre_mm = (0.0, 600.0))
+        r = process_ratios(p, (0.0, 0.0), (0.0, 1.0), Dict(water.name => a), 200.0)
+        @test r.compton[60] ≈ 1.0
+        @test r.rayleigh[60] ≈ 1.0
+        @test r.rayleigh_forward[60] ≈ 1.0
+        @test all(abs.(r.delta_mu_per_mm) .< 1.0e-12)
+
+        # Bone attenuates far more than its water-equivalent length of water at 40 keV, as much at 70
+        bone = DetectorMaterial(:CorticalBone)
+        attenuation = forced_attenuation([water, bone])
+        p_bone = CylinderPhantom(; material = bone, semi_axes_mm = (50.0, 50.0), centre_mm = (0.0, 600.0))
+        wet = water_equivalent_length(p_bone, (0.0, 0.0), (0.0, 1.0))
+        δ = process_ratios(p_bone, (0.0, 0.0), (0.0, 1.0), attenuation, wet).delta_mu_per_mm
+        @test δ[BasisMonteCarlo.path_band(40.0)] > 0.005
+        @test abs(δ[BasisMonteCarlo.path_band(70.0)]) < 0.001
+
+        # Blending the kernels around a ray: each moved so its own ray lies under this one. Synthetic
+        # kernels, a bump centred on each kernel's own ray, give one bump on the ray, no wider (the bump
+        # spans a few of the 2° columns, so moving it by part of a column hardly widens it)
+        thicknesses, aspects, impacts, energies = [200.0, 300.0], [1.0, 1.5], [0.0, 0.2, 0.4, 0.6, 0.8, 0.99], [50.0, 70.0]
+        cols, rows = column_edges(s), row_edges(s)
+        γ = (cols[1:(end - 1)] .+ cols[2:end]) ./ 2
+        width = 6.0
+        S = zeros(Float32, length(γ), length(rows) - 1, length(impacts), length(aspects), length(thicknesses), length(energies))
+        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
+            own = asind(BasisMonteCarlo.kernel_offset(T / 2, BasisMonteCarlo.kernel_half_width(T, ar), u) / s.source_to_isocenter_mm)
+            S[:, :, iu, ir, iT, :] .= exp.(-((γ .- own) ./ width) .^ 2)
+        end
+        nb = length(BasisMonteCarlo.PATH_ENERGY_EDGES_KEV) - 1
+        lib = ShapeScatterLibrary(
+            [s],
+            thicknesses,
+            aspects,
+            impacts,
+            energies,
+            Dict(s.name => S),
+            Dict(s.name => zero(S)),
+            Dict(s.name => zero(S)),
+            Dict(s.name => ones(Float32, length(impacts), length(aspects), length(thicknesses), length(energies))),
+            Dict(s.name => zeros(Float32, 2, nb, length(impacts), length(aspects), length(thicknesses), length(energies))),
+            Dict(s.name => zeros(Float32, length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))),
+            Dict(s.name => fill(Float32(s.column_bin_deg / sqrt(12)), length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))),
+            Dict(s.name => ones(Float32, 2, length(BasisMonteCarlo.SCATTER_ANGLE_EDGES_DEG) - 1, length(energies))),
+            a.total,
+            Dict{String, Any}(),
+        )
+        function bump(angle, wet, ellipse)
+            out = BasisMonteCarlo.library_scan(
+                lib,
+                s.name,
+                [(angle_deg = angle, wet_mm = wet, weight = 1.0)];
+                collimation_mm = 40.0,
+                spectrum = ([60.0], [1.0]),
+                ellipse,
+            )
+            profile = vec(sum(out.scatter; dims = 2))
+            centre = sum(profile .* γ) / sum(profile)
+            return centre, sqrt(sum(profile .* (γ .- centre) .^ 2) / sum(profile))
+        end
+        # a ray on a kernel of the grid, nothing blended, against one among eight of them
+        on_grid = bump(
+            asind(0.4 * 100.0 / s.source_to_isocenter_mm),
+            BasisMonteCarlo.kernel_chord(100.0, 100.0, 0.4),
+            (thickness_mm = 200.0, width_mm = 200.0, centre_mm = 0.0),
+        )
+        target = 8.0
+        blended = bump(target, 180.0, (thickness_mm = 250.0, width_mm = 300.0, centre_mm = 0.0))
+        @test blended[1] ≈ target atol = 0.05
+        @test blended[2] ≈ on_grid[2] rtol = 0.05
+
+        # A kernel whose scatter landed at one point of its column (no spread) moves there whole: a ray
+        # anywhere in a column puts it all in that column, none in its neighbours
+        O = zeros(Float32, length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))
+        point = ShapeScatterLibrary(
+            [s],
+            thicknesses,
+            aspects,
+            impacts,
+            energies,
+            Dict(s.name => S),
+            Dict(s.name => zero(S)),
+            Dict(s.name => zero(S)),
+            lib.primary,
+            lib.paths,
+            Dict(s.name => O),
+            Dict(s.name => zero(O)),
+            lib.angles,
+            a.total,
+            Dict{String, Any}(),
+        )
+        S .= 0
+        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
+            own = asind(BasisMonteCarlo.kernel_offset(T / 2, BasisMonteCarlo.kernel_half_width(T, ar), u) / s.source_to_isocenter_mm)
+            c = searchsortedlast(cols, own)
+            S[c, :, iu, ir, iT, :] .= 1
+            O[c, iu, ir, iT, :] .= own - γ[c]
+        end
+        for target in (8.3, 9.7)
+            out = BasisMonteCarlo.library_scan(
+                point,
+                s.name,
+                [(angle_deg = target, wet_mm = 180.0, weight = 1.0)];
+                collimation_mm = 40.0,
+                spectrum = ([60.0], [1.0]),
+                ellipse = (thickness_mm = 250.0, width_mm = 300.0, centre_mm = 0.0),
+            )
+            profile = vec(sum(out.scatter; dims = 2))
+            @test profile[searchsortedlast(cols, target)] ≈ sum(profile) rtol = 1.0e-9
+        end
+    end
+
     @testset "physics is fixed per process" begin
         @test_throws ErrorException simulate_monoenergetic(
             det, 60.0; n = 10,
