@@ -143,13 +143,12 @@ end
     end
 
     @testset "scatter is injected against each ray's own flux" begin
-        scanner = _pcct(; bowtie = :large_body)
+        scanner = BS.PCCTScanner(_pcct(; bowtie = :large_body); scatter_kernels = "BS test counter")
         opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = true, use_heel_effect = false, seed = 1)
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         res = BS.simulate!(ws, _air(), protocol, opts)
         n_cols = ws.geom.n_cols
-        # in air the scatter field is small and the bins must stay near zero everywhere — a
-        # scatter term scaled by the central flux would show as a large negative p at the edge
+        # air scatters nothing (gases are outside the patient), so the bins stay zero everywhere
         for b in 1:4
             p = Array(res.pcct_sino.bins[b])[:, r, 1]
             @test p[1] > -0.05 && p[n_cols ÷ 2] > -0.05

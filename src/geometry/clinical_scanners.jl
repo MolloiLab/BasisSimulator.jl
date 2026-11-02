@@ -28,6 +28,8 @@ Gemstone garnet array (`detector_material = :lumex`, the Geant4 table
 - Fill factor 0.9 × 0.9 and detection gain 10 e⁻/keV: assumptions.
 - Electronic noise 3500 e⁻, the clinical DAS readout of notebooks 01, 02 and 05. The VMI notebooks
   (03, 06, 07) run without it: `EICTScanner(REVOLUTION_APEX; electronic_noise = 0.0)`.
+- Scatter: the Geant4 library's `"Revolution Apex"` kernels ([`scatter_kernels`](@ref); its 2-D
+  grid 8 mm tall, BasisMonteCarlo notebook 10).
 
 Rapid kVp switching is two acquisitions on this scanner, one protocol per kVp, each with its
 share of the view period (notebook 03).
@@ -53,6 +55,7 @@ const REVOLUTION_APEX = EICTScanner(;
     fill_factor_col = 0.9,
     electronic_noise = 3500.0,
     detection_gain = 10.0,
+    scatter_kernels = "Revolution Apex",
 )
 
 """
@@ -75,7 +78,9 @@ electrode plus its share of the anti-scatter grid's gaps), magnified 1113/610.
   of notebook 03 to Li 2025's count loss.
 - Anode 8° (K233657 Table 4; K243523 Table 3), which is also the spectrum's tabulated angle.
 - Focal spot 0.4 × 0.5 mm, 3 mm Al, large-body bowtie, 820 mm bore: the notebooks.
-- Scatter correction on, exact Poisson counts: the notebooks' detector toggles.
+- Scatter correction on, exact Poisson counts: the notebooks' detector toggles. Scatter: the
+  Geant4 library's `"NAEOTOM Alpha"` kernels ([`scatter_kernels`](@ref); the 2-D grid of 4 × 6-dexel
+  cells, 10 mm tall), which `NAEOTOM_ALPHA_UHR` shares.
 
 Its dexels are ideal (no gain or threshold spread). BasisMonteCarlo notebook 03 assumes a 2 % gain
 spread and 0.35 keV of threshold spread (unpublished); that detector is
@@ -111,6 +116,7 @@ const NAEOTOM_ALPHA = let native_pitch = (0.34, 1.13 * 0.322), sid = 610.0, sdd 
         binning_factor = binning,
         scatter_correction = true,
         noise_reduction = 0.0,
+        scatter_kernels = "NAEOTOM Alpha",
     )
 end
 
@@ -151,6 +157,9 @@ BasisSimulator's Force Monte Carlo efficiency table).
 - Large-body bowtie: an assumption (Siemens' profile is unpublished).
 - UFC depth 1.4 mm, the only UFC thickness Siemens quotes; fill factor 0.9 × 0.9.
 - Electronic noise 0 and detection gain 10 e⁻/keV: notebook 09's assumptions.
+- Scatter: the Geant4 library's `"SOMATOM Force"` kernels ([`scatter_kernels`](@ref); its 2-D grid
+  10 mm tall, BasisMonteCarlo notebook 10), which `SOMATOM_FORCE_B` shares. The scatter of one
+  tube reaching the other's detector (cross-scatter) is not modelled.
 
 The real detector is spherical; this one is the equiangular arc, which has the same angles
 across the fan and along z.
@@ -174,6 +183,7 @@ const SOMATOM_FORCE = EICTScanner(;
     fill_factor_col = 0.9,
     electronic_noise = 0.0,
     detection_gain = 10.0,
+    scatter_kernels = "SOMATOM Force",
 )
 
 """
@@ -214,6 +224,8 @@ Force's `:ufc`).
   fill factor scales the quanta, hence the noise, and cancels in the air calibration.
 - Electronic noise 1500 e⁻ (the Stellar detector's floor; ≈ 3500 e⁻ before 2011) and detection
   gain 10 e⁻/keV: assumptions.
+- Scatter: the Geant4 library's `"SOMATOM Definition Flash"` kernels ([`scatter_kernels`](@ref); its
+  1-D grid 10 mm tall, BasisMonteCarlo notebook 10), which `SOMATOM_DEFINITION_FLASH_B` shares.
 """
 const SOMATOM_DEFINITION_FLASH = EICTScanner(;
     source_to_isocenter = 595.0,
@@ -238,6 +250,7 @@ const SOMATOM_DEFINITION_FLASH = EICTScanner(;
     fill_factor_col = 0.9,
     electronic_noise = 1500.0,
     detection_gain = 10.0,
+    scatter_kernels = "SOMATOM Definition Flash",
 )
 
 """

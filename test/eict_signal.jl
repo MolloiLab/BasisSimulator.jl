@@ -1,7 +1,7 @@
 # The energy-integrating detector's signal model, checked against its analytic values: the signal
 # moments m₁ and m₂, the air scan's mean and variance, NEQ = ff·N·DQE(0), the compound-Poisson
-# dispersion behind water, the electronic noise, beam-hardening correction of water, scatter of
-# an empty field, and a noise-free spectral decomposition. CPU only.
+# dispersion behind water, the electronic noise, beam-hardening correction of water, and a
+# noise-free spectral decomposition (scatter: scatter.jl). CPU only.
 
 using Statistics: var
 
@@ -146,18 +146,6 @@ end
     @test sum(σ^2 ./ λ .^ 2) / sum(quantum) > 0.5                # the electronic share matters
     measured = (d.a[c, :, :] .- d.b[c, :, :]) .^ 2 ./ 2
     @test sum(measured) / sum(total) ≈ 1 atol = 0.06
-end
-
-@testset "an empty field gets no scatter" begin
-    protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 30)
-    phantom = _eict_cylinder(; diameter_cm = 0.0, n = 8)
-    sinograms = map((false, true)) do scatter
-        opts = _eict_opts(1; noise = false, use_scatter = scatter)
-        ws = BS.create_eict_workspace(_EICT_TEST_SCANNER, protocol, opts, _EICT_RECON, phantom)
-        BS.simulate!(ws, phantom, protocol, opts; report_dose = false)
-        Array(ws.sinogram)
-    end
-    @test maximum(abs.(sinograms[2] .- sinograms[1])) < 1.0e-5
 end
 
 @testset "water BHC: 0 ± 1 HU, cupping < 2 HU" begin

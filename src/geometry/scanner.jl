@@ -176,6 +176,7 @@ struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     gain_spread::T              # relative σ of the dexels' gains (0 = ideal)
     offset_spread_keV::T        # σ of the dexels' offsets, keV per reading (0 = ideal)
     defect_seed::Int            # the fixed pattern of this detector's dexels
+    scatter_kernels::String     # its entry of the Geant4 scatter library ("" = none)
 end
 
 """
@@ -196,11 +197,12 @@ struct PCCTScanner{T <: AbstractFloat} <: Scanner{T}
     binning_factor::Int         # native dexels summed per pixel side (2 = standard, 1 = UHR)
     # detector model toggles (simulation-side physics of THIS detector)
     pileup::Bool                # pulse pile-up per native dexel (needs dead_time_ns > 0)
-    scatter_correction::Bool    # model-based scatter re-estimate-and-subtract on the bins
+    scatter_correction::Bool    # subtract the scatter estimated from the measured counts
     noise_reduction::T          # count-noise blend, 0 = exact Poisson counts … 1 = expected counts
     gain_spread::T              # relative σ of the native dexels' gains (0 = ideal)
     threshold_spread_keV::T     # σ of each native dexel's threshold offsets, keV (0 = ideal)
     defect_seed::Int            # the fixed pattern of this detector's dexels
+    scatter_kernels::String     # its entry of the Geant4 scatter library ("" = none)
 end
 
 # Geometry fields are reachable directly on the scanner (`scanner.detector_rows`):
@@ -249,12 +251,16 @@ scintillator model: `detector_material = :lumex`, `detector_depth = 3.0`,
 (electrons/keV), `electronic_noise = 5000.0` (electrons); and the dexels' defects,
 `gain_spread = 0.0` (relative σ), `offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by
 [`calibrate_flat_field`](@ref)). The ideal detector is a copy with the spreads at zero.
+
+`scatter_kernels = ""` names the scanner's entry of the Geant4 scatter library
+([`scatter_kernels`](@ref), e.g. `"SOMATOM Force"`), which `SimOptions(use_scatter = true)`
+superposes on the patient; `""` has none, and then `use_scatter = true` throws.
 """
 function EICTScanner(;
         detector_material::Symbol = :lumex, detector_depth::Real = 3.0,
         fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9, detection_gain::Real = 15.0,
         electronic_noise::Real = 5000.0, gain_spread::Real = 0.0, offset_spread_keV::Real = 0.0,
-        defect_seed::Integer = 1, kwargs...
+        defect_seed::Integer = 1, scatter_kernels::AbstractString = "", kwargs...
     )
     T = Float64
     (0 < fill_factor_row <= 1 && 0 < fill_factor_col <= 1) ||
@@ -265,7 +271,8 @@ function EICTScanner(;
     geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
     return EICTScanner{T}(
         geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
-        T(detection_gain), T(electronic_noise), T(gain_spread), T(offset_spread_keV), Int(defect_seed)
+        T(detection_gain), T(electronic_noise), T(gain_spread), T(offset_spread_keV), Int(defect_seed),
+        String(scatter_kernels),
     )
 end
 
@@ -279,6 +286,9 @@ direct-conversion detector model: `detector_material = :CdTe`, `detector_depth =
 `noise_reduction = 0.0`; and the native dexels' defects, `gain_spread = 0.0` (relative σ),
 `threshold_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref);
 pile-up by [`calibrate_pileup`](@ref)). The ideal detector is a copy with the spreads at zero.
+`scatter_kernels = ""` names its entry of the Geant4 scatter library, as for
+[`EICTScanner`](@ref); `scatter_correction` subtracts the scatter the library estimates from the
+measured counts.
 
 `detector_col_size` / `detector_row_size` are the pixel's pitch at the isocentre; a native dexel's
 pitch is the pixel's over `binning_factor`. The dexel's aperture, the anti-scatter grid, the
@@ -289,7 +299,8 @@ function PCCTScanner(;
         energy_thresholds::AbstractVector{<:Real} = Float64[], dead_time_ns::Real = 0.0,
         binning_factor::Int = 1, pileup::Bool = true,
         scatter_correction::Bool = false, noise_reduction::Real = 0.0,
-        gain_spread::Real = 0.0, threshold_spread_keV::Real = 0.0, defect_seed::Integer = 1, kwargs...
+        gain_spread::Real = 0.0, threshold_spread_keV::Real = 0.0, defect_seed::Integer = 1,
+        scatter_kernels::AbstractString = "", kwargs...
     )
     T = Float64
     0 <= noise_reduction <= 1 || error("noise_reduction must lie in [0, 1] (got $noise_reduction)")
@@ -302,7 +313,8 @@ function PCCTScanner(;
     return PCCTScanner{T}(
         geometry, detector_material, T(detector_depth),
         T.(collect(energy_thresholds)), T(dead_time_ns), binning_factor,
-        pileup, scatter_correction, T(noise_reduction), T(gain_spread), T(threshold_spread_keV), Int(defect_seed)
+        pileup, scatter_correction, T(noise_reduction), T(gain_spread), T(threshold_spread_keV), Int(defect_seed),
+        String(scatter_kernels),
     )
 end
 

@@ -88,9 +88,7 @@ function _apply_pcct_defects!(expected, I0, d)
 end
 
 _air_phantom() = Phantom(zeros(UInt8, 4, 4, 2), Dict{Int, Any}(0 => XA.Materials.air), (0.05, 0.05, 0.05))
-_calibration_options(o::SimOptions) = SimOptions(;
-    merge(NamedTuple{fieldnames(SimOptions)}(getfield.(Ref(o), fieldnames(SimOptions))), (use_noise = false, use_scatter = false))...,
-)
+_calibration_options(o::SimOptions) = SimOptions(o; use_noise = false, use_scatter = false)
 
 """
     FlatFieldCalibration

@@ -2,10 +2,7 @@
 # active simulate!() path, organized one file per detector module:
 #
 #   physics_pipeline.jl  → PhysicsConfig, default_physics_config
-#   scatter.jl           → ScatterModel, geometry_aware_scatter_model, kernels,
-#                          estimate_scatter_field!, per-energy/per-bin weights,
-#                          inject_scatter!/inject_scatter_bins!,
-#                          estimate_phantom_diameter_cm
+#   scatter_kernels.jl, scatter.jl → test/scatter.jl
 #   detector_efficiency  → DetectorEfficiency (+ Gemstone factory + modes),
 #                          MC LUT lookups, Beer-Lambert vector, μ-data
 #   fill_factor.jl       → FillFactorModel,
@@ -48,7 +45,7 @@ import AcceleratedKernels  # workspace kernels are AK-based; loading here for pa
     @testset "default_physics_config — populated kwargs propagate" begin
         cfg = BS.default_physics_config(;
             fill_factor = BS.FillFactorModel(0.9),
-            scatter = BS.geometry_aware_scatter_model(BS.EICTScanner()),
+            scatter = BS.scatter_kernels(_SCATTER_TEST_ENTRY),
             optical_crosstalk = BS.optical_crosstalk_typical(),
             detector_efficiency = BS.DetectorEfficiency(:lumex, 3.0, BS.MC_LUT),
             lag = BS.lag_gadox(),
@@ -56,7 +53,7 @@ import AcceleratedKernels  # workspace kernels are AK-based; loading here for pa
             energy_keV = 75.0,
         )
         @test cfg.fill_factor isa BS.FillFactorModel
-        @test cfg.scatter isa BS.ScatterModel
+        @test cfg.scatter isa BS.ScatterKernels
         @test cfg.optical_crosstalk isa BS.OpticalCrosstalkModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
         @test cfg.lag isa BS.LagModel
@@ -65,158 +62,7 @@ import AcceleratedKernels  # workspace kernels are AK-based; loading here for pa
     end
 end
 
-# -----------------------------------------------------------------------------
-# scatter.jl
-# -----------------------------------------------------------------------------
-@testset "ScatterModel + geometry_aware_scatter_model" begin
-    @testset "geometry_aware_scatter_model scales with air gap" begin
-        ref = BS.EICTScanner(
-            source_to_isocenter = BS.SCATTER_REF_SID_MM,
-            source_to_detector = BS.SCATTER_REF_SDD_MM,
-        )
-        ref_model = BS.geometry_aware_scatter_model(ref)
-        @test ref_model isa BS.ScatterModel
-        # Reference geometry → coefficient ≈ SCATTER_REF_COEFFICIENT × 1 × 1
-        @test ref_model.scatter_coefficient ≈ BS.SCATTER_REF_COEFFICIENT atol = 1.0e-12
-
-        # GE Revolution has a larger air gap → less scatter
-        ge = BS.EICTScanner(source_to_isocenter = 626.0, source_to_detector = 1097.0)
-        ge_model = BS.geometry_aware_scatter_model(ge)
-        @test ge_model.scatter_coefficient < ref_model.scatter_coefficient
-    end
-
-    @testset "phantom diameter scaling — bigger body, more scatter" begin
-        scanner = BS.EICTScanner()
-        small = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = 20.0)
-        large = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = 40.0)
-        @test large.scatter_coefficient > small.scatter_coefficient
-    end
-end
-
-@testset "scatter kernels (spatial + 1D Gaussian)" begin
-    model = BS.geometry_aware_scatter_model(BS.EICTScanner())
-
-    @testset "create_scatter_kernel_spatial — Gaussian normalized" begin
-        K = BS.create_scatter_kernel_spatial(model)
-        @test ndims(K) == 2
-        @test sum(K) ≈ 1.0  atol = 1.0e-12
-        # Symmetric about center
-        nc = size(K, 1) ÷ 2 + 1
-        @test K[nc - 1, nc] ≈ K[nc + 1, nc]
-        @test K[nc, nc - 1] ≈ K[nc, nc + 1]
-    end
-
-    @testset "exponential kernel path" begin
-        exp_model = BS.ScatterModel(0.025, 1.0, 30.0, :exponential)
-        K = BS.create_scatter_kernel_spatial(exp_model)
-        @test sum(K) ≈ 1.0  atol = 1.0e-12
-    end
-end
-
-@testset "estimate_scatter_field!  + inject_scatter!" begin
-    model = BS.geometry_aware_scatter_model(BS.EICTScanner())
-
-    # Make a smooth phantom-shaped sinogram (Gaussian projection profile)
-    nc, nr, nv = 64, 4, 8
-    sino = zeros(Float32, nc, nr, nv)
-    for v in 1:nv, r in 1:nr, c in 1:nc
-        sino[c, r, v] = 2.0f0 * exp(-((c - nc / 2)^2) / (2 * 12^2))
-    end
-
-    @testset "estimate_scatter_field! does not modify the input" begin
-        sino_save = copy(sino)
-        sf = similar(sino)
-        BS.estimate_scatter_field!(sf, sino, model)
-        @test sino == sino_save                   # input untouched
-        @test all(>=(0), sf)                      # field is non-negative
-        @test maximum(sf) > 0                     # something got estimated
-    end
-
-    @testset "inject_scatter! raises sinogram intensity (lowers log)" begin
-        sino_inj = copy(sino)
-        sf = similar(sino)
-        BS.estimate_scatter_field!(sf, sino, model)
-        BS.inject_scatter!(sino_inj, sf, 0.5)
-        # I_new = I_primary + scatter ⇒ -log(I_new) ≤ -log(I_primary), and
-        # the projection should decrease in the body (where scatter is highest).
-        body_center = sino[nc ÷ 2, :, :]
-        body_center_inj = sino_inj[nc ÷ 2, :, :]
-        @test all(body_center_inj .<= body_center .+ 1.0e-6)
-    end
-end
-
-@testset "compute_scatter_energy_weights — Compton fraction" begin
-    energies = [20.0, 60.0, 100.0, 140.0]
-    ew = BS.compute_scatter_energy_weights(energies)
-    @test length(ew) == length(energies)
-    @test all(0 .<= ew .<= 1)
-    # 1 / (1 + (20/E)^3) is monotonic increasing in E
-    @test issorted(ew)
-end
-
-@testset "compute_scatter_bin_weights — normalize to 1, route via DRM" begin
-    # 4-bin synthetic DRM: identity diag (each E lands in its native bin)
-    energies = collect(20.0:5.0:120.0)
-    weights = ones(length(energies))
-    n_E = length(energies)
-    n_bins = 4
-    R = zeros(n_E, n_bins)
-    for (i, E) in enumerate(energies)
-        b = E < 35 ? 1 :
-            E < 55 ? 2 :
-            E < 70 ? 3 : 4
-        R[i, b] = 1.0
-    end
-    ew = BS.compute_scatter_energy_weights(energies)
-    bw = BS.compute_scatter_bin_weights(energies, weights, ew, R, 120.0)
-    @test length(bw) == n_bins
-    @test sum(bw) ≈ 1.0  atol = 1.0e-12
-    @test all(>=(0), bw)
-    # higher-energy bins get more Compton weight than the lowest
-    @test bw[4] > bw[1]
-end
-
-@testset "inject_scatter_bins! — scatter lowers each bin's line integral" begin
-    # Start from a realistic body-projection (p ≈ 2.0 → I = e⁻² of primary).
-    # Adding scatter raises N_total relative to N_primary → projection drops.
-    nc, nr, nv = 16, 2, 4
-    n_bins = 4
-    bins_before = [fill(Float32(2.0), nc, nr, nv) for _ in 1:n_bins]
-    bins = deepcopy(bins_before)
-    sf = fill(Float32(0.01), nc, nr, nv)
-    I0 = fill(Float32(1.0e5), nc, nr, n_bins)           # per ray, per bin
-    I0_all = fill(Float32(4.0e5), nc, nr)                # per ray, all bins
-    bw = [0.4, 0.3, 0.2, 0.1]
-
-    BS.inject_scatter_bins!(bins, sf, I0, I0_all, bw)
-    for b in 1:n_bins
-        # Scatter adds to numerator counts → p_new ≤ p_old everywhere
-        @test all(bins[b] .<= bins_before[b] .+ 1.0e-6)
-        # And at least some pixels show a measurable drop
-        @test minimum(bins[b]) < bins_before[b][1, 1, 1] - 1.0e-4
-    end
-    # Lower bin weight should produce smaller change than higher bin weight,
-    # since scatter is distributed proportionally to `bin_weights`.
-    Δb1 = bins_before[1][1, 1, 1] - bins[1][1, 1, 1]    # bw=0.40
-    Δb4 = bins_before[4][1, 1, 1] - bins[4][1, 1, 1]    # bw=0.10
-    @test Δb1 > Δb4
-end
-
-@testset "estimate_phantom_diameter_cm" begin
-    # 256³ mask with a central 100-vox-diameter cylinder, 1 mm voxels.
-    nx = 256
-    mask = zeros(UInt8, nx, nx, 8)
-    R = 50
-    cx, cy = nx ÷ 2, nx ÷ 2
-    for z in 1:8, y in 1:nx, x in 1:nx
-        if (x - cx)^2 + (y - cy)^2 <= R^2
-            mask[x, y, z] = UInt8(1)
-        end
-    end
-    d_cm = BS.estimate_phantom_diameter_cm(mask, (1.0, 1.0, 1.0))
-    # Bounding box ≈ 2R = 100 mm = 10 cm; sqrt(AP × LAT) = 10 cm.
-    @test 9.0 < d_cm < 11.0
-end
+# scatter_kernels.jl / scatter.jl: the Geant4 scatter library, test/scatter.jl
 
 # -----------------------------------------------------------------------------
 # detector_efficiency.jl — the Geant4 tables, Beer–Lambert, the model's checks

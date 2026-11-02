@@ -31,7 +31,7 @@
     @test CTGeometry(p; n_angles = 4, fov_cm = 20.0, z_cm = 1.0).n_cols == 64
     # SimOptions carries only the common physics toggles
     o = SimOptions()
-    @test o.use_noise && o.use_scatter && o.use_focal_spot && o.use_lag && !o.use_optical_crosstalk && o.seed == 42
+    @test o.use_noise && !o.use_scatter && o.use_focal_spot && o.use_lag && !o.use_optical_crosstalk && o.seed == 42
     @test !hasproperty(o, :use_pcct_pileup) && !hasproperty(o, :pcct_noise_reduction)
     @test_throws MethodError SimOptions(fidelity = :pcct)
 end

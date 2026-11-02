@@ -38,9 +38,6 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # ─── Spatial kernel scratch (GPU-side) ───
     scratch::A3                # ONE buffer for spatial kernels
 
-    # ─── Combine (GPU-side) ───
-    combined::A3               # scratch for `combined_primary` in scatter step
-
     # ─── Noise CPU staging (CPU RNG, exact Poisson sampling) ───
     noise_staging::Array{T, 3}  # CPU buffer for GPU↔CPU noise transfer
 
@@ -107,6 +104,7 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
     defects::Union{Nothing, NamedTuple}                # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`)
     scatter_correction::Bool                           # PCCTScanner.scatter_correction
+    scatter::Union{Nothing, ScatterPlan}               # the scatter library on this acquisition's rays (nothing: use_scatter off)
     noise_reduction::Float64                           # PCCTScanner.noise_reduction
     noise_classes::NamedTuple                          # the photons neighbouring native dexels share (`pcct_event_classes`)
     pileup_S::Union{Nothing, Array{Float64, 3}}        # (n_bins × n_bins × n_rates), nothing when pileup off
@@ -185,13 +183,12 @@ function create_workspace(
         μ_volume = allocate_backend(vol_shape)
         sino_buf = allocate_backend(sino_shape)
         scratch = allocate_backend(sino_shape)
-        combined = allocate_backend(sino_shape)
 
         # CPU-side staging buffer (CPU Poisson RNG → GPU transfer)
         noise_staging = zeros(T, sino_shape)
         energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
         n_energies = length(energies)
-        config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom = phantom)
+        config = build_physics_config(scanner, sim_opts, energies, weights_vec)
         pcct_detector = _build_pcct_detector(scanner)
         mats = phantom.materials
         kVp = Float64(maximum(energies))
@@ -455,8 +452,35 @@ function create_workspace(
             nothing
         end
 
-        # Scatter bin fractions are now computed on-the-fly in simulate!() using
-        # compute_scatter_energy_weights() + compute_scatter_bin_weights() (unified per-energy model)
+        # ─── The scatter library on this acquisition's rays ───
+        # A scattered photon of energy E is split over the bins as the response table splits a
+        # photon of that energy, per photon the library counted (it counts each photon the sensor
+        # absorbs once): R(E, b) / η(E). The fields are counts per pixel per incident photon per
+        # pixel; the correction reads the counts summed over the bins against the same air.
+        _scatter = if config.scatter === nothing
+            nothing
+        else
+            config.scatter.energy_weighted && throw(
+                ArgumentError("the scatter kernels \"$(config.scatter.name)\" are an energy integrator's; a photon counter needs counting kernels")
+            )
+            r_index = E -> clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
+            qe = E -> max(quantum_efficiency(pcct_detector.material, pcct_detector.thickness_mm, E), 1.0e-6)
+            _photons = compute_detector_I0(geom, protocol, sum(weights_vec))
+            _scatter_plan(
+                config.scatter,
+                geom,
+                energies,
+                weights_vec;
+                source = _scatter_source(bowtie_filter, config.heel_effect, energies),
+                detection = [sum(R_mat[r_index(E), :]) for E in energies],
+                channels = [R_mat[r_index(E), b] / qe(E) for E in energies, b in 1:n_bins],
+                measured_channels = n_bins,
+                air = dropdims(sum(I0_cpu; dims = 3); dims = 3) ./ _photons,
+                materials = mats,
+                ref = ref_mask,
+                T,
+            )
+        end
 
         # ─── Pre-compute focal-spot blur kernel (opt-in; :pcct preset default off) ───
         # Mirrors the EICT workspace: kernel is built once here so the per-bin
@@ -477,7 +501,6 @@ function create_workspace(
 
         return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
             bins, μ_volume, sino_buf, scratch,
-            combined,
             noise_staging,
             R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec, rng,
             μ_lut_cpu, μ_lut_gpu, μ_table,
@@ -488,7 +511,7 @@ function create_workspace(
             _μ_table_gpu, _W_matrix_gpu, _bowtie_spectral_gpu, _native_bowtie_spectral_gpu, _outputs_flat, _native_outputs_flat,
             _use_pileup,
             _pcct_dexel_defects(scanner, (bf > 1 ? _native_geom : geom).n_cols, (bf > 1 ? _native_geom : geom).n_rows, energies, weights_vec),
-            scanner.scatter_correction, Float64(scanner.noise_reduction),
+            scanner.scatter_correction, _scatter, Float64(scanner.noise_reduction),
             pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec), _pileup_S,
             _pileup_rates, _count_rate_air,
             geom, energies, weights_vec, config, pcct_detector, mats,
@@ -537,9 +560,7 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     lag_intensity::A3     # sinogram-sized scratch for lag intensity computation
 
     # ─── Pre-computed physics kernels (GPU-side) ───
-    scatter_kernel::Union{Nothing, A2}          # scatter convolution kernel (2D fallback)
-    scatter_kernel_1d::Union{Nothing, A1}       # 1D Gaussian scatter kernel (separable path)
-    scatter_temp::A3                            # sinogram-shaped scratch for separable convolution
+    scatter::Union{Nothing, ScatterPlan}        # the scatter library on this acquisition's rays (nothing: use_scatter off)
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
     bowtie_spectral::Union{Nothing, A3}         # [n_cols, n_rows, n_energies] spectral transmission
@@ -644,7 +665,7 @@ function create_eict_workspace(
     n_energies = length(energies)
 
     # Physics config
-    config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom = phantom)
+    config = build_physics_config(scanner, sim_opts, energies, weights_vec)
 
     # Materials
     mats = phantom.materials
@@ -670,32 +691,6 @@ function create_eict_workspace(
 
     # Pre-compute physics kernels (GPU-side)
     # These depend only on config and are constant across calls.
-    scatter_kernel = if config.scatter !== nothing
-        k_cpu = T.(create_scatter_kernel_spatial(config.scatter))
-        k_gpu = similar(ref, T, size(k_cpu)...)
-        copyto!(k_gpu, k_cpu)
-        k_gpu
-    else
-        nothing
-    end
-
-    # 1D scatter kernels for separable Gaussian convolution (SPEED-BUILD-002)
-    scatter_kernel_1d = if config.scatter !== nothing
-        k1d_cpu = create_scatter_kernel_1d(config.scatter)
-        if k1d_cpu !== nothing
-            k1d = similar(ref, T, length(k1d_cpu))
-            copyto!(k1d, T.(k1d_cpu))
-            k1d
-        else
-            nothing
-        end
-    else
-        nothing
-    end
-
-    # Scratch buffer for separable scatter convolution intermediate results
-    scatter_temp = similar(ref, T, sino_shape)
-
     optical_crosstalk_kernel = if config.optical_crosstalk !== nothing
         k_cpu = T.(create_optical_crosstalk_kernel(config.optical_crosstalk))
         k_gpu = similar(ref, T, 3, 3)
@@ -811,6 +806,30 @@ function create_eict_workspace(
     air_reference = similar(ref, T, sino_shape[1], sino_shape[2])
     copyto!(air_reference, air_ref_cpu)
 
+    # The scatter library on this acquisition's rays: a scattered photon's signal in units of E_ref
+    # (S₁), and its second moment (S₂) as the detector's m₂/m₁ at the photon's energy
+    scatter_plan = if config.scatter === nothing
+        nothing
+    else
+        config.scatter.energy_weighted || throw(
+            ArgumentError("the scatter kernels \"$(config.scatter.name)\" are a photon counter's; an energy integrator needs energy-weighted kernels")
+        )
+        _scatter_plan(
+            config.scatter,
+            geom,
+            energies,
+            weights_vec;
+            source = _scatter_source(bowtie_filter, config.heel_effect, energies),
+            detection = m1,
+            channels = hcat(fill(1 / E_ref, n_energies), m2 ./ max.(m1, 1.0e-30) ./ E_ref^2),
+            measured_channels = 1,
+            air = Float64.(air_ref_cpu),
+            materials = mats,
+            ref,
+            T,
+        )
+    end
+
     # BHC is decoupled — applied at notebook level
 
     # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
@@ -833,8 +852,7 @@ function create_eict_workspace(
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, similar(ref, T, sino_shape), μ_volume, sino_mono, I_transmitted,
         physics_output, lag_intensity,
-        scatter_kernel,
-        scatter_kernel_1d, scatter_temp,
+        scatter_plan,
         optical_crosstalk_kernel, focal_spot_kernel,
         bowtie_spectral_gpu, air_reference,
         copyto!(similar(ref, T, sino_shape[1], sino_shape[2]), T.(dexel_defects[1])),

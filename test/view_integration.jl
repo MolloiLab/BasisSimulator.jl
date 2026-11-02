@@ -45,13 +45,15 @@ function _vi_setup(kind; views, kwargs...)
         BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
             detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.0,
-            detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0
+            detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0,
+            scatter_kernels = _SCATTER_TEST_ENTRY,
         ) :
         BS.PCCTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
             detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.0,
             detector_material = :CdTe, detector_depth = 1.6,
-            energy_thresholds = [20.0, 35.0, 55.0, 70.0], pileup = false
+            energy_thresholds = [20.0, 35.0, 55.0, 70.0], pileup = false,
+            scatter_kernels = "BS test counter",
         )
     protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = views, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;

@@ -120,8 +120,9 @@ include("projection/select_projector.jl")
 # Detector (ALL detector effects + noise)
 # =============================================================================
 
-# Scatter simulation (spatial convolution)
-include("detector/scatter.jl")
+# The Geant4 scatter library: its reader, artifacts and superposition
+include("detector/scatter_kernels.jl")
+export scatter_kernels, ScatterKernels
 
 # Protocol definitions
 include("source/protocol.jl")
@@ -235,6 +236,9 @@ include("detector/pcct/native_table.jl")
 
 # MC-based pulse pileup model (replaces analytical Taguchi model)
 include("detector/pcct/mc_pileup.jl")
+
+# Patient scatter in simulate!: the library on the acquisition's own rays, and its correction
+include("detector/scatter.jl")
 
 # =============================================================================
 # API (top-level orchestration)

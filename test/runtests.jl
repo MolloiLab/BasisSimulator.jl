@@ -5,6 +5,8 @@ using Statistics: mean, std
 using LinearAlgebra
 const BS = BasisSimulator
 
+include("scatter_library.jl")
+
 @testset "BasisSimulator.jl" begin
     @testset "api/" begin
         include("api.jl")
@@ -19,6 +21,7 @@ const BS = BasisSimulator
         include("denoising.jl")
     end
     @testset "detector/" begin
+        include("scatter.jl")
         include("detector.jl")
         include("detector_offset.jl")
         include("eict_signal.jl")

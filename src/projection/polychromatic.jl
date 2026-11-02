@@ -66,7 +66,7 @@
 #
 # CatSim Signal Chain (when enabled via kwargs):
 # 1. Polychromatic forward projection (Beer-Lambert)
-# 2. Physics pipeline (scatter, crosstalk, focal spot, noise, lag)
+# 2. Physics pipeline (crosstalk, focal spot, lag; then the patient scatter and the noise)
 # 3. Heel effect (intensity domain)
 # 4. DAS model (gain + electronic noise)
 # 5. Air scan calibration (CatSim-exact: noise-free air reference)
@@ -274,14 +274,11 @@ function _apply_physics_no_noise!(
         config::PhysicsConfig;
         # Workspace kwargs for zero-allocation path
         ws_output = nothing,             # sinogram-sized scratch (shared by convolution effects)
-        ws_scatter_kernel = nothing,     # pre-computed scatter kernel (GPU)
         ws_optical_crosstalk_kernel = nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
         ws_focal_spot_kernel = nothing,  # pre-computed focal spot kernel (GPU)
         ws_lag_output = nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
         ws_lag_intensity = nothing,      # sinogram-sized intensity scratch for lag
         ws_lag_coeffs = nothing,         # pre-computed lag coefficients (GPU)
-        ws_scatter_temp = nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
-        ws_scatter_kernel_1d = nothing   # 1D Gaussian scatter kernel (separable path)
     ) where {T}
 
     # Apply deterministic physics effects only
@@ -290,11 +287,8 @@ function _apply_physics_no_noise!(
     # The fill factor is not here: it scales the detected quanta, so the EICT noise applies it
     # once (I₀·ff), and the air calibration divides it out exactly.
 
-    # NOTE: Scatter injection and correction are now handled in simulate!() using
-    # the unified per-energy scatter model (compute_scatter_energy_weights +
-    # inject_scatter!/inject_scatter_bins!). Scatter is added BEFORE noise and
-    # corrected AFTER noise, matching the clinical scanner signal chain.
-    # See: driver.jl simulate!(ws::EICTWorkspace) and simulate!(ws::PCCTWorkspace)
+    # Patient scatter is simulate!'s (src/detector/scatter.jl): added after these effects, before
+    # the noise, and estimated from the data and subtracted after it.
 
     # Optical crosstalk
     if config.optical_crosstalk !== nothing

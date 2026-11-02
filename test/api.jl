@@ -93,7 +93,7 @@ _ts("entering SimOptions testset")
         opts = BS.SimOptions()
         @test opts.use_fill_factor === true
         @test opts.use_detector_efficiency === true
-        @test opts.use_scatter === true
+        @test opts.use_scatter === false             # the kernels are a download: opt in
         # optical_crosstalk defaults to false because no stable post-hoc
         # correction exists yet (see src/api/options.jl).
         @test opts.use_optical_crosstalk === false
@@ -968,7 +968,7 @@ _ts("entering build_physics_config testset")
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
-        @test cfg.scatter isa BS.ScatterModel
+        @test cfg.scatter === nothing                # off by default
         @test cfg.optical_crosstalk isa BS.OpticalCrosstalkModel
         @test cfg.focal_spot isa BS.FocalSpot
         @test cfg.lag isa BS.LagModel
@@ -1044,20 +1044,12 @@ _ts("entering build_physics_config testset")
         @test cfg.heel_effect.anode_angle_deg ≈ 7.5
     end
 
-    @testset "scatter: phantom-diameter scaling kicks in when phantom passed" begin
+    @testset "scatter: the scanner's kernels, or an error naming the scanners that have them" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions()
-        # No phantom: scatter still built, just without size-aware scaling.
-        cfg_nopath = BS.build_physics_config(sc, opts, energies, weights)
-        @test cfg_nopath.scatter isa BS.ScatterModel
-
-        # With phantom: ensure no error and result is a ScatterModel.  Use
-        # a small synthetic mask (same path the workspace ctor takes).
-        mask = ones(UInt8, 24, 24, 4)
-        materials = [BS.XA.Materials.water]
-        phantom = BS.Phantom(mask, materials, (0.1, 0.1, 0.1), (0.0, 0.0, 0.0), (2.4, 2.4, 0.4))
-        cfg_path = BS.build_physics_config(sc, opts, energies, weights; phantom = phantom)
-        @test cfg_path.scatter isa BS.ScatterModel
+        opts = BS.SimOptions(; use_scatter = true)
+        @test_throws ArgumentError BS.build_physics_config(sc, opts, energies, weights)
+        with = BS.EICTScanner(sc; scatter_kernels = _SCATTER_TEST_ENTRY)
+        @test BS.build_physics_config(with, opts, energies, weights).scatter === BS.scatter_kernels(_SCATTER_TEST_ENTRY)
     end
 end
 
@@ -1756,31 +1748,6 @@ _ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
         for str in 0:10:100
             @test BS.get_hir_params(str).n_subsets > 0
         end
-    end
-end
-
-_ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
-@testset "simulate!(EICTWorkspace) — scatter on/off" begin
-    if !HAS_GPU
-        @warn "Skipping EICT scatter test: no GPU backend."
-    else
-        _ts("  scatter OFF")
-        off = _toy_eict_setup(use_noise = false, use_scatter = false)
-        BS.simulate!(off.ws, off.phantom, off.protocol, off.sim_opts)
-        sino_off = Array(off.ws.sinogram)
-
-        _ts("  scatter ON")
-        on = _toy_eict_setup(use_noise = false, use_scatter = true)
-        BS.simulate!(on.ws, on.phantom, on.protocol, on.sim_opts)
-        sino_on = Array(on.ws.sinogram)
-
-        # Noise-free, the DAS subtracts exactly the scatter that was injected (its estimate is the
-        # injected field), so the scatter-ON sinogram is the scatter-OFF one; scatter shows in the
-        # noise it adds, and in the estimate being the object's own (an empty field gets none:
-        # eict_signal.jl).
-        @test maximum(abs.(sino_on .- sino_off)) < 1.0e-4
-        @test on.ws.config.scatter !== nothing && off.ws.config.scatter === nothing
-        @test all(isfinite, sino_on)
     end
 end
 

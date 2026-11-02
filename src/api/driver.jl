@@ -145,8 +145,11 @@ is passed, and there is no ideal-binning path.
 
 Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`; it is corrected
 like a scanner corrects it, outside: [`calibrate_pileup`](@ref) → [`apply_pileup!`](@ref), as the
-dexels' defects are by [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref). The scatter
-correction (`PCCTScanner(; scatter_correction)`) runs inside `simulate!` when enabled. Bin combination,
+dexels' defects are by [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref). With
+`SimOptions(use_scatter = true)` the scanner's Geant4 scatter kernels ([`scatter_kernels`](@ref))
+add the patient's scatter to every bin before the noise; the scatter correction
+(`PCCTScanner(; scatter_correction)`) subtracts the scatter estimated from the recorded counts
+alone (the patient taken as water), inside `simulate!`. Bin combination,
 water BHC and reconstruction are the caller's: the returned per-bin sinograms are
 log-transmissions against the per-ray air response `I0_bins` (`[n_cols, n_rows, n_bins]`), which
 is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
@@ -190,9 +193,6 @@ function simulate!(
     mats = ws.mats
 
     I0 = ws.I0
-    n_rays = Int32(size(I0, 1) * size(I0, 2))
-    eps_combine = T(1.0e-10)
-    I0_total = ws.I0_all           # [n_cols, n_rows]: Σ_b I0[col, row, b], the whole-spectrum air response per ray
     # Everything before the noise is deterministic (see the EICT `simulate!`): `keep_projection`
     # returns it and `projection` re-uses it for another noise draw, bit-identically.
     pcct_sino = nothing
@@ -273,50 +273,11 @@ function simulate!(
             end
         end
 
-        # ─── Energy-resolved scatter injection (BEFORE noise) ───
-        # Unified per-energy scatter model (shared with EICT):
-        # 1. Spatial distribution: Ohnesorge convolution on combined sinogram
-        # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
-        # 3. Detector response: weights convolved through DRM → per-bin scatter
-        # Must be added before noise so Poisson statistics are on total counts.
-        #
-        # References:
-        # - Ohnesorge B et al., Eur Radiol 1999 (spatial scatter model)
-        # - NIST XCOM (per-energy Compton fractions)
-
-        if config.scatter !== nothing && sim_opts.use_scatter
-            # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
-            combined_primary = ws.combined
-            fill!(combined_primary, zero(T))
-            for (b, bin_sino) in enumerate(pcct_sino.bins)
-                let i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays, bs = bin_sino, comb = combined_primary
-                    AK.foreachindex(bs) do idx
-                        comb[idx] += i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-bs[idx])
-                    end
-                end
-            end
-            let comb = combined_primary, i0t = I0_total, m = n_rays, eps = eps_combine
-                AK.foreachindex(comb) do idx
-                    comb[idx] = -log(max(comb[idx], eps) / i0t[(Int32(idx - 1) % m) + Int32(1)])
-                end
-            end
-
-            # Step 2: Spatial scatter field (Ohnesorge convolution model)
-            scatter_field = ws.tube_physics_scratch
-            estimate_scatter_field!(
-                scatter_field, combined_primary, config.scatter;
-                ws_scatter_temp = ws.scratch
-            )
-
-            # Step 3: Per-energy scatter weights → per-bin via DRM
-            ew = compute_scatter_energy_weights(Float64.(energies))
-            bin_weights = compute_scatter_bin_weights(
-                Float64.(energies), Float64.(weights),
-                ew, ws.R, ws.kVp
-            )
-
-            # Step 4: Inject scatter into each bin
-            inject_scatter_bins!(pcct_sino.bins, scatter_field, I0, I0_total, bin_weights)
+        # ─── Patient scatter (before the noise): the Geant4 library on the patient's own rays,
+        # each bin's expected counts (src/detector/scatter.jl) ───
+        if ws.scatter !== nothing
+            _scatter_forward!(ws.scatter, phantom)
+            _pcct_scatter!(pcct_sino.bins, I0, ws.scatter, compute_detector_I0(geom, protocol, sum(weights)), 1)
         end
     else
         length(projection.bins) == length(ws.bins) && size(first(projection.bins)) == size(first(ws.bins)) ||
@@ -343,41 +304,16 @@ function simulate!(
     raw_counts = capture_raw_counts ? [similar(b) for b in pcct_sino.bins] : nothing
     _pcct_detect!(ws, pcct_sino.bins, sim_opts.use_noise, sim_opts.seed, raw_counts)
 
-    # --- PCCT scatter correction (optional; scatter_correction) ---
-    # Model-based re-estimate-and-subtract, logically identical to the validated
-    # nb08 inline scatter-correction cell: re-combine the CURRENT bins (now
-    # primary+scatter+noise+pileup), re-estimate the Ohnesorge field, and subtract
-    # the per-bin scatter, per ray against each ray's own air response.  Runs after pileup so
-    # it sees the recorded counts.
-    if config.scatter !== nothing && ws.scatter_correction
-        combined_corr = ws.combined
-        fill!(combined_corr, zero(T))
-        for (b, bin_sino) in enumerate(pcct_sino.bins)
-            let i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays, bs = bin_sino, comb = combined_corr
-                AK.foreachindex(bs) do idx
-                    comb[idx] += i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-bs[idx])
-                end
-            end
+    # ─── Scatter correction (`scatter_correction`): the scatter estimated from the recorded
+    # counts alone, the patient taken as water, subtracted from each bin (src/detector/scatter.jl) ───
+    if ws.scatter !== nothing && ws.scatter_correction
+        plan = ws.scatter
+        for b in eachindex(pcct_sino.bins)
+            _reduce_footprints!(plan.measured, plan, pcct_sino.bins[b]; i0 = I0, plane = b, accumulate = b > 1)
         end
-        let comb = combined_corr, i0t = I0_total, m = n_rays, eps = eps_combine
-            AK.foreachindex(comb) do idx
-                comb[idx] = -log(max(comb[idx], eps) / i0t[(Int32(idx - 1) % m) + Int32(1)])
-            end
-        end
-        scatter_field_corr = ws.tube_physics_scratch
-        estimate_scatter_field!(
-            scatter_field_corr, combined_corr, config.scatter;
-            ws_scatter_temp = ws.scratch
-        )
-        ew_corr = compute_scatter_energy_weights(Float64.(energies))
-        bin_weights_corr = compute_scatter_bin_weights(
-            Float64.(energies), Float64.(weights),
-            ew_corr, ws.R, ws.kVp
-        )
-        inject_scatter_bins!(
-            pcct_sino.bins, scatter_field_corr, I0, I0_total,
-            bin_weights_corr; subtract = true
-        )
+        photons = compute_detector_I0(geom, protocol, sum(weights))
+        _scatter_estimate!(plan, Array(plan.measured) ./ photons)
+        _pcct_scatter!(pcct_sino.bins, I0, plan, photons, -1)
     end
 
     # Bin combination, BHC and reconstruction are the caller's (spectral_basis / vmi_pipeline
@@ -463,9 +399,6 @@ function simulate!(
     # protocol and workspace. `keep_projection` returns it (`projection`), and passing it back as
     # `projection` skips the forward projection and the physics before the noise — bit-identical to
     # simulating again, the noise drawn from this call's seed.
-    has_scatter = config.scatter !== nothing
-    scatter_total_weight = 0.0
-    scatter_field_gpu = nothing  # set below if has_scatter; reused in step 3
     if projection === nothing
         # ═══════════════════════════════════════════════════════════════════════
         # STEP 1: Polychromatic forward projection. One walk forms both spectral
@@ -521,9 +454,6 @@ function simulate!(
         _apply_physics_no_noise!(
             ws.sinogram, geom, config;
             ws_output = ws.physics_output,
-            ws_scatter_kernel = ws.scatter_kernel,
-            ws_scatter_temp = ws.scatter_temp,
-            ws_scatter_kernel_1d = ws.scatter_kernel_1d,
             ws_optical_crosstalk_kernel = ws.optical_crosstalk_kernel,
             ws_focal_spot_kernel = ws.focal_spot_kernel,
             ws_lag_output = ws.physics_output,
@@ -531,23 +461,11 @@ function simulate!(
             ws_lag_coeffs = ws.lag_coeffs
         )
 
-        # ─── Energy-resolved scatter injection (unified with PCCT) ───
-        # 1. Spatial field: Ohnesorge convolution (Ohnesorge et al., Eur Radiol 1999) of each
-        #    ray's primary times the object's own line integral (the sinogram less its air value)
-        # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
-        # 3. Detector response: the signal-weighted (m₁) mean over the spectrum
-        if has_scatter
-            scatter_field_gpu = ws.physics_output  # GPU buffer; live until step 3
-            estimate_scatter_field!(
-                scatter_field_gpu, ws.sinogram, config.scatter;
-                ws_scatter_temp = ws.scatter_temp,
-                ws_kernel_1d = ws.scatter_kernel_1d,
-                air_reference = ws.air_reference,
-            )
-            ew = compute_scatter_energy_weights(Float64.(ws.energies))
-            wm = Float64.(ws.weights_norm) .* ws.m1
-            scatter_total_weight = sum(wm .* ew) / sum(wm)
-            inject_scatter!(ws.sinogram, scatter_field_gpu, scatter_total_weight)
+        # ─── Patient scatter: the Geant4 library on the patient's own rays, added to S₁ and S₂
+        # (src/detector/scatter.jl) ───
+        if ws.scatter !== nothing
+            _scatter_forward!(ws.scatter, phantom)
+            _add_eict_scatter!(ws.sinogram, ws.dispersion, ws.scatter)
         end
     else
         size(projection.sinogram) == size(ws.sinogram) || throw(
@@ -557,17 +475,10 @@ function simulate!(
         )
         copyto!(ws.sinogram, projection.sinogram)
         copyto!(ws.dispersion, projection.dispersion)
-        scatter_total_weight = projection.scatter_weight
-        if has_scatter
-            scatter_field_gpu = ws.physics_output
-            copyto!(scatter_field_gpu, projection.scatter_field)
-        end
     end
     kept = keep_projection ? (
             sinogram = copy(ws.sinogram),
             dispersion = copy(ws.dispersion),
-            scatter_field = has_scatter ? copy(scatter_field_gpu) : nothing,
-            scatter_weight = scatter_total_weight,
         ) : nothing
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -576,15 +487,13 @@ function simulate!(
     #      once, as the fraction of the quanta a dexel collects
     #   2. Compound-Poisson quantum noise, variance D·λ (D = S₂/S₁), plus the
     #      electronic noise, variance σ_electronic²
-    #   3. The DAS subtracts the estimated scatter and holds the signal at ≥ 1
+    #   3. The DAS subtracts the scatter it estimates from the measured signal
+    #      (the patient taken as water) and holds the signal at ≥ 1
     # ═══════════════════════════════════════════════════════════════════════
     ff = config.fill_factor === nothing ? 1.0 : effective_fill_factor(config.fill_factor)
     I0v = T(compute_detector_I0(geom, protocol, sum(ws.weights)) * ff)
     σ = sim_opts.use_noise ? ws.σ_electronic : zero(T)
-
-    # `sf` is always a real device buffer, even when scatter is off and never read: a
-    # `sf::Nothing` capture tripped GPUCompiler's box_int64 path on Metal.
-    sf_kernel = has_scatter ? scatter_field_gpu : ws.physics_output
+    has_scatter = ws.scatter !== nothing
 
     if sim_opts.use_noise
         # Seeded from sim_opts.seed every call, so same-seed reruns agree.
@@ -601,8 +510,7 @@ function simulate!(
     let sino = ws.sinogram, disp = ws.dispersion, rg = ws.noise_rand_gpu,
             gain = ws.dexel_gain, offset = ws.dexel_offset, ncnr = length(ws.dexel_gain),
             eg = σ > zero(T) ? ws.enoise_rand_gpu : ws.noise_rand_gpu,
-            I0v = I0v, σ = σ, noisy = sim_opts.use_noise,
-            sf = sf_kernel, sw = T(scatter_total_weight), do_sc = has_scatter
+            I0v = I0v, σ = σ, noisy = sim_opts.use_noise, linear = has_scatter
         AK.foreachindex(sino) do idx
             λ = I0v * exp(-sino[idx])
             if noisy
@@ -610,11 +518,14 @@ function simulate!(
             end
             ray = (idx - 1) % ncnr + 1
             λ = gain[ray] * λ + offset[ray]          # the dexel's own gain and offset
-            if do_sc
-                λ -= I0v * sf[idx] * sw
-            end
-            sino[idx] = -log(max(λ, one(T)) / I0v)
+            # with scatter, the measured signal (relative to I₀) waits for the DAS's estimate
+            sino[idx] = linear ? λ / I0v : -log(max(λ, one(T)) / I0v)
         end
+    end
+    if has_scatter
+        _reduce_footprints!(ws.scatter.measured, ws.scatter, ws.sinogram)
+        _scatter_estimate!(ws.scatter, Array(ws.scatter.measured))
+        _subtract_eict_scatter!(ws.sinogram, ws.scatter, I0v)
     end
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -905,7 +816,7 @@ end
 """
     resolve_source_spectrum_full(
         sim_opts, protocol;
-        scanner, geom, phantom = nothing,
+        scanner, geom,
         diagnostic = false, label = "",
     ) -> (e, ŵ)
 
@@ -950,8 +861,6 @@ simulate! applied.
 - `scanner` — Scanner hardware definition.
 - `geom` — Workspace geometry (`ws.geom` from a forward-projected sim);
   needed to assemble the per-(col, row) bowtie / heel maps.
-- `phantom = nothing` — Forwarded to `build_physics_config` (only matters
-  for scatter scaling, which is sinogram-domain and irrelevant here).
 - `diagnostic = false` — When `true`, log the center-vs-edge mean energy
   to help spot bowtie / heel calibration drift.
 - `label = ""` — Prepended to the diagnostic log line for multi-kVp runs.
@@ -965,11 +874,11 @@ simulate! applied.
 ```julia
 e_L, ŵ_L = BS.resolve_source_spectrum_full(
     sim_opts, protocol_low;
-    scanner = scanner, geom = sim_low.geom, phantom = phantom,
+    scanner = scanner, geom = sim_low.geom,
 )
 e_H, ŵ_H = BS.resolve_source_spectrum_full(
     sim_opts, protocol_high;
-    scanner = scanner, geom = sim_high.geom, phantom = phantom,
+    scanner = scanner, geom = sim_high.geom,
 )
 material_basis = (ŵ_L = ŵ_L, p_L = …, q_L = …, ŵ_H = ŵ_H, p_H = …, q_H = …)
 ```
@@ -979,7 +888,6 @@ function resolve_source_spectrum_full(
         protocol::CTProtocol;
         scanner,
         geom,
-        phantom::Union{Nothing, Phantom} = nothing,
         diagnostic::Bool = false,
         label::String = "",
     )
@@ -989,8 +897,12 @@ function resolve_source_spectrum_full(
     # Step 2: identical PhysicsConfig that simulate!'s workspace ctor uses,
     # so `config.heel_effect` / `config.detector_efficiency` are populated
     # iff the corresponding sim_opts flag is true.
+    # (scatter does not shape the spectrum, so its kernels are not loaded here)
     config = build_physics_config(
-        scanner, sim_opts, Float64.(e), Float64.(w_1d); phantom = phantom,
+        scanner,
+        SimOptions(sim_opts; use_scatter = false),
+        Float64.(e),
+        Float64.(w_1d),
     )
 
     # Step 3: bowtie B[col, row, E]
@@ -1033,14 +945,15 @@ function resolve_source_spectrum_full(
 end
 
 """
-    build_physics_config(scanner::Scanner, sim_opts::SimOptions, energies::Vector{Float64}, weights::Vector{Float64}; phantom=nothing) -> PhysicsConfig
+    build_physics_config(scanner::Scanner, sim_opts::SimOptions, energies::Vector{Float64}, weights::Vector{Float64}) -> PhysicsConfig
 
 Build a complete PhysicsConfig from Scanner hardware fields and SimOptions toggles.
 
 For effects with Scanner fields (focal_spot, fill_factor, detector_efficiency,
-heel_effect), the Scanner hardware parameters are used to construct the effect structs.
-For effects without Scanner fields (scatter, optical_crosstalk, lag),
-factory function defaults are used.
+heel_effect, scatter), the Scanner hardware parameters are used to construct the effect structs:
+the scatter is the scanner's [`scatter_kernels`](@ref), loaded (and on first use downloaded) when
+`use_scatter` is on. For effects without Scanner fields (optical_crosstalk, lag), factory function
+defaults are used.
 
 Noise is not part of PhysicsConfig — it is applied externally via
 `compute_detector_I0()` + quantum noise when `sim_opts.use_noise == true`.
@@ -1050,11 +963,6 @@ Noise is not part of PhysicsConfig — it is applied externally via
 - `sim_opts`: SimOptions with resolved boolean toggles
 - `energies`: Energy bin centers (keV) for the current spectrum
 - `weights`: Photon weights for each energy bin
-
-# Keyword Arguments
-- `phantom::Union{Nothing, Phantom} = nothing`: Phantom for automatic scatter scaling.
-  If provided and scatter is enabled, the phantom diameter is estimated from the mask
-  and used to scale the scatter coefficient appropriately.
 
 # Returns
 A `PhysicsConfig` consumed by `simulate!` via the workspace pathway
@@ -1066,8 +974,7 @@ function build_physics_config(
         scanner::Scanner,
         sim_opts::SimOptions,
         energies::Vector{Float64},
-        weights::Vector{Float64};
-        phantom::Union{Nothing, Phantom} = nothing
+        weights::Vector{Float64},
     )
     kwargs = Dict{Symbol, Any}()
 
@@ -1097,17 +1004,9 @@ function build_physics_config(
         )
     end
 
-    # Scatter: use geometry-aware model scaled for this scanner and phantom size
-    # If phantom is provided, estimate diameter from mask for size-aware scatter scaling
-    phantom_diameter_cm = if phantom !== nothing && sim_opts.use_scatter
-        voxel_size_mm = phantom.voxel_size .* 10.0
-        estimate_phantom_diameter_cm(phantom.mask, voxel_size_mm)
-    else
-        nothing
-    end
-
+    # Scatter: the scanner's Geant4 kernels (throws when it names none)
     if sim_opts.use_scatter
-        kwargs[:scatter] = geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diameter_cm)
+        kwargs[:scatter] = scatter_kernels(scanner)
     end
 
     # Optical crosstalk: no Scanner field, use factory default
