@@ -25,7 +25,8 @@ function _pcct(; bowtie)
     )
 end
 
-_air() = BS.Phantom(zeros(UInt8, 8, 8, 8), [BS.XA.Materials.air], (1.0, 1.0, 1.0), (-4.0, -4.0, -4.0), (8.0, 8.0, 8.0))
+# on the backend `to_gpu` picks (api.jl: a GPU when the test environment has one)
+_air() = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 8)), [BS.XA.Materials.air], (1.0, 1.0, 1.0), (-4.0, -4.0, -4.0), (8.0, 8.0, 8.0))
 
 @testset "photon-counting bowtie across the fan" begin
     protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
@@ -135,7 +136,7 @@ end
         @test 0.03 < loss_centre < 0.3
         @test loss_edge < 0.3 * loss_centre       # a tenth of the flux, well under a third of the loss
         # the correction calibrated from air scans at rising currents undoes it in air
-        cal = BS.calibrate_pileup(scanner, protocol, recon; sim_opts = opts)
+        cal = BS.calibrate_pileup(scanner, protocol, recon; sim_opts = opts, like = _air().mask)
         bins = BS.apply_pileup!([copy(b) for b in res.pcct_sino.bins], ws.I0_cpu, cal, protocol)
         before = maximum(maximum(abs, Array(res.pcct_sino.bins[b])[:, r, 1]) for b in 1:4)
         after = maximum(maximum(abs, Array(bins[b])[:, r, 1]) for b in 1:4)
@@ -203,7 +204,7 @@ end
     for i in 1:n, j in 1:n
         hypot((i - (n + 1) / 2) * px, (j - (n + 1) / 2) * px) <= 16.0 && (mask[i, j, :] .= 1)
     end
-    water = BS.Phantom(mask, [BS.XA.Materials.air, BS.XA.Materials.water], (px, px, 0.1), (-18.0 + px / 2, -18.0 + px / 2, -0.35), (36.0, 36.0, 0.8))
+    water = BS.Phantom(to_gpu(mask), [BS.XA.Materials.air, BS.XA.Materials.water], (px, px, 0.1), (-18.0 + px / 2, -18.0 + px / 2, -0.35), (36.0, 36.0, 0.8))
     ws = BS.create_workspace(scanner, protocol, opts, recon, water)
     res = BS.simulate!(ws, water, protocol, opts)
     ch = [Array(b) for b in res.pcct_sino.bins]; I0 = Float64.(Array(res.I0_bins))

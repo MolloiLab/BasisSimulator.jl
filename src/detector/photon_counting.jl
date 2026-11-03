@@ -726,15 +726,57 @@ end
 # =============================================================================
 
 
-# log(k!) for k = 0…20 exactly; Stirling–de Moivre series beyond (rel. error
-# < 1e-10 at k = 21, decreasing with k — far below rejection-test resolution).
-const _LOG_FACTORIAL_TABLE = Float64[sum(log(j) for j in 1:k; init = 0.0) for k in 0:20]
+# log(k!) for k = 0…20 exactly (a tuple, so device code reads it too); Stirling–de Moivre series
+# beyond (rel. error < 1e-10 at k = 21, decreasing with k — far below rejection-test resolution).
+const _LOG_FACTORIAL_TABLE = Tuple(Float64[sum(log(j) for j in 1:k; init = 0.0) for k in 0:20])
 
 function _log_factorial(k::Int)
     k <= 20 && return @inbounds _LOG_FACTORIAL_TABLE[k + 1]
     invk = 1.0 / k
     return (k + 0.5) * log(k) - k + 0.9189385332046728 +
         invk * (1.0 / 12.0 - invk * invk * (1.0 / 360.0 - invk * invk / 1260.0))
+end
+
+# log P(k; λ) = k log λ − λ − log k!. Past the table it is Stirling's series written in
+# t = (λ − k) / k, k (log1p(t) − t) − ½ log k − ½ log 2π − …, so the large terms cancel exactly
+# and Float32 keeps it to about |λ − k|·eps.
+@inline function _log_poisson_pmf(k::T, λ::T) where {T <: AbstractFloat}
+    k <= 20 && return k * log(λ) - λ - T(@inbounds _LOG_FACTORIAL_TABLE[unsafe_trunc(Int, k) + 1])
+    invk = inv(k)
+    t = (λ - k) * invk
+    return k * (log1p(t) - t) - log(k) / 2 - T(0.9189385332046728) -
+        invk * (T(1 / 12) - invk * invk * (T(1 / 360) - invk * invk / 1260))
+end
+
+# A counter-based stream of uniform variates for device code: its `n`-th variate is a hash of
+# `(key, n)`, so every draw is a pure function of its key and no state is shared between threads.
+struct _DrawStream
+    key::UInt64
+    n::UInt64
+end
+
+@inline function _mix64(x::UInt64)                    # splitmix64's finaliser
+    x = (x ⊻ (x >> 30)) * 0xbf58476d1ce4e5b9
+    x = (x ⊻ (x >> 27)) * 0x94d049bb133111eb
+    return x ⊻ (x >> 31)
+end
+
+# Mix `x` into the hash `h`. `x` is spread over all 64 bits first (an odd multiplier), so small
+# seeds and small classes never collide (`seed ⊻ class` would: seed 15's class x is seed 16's y).
+@inline _combine(h::UInt64, x) = _mix64(h ⊻ ((x % UInt64) * 0xd1b54a32d192ed03 + 0x9e3779b97f4a7c15))
+
+# The stream of one draw: a seed, a class, and the dexel `(c, r)` of view `v`.
+@inline _DrawStream(seed::UInt64, class, c, r, v) =
+    _DrawStream(_combine(_combine(_combine(_combine(seed, class), v), r), c), UInt64(0))
+
+@inline _uniform(rng::AbstractRNG, ::Type{T}) where {T} = (rand(rng, T), rng)
+@inline function _uniform(s::_DrawStream, ::Type{Float32})
+    x = _mix64(s.key + s.n * 0x9e3779b97f4a7c15)
+    return ((Float32(x >> 40) + 0.5f0) * 5.9604645f-8, _DrawStream(s.key, s.n + 1))   # (0, 1)
+end
+@inline function _uniform(s::_DrawStream, ::Type{Float64})
+    x = _mix64(s.key + s.n * 0x9e3779b97f4a7c15)
+    return ((Float64(x >> 11) + 0.5) * 1.1102230246251565e-16, _DrawStream(s.key, s.n + 1))
 end
 
 """
@@ -745,43 +787,41 @@ PTRS transformed rejection above (W. Hörmann, "The transformed rejection
 method for generating Poisson random variables", Insurance: Mathematics and
 Economics 12, 39–45, 1993).  No Gaussian approximation at any count level.
 """
-function _poisson_sample(rng, λ::Float64)
-    if λ < 1.0e-10
-        return 0
-    elseif λ < 10.0
+_poisson_sample(rng, λ::Real) = Int(first(_poisson_draw(rng, Float64(λ))))
+
+# The sampler, in λ's precision (Float32 on a device): the count, as a number of that type, and
+# the stream past the variates it used. `rng` is an `AbstractRNG` or a `_DrawStream`.
+@inline function _poisson_draw(rng, λ::T) where {T <: AbstractFloat}
+    if λ < T(1.0e-10)
+        return (zero(T), rng)
+    elseif λ < 10
         # Inversion by sequential search (Knuth): exact, O(λ).
         L = exp(-λ)
-        k = 0
-        p = 1.0
+        k = zero(T)
+        p = one(T)
         while true
-            p *= rand(rng)
-            p < L && return k
-            k += 1
-        end
-    else
-        # PTRS: O(1) exact transformed-rejection sampling for λ ≥ 10.
-        b = 0.931 + 2.53 * sqrt(λ)
-        a = -0.059 + 0.02483 * b
-        inv_alpha = 1.1239 + 1.1328 / (b - 3.4)
-        v_r = 0.9277 - 3.6224 / (b - 2.0)
-        logλ = log(λ)
-        while true
-            U = rand(rng) - 0.5
-            V = rand(rng)
-            us = 0.5 - abs(U)
-            k = floor(Int, (2.0 * a / us + b) * U + λ + 0.43)
-            if us >= 0.07 && V <= v_r
-                return k
-            end
-            if k < 0 || (us < 0.013 && V > us)
-                continue
-            end
-            if log(V) + log(inv_alpha) - log(a / (us * us) + b) <=
-                    k * logλ - λ - _log_factorial(k)
-                return k
-            end
+            u, rng = _uniform(rng, T)
+            p *= u
+            p < L && return (k, rng)
+            k += one(T)
         end
     end
+    # PTRS: O(1) exact transformed-rejection sampling for λ ≥ 10.
+    b = T(0.931) + T(2.53) * sqrt(λ)
+    a = T(-0.059) + T(0.02483) * b
+    inv_alpha = T(1.1239) + T(1.1328) / (b - T(3.4))
+    v_r = T(0.9277) - T(3.6224) / (b - 2)
+    while true
+        u, rng = _uniform(rng, T)
+        V, rng = _uniform(rng, T)
+        U = u - T(0.5)
+        us = T(0.5) - abs(U)
+        k = floor((2 * a / us + b) * U + λ + T(0.43))
+        us >= T(0.07) && V <= v_r && return (k, rng)
+        (k < 0 || (us < T(0.013) && V > us)) && continue
+        log(V) + log(inv_alpha) - log(a / (us * us) + b) <= _log_poisson_pmf(k, λ) && return (k, rng)
+    end
+    return
 end
 
 # =============================================================================

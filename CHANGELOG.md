@@ -52,8 +52,8 @@ onward they are written by hand, and releases are cut by hand — see
   pixel's Fano factor above 20 keV 1.109, within 3 % of the binned table's; standard counts = 4.000 × UHR counts.
 - **Pile-up per native dexel, before the sum**, re-implemented from the fitted inputs (pulses per photon and their
   heights, a 10 ns CR-RC shaper, one retriggering comparator per threshold, 27 ns dead time):
-  `compute_mc_pileup_matrix(thresholds, weights, energies, rate, dead_time_ns; n_pulses, seed)` and
-  `pileup_counts!`. Count loss at 140 kV: 2.6 % at 1 Mcps per dexel, 21 % at 10 Mcps.
+  `compute_mc_pileup_matrix(thresholds, weights, energies, rate, dead_time_ns; n_pulses, seed)`, applied by
+  `pcct_count!`. Count loss at 140 kV: 2.6 % at 1 Mcps per dexel, 21 % at 10 Mcps.
 - **η once, no cap:** the response is per incident photon (absorption included), so `quantum_efficiency` no longer
   multiplies the projection, the air response, the scatter weights or `compute_mc_count_moments` (its `η` keyword is
   gone; `compute_scatter_bin_weights(energies, weights, energy_weights, R, kVp)`); `compute_mc_drm` no longer
@@ -65,8 +65,8 @@ onward they are written by hand, and releases are cut by hand — see
   are the table's), `n_energy_bins` (it is `length(energy_thresholds)`), `energy_resolution`, `charge_sharing_fwhm`
   (the table's), `pixel_mode` (dead), `native_dexel_col_mm`, `native_dexel_row_mm` (a native dexel's pitch is the
   pixel's over `binning_factor`; its aperture is the table's). Thresholds must be among the table's 16.
-- **Removed:** `apply_pcct_noise!` (→ `pcct_count!` inside `simulate!`) and `simulate!`'s `noise_rng` (views are
-  drawn in parallel from `(seed, view)` streams), `apply_pcct_pileup!` (→ `pileup_counts!` per native dexel),
+- **Removed:** `apply_pcct_noise!` (→ `pcct_count!` inside `simulate!`) and `simulate!`'s `noise_rng` (every
+  draw has its own counter-based stream), `apply_pcct_pileup!` (→ `pcct_count!`'s pile-up per native dexel),
   `simulate_pulse_train`, `PileupResult`; `MCResponseData`'s unused `R_perpixel`, `Var_total` and `Cov_pixpair`.
 
 - **Pile-up is corrected outside `simulate!`, from simulated calibration scans:** `calibrate_pileup` (air scans at
@@ -94,7 +94,7 @@ onward they are written by hand, and releases are cut by hand — see
   `detector_efficiency_gemstone`, `detector_efficiency_ufc`, `detector_efficiency_ufc_flash`,
   `fill_factor_standard`, `get_gemstone_mc_efficiency`, `get_ufc_flash_mc_efficiency`, `get_ufc_mc_efficiency`,
   `simulate_pulse_train`. The new plumbing (`eid_signal_moments`, the native table, `pcct_count!`,
-  `pcct_event_classes`, `pcct_position_gain`, `pileup_counts!`) is internal.
+  `pcct_event_classes`, `pcct_position_gain`) is internal.
 
 - **Patient scatter is the Geant4 scatter library**, superposed on each acquisition's own rays; the analytic
   convolution model (Ohnesorge-style kernel, `(diameter/30)^1.5` and air-gap scalings) is gone. BasisMonteCarlo's v2
@@ -154,6 +154,26 @@ onward they are written by hand, and releases are cut by hand — see
   `EICTWorkspace`'s `scatter_kernel`, `scatter_kernel_1d`, `scatter_temp` and `PCCTWorkspace`'s `combined` are gone,
   `scatter` (a `ScatterPlan`, or `nothing`) is new on both; `keep_projection` keeps no scatter field (the scatter is
   in the projection). A phantom simulated with scatter has at most 64 materials (`compact_materials`).
+- **The photon-counting detection runs on the scan's device, in its precision (Float32).** Every native dexel's
+  expected counts, its defects, its counting noise (each pair class's shared photons), its pile-up and the digital
+  2 × 2 sum are kernels on the phantom's backend (`pcct_count!` does the noise, the pile-up and the sum in one; the
+  CPU backend runs the same kernels); before, they ran on the host in Float64, about 7.3 GB of host memory per bin
+  for a full NAEOTOM Alpha scan. Each Poisson draw has its own counter-based stream keyed by (seed, class, dexel,
+  view), so a seed fixes a scan on a backend whatever the thread count, and the CPU and a GPU draw nearly the same
+  realisation; the realisations differ from before, their statistics do not. Against the host code on a 160 × 8-pixel
+  Alpha (300 views, defects and pile-up on): the noise-free counts agree to 5e-7, the noisy means, Fano factors and
+  neighbour correlations within sampling error, and the flat-field and pile-up residuals of `test/defects.jl` to
+  6 digits. On notebook 04's detector (1376 × 17 pixels, 120 views × 5 sub-views) the detection takes 0.07 s (was
+  8.8 s) and no host memory (was 0.7 GB). `pileup_counts!` (internal) is folded into `pcct_count!`
+  (`pcct_count!(counts, expected, classes; seed, binning, pileup)`, `classes = nothing` for the expected counts);
+  `PCCTWorkspace`'s unused `noise_staging` and `rng` are gone and its `defects` live on the device.
+- **The calibrations scan on the scan's device:** `calibrate_flat_field` and `calibrate_pileup` take
+  `like`, an array on the device to scan on (the scan's `phantom.mask`; the CPU by default), and
+  `apply_pileup!` is a kernel on the bins' backend. On notebook 04's detector `calibrate_pileup` (40 views) takes
+  13.5 s (was 342 s) and `calibrate_flat_field` (120 views) 1.5 s (was 145 s); the gains and curves agree with the
+  host code to 6e-7. Notebook 04's whole acquisition (both calibrations and three draws, 1200 views × 5 sub-views,
+  scatter on) takes 505 s (was 3462 s) and 3.8 GB of host memory (was 12.6 GB); a full NAEOTOM Alpha scan
+  (1376 × 144 pixels, 1152 views) fits in 6.7 GB of host and 44.5 GB of device memory, its detection about 2 s.
 
 ### Fixed
 - **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.

@@ -437,12 +437,13 @@ end"""),
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
 res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 
-# pile-up, calibrated as a scanner does it: air scans at rising currents (few views suffice)
-pileup = BS.calibrate_pileup(scanner_pc, BS.CTProtocol(protocol; views = 40), recon; sim_opts)
+# pile-up, calibrated as a scanner does it: air scans at rising currents (few views suffice),
+# on the phantom's device
+pileup = BS.calibrate_pileup(scanner_pc, BS.CTProtocol(protocol; views = 40), recon; sim_opts, like = phantom.mask)
 BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
 
 # then the flat field: a low-flux air scan gives every pixel's gain in every bin
-flat = BS.calibrate_flat_field(scanner_pc, protocol, recon; sim_opts)
+flat = BS.calibrate_flat_field(scanner_pc, protocol, recon; sim_opts, like = phantom.mask)
 BS.apply_flat_field!(res_pc.pcct_sino.bins, flat)"""),
             p("The pile-up model simulates shaped pulses on the CPU at the count rates this scan will see; it takes ",
               "seconds and is memoised for the session. Set ", c("dead_time_ns = 0"), " to skip pile-up while you iterate."),
@@ -812,7 +813,7 @@ RULES
 - Every label needs a material (missing -> air silently). Phantom voxel <= recon voxel. Whole body cross-section in the volume, z margin beyond the recon slab; the volume is centred at the isocentre (origin does not move it). <= 64 materials for the fast projector (compact_materials; dithered iodine quantization; never merge across measured regions).
 - Detector must cover the body: detector_cols * detector_col_size (mm) > body width. Even views per rotation for helical. Measure inside the inscribed FOV circle.
 - Water on a Gammex centre ROI reads about +20 HU (calcium hardening); judge water on a water phantom. HU per mg/mL iodine depends on body size; calibrate on the scanned body.
-- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, CTProtocol(protocol; views = 40), recon; sim_opts), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
+- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, CTProtocol(protocol; views = 40), recon; sim_opts, like = phantom.mask), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
 - reconstruct! returns the workspace's buffer: copy before the next call. vmi_pipeline(recon_method = :hir) cannot use PairFilter or image HYPR.
 - Pluto: simulate! mutates in place (return values from cells); restart after package updates; one heavy scan at a time (a full chest/head scan peaks at 10-11 GB).
 - Record seed, scanner, protocol, options and pkgversion(BasisSimulator) with every output. Never present a downscaled run (fewer views, coarser phantom) as the real scan.

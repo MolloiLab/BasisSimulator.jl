@@ -12,9 +12,10 @@ const _PCCT_DEVICE_SAFETY_FACTOR = 0.5
                                   T = Float32)
 
 Conservative byte estimate for the persistent PCCT workspace buffers. The GPU
-estimate includes binned and native-resolution bins/scratch/output storage;
-the host estimate includes the two full sinogram noise staging buffers.
-Small spectral tables and geometry vectors are covered by a 16 MiB allowance.
+estimate includes binned and native-resolution bins/scratch/output storage and
+the detection's transient counts (it runs on the device); the host holds only
+small tables. Small spectral tables and geometry vectors are covered by a 16 MiB
+allowance.
 """
 function estimate_pcct_workspace_bytes(
         sino_shape::NTuple{3, <:Integer},
@@ -30,6 +31,8 @@ function estimate_pcct_workspace_bytes(
     volume = prod(Int.(volume_shape)) * bytes
     # bins K + sino/scratch/combined/tube scratch 4 + flat outputs K
     gpu = (2Int(n_bins) + 4) * binned + volume
+    # the detection's counts K, and its expected counts K when they are the pixels' own (bf = 1)
+    gpu += (binning_factor == 1 ? 2 : 1) * Int(n_bins) * binned
     if binning_factor > 1
         native_shape = (
             Int(sino_shape[1]) * Int(binning_factor),
@@ -41,7 +44,7 @@ function estimate_pcct_workspace_bytes(
         gpu += (2Int(n_bins) + 1) * native
     end
     gpu += 16 * 2^20
-    host = 2 * binned + 16 * 2^20
+    host = 16 * 2^20
     (gpu_bytes = gpu, host_bytes = host, total_bytes = gpu + host)
 end
 
