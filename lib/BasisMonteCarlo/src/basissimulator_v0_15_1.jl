@@ -173,3 +173,98 @@ Khodajou-Chokami, BasisSimulator PR #10), copied byte for byte into
 basissimulator_v0_15_1_response() = Serialization.deserialize(
     joinpath(@__DIR__, "data", "basissimulator_v0_15_1_cdte_response_v4.jls"),
 )
+
+# =============================================================================
+# BasisSimulator v0.15.1's analytic scatter model, kept for comparison
+# =============================================================================
+# Up to and including v0.15.1, BasisSimulator estimated scatter with an analytic convolution model
+# (Ohnesorge et al., Eur Radiol 1999; XCIST), in src/detector/scatter.jl (last changed at commit
+# 70dbf13; tag v0.15.1 is commit b429311 of MolloiLab/BasisSimulator.jl). v0.16 replaced it with
+# the Geant4 scatter library. The math of `geometry_aware_scatter_model` (Gaussian kernel, the
+# default), `estimate_scatter_field!` (its separable path) and `compute_scatter_energy_weights` is
+# copied here, on the CPU, so that the scatter notebooks keep comparing against it.
+# =============================================================================
+
+"""
+    basissimulator_v0_15_1_scatter(
+        sinogram;
+        source_to_isocenter_mm,
+        source_to_detector_mm,
+        detector_col_size_mm,
+        phantom_diameter_cm,
+        energies,
+        weights,
+    ) -> Array{Float64, 3}
+
+The scatter BasisSimulator v0.15.1 added to a sinogram of line integrals `[column, row, view]`,
+in intensity relative to the unattenuated beam: its scatter field times its spectrum's scatter
+weight, the term `inject_scatter!` added to each ray's `exp(-p)`. Copied from BasisSimulator
+v0.15.1, `src/detector/scatter.jl` (tag v0.15.1, commit b429311):
+
+- the coefficient (`geometry_aware_scatter_model`): `0.025 × (410 mm / air gap)² × (D / 30 cm)^1.5`,
+  each factor clamped to `[0.1, 10]`, the air gap `source_to_detector_mm - source_to_isocenter_mm`
+  and `D = phantom_diameter_cm`;
+- the kernel: a Gaussian of 50 mm FWHM at the detector face, in columns of
+  `detector_col_size_mm` (at the isocentre) magnified by `source_to_detector_mm /
+  source_to_isocenter_mm`, truncated at 3σ and at 63 dexels, normalised, applied separably over
+  columns then rows, the edges clamped (row pitch does not enter: v0.15.1 used the column FWHM in
+  both directions);
+- the field (`estimate_scatter_field!`): that kernel over `exp(-min(p, 20)) × p × coefficient`;
+- the weight (`compute_scatter_energy_weights`): the spectrum's mean Compton fraction,
+  `Σ wₖ / (1 + (20 / max(Eₖ, 1))³) / Σ wₖ` over `energies` (keV) and `weights`.
+
+v0.15.1's `scale_factor` (1) and `kernel_type` (`:gaussian`) are at their defaults. Kept for
+comparison only, like [`BASISSIMULATOR_V0_15_1_EFFICIENCY`](@ref).
+"""
+function basissimulator_v0_15_1_scatter(
+        sinogram::AbstractArray{<:Real, 3};
+        source_to_isocenter_mm::Real,
+        source_to_detector_mm::Real,
+        detector_col_size_mm::Real,
+        phantom_diameter_cm::Real,
+        energies::AbstractVector{<:Real},
+        weights::AbstractVector{<:Real},
+    )
+    # geometry_aware_scatter_model: SCATTER_REF_COEFFICIENT, SCATTER_REF_AIR_GAP_MM,
+    # SCATTER_REF_PHANTOM_DIAMETER_CM, SCATTER_SIZE_SCALING_EXPONENT
+    air_gap = source_to_detector_mm - source_to_isocenter_mm
+    geometry_scale = clamp((410.0 / air_gap)^2, 0.1, 10.0)
+    size_scale = clamp((phantom_diameter_cm / 30.0)^1.5, 0.1, 10.0)
+    coefficient = 0.025 * geometry_scale * size_scale
+
+    # compute_scatter_kernel_fwhm_pixels: SCATTER_PHYSICAL_KERNEL_FWHM_MM at the detector face
+    magnification = source_to_detector_mm / source_to_isocenter_mm
+    fwhm = 50.0 / (detector_col_size_mm * magnification)
+
+    # create_scatter_kernel_1d: MAX_SCATTER_KERNEL_SIZE = 63
+    sigma = fwhm / (2 * sqrt(2 * log(2)))
+    extent = min(63 ÷ 2, ceil(Int, 3 * sigma))
+    kernel = [exp(-dx^2 / (2 * sigma^2)) for dx in -extent:extent]
+    kernel ./= sum(kernel)
+
+    # estimate_scatter_field!: the pre-signal, then columns, then rows
+    p = Float64.(sinogram)
+    pre = @. exp(-min(p, 20.0)) * p * coefficient
+    n_cols, n_rows, n_views = size(p)
+    across = similar(pre)
+    field = similar(pre)
+    for v in 1:n_views, r in 1:n_rows, c in 1:n_cols
+        acc = 0.0
+        for d in -extent:extent
+            acc += pre[clamp(c + d, 1, n_cols), r, v] * kernel[d + extent + 1]
+        end
+        across[c, r, v] = acc
+    end
+    for v in 1:n_views, r in 1:n_rows, c in 1:n_cols
+        acc = 0.0
+        for d in -extent:extent
+            acc += across[c, clamp(r + d, 1, n_rows), v] * kernel[d + extent + 1]
+        end
+        field[c, r, v] = acc
+    end
+
+    # compute_scatter_energy_weights, integrated over the spectrum as the notebooks did
+    compton = [1.0 / (1.0 + (20.0 / max(E, 1.0))^3) for E in energies]
+    weight = sum(weights .* compton) / sum(weights)
+    return field .* weight
+end

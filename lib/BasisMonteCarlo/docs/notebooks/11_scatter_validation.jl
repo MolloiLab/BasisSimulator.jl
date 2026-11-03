@@ -18,9 +18,10 @@ kernel's Compton and Rayleigh parts by how much of each scattering the ray's own
 into the angles the detector sees. This notebook measures how well that holds: six phantoms that
 are not water cylinders, each simulated directly in Geant4 (every photon of the fan beam, every
 scattering scored by forced detection), against the library's prediction and against
-BasisSimulator's current model, on a scanner with a 2-D grid (the SOMATOM Force) and one with a
-1-D grid (the Aquilion ONE). The second thorax is held out: it was not used to choose anything.
-Every comparison is a number with a target; the notebook ends with its scorecard.
+BasisSimulator v0.15.1's analytic model (which v0.16 replaced with the library), on a scanner
+with a 2-D grid (the SOMATOM Force) and one with a 1-D grid (the Aquilion ONE). The second
+thorax is held out: it was not used to choose anything. Every comparison is a number with a
+target; the notebook ends with its scorecard.
 """
 
 # ╔═╡ 6c441e5d-e5e6-59ee-ab46-e7bb118e71b5
@@ -75,7 +76,7 @@ PALETTE = (
     ceramic = Mke.RGBf(0.9, 0.92, 0.95),
     ceramic_hit = Mke.RGBf(0.78, 0.85, 0.95),
     tungsten = Mke.RGBf(0.25, 0.25, 0.3),
-    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator's current table
+    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator v0.15.1's analytic model
     ink = Mke.RGBf(0.13, 0.13, 0.16),
     muted = Mke.RGBf(0.42, 0.42, 0.46),
 )
@@ -347,8 +348,9 @@ library's prediction takes rays every 0.1° across the fan, each with its water-
 its length through the outline and its materials' scattering and attenuation against water's;
 stands the view in its water ellipse; and sums the kernels, each at the offset whose chord is the
 ray's own water-equivalent length (a ray longer than the ellipse is thick gets an ellipse as thick
-as itself). BasisSimulator's current model is run on the same projection, one ray per column of
-the detector, with its size scaling at the phantom's water-equivalent diameter.
+as itself). BasisSimulator v0.15.1's analytic model, which v0.16 replaced with the library, is run
+on the same projection, one ray per column of the detector, with its size scaling at the phantom's
+water-equivalent diameter.
 """
 
 # ╔═╡ 3ddaaa30-9111-50c0-9836-f278f92809fa
@@ -492,8 +494,9 @@ predicted = [
 
 # ╔═╡ 241b138e-6fce-5b2a-a217-71902cdf0f62
 md"""
-**BasisSimulator today**, on each case: its scatter field (`estimate_scatter_field!`, the scanner's
-geometry and the phantom's water-equivalent diameter in `geometry_aware_scatter_model`) from the
+**BasisSimulator v0.15.1's analytic model**, which v0.16 replaced with the library, on each case:
+its scatter field (an Ohnesorge convolution, scaled by the scanner's geometry and the phantom's
+water-equivalent diameter; kept in this package as `basissimulator_v0_15_1_scatter`) from the
 polychromatic projection of the water-equivalent lengths, times its energy weighting. It works in
 intensity relative to the unattenuated beam, so it is compared as a scatter-to-primary ratio; the
 direct simulation and the library are put on the same footing with the exact primary of each
@@ -511,33 +514,26 @@ function transmission(wet_mm)
 end
 
 # ╔═╡ a569223d-d467-56fa-9122-3b32a5ca8d8f
-# BasisSimulator's scatter-to-primary ratio on the central row, column by column
+# BasisSimulator v0.15.1's analytic model (which v0.16 replaced with the library): its
+# scatter-to-primary ratio on the central row, column by column
 bs_profiles = [
     let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
             rays = projections[j].rays
-            bs_scanner = BS.EICTScanner(
-                source_to_isocenter = s.source_to_isocenter_mm,
-                source_to_detector = s.source_to_detector_mm,
-                detector_rows = 64,
-                detector_cols = length(rays),
-                detector_row_size = 40.0 / 64,
-                detector_col_size = s.source_to_isocenter_mm * deg2rad(s.column_bin_deg),
-                detector_material = :ufc,
-                detector_depth = 1.4,
-            )
             sinogram = zeros(Float64, length(rays), 64, 1)
             for (i, ray) in enumerate(rays)
                 sinogram[i, :, 1] .= -log(transmission(ray.wet_mm))
         end
-            model = BS.geometry_aware_scatter_model(
-                bs_scanner;
-                phantom_diameter_cm = projections[j].wed_mm / 10,
-            )
-            field = similar(sinogram)
-            BS.estimate_scatter_field!(field, sinogram, model)
             e, w = spectrum
-            weight = sum(w .* BS.compute_scatter_energy_weights(collect(Float64, e))) / sum(w)
-            field[:, 32, 1] .* weight ./ exp.(-sinogram[:, 32, 1])
+            scatter = MC.basissimulator_v0_15_1_scatter(
+                sinogram;
+                source_to_isocenter_mm = s.source_to_isocenter_mm,
+                source_to_detector_mm = s.source_to_detector_mm,
+                detector_col_size_mm = s.source_to_isocenter_mm * deg2rad(s.column_bin_deg),
+                phantom_diameter_cm = projections[j].wed_mm / 10,
+                energies = e,
+                weights = w,
+            )
+            scatter[:, 32, 1] ./ exp.(-sinogram[:, 32, 1])
     end
         for (j, case) in enumerate(cases)
 ]
@@ -641,7 +637,7 @@ let
             color = PALETTE.reference,
             linewidth = 2,
             linestyle = :dot,
-            label = "BasisSimulator today",
+            label = "BasisSimulator v0.15.1",
         )
         j == 1 && Mke.axislegend(ax; position = :lt, labelsize = 13)
     end
@@ -656,7 +652,7 @@ let
     ]
     Markdown.parse(
         """
-        | phantom | scanner | WED | library, centre | library, across the fan (rms) | BasisSimulator today, across the fan (rms) |
+        | phantom | scanner | WED | library, centre | library, across the fan (rms) | BasisSimulator v0.15.1, across the fan (rms) |
         |---|---|---|---|---|---|
         $(join(rows, "\n"))
 
@@ -818,9 +814,9 @@ md"""
 
 For every phantom and scanner: the library's scatter at the centre within 10 % of the direct
 simulation, its scatter-to-primary ratio across the fan within 15 % (rms, over every column whose
-ray crosses the phantom), and closer to the direct simulation than BasisSimulator's current model;
-and the direct simulation precise enough to judge that (its own noise at the centre within 2 %).
-Every column inside the phantom counts, the most attenuated rays included.
+ray crosses the phantom), and closer to the direct simulation than BasisSimulator v0.15.1's
+analytic model; and the direct simulation precise enough to judge that (its own noise at the
+centre within 2 %). Every column inside the phantom counts, the most attenuated rays included.
 """
 
 # ╔═╡ 9c1da4a7-b08d-5601-950d-b06473a0e538
@@ -851,7 +847,7 @@ checks = vcat(
     ],
     [
         MC.check_below(
-                "$(case.phantom.name), $(case.scanner): library error over BasisSimulator's",
+                "$(case.phantom.name), $(case.scanner): library error over BasisSimulator v0.15.1's",
                 comparison[j].library_rms / comparison[j].bs_rms,
                 1.0;
                 source = "direct Monte Carlo",

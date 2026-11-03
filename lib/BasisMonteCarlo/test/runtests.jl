@@ -278,6 +278,93 @@ using Random: Xoshiro
         @test size(response["R_total"]) == (140, length(response["thresholds_keV"]))
     end
 
+    @testset "BasisSimulator v0.15.1's analytic scatter, kept for comparison" begin
+        # Elliptical water phantoms across a fan, with a row-dependent ramp, and a synthetic
+        # spectrum. The numbers were recorded from BasisSimulator v0.15.1's own
+        # geometry_aware_scatter_model, estimate_scatter_field! and compute_scatter_energy_weights
+        # on the same inputs (which the port matched bit for bit).
+        function ellipse_sinogram(n_cols, views, sid, col, a, b)
+            s = zeros(Float64, n_cols, 64, length(views))
+            for (v, θ) in enumerate(views), r in 1:64, i in 1:n_cols
+                t = sid * sin((i - (n_cols + 1) / 2) * (col / sid))
+                ρ2 = (a * cos(θ))^2 + (b * sin(θ))^2
+                L = abs(t) < sqrt(ρ2) ? 2 * a * b * sqrt(ρ2 - t^2) / ρ2 : 0.0
+                s[i, r, v] = 0.019 * L * (1 + 0.3 * ((r - 32.5) / 64)^2)
+            end
+            return s
+        end
+        energies = collect(20.0:10.0:120.0)
+        weights = [exp(-((E - 60) / 25)^2) for E in energies]
+        cases = [
+            # the library's SOMATOM Force entry (notebook 11): 2° columns
+            (
+                sid = 595.0,
+                sdd = 1085.6,
+                col = 595.0 * deg2rad(2.0),
+                n_cols = 25,
+                a = 150.0,
+                b = 150.0,
+                diameter_cm = 30.0,
+                views = [0.0],
+                recorded = [
+                    (13, 32, 1) => 0.00031693335508647453,
+                    (6, 1, 1) => 0.0038412715479984607,
+                    (20, 64, 1) => 0.00384127154799846,
+                ],
+            ),
+            # the library's Aquilion ONE entry (notebook 11)
+            (
+                sid = 600.0,
+                sdd = 1072.0,
+                col = 600.0 * deg2rad(2.0),
+                n_cols = 25,
+                a = 175.0,
+                b = 125.0,
+                diameter_cm = 29.6,
+                views = [0.0, π / 3],
+                recorded = [
+                    (13, 32, 1) => 0.00071925506610508,
+                    (6, 1, 1) => 0.0030834678829173264,
+                    (20, 64, 2) => 0.00042855329010831674,
+                ],
+            ),
+            # BasisSimulator's Force dexels (notebook 09): the kernel at its 63-dexel cap, and line
+            # integrals past the clamp at 20
+            (
+                sid = 595.0,
+                sdd = 1085.6,
+                col = 0.561,
+                n_cols = 920,
+                a = 250.0,
+                b = 200.0,
+                diameter_cm = 45.0,
+                views = [0.0, π / 2],
+                recorded = [
+                    (460, 32, 1) => 0.00010307154413174238,
+                    (460, 32, 2) => 1.8746872182146465e-5,
+                    (100, 5, 2) => 0.0035231987611380636,
+                ],
+            ),
+        ]
+        for c in cases
+            sinogram = ellipse_sinogram(c.n_cols, c.views, c.sid, c.col, c.a, c.b)
+            c.n_cols == 920 && (sinogram[460, 30:34, 2] .= 25.0)
+            scatter = basissimulator_v0_15_1_scatter(
+                sinogram;
+                source_to_isocenter_mm = c.sid,
+                source_to_detector_mm = c.sdd,
+                detector_col_size_mm = c.col,
+                phantom_diameter_cm = c.diameter_cm,
+                energies,
+                weights,
+            )
+            @test size(scatter) == size(sinogram)
+            for (index, value) in c.recorded
+                @test scatter[index...] ≈ value rtol = 1.0e-12
+            end
+        end
+    end
+
     @testset "scatter library: each ray in its own cylinder" begin
         # A synthetic library whose kernel is the cylinder's diameter, in one bin: the scatter a
         # scan adds up is then the diameter each ray was given, weighted by its share

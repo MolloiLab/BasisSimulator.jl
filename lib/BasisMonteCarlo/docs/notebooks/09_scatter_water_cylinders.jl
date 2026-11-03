@@ -20,8 +20,8 @@ forced detection (notebook 10 explains it), and asks four things:
    the 2-D against 1-D grid reductions of Melnyk et al.?
 3. **Is the grid model right**: the probability that a photon at an angle gets through a grid,
    against Geant4 transporting it through the tungsten walls?
-4. **How far is BasisSimulator's current model** (one convolution scaled by one diameter) from all
-   of this?
+4. **How far is BasisSimulator v0.15.1's analytic model** (one convolution scaled by one
+   diameter, which v0.16 replaced with the library) from all of this?
 
 Every answer is a number with a target; the notebook ends with its scorecard.
 """
@@ -175,7 +175,7 @@ PALETTE = (
     ceramic = Mke.RGBf(0.9, 0.92, 0.95),
     ceramic_hit = Mke.RGBf(0.78, 0.85, 0.95),
     tungsten = Mke.RGBf(0.25, 0.25, 0.3),
-    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator's current table
+    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator v0.15.1's analytic model
     ink = Mke.RGBf(0.13, 0.13, 0.16),
     muted = Mke.RGBf(0.42, 0.42, 0.46),
 )
@@ -500,10 +500,11 @@ primary_check = [
 
 # ╔═╡ 859c7739-942a-5cc1-a90a-064f8a3b1ae4
 md"""
-**BasisSimulator today.** Its model, `geometry_aware_scatter_model` with `estimate_scatter_field!`,
-on the same cylinders: the projection of each cylinder through the same beam, the Force as
-BasisSimulator defines it, 40 mm wide, and the model's own size scaling from the diameter. Its SPR
-in the central bin is its scatter field, weighted by its energy model, over the primary.
+**BasisSimulator v0.15.1's analytic model**, which v0.16 replaced with the library (kept in this
+package as `basissimulator_v0_15_1_scatter`), on the same cylinders: the projection of each
+cylinder through the same beam, the Force as BasisSimulator defines it, 40 mm wide, and the
+model's own size scaling from the diameter. Its SPR in the central bin is its scatter field,
+weighted by its energy model, over the primary.
 """
 
 # ╔═╡ 8e6da242-e150-5b6f-9a89-0281bd4aa933
@@ -530,9 +531,9 @@ bs_force = BS.EICTScanner(
 
 # ╔═╡ 5323db56-e1e0-53d0-92ce-ab689486fc8f
 """
-BasisSimulator's SPR at the central detector element, for a water cylinder of `diameter_mm` in
-`scanner`'s beam: its scatter field from the polychromatic projection, its energy weighting, over
-the primary.
+BasisSimulator v0.15.1's SPR at the central detector element, for a water cylinder of
+`diameter_mm` in `scanner`'s beam: its scatter field from the polychromatic projection, its
+energy weighting, over the primary.
 """
 function bs_spr(scanner, diameter_mm)
     e, w = spectrum
@@ -547,12 +548,17 @@ function bs_spr(scanner, diameter_mm)
         transmitted = sum(wk * exp(-μ[clamp(round(Int, Ek), 1, 150)] * L) for (Ek, wk) in zip(e, w)) / sum(w)
         sinogram[i, :, 1] .= -log(transmitted)
     end
-    model = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = diameter_mm / 10)
-    field = similar(sinogram)
-    BS.estimate_scatter_field!(field, sinogram, model)
-    weight = sum(w .* BS.compute_scatter_energy_weights(collect(Float64, e))) / sum(w)
+    scatter = MC.basissimulator_v0_15_1_scatter(
+        sinogram;
+        source_to_isocenter_mm = scanner.source_to_isocenter,
+        source_to_detector_mm = scanner.source_to_detector,
+        detector_col_size_mm = scanner.detector_col_size,
+        phantom_diameter_cm = diameter_mm / 10,
+        energies = e,
+        weights = w,
+    )
     c, r = (cols + 1) ÷ 2, (rows + 1) ÷ 2
-    return field[c, r, 1] * weight / exp(-sinogram[c, r, 1])
+    return scatter[c, r, 1] / exp(-sinogram[c, r, 1])
 end
 
 # ╔═╡ 555af2c9-409e-5c2b-9c34-90573793dd46
@@ -590,7 +596,7 @@ let
         markersize = 12,
         linewidth = 3,
         linestyle = :dash,
-        label = "BasisSimulator today",
+        label = "BasisSimulator v0.15.1",
     )
     Mke.axislegend(ax; position = :lt)
     fig
@@ -604,7 +610,7 @@ let
     ]
     Markdown.parse(
         """
-        | water cylinder | no grid | 1-D grid | 2-D grid | BasisSimulator today |
+        | water cylinder | no grid | 1-D grid | 2-D grid | BasisSimulator v0.15.1 |
         |---|---|---|---|---|
         $(join(rows, "\n"))
 
@@ -906,7 +912,7 @@ md"""
 ## Saving the Results
 
 One file in `lib/BasisMonteCarlo/tables/`: the SPR against diameter for the three grids and for
-BasisSimulator's current model, the literature comparisons, the grid check and the scorecard.
+BasisSimulator v0.15.1's analytic model, the literature comparisons, the grid check and the scorecard.
 """
 
 # ╔═╡ a79a77e5-a407-5b78-ac96-f9ceabb4144d
