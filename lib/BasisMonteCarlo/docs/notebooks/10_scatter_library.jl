@@ -57,6 +57,17 @@ mostly a sharp forward peak at the ray itself: moved by part of a column and sha
 that peak would smear across the steepest part of the scan. So the kernels also keep where in each
 column their scatter landed (its mean and spread), and a column is moved as what it holds: a peak
 lands whole, scatter spread over its column is shared as before.
+
+A kernel's ray is surrounded by water as its ellipse places it; a patient's is not. A thorax is
+dense in the middle (the mediastinum and the spine) and light at the sides (the lungs): the scatter
+a ray beside the mediastinum sends toward the middle is stopped there, and what it sends out
+through a lung escapes. The scatter of a ray's first scattering, most of what a grid lets through
+near the ray, can be computed in any medium (a quadrature of what forced detection integrates
+along a kernel's ray, with Geant4's angular distributions of water). So a scan has each kernel
+give up its own single scatter, computed in its water ellipse, for the ray's own, computed in the
+patient as its rays describe it (each ray's water spread evenly along its length through the
+outline), and keeps the kernel's multiple scatter. For a patient that is its own water ellipse the
+two are the same.
 """
 
 # ╔═╡ e0e565df-c3ed-4b6d-b27f-66226d58c2ce
@@ -598,6 +609,8 @@ library = MC.shape_scatter_library(
     impact_fractions,
     energies_keV;
     water_mu_per_mm = water_mu,
+    water_compton_per_mm = water_compton,
+    water_rayleigh_per_mm = water_rayleigh,
     metadata = Dict{String, Any}(
         "photons_per_kernel" => Dict(string(T, " mm × ", r) => 2 * photons_per_half(T, r) for T in thicknesses_mm for r in aspects),
         "physics" => string(physics),
@@ -617,6 +630,8 @@ library_halves = [
             impact_fractions,
             energies_keV;
             water_mu_per_mm = water_mu,
+            water_compton_per_mm = water_compton,
+            water_rayleigh_per_mm = water_rayleigh,
         )
         for half in 1:2
 ]

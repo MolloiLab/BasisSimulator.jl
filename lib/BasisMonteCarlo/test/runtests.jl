@@ -522,6 +522,10 @@ using Random: Xoshiro
             Dict(s.name => fill(Float32(s.column_bin_deg / sqrt(12)), length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))),
             Dict(s.name => ones(Float32, 2, length(BasisMonteCarlo.SCATTER_ANGLE_EDGES_DEG) - 1, length(energies))),
             a.total,
+            # a water that does not scatter: these kernels are made up, with no single scatter of
+            # their own to give up, so the scans below test the blending alone
+            zeros(150),
+            zeros(150),
             Dict{String, Any}(),
         )
         function bump(angle, wet, ellipse)
@@ -566,6 +570,8 @@ using Random: Xoshiro
             Dict(s.name => zero(O)),
             lib.angles,
             a.total,
+            zeros(150),
+            zeros(150),
             Dict{String, Any}(),
         )
         S .= 0
@@ -587,6 +593,57 @@ using Random: Xoshiro
             profile = vec(sum(out.scatter; dims = 2))
             @test profile[searchsortedlast(cols, target)] ≈ sum(profile) rtol = 1.0e-9
         end
+
+        # A ray left of the axis takes its kernels' mirror image, by its side, even through the axis
+        # (impact 0): a kernel at impact 0 whose scatter lies 2° to one side of its ray lands 2°
+        # farther out on either side
+        S .= 0
+        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
+            own = asind(BasisMonteCarlo.kernel_offset(T / 2, BasisMonteCarlo.kernel_half_width(T, ar), u) / s.source_to_isocenter_mm)
+            S[:, :, iu, ir, iT, :] .= exp.(-((γ .- own .- 2.0) ./ width) .^ 2)
+        end
+        @test BasisMonteCarlo.kernel_impact(150.0, 187.5, BasisMonteCarlo.kernel_chord(150.0, 187.5, 0.0)) == 0.0
+        for side in (1, -1)
+            out = BasisMonteCarlo.library_scan(
+                lib,
+                s.name,
+                [(angle_deg = 8.0 * side, wet_mm = 300.0, weight = 1.0)];
+                collimation_mm = 40.0,
+                spectrum = ([60.0], [1.0]),
+                ellipse = (thickness_mm = 250.0, width_mm = 300.0, centre_mm = 0.0),
+            )
+            profile = vec(sum(out.scatter; dims = 2))
+            @test sum(profile .* γ) / sum(profile) ≈ 10.0 * side atol = 0.3
+        end
+
+        # Single scatter by quadrature: in a kernel's water ellipse as forced detection integrates it
+        # along the kernel's ray, and the same in that ellipse as its rays describe it
+        T, ar, u, E = 260.0, 1.25, 0.4, 60.0
+        phantom, beam = kernel_phantom(T, ar), kernel_ray(T, ar, u)
+        run = (beam = beam, energy_keV = E, n = 200_000, photon_energy_keV = nothing, seed = 1)
+        cols_s, rows_s = column_edges(s), row_edges(s)
+        blank = zeros(length(cols_s) - 1, length(rows_s) - 1)
+        analog = ScatterTally(s.name, run.n, 0.0, cols_s, rows_s, blank, blank, zeros(150), blank, blank, zeros(2, 7), blank, zeros(2, 30), zeros(2, length(cols_s) - 1))
+        frames = [BasisMonteCarlo.detector_frame(s, run, phantom, analog)]
+        BasisMonteCarlo.first_scatter!(frames, run, phantom, BasisMonteCarlo.phantom_media(phantom, readout), readout, Xoshiro(3))
+        forced = frames[1].scatter ./ run.n
+        water_parts = (total = a.total, compton = a.compton, rayleigh = a.rayleigh, tables = BasisMonteCarlo.cached_scattering_tables(water))
+        a_k, b_k = T / 2, BasisMonteCarlo.kernel_half_width(T, ar)
+        node = asind(BasisMonteCarlo.kernel_offset(a_k, b_k, u) / s.source_to_isocenter_mm)
+        q = only(BasisMonteCarlo.single_scatter(BasisMonteCarlo.WaterEllipse(a_k, b_k, s.source_to_isocenter_mm), s, node, [E], water_parts))
+        quadrature = q.compton .+ q.wide .+ q.forward
+        @test sum(quadrature) ≈ sum(forced) rtol = 0.03
+        @test sum(q.forward) ≈ sum(frames[1].forward) / run.n rtol = 0.03
+        centre = (0.0, s.source_to_isocenter_mm)
+        strips = BasisMonteCarlo.RayStrips(
+            [
+                (angle_deg = g, wet_mm = BasisMonteCarlo.ellipse_chord((0.0, 0.0), (sind(g), cosd(g)), centre, (b_k, a_k)))
+                    for g in -30:0.1:30
+            ],
+            s.source_to_isocenter_mm,
+        )
+        r = only(BasisMonteCarlo.single_scatter(strips, s, node, [E], water_parts))
+        @test sum(r.compton .+ r.wide .+ r.forward) ≈ sum(quadrature) rtol = 0.02
     end
 
     @testset "charge transport: induction and trapping" begin

@@ -20,9 +20,14 @@ band, impact, aspect, thickness, energy), the mean length in mm the detected pho
 each band; `offsets` and `spreads` (column, impact, aspect, thickness, energy), the mean and the
 standard deviation in degrees of where in each column the scatter landed; and `angles` (process,
 angle bin, energy), the profile of the scatter its detector sees. And once, `elements/scattering`
-([`element_scattering_table`](@ref): element, process, angle bin, keV). Little-endian Float32,
-column-major. The header records each array's shape and byte offset, the axes, each scanner's
-geometry and bins, Geant4's attenuation of water on a 1-keV grid, `provenance` and `scorecard`.
+([`element_scattering_table`](@ref): element, process, angle bin, keV) and `elements/water_pdf`
+(cosine cell, keV, process: water's chance per steradian of scattering at each cosine of the angle,
+Compton then Rayleigh, Geant4's scattering functions and form factors on `water_pdf_cells` equal
+cells of the cosine from −1). Little-endian Float32, column-major. The header records each array's
+shape and byte offset, the axes, each scanner's geometry, bins, grid and detector (its efficiency
+at every keV, and its attenuation and depth for the obliquity), Geant4's attenuation of water on a
+1-keV grid in all and by Compton and Rayleigh scattering, the single-scatter quadrature
+([`single_scatter`](@ref)), `provenance` and `scorecard`.
 """
 function write_scatter_library(
         path::AbstractString,
@@ -47,7 +52,10 @@ function write_scatter_library(
                         ("angles", lib.angles[s.name]),
                     )
             ],
-            [("elements", "scattering", Float32.(element_scattering_table(ELEMENT_Z)))],
+            [
+                ("elements", "scattering", Float32.(element_scattering_table(ELEMENT_Z))),
+                ("elements", "water_pdf", Float32.(cached_scattering_tables(DETECTOR_MATERIALS[:Water]).pdf)),
+            ],
         )
         for (owner, kind, A) in blocks
             write(io, htol.(vec(Float32.(A))))
@@ -85,6 +93,15 @@ function write_scatter_library(
         ),
         "geometry" => "a pencil beam along the thickness of a water elliptical cylinder `thickness_mm` thick and `aspect × thickness_mm` wide (at most 700 mm), passing its axis at `impact_fraction` of the half-width the tilted ray sees (sqrt(b² cos²t + a² sin²t), t its tilt), tilted as a ray from a focal spot 600 mm from the axis; the scanner's focal spot on the ray's line at its source-to-isocentre distance from the cylinder's axis; columns in degrees across the fan from the central ray (+ toward the ray's side), rows in mm along z at the detector",
         "water_mu_per_mm" => lib.water_mu_per_mm,
+        "water_compton_per_mm" => lib.water_compton_per_mm,
+        "water_rayleigh_per_mm" => lib.water_rayleigh_per_mm,
+        "water_pdf_cells" => cached_scattering_tables(DETECTOR_MATERIALS[:Water]).cells,
+        "single_scatter" => Dict{String, Any}(
+            "depths" => SINGLE_DEPTHS,
+            "points_per_column" => SINGLE_POINTS[1],
+            "points_per_row" => SINGLE_POINTS[2],
+            "columns_each_side" => SINGLE_COLUMNS,
+        ),
         "scatter_angle_edges_deg" => SCATTER_ANGLE_EDGES_DEG,
         "forward_rayleigh_deg" => FORWARD_RAYLEIGH_DEG,
         "path_energy_edges_keV" => PATH_ENERGY_EDGES_KEV,
@@ -102,6 +119,9 @@ function write_scatter_library(
                     "grid_height_mm" => s.grid_height_mm,
                     "grid_opening_mm" => [isinf(x) ? -1.0 : x for x in s.grid_opening_mm],
                     "energy_weighted" => s.energy_weighted,
+                    "efficiency" => s.efficiency,
+                    "detector_mu_per_mm" => s.mu_per_mm,
+                    "detector_depth_mm" => s.depth_mm,
                 )
                 for s in lib.scanners
         ],

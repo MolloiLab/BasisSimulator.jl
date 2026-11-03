@@ -15,7 +15,10 @@ they are elliptical, off-centre, and made of lung, bone and soft tissue. The lib
 view of a patient in a water ellipse as thick and as wide as the patient's water there, takes each
 ray's kernel at the offset whose chord is the ray's water-equivalent length, and scales the
 kernel's Compton and Rayleigh parts by how much of each scattering the ray's own materials make
-into the angles the detector sees. This notebook measures how well that holds: six phantoms that
+into the angles the detector sees. Each kernel also gives up its own single scatter, computed in
+its water ellipse, for the ray's own, computed in the patient as its rays describe it: lungs and a
+spine move the scatter across the fan, and a water ellipse cannot. This notebook measures how well
+that holds: six phantoms that
 are not water cylinders, each simulated directly in Geant4 (every photon of the fan beam, every
 scattering scored by forced detection), against the library's prediction and against
 BasisSimulator v0.15.1's analytic model (which v0.16 replaced with the library), on a scanner
@@ -348,7 +351,8 @@ library's prediction takes rays every 0.1° across the fan, each with its water-
 its length through the outline and its materials' scattering and attenuation against water's;
 stands the view in its water ellipse; and sums the kernels, each at the offset whose chord is the
 ray's own water-equivalent length (a ray longer than the ellipse is thick gets an ellipse as thick
-as itself). BasisSimulator v0.15.1's analytic model, which v0.16 replaced with the library, is run
+as itself), each with its single scatter swapped for the ray's own in the patient as the rays
+describe it (notebook 10). BasisSimulator v0.15.1's analytic model, which v0.16 replaced with the library, is run
 on the same projection, one ray per column of the detector, with its size scaling at the phantom's
 water-equivalent diameter.
 """
@@ -704,7 +708,8 @@ let
         $(join(rows, "\n"))
 
         The mean was chosen on the first thorax, in the pilot; the held-out thorax, larger and with larger
-        lungs, tests it.
+        lungs, tests it. Every reading swaps each kernel's single scatter for the ray's own in the
+        patient (notebook 10).
         """
     )
 end

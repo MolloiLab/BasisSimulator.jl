@@ -1,7 +1,7 @@
 # Split the scatter library BasisMonteCarlo writes (`write_scatter_library`, notebook 10: one
 # header and one data file for every scanner) into one header + data file per scanner, in the same
 # format, so that BasisSimulator ships each scanner's kernels as its own artifact (about 250 MB
-# each, not 1.5 GB). Each file keeps its scanner's arrays and the shared `elements` table; the
+# each, not 1.5 GB). Each file keeps its scanner's arrays and the shared `elements` tables; the
 # header is the original's with `scanners` and `arrays` narrowed to that scanner.
 #
 #     julia lib/BasisMonteCarlo/scripts/split_scatter_library.jl scatter_library_v2.toml out/
@@ -18,13 +18,13 @@ import TOML
 entry_stem(name) = replace(lowercase(name), r"[^a-z0-9]+" => "_")
 
 """
-    write_entry(stem, header, name, arrays) -> header path
+    write_entry(stem, header, name, arrays, elements) -> header path
 
 Write `stem.toml` and `stem.bin`: the scanner `name`'s arrays (`Dict(kind => array)`) and the
-shared `elements` table (`arrays["elements/scattering"]`), little-endian Float32 in column-major
-order, under `header` with its `scanners` and `arrays` narrowed to that scanner.
+shared `elements` tables (`Dict(kind => array)`), little-endian Float32 in column-major order,
+under `header` with its `scanners` and `arrays` narrowed to that scanner.
 """
-function write_entry(stem, header, name, arrays)
+function write_entry(stem, header, name, arrays, elements)
     out = deepcopy(header)
     out["data_file"] = basename(stem) * ".bin"
     out["scanners"] = [s for s in header["scanners"] if s["name"] == name]
@@ -32,8 +32,8 @@ function write_entry(stem, header, name, arrays)
     entries = Dict{String, Any}[]
     offset = 0
     open(stem * ".bin", "w") do io
-        for (owner, kind) in vcat([(name, k) for k in sort!(collect(keys(arrays))) if k != "elements/scattering"], [("elements", "scattering")])
-            A = owner == "elements" ? arrays["elements/scattering"] : arrays[kind]
+        for (owner, kind) in vcat([(name, k) for k in sort!(collect(keys(arrays)))], [("elements", k) for k in sort!(collect(keys(elements)))])
+            A = owner == "elements" ? elements[kind] : arrays[kind]
             write(io, htol.(vec(Float32.(A))))
             push!(entries, Dict{String, Any}("scanner" => owner, "kind" => kind, "shape" => collect(size(A)), "offset_bytes" => offset))
             offset += sizeof(Float32) * length(A)
@@ -72,10 +72,9 @@ One header + data file per scanner of the library at `header_path`, in `out_dir`
 function split_scatter_library(header_path, out_dir)
     mkpath(out_dir)
     header = TOML.parsefile(header_path)
-    elements = read_arrays(header_path, "elements")["scattering"]
+    elements = read_arrays(header_path, "elements")
     return map(header["scanners"]) do s
-        arrays = merge(read_arrays(header_path, s["name"]), Dict("elements/scattering" => elements))
-        write_entry(joinpath(out_dir, entry_stem(s["name"])), header, s["name"], arrays)
+        write_entry(joinpath(out_dir, entry_stem(s["name"])), header, s["name"], read_arrays(header_path, s["name"]), elements)
     end
 end
 
