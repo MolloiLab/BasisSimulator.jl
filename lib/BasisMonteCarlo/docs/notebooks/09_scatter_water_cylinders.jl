@@ -367,7 +367,6 @@ spectrum = let
         views = 1200,
         rotation_time = 0.5,
         collimation_mm = 40.0,
-        anode_angle = 10,
     )
     BS.resolve_source_spectrum_without_bowtie(BS.SimOptions(), protocol; scanner)
 end

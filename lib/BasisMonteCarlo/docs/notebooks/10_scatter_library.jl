@@ -117,7 +117,7 @@ PlutoUI.TableOfContents()
 
 # ╔═╡ 927f4d8a-337c-5169-93dc-b740520aaa90
 # Eight Geant4 processes run the sweeps in parallel; the rest of the machine stays free
-workers = MC.start_workers(8)
+workers = MC.start_workers(max(1, Sys.CPU_THREADS - 2))
 
 # ╔═╡ fa7d87e4-de51-5da1-8211-9182959161dc
 # One colour per kind of particle, used by every figure
@@ -937,7 +937,6 @@ scan_spectrum = let
         views = 1200,
         rotation_time = 0.5,
         collimation_mm = 40.0,
-        anode_angle = 10,
     )
     BS.resolve_source_spectrum_without_bowtie(BS.SimOptions(), protocol; scanner)
 end
