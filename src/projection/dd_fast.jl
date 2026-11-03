@@ -53,8 +53,9 @@ export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
 # the legacy per-energy kernels.
 
 # Branchless scatter of `w` into `plens[mat]` (select chain, no divergence).
-@generated function _plen_accum(plens::NTuple{M, T}, mat::Int32, w::T) where {M, T}
-    exprs = [:(ifelse(mat == Int32($m), plens[$m] + w, plens[$m])) for m in 1:M]
+# `plens` with `a · b` added to material `mat`'s, one rounding (`_dd_edge`)
+@generated function _plen_accum(plens::NTuple{M, T}, mat::Int32, a::T, b::T) where {M, T}
+    exprs = [:(ifelse(mat == Int32($m), fma(a, b, plens[$m]), plens[$m])) for m in 1:M]
     return :(tuple($(exprs...)))
 end
 
@@ -120,27 +121,27 @@ end
 
     il = Int32(1)
     while il <= n_long
-        lp = vmin_long + (T(il) - T(0.5)) * v_long
+        lp = fma(T(il) - T(0.5), v_long, vmin_long)
         mag_fac = s_long / (s_long - lp)
         inv_mf = one(T) / mag_fac
         (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
         (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
         it = it_s
         while it <= it_e
-            t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-            t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+            t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
+            t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
             ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
             if ox > zero(T)
                 ixv = vertical ? it : il
                 iyv = vertical ? il : it
                 ip = ip_s
                 while ip <= ip_e
-                    z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                    z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
+                    z0 = _dd_edge(sz, vmz, T(ip - Int32(1)), vsz, mag_fac)
+                    z1 = _dd_edge(sz, vmz, T(ip), vsz, mag_fac)
                     oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
                     if oz > zero(T)
                         mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                        plens = _plen_accum(plens, mat, ox * oz * norm)
+                        plens = _plen_accum(plens, mat, ox * oz, norm)
                     end
                     ip += Int32(1)
                 end
