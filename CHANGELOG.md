@@ -114,7 +114,7 @@ onward they are written by hand, and releases are cut by hand — see
   the same kernels on Julia's threads): the walk, the superposition, the correction's inversion and the maps to
   dexels, with the plan's own copy of the library on the device. On a SOMATOM Force chest scan (920 × 96 dexels,
   1152 views, GPU) scatter and its correction added about 0.04 s to a 0.49 s `simulate!` (2.4 s before) before the
-  single-scatter swap (next item), whose cost on a GPU is still to be measured.
+  single-scatter swap (next item); with it, 0.34 s to a 0.38 s one.
   Against `library_scan` on exact rays every 0.05° (before the single-scatter swap, next item) to ≤ 1.7 % per bin (4 %
   at the patient-edge peak of a 20 cm cylinder on the Aquilion), 0.9 % at the centre.
 - **Each kernel's single scatter is swapped for the ray's own in the patient**, as BasisMonteCarlo's `library_scan`
@@ -140,6 +140,11 @@ onward they are written by hand, and releases are cut by hand — see
   centre, 0.6 % in all. Loading an entry takes about 6 s on 8 threads (25 s before: the reader's arrays are now
   typed). On the CPU the single scatter costs about 10–14 ms per coarse ray in the patient and thread: on the
   Force chest scan (8 threads) the forward scatter takes 74 s (6 s before) and the correction's estimate 63 s (0.7 s).
+  On a GPU (RTX PRO 6000) the same scan's scatter adds 0.34 s to `simulate!` (forward 0.20 s, estimate 0.14 s), the
+  NAEOTOM Alpha's (four bins) about 0.6 s: the forward model's two ellipses share one single-scatter pass (their
+  weights side by side), the quadrature takes what depends on the energy alone once per energy, and the correction's
+  second pass reuses its first pass's single scatter (a realistic estimate, not part of the equivalence below: on the
+  Force chest scan the estimate moves by 2 %, the corrected sinogram by ≤ 0.012 in −log, rms 0.0015).
   Against BasisMonteCarlo's own `library_scan` on the same rays and data (identical lengths; SOMATOM Force and
   Aquilion ONE on a 32 cm cylinder, a 36 × 26 cm ellipse and notebook 11's thorax, NAEOTOM Alpha and Revolution Apex
   on the cylinder; no rays left out) the superposition agrees per bin above 1e-3 of the peak to 9.3e-9 in double
