@@ -1403,30 +1403,31 @@ function _scatter_strips!(
     return strips
 end
 
-# `weights[energy, process, ch, ray]` for the first `n_used` channels of the `n_rays` rays from
-# `ray0 + 1` on, in place: each ray's photons by library energy and process (`_scatter_weights!`),
-# each scaled by how much less of its scatter gets out of the ray's materials than of the water of
-# its corners' kernels, mixed by the corners' shares of the ray alone (`corner_weight`, `mix`;
-# BasisMonteCarlo's escape factors): the weights of the ray's own single scatter.
+# `own[ray, energy, process, own0 + ch]` for the first `n_used` channels of the `n_rays` rays from
+# `ray0 + 1` on: each ray's photons by library energy and process (`mix`, `_scatter_corners!`'s from
+# `_scatter_weights!`'s), each scaled by how much less of its scatter gets out of the ray's materials
+# than of the water of its corners' kernels, mixed by the corners' shares of the ray alone
+# (`corner_weight`; BasisMonteCarlo's escape factors): the weights of the ray's own single scatter.
+# The ray is the fastest index: `_scatter_single!`'s warps read 32 rays' weights at once.
 function _scatter_single_weights!(
-        weights::AbstractArray{T, 4},
+        own::AbstractArray{T, 4},
         corner_weight::AbstractMatrix{T},
         mix::AbstractArray{T, 4},
         plain::AbstractVector{Bool},
         n_used::Int,
+        own0::Int,
         ray0::Int,
         n_rays::Int,
     ) where {T}
-    nE, n_ch = size(weights, 1), size(weights, 3)
-    let weights = weights, corner_weight = corner_weight, mix = mix, plain = plain, nE = nE, n_ch = n_ch,
-            n_used = n_used, ray0 = ray0
-        _foreachindex(1:(nE * n_ch * n_rays), AK.get_backend(weights)) do idx
+    nE = size(own, 2)
+    let own = own, corner_weight = corner_weight, mix = mix, plain = plain, nE = nE, n_rays = n_rays,
+            own0 = own0, ray0 = ray0
+        _foreachindex(1:(n_rays * nE * n_used), AK.get_backend(own)) do idx
             q = idx - 1
+            local_ray = q % n_rays + 1
+            q ÷= n_rays
             g = q % nE + 1
-            q ÷= nE
-            ch = q % n_ch + 1
-            local_ray = q ÷ n_ch + 1
-            ch <= n_used || return
+            ch = q ÷ nE + 1
             # a ray of water's kernels hold all their scatter, each process weighed alike
             water = plain[local_ray + ray0]
             @inbounds for p in 1:3
@@ -1437,17 +1438,17 @@ function _scatter_single_weights!(
                     w == 0 && continue
                     s += w * mix[slot, ch, c, local_ray]
                 end
-                weights[g, p, ch, local_ray] = s
+                own[local_ray, g, p, own0 + ch] = s
             end
         end
     end
-    return weights
+    return own
 end
 
 # The channels' sums `acc` with one energy `e` of a point added: its Compton and its Rayleigh scatter
-# (wide, process 2, or forward, 3: `p`) weighed by the ray's `weights[e, process, ch, ray]`
-@inline _single_add(acc::NTuple{N}, weights, e, p, ray, compton, rayleigh) where {N} =
-    ntuple(k -> acc[k] + (weights[e, 1, k, ray] * compton + weights[e, p, k, ray] * rayleigh), Val(N))
+# (wide, process 2, or forward, 3: `p`) weighed by the ray's `own[ray, e, process, ch]`
+@inline _single_add(acc::NTuple{N}, own, e, p, ray, compton, rayleigh) where {N} =
+    ntuple(k -> @inbounds(acc[k] + (own[ray, e, 1, k] * compton + own[ray, e, p, k] * rayleigh)), Val(N))
 
 # `single[ray, row, ch, column]` for the `n_rays` rays from `ray0 + 1` on: each ray's own single
 # scatter (`_single_scatter!`) through the patient its view-group's rays describe (`strips`), its
@@ -1461,7 +1462,6 @@ end
 function _scatter_single!(
         single::AbstractArray{T, 4},
         weights::AbstractArray{T, 4},
-        shapes::AbstractMatrix{T},
         strips::AbstractMatrix{T},
         angle_deg::AbstractVector{T},
         rays::AbstractMatrix{T},
@@ -1475,9 +1475,9 @@ function _scatter_single!(
         ::Val{N},
     ) where {T, N}
     nr, nc, n_win = size(single, 2), length(t.cols) - 1, size(single, 4)
-    nE = size(weights, 1)
+    nE = size(weights, 2)
     n_cc = length(angle_deg)
-    let single = single, weights = weights, shapes = shapes, strips = strips, angle_deg = angle_deg, rays = rays,
+    let single = single, weights = weights, strips = strips, angle_deg = angle_deg, rays = rays,
             boundaries = boundaries, window0 = window0, first = first, step = step, cols = t.cols, rows = t.rows,
             column_points = t.column_points, energies = t.energies, total = t.total, mu = t.mu, pdf = t.pdf,
             pdf_row = t.pdf_row, pdf_t = t.pdf_t, efficiency = t.efficiency, mud = t.mud, norm = t.norm,
@@ -1497,14 +1497,14 @@ function _scatter_single!(
             ray = local_ray + ray0
             i = (ray - 1) % n_cc + 1
             ci = w + Int(window0[i])
-            (scatters && 1 <= ci <= nc && shapes[5, ray] > 0) || return
+            (scatters && 1 <= ci <= nc) || return
             medium = _RayStrips(strips, boundaries, ray - i, n_cc, first, step)
             entry, L, ρ = _ray_segment(medium, i)
             (L > 0 && ρ > 0) || return
             # the library energies the ray has photons of
             used = UInt64(0)
             @inbounds for e in 1:nE, k in 1:N, p in 1:3
-                weights[e, p, k, local_ray] != 0 && (used |= UInt64(1) << (e - 1))
+                weights[local_ray, e, p, k] != 0 && (used |= UInt64(1) << (e - 1))
             end
             used == 0 && return
             tables = (; energies, total, mu, pdf, pdf_row, pdf_t, efficiency, mud, norm, energy_weighted)
@@ -1569,6 +1569,7 @@ function _scatter_deposit!(
         boxes::AbstractArray{T, 5},
         window::AbstractArray{Int32, 4},
         single::AbstractArray{T, 4},
+        single0::Int,
         window0::AbstractVector{Int32},
         shapes::AbstractMatrix{T},
         plain::AbstractVector{Bool},
@@ -1584,7 +1585,7 @@ function _scatter_deposit!(
     block = L * 4nE
     lanes = 32 * cld(nr, 32)
     let rows = rows, corner = corner, factor = factor, mix = mix, boxes = boxes, window = window,
-            single = single, window0 = window0, n_win = Int32(size(single, 4)),
+            single = single, single0 = Int32(single0), window0 = window0, n_win = Int32(size(single, 4)),
             shapes = shapes, plain = plain, kernels = lib.kernels, w_col = lib.column_width,
             nr = Int32(nr), nc = Int32(nc), n_ch = Int32(n_ch), nE = Int32(nE), L = Int32(L), block = Int32(block),
             n_cc = Int32(n_cc), n_used = Int32(n_used), lanes = Int32(lanes), ray0 = Int32(ray0)
@@ -1605,7 +1606,7 @@ function _scatter_deposit!(
                     # the ray's own single scatter, where it lands
                     w = ci - window0[i]
                     if Int32(1) <= w <= n_win
-                        acc, comp = _kahan(acc, comp, single[ray, dr, ch, w])
+                        acc, comp = _kahan(acc, comp, single[ray, dr, single0 + ch, w])
                     end
                     mirror = shapes[4, ray + ray0] < 0
                     slot0, n_slots = plain[ray + ray0] ? (Int32(3) * nE, nE) : (Int32(0), Int32(3) * nE)

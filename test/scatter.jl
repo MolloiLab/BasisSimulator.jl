@@ -235,8 +235,10 @@ end
         copyto!(s.wet, repeat(T.(wet), 1, size(s.wet, 2), size(s.wet, 3)))
         fill!(s.plain, true)
         out = similar(plan.field, size(plan.field, 1), size(plan.field, 2), 1, size(plan.field, 4))
-        BS._superpose!(out, plan, s.wet, s.wet)
-        return (; out = Array(out), shape = Array(s.shapes)[:, i])
+        for (v0, n_v) in BS._scatter_chunks(plan)
+            BS._superpose!(out, plan, (s.wet,), s.wet, v0, n_v)
+        end
+        return (; out = Array(out), shape = Array(s.shapes[1])[:, i])
     end
     left, right = scan(-1), scan(1)
     @test left.shape[3] == 0 && left.shape[4] == -1 && right.shape[3] == 0 && right.shape[4] == 1
@@ -340,7 +342,9 @@ end
         fill!(s.plain, true)
         out = similar(plan.field, size(plan.field, 1), size(plan.field, 2), 1, size(plan.field, 4))
         fill!(s.clamped, Int32(0))
-        BS._superpose!(out, plan, s.wet, s.wet)
+        for (v0, n_v) in BS._scatter_chunks(plan)
+            BS._superpose!(out, plan, (s.wet,), s.wet, v0, n_v)
+        end
         (; out = Array(out), n = Int(sum(s.clamped)))
     end
     thin, inside, thickest = scan(35.0), scan(80.0), scan(400.0)

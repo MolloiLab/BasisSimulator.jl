@@ -435,19 +435,23 @@ function _scatter_plan(
     )
     n_ray = n_cc * n_g * n_cv
     n_chunk = n_cc * n_g * clamp(_SCATTER_CHUNK_RAYS ÷ (n_cc * n_g), 1, n_cv)       # whole views
+    # the forward model's ellipses: the water-equivalent one, and the outline's through a material
+    # other than water (`_scatter_forward!`), their single scatters' weights side by side
+    n_ellipses = ray_consts.other ? 2 : 1
     scratch = (;
         wet = similar(ref, T, n_cc, n_g, n_cv),
         outline = similar(ref, T, n_cc, n_g, n_cv),
         plain = similar(ref, Bool, n_ray),
         dmu = fill!(similar(ref, T, nbands, n_ray), zero(T)),
         weights = similar(ref, T, nE_lib, 3, n_ch, n_chunk),
-        ellipse = similar(ref, T, 3, n_g, n_cv),
-        shapes = similar(ref, T, 5, n_ray),
+        own = similar(ref, T, n_chunk, nE_lib, 3, n_ellipses * n_ch),
+        ellipse = ntuple(_ -> similar(ref, T, 3, n_g, n_cv), n_ellipses),
+        shapes = ntuple(_ -> similar(ref, T, 5, n_ray), n_ellipses),
         strips = similar(ref, T, 4, n_ray),
         clamped = fill!(similar(ref, Int32, n_ray), Int32(0)),
         corner = fill!(similar(ref, Int32, 8, n_chunk), Int32(0)),
         corner_weight = similar(ref, T, 8, n_chunk),
-        single = similar(ref, T, n_chunk, nlr, n_ch, n_win),
+        single = similar(ref, T, n_chunk, nlr, n_ellipses * n_ch, n_win),
         factor = similar(ref, T, n_ch, 8, n_chunk),
         mix = similar(ref, T, 3nE_lib, n_ch, 8, n_chunk),
         boxes = similar(ref, T, 3, nlc, n_ch, 8, n_chunk),
@@ -574,48 +578,78 @@ function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
     return p
 end
 
-# The scatter of every coarse view into `out[column, row, ch, view]` (its channels the first of the
-# plan's), the views' ellipses measured from `lengths`, the rays' impacts from `scratch.wet`, the
-# patient for the rays' own single scatter from `scratch.wet` spread over `outline`; with `combine`,
-# the geometric mean of that and what `out` holds. Without `combine`, it marks the rays outside the
-# library's grids in `scratch.clamped`.
-function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray, outline::AbstractArray; combine::Bool = false)
+# The views in chunks, as many as the superposition's buffers hold: `(v0, n_v)`, the `n_v` views
+# from `v0 + 1` on.
+function _scatter_chunks(p::ScatterPlan)
+    n_cv, per_chunk = size(p.scratch.wet, 3), size(p.scratch.rows, 5)
+    return [(v0, min(per_chunk, n_cv - v0)) for v0 in 0:per_chunk:(n_cv - 1)]
+end
+
+# The corners of every ray of the chunk (`_scatter_corners!`) for the ellipse `e`'s shapes.
+function _superpose_corners!(p::ScatterPlan, e::Int, n_used::Int, ray0::Int, n_rays::Int)
+    s = p.scratch
+    return _scatter_corners!(
+        s.corner,
+        s.corner_weight,
+        s.factor,
+        s.mix,
+        s.boxes,
+        s.window,
+        s.shapes[e],
+        s.weights,
+        s.plain,
+        s.dmu,
+        p.rays.angle,
+        p.library,
+        n_used,
+        ray0,
+        n_rays,
+    )
+end
+
+# The scatter of the `n_v` coarse views from `v0 + 1` on (one of `_scatter_chunks`) into
+# `out[column, row, ch, view]` (its channels the first of the plan's): the rays' impacts from
+# `scratch.wet`, the patient for their own single scatter from `scratch.wet` spread over `outline`,
+# each view's ellipse measured from `ellipses[1]`, or the geometric mean of the scatters in the
+# ellipses of `ellipses[1]` and `ellipses[2]`. It marks the rays outside the library's grids by the
+# first ellipse in `scratch.clamped`.
+#
+# The rays' own single scatter is one pass over the patient for every ellipse (their weights side
+# by side in its channels); with `single = false` it is the last call's (`scratch.single`), not
+# computed again.
+function _superpose!(
+        out::AbstractArray,
+        p::ScatterPlan,
+        ellipses::Tuple,
+        outline::AbstractArray,
+        v0::Int,
+        n_v::Int;
+        single::Bool = true,
+    )
     s, lib, r = p.scratch, p.library, p.rays
     n_used = size(out, 3)
-    n_cc, n_g, n_cv = size(s.wet)
-    _scatter_ellipses!(s.ellipse, r.xs, r.dxs, lengths)
-    _scatter_ray_shapes!(s.shapes, s.clamped, s.wet, s.ellipse, r.xs, r.angle_deg, lib.grid, !combine)
-    _scatter_strips!(s.strips, r.pairs, s.wet, outline, lib.sid2, lib.π2)
+    n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
+    ray0, n_rays = v0 * n_cc * n_g, n_v * n_cc * n_g
+    n_e = length(ellipses)
 
-    # the views in chunks, as many as the buffers hold
-    per_chunk = size(s.rows, 5)
-    for v0 in 0:per_chunk:(n_cv - 1)
-        n_v = min(per_chunk, n_cv - v0)
-        ray0 = v0 * n_cc * n_g
-        n_rays = n_v * n_cc * n_g
-        _scatter_weights!(p, n_used, ray0, n_rays)
-        _scatter_corners!(
-            s.corner,
-            s.corner_weight,
-            s.factor,
-            s.mix,
-            s.boxes,
-            s.window,
-            s.shapes,
-            s.weights,
-            s.plain,
-            s.dmu,
-            r.angle,
-            lib,
-            n_used,
-            ray0,
-            n_rays,
-        )
-        _scatter_single_weights!(s.weights, s.corner_weight, s.mix, s.plain, n_used, ray0, n_rays)
+    # each ellipse's rays, and the chunk's photons by library energy
+    for (e, lengths) in enumerate(ellipses)
+        _scatter_ellipses!(s.ellipse[e], r.xs, r.dxs, lengths)
+        _scatter_ray_shapes!(s.shapes[e], s.clamped, s.wet, s.ellipse[e], r.xs, r.angle_deg, lib.grid, e == 1)
+    end
+    _scatter_weights!(p, n_used, ray0, n_rays)
+
+    # the rays' own single scatter, every ellipse's weights at once (the first's corners last: its
+    # deposit is next)
+    if single
+        _scatter_strips!(s.strips, r.pairs, s.wet, outline, lib.sid2, lib.π2)
+        for e in n_e:-1:1
+            _superpose_corners!(p, e, n_used, ray0, n_rays)
+            _scatter_single_weights!(s.own, s.corner_weight, s.mix, s.plain, n_used, (e - 1) * n_used, ray0, n_rays)
+        end
         _scatter_single!(
             s.single,
-            s.weights,
-            s.shapes,
+            s.own,
             s.strips,
             r.angle_deg,
             r.pairs,
@@ -626,8 +660,15 @@ function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray,
             lib.single,
             ray0,
             n_rays,
-            Val(n_used),
+            Val(n_e * n_used),
         )
+    else
+        _superpose_corners!(p, 1, n_used, ray0, n_rays)
+    end
+
+    # each ellipse's scatter, the second's combined with the first's
+    for e in 1:n_e
+        e > 1 && _superpose_corners!(p, e, n_used, ray0, n_rays)
         _scatter_deposit!(
             s.rows,
             s.corner,
@@ -636,8 +677,9 @@ function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray,
             s.boxes,
             s.window,
             s.single,
+            (e - 1) * n_used,
             r.window0,
-            s.shapes,
+            s.shapes[e],
             s.plain,
             lib,
             n_cc,
@@ -645,7 +687,7 @@ function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray,
             ray0,
             n_v * n_g,
         )
-        _scatter_rows!(out, s.rows, r.row_share, v0, n_v; combine)
+        _scatter_rows!(out, s.rows, r.row_share, v0, n_v; combine = e > 1)
     end
     return out
 end
@@ -674,10 +716,12 @@ function _scatter_forward!(p::ScatterPlan, phantom)
     dd_fast_material_paths!(p.paths, phantom.mask, p.geom; volume_extent = extent)
     _scatter_phantom_rays!(p)
     fill!(s.clamped, Int32(0))
-    _superpose!(p.field, p, s.wet, s.outline)
     # the geometric mean with the outline's ellipse, which is another only through a material other
     # than water (a gas is in neither)
-    p.rays.other && _superpose!(p.field, p, s.outline, s.outline; combine = true)
+    ellipses = p.rays.other ? (s.wet, s.outline) : (s.wet,)
+    for (v0, n_v) in _scatter_chunks(p)
+        _superpose!(p.field, p, ellipses, s.outline, v0, n_v)
+    end
     return p.field
 end
 
@@ -747,17 +791,19 @@ view] / photons` is each coarse ray's mean measured signal over its footprint, s
 in the units in which the plan's air value is its air value and the fields are the scatter (the
 signal of an energy integrator's `S₁`, or a photon counter's counts summed over its bins, per
 incident photon). Each pass measures every ray's water-equivalent length from its transmission
-less the last estimate, and superposes the scatter of that water patient (`view = :wet`). Fills
+less the last estimate, and superposes the scatter of that water patient (`view = :wet`); the rays'
+own single scatter is the first pass's (a view's estimate depends on its own views alone, so each
+chunk of views takes its passes in turn). Fills
 `plan.estimate` on the device, its channels the measured signal's: `S₁` alone for an energy
 integrator, every bin for a photon counter.
 """
 function _scatter_estimate!(p::ScatterPlan, photons::Real = 1)
     s = p.scratch
     fill!(s.plain, true)
-    for pass in 1:_SCATTER_CORRECTION_PASSES
+    for (v0, n_v) in _scatter_chunks(p), pass in 1:_SCATTER_CORRECTION_PASSES
         _scatter_water_lengths!(p, photons, pass > 1)
         # a water patient: its outline is its water-equivalent lengths
-        _superpose!(p.estimate, p, s.wet, s.wet)
+        _superpose!(p.estimate, p, (s.wet,), s.wet, v0, n_v; single = pass == 1)
     end
     return p.estimate
 end
