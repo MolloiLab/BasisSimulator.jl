@@ -335,7 +335,10 @@ end
 const _KERNEL_MAX_HALF_WIDTH_MM = 350.0
 const _KERNEL_SOURCE_MM = 600.0
 
-_kernel_half_width(thickness_mm, aspect) = min(aspect * thickness_mm / 2, oftype(thickness_mm, _KERNEL_MAX_HALF_WIDTH_MM))
+_kernel_half_width(thickness_mm, aspect) = min(
+    aspect * thickness_mm / 2,
+    oftype(thickness_mm, _KERNEL_MAX_HALF_WIDTH_MM),
+)
 
 # The half-width of the ellipse of semi-axes (b across, a along the view) across the kernel ray of
 # `impact_fraction`, which passes the axis at that fraction of it: the ray from the focal spot is
@@ -594,10 +597,10 @@ end
 # for none); `window[(min, max), ch, c, ray]`, the offsets of the library columns those boxes
 # reach from their own (one wider each side, for rounding).
 #
-# The library's columns are uniform, `lib.column_width` wide. `angle[(hi, lo), column]` and `node[(hi, lo), kernel]` are the
-# coarse rays' angles and the kernels' own rays' (degrees, from the axis on their side), each the
-# pair of floats that sums to its value: their difference is kept to the rounding of a column's
-# width, not of the fan's.
+# The library's columns are uniform, `lib.column_width` wide. `angle[(hi, lo), column]` and
+# `node[(hi, lo), kernel]` are the coarse rays' angles and the kernels' own rays' (degrees, from the
+# axis on their side), each the pair of floats that sums to its value: their difference is kept to
+# the rounding of a column's width, not of the fan's.
 #
 # `weights[energy, process, ch, ray]` are the ray's photons by library energy, process and
 # channel; `dmu[band, ray]` its materials' attenuation against water's (not read for a ray of

@@ -113,7 +113,7 @@ onward they are written by hand, and releases are cut by hand — see
   Every step after the workspace is built runs on its backend, all coarse rays and views at once (GPU kernels, or
   the same kernels on Julia's threads): the walk, the superposition, the correction's inversion and the maps to
   dexels, with the plan's own copy of the library on the device. On a SOMATOM Force chest scan (920 × 96 dexels,
-  1152 views, GPU) scatter and its correction add about 0.03 s to a 0.49 s `simulate!` (2.25 s before).
+  1152 views, GPU) scatter and its correction add about 0.04 s to a 0.49 s `simulate!` (2.4 s before).
   Against BasisMonteCarlo's own `library_scan` on the same rays and data (SOMATOM Force, Aquilion ONE; 32 cm cylinder,
   36 × 26 cm ellipse) the superposition, in single precision, agrees to 3e-6 per bin; against `library_scan` on exact rays every 0.05° to
   ≤ 1.7 % per bin (4 % at the patient-edge peak of a 20 cm cylinder on the Aquilion), 0.9 % at the centre.

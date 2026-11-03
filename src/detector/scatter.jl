@@ -45,10 +45,6 @@ const _SCATTER_RAY_STEP_DEG = 0.25
 const _SCATTER_GROUP_ROWS = 3
 const _SCATTER_CORRECTION_PASSES = 2
 
-# Each coarse ray's footprint is walked as this many columns × rows of sub-footprints, in parallel,
-# and their path lengths averaged: the same footprint, `_SCATTER_WALK_SPLIT²` times the threads
-const _SCATTER_WALK_SPLIT = 4
-
 # The superposition's buffers hold at most this many coarse rays: views beyond go in chunks
 const _SCATTER_CHUNK_RAYS = 32768
 
@@ -59,8 +55,7 @@ const _SCATTER_GAS_DENSITY = 0.01
     ScatterPlan
 
 What `simulate!` needs to superpose the scatter library on one workspace's acquisition, built with
-the workspace: the coarse rays (a `CTGeometry` of their own, `geom`, and `walk`, the same with
-each footprint split for the walk; their fan angles and z groups), the
+the workspace: the coarse rays (a `CTGeometry` of their own, their fan angles and z groups), the
 detector's weight of a photon in each output channel (`channels[energy, channel]`: an energy
 integrator's `S₁` and `S₂`, a photon counter's bins), and on the device the walk's buffer, the
 scatter field (library bins × channels × coarse views), the correction's estimate, the maps from
@@ -75,7 +70,6 @@ bins and coarse views to dexels and views, and
 struct ScatterPlan{A4, A3, AI, AT, LB, RY, SC}
     kernels::ScatterKernels
     geom::CTGeometry
-    walk::CTGeometry
     views::Vector{Int}
     angle_deg::Vector{Float64}
     z_mm::Vector{Float64}
@@ -194,15 +188,14 @@ function _scatter_plan(
     last(views) == n_v || push!(views, n_v)
     n_cv = length(views)
 
-    # the coarse rays, each footprint split into `k × k` (`k = 1`: the rays themselves)
-    coarse_geometry(k) = CTGeometry(
+    rays = CTGeometry(
         geom.SAD,
         geom.SDD,
         n_cv,
-        k * n_g,
-        k * n_cc,
-        deg2rad(Δγ / k) * geom.SAD,
-        geom.n_rows * geom.pixel_row_size / (k * n_g),
+        n_g,
+        n_cc,
+        deg2rad(Δγ) * geom.SAD,
+        geom.n_rows * geom.pixel_row_size / n_g,
         geom.angles[views],
         geom.source_positions[:, views],
         geom.detector_centers[:, views],
@@ -212,10 +205,8 @@ function _scatter_plan(
         geom.pitch,
         geom.table_feed,
         :arc,
-        (0.5 - γ_min / (Δγ / k)) - (k * n_cc + 1) / 2,
+        (0.5 - γ_min / Δγ) - (n_cc + 1) / 2,
     )
-    rays = coarse_geometry(1)
-    walk = coarse_geometry(_SCATTER_WALK_SPLIT)
 
     # each coarse ray's footprint on the detector: the dexels it stands for
     fp_cols = zeros(Int32, 2, n_cc)
@@ -332,7 +323,9 @@ function _scatter_plan(
     group_maps = [_bin_bracket(rows_lib, z) for z in z_mm]
     nlc, nlr = length(cols) - 1, length(rows_lib) - 1
     all(≈(cols[2] - cols[1]), diff(cols)) || throw(
-        ArgumentError("the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform")
+        ArgumentError(
+            "the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform"
+        )
     )
     device_int(v) = _device_copy(ref, Int32.(v))
     device_real(v) = _device_copy(ref, T.(v))
@@ -341,18 +334,27 @@ function _scatter_plan(
     pair(maps) = device_int(reduce(hcat, [[m[1], m[2]] for m in maps]))
     # each value as the two floats of the workspace's type that sum to it
     float_pairs(x) = reduce(hcat, [[T(v), T(v - T(v))] for v in x])
+    node_deg = rad2deg.(asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1)))
 
     library = (;
         kernels = device_library(vec(k.kernels)),
         moments = device_library(vec(k.moments)),
         paths = device_library(vec(k.paths)),
-        node_deg = device_real(float_pairs(rad2deg.(asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1))))),
+        node_deg = device_real(float_pairs(node_deg)),
         thicknesses = device_real(k.thicknesses_mm),
         log_aspects = device_real(log.(k.aspects)),
         impacts = device_real(k.impact_fractions),
         cols = device_real(cols),
         column_width = T(cols[2] - cols[1]),
-        grid = T.((first(k.thicknesses_mm), last(k.thicknesses_mm), first(k.aspects), last(k.aspects), last(k.impact_fractions))),
+        grid = T.(
+            (
+                first(k.thicknesses_mm),
+                last(k.thicknesses_mm),
+                first(k.aspects),
+                last(k.aspects),
+                last(k.impact_fractions),
+            )
+        ),
     )
     sid = k.source_to_isocenter_mm
     ray_consts = (;
@@ -380,9 +382,7 @@ function _scatter_plan(
     )
     n_ray = n_cc * n_g * n_cv
     n_chunk = n_cc * n_g * clamp(_SCATTER_CHUNK_RAYS ÷ (n_cc * n_g), 1, n_cv)       # whole views
-    k_walk = _SCATTER_WALK_SPLIT
     scratch = (;
-        walk_paths = similar(ref, T, n_m, k_walk * n_cc, k_walk * n_g, n_cv),
         wet = similar(ref, T, n_cc, n_g, n_cv),
         outline = similar(ref, T, n_cc, n_g, n_cv),
         plain = similar(ref, Bool, n_ray),
@@ -401,7 +401,6 @@ function _scatter_plan(
     return ScatterPlan(
         k,
         rays,
-        walk,
         views,
         angle_deg,
         z_mm,
@@ -431,30 +430,6 @@ end
 # =============================================================================
 # The rays of every coarse view
 # =============================================================================
-
-# `paths[m, column, group, view]`: the mean of the path lengths of each coarse ray's `k × k`
-# sub-footprints (`split[m, k(column - 1) + a, k(group - 1) + b, view]`), its footprint's.
-function _scatter_join_footprints!(paths::AbstractArray{T, 4}, split::AbstractArray{T, 4}) where {T}
-    n_m, n_cc, n_g = size(paths, 1), size(paths, 2), size(paths, 3)
-    k = size(split, 2) ÷ n_cc
-    let paths = paths, split = split, n_m = n_m, n_cc = n_cc, n_g = n_g, k = k
-        AK.foreachindex(paths) do idx
-            q = idx - 1
-            m = q % n_m + 1
-            q ÷= n_m
-            i = q % n_cc + 1
-            q ÷= n_cc
-            g = q % n_g + 1
-            v = q ÷ n_g + 1
-            s = zero(T)
-            for b in 1:k, a in 1:k
-                s += split[m, k * (i - 1) + a, k * (g - 1) + b, v]
-            end
-            paths[idx] = s / (k * k)
-        end
-    end
-    return paths
-end
 
 # From the walk's path lengths (cm, `[material, column, group, view]`): each ray's water-equivalent
 # length, its outline, whether it crosses nothing but water-like materials, and if not its
@@ -618,8 +593,7 @@ the device.
 function _scatter_forward!(p::ScatterPlan, phantom)
     extent = hasproperty(phantom, :extent) && phantom.extent !== nothing ? Tuple(Float64.(phantom.extent)) : nothing
     s = p.scratch
-    dd_fast_material_paths!(s.walk_paths, phantom.mask, p.walk; volume_extent = extent)
-    _scatter_join_footprints!(p.paths, s.walk_paths)
+    dd_fast_material_paths!(p.paths, phantom.mask, p.geom; volume_extent = extent)
     _scatter_phantom_rays!(p)
     fill!(s.clamped, Int32(0))
     _superpose!(p.field, p, s.wet)
