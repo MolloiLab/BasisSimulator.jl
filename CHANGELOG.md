@@ -214,6 +214,12 @@ onward they are written by hand, and releases are cut by hand — see
 - **A large photon-counting scan threw a `BoundsError`** in the fused spectral projectors (`:dd_fast`, `:dd`,
   Siddon): bin b sits at offset (b − 1) × rays in one flat buffer, and that Int32 offset wrapped once it passed
   2³¹, as the NAEOTOM Alpha's full detector does at native resolution from 904 views on. The offset is an `Int`.
+- **The CPU and the GPU projected differently by ulps**: a GPU compiler fuses `a * b + c` into one rounding on its
+  own, the CPU's does not, and CUDA's `sin`/`cos` are not Julia's. The distance-driven walk (`:dd_fast`'s material
+  paths, the `:dd` projector and its transpose) now writes every multiply-add as an explicit `fma` and takes its fan
+  angles' sine and cosine from one polynomial (`_dd_sincos`), so the material paths and the `:dd` forward projection
+  are bit for bit alike on the CPU and the device. The scatter's impact, inverted from each ray's water length,
+  amplified their ulps into a scatter field 2 × 10⁻⁵ apart; it now agrees to the CPU's within 10⁻⁵.
 
 ### Added
 - **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and

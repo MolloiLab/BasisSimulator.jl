@@ -40,7 +40,7 @@ end
             scanner; n_angles = 9, n_rows = 7, n_cols = 24,
             fov_cm = 8.0, z_cm = 1.4,
         )
-        rng = MersenneTwister(0xDD3 + (shape === :arc))
+        rng = MersenneTwister(0x0DD3 + (shape === :arc))
         x = randn(rng, Float64, 9, 9, 5)
         y = randn(rng, Float64, geom.n_cols, geom.n_rows, geom.n_angles)
         Ax = BS.dd_forward_project(x, geom)
@@ -223,7 +223,7 @@ end
     end
     μ_table = zeros(Float32, 2, N_E)             # row 1 = air (0), row 2 = water
     for e in 1:N_E
-        μ_table[2, e] = 0.30f0 - 0.12f0 * (e - 1) / (N_E - 1)
+        μ_table[2, e] = 0.3f0 - 0.12f0 * (e - 1) / (N_E - 1)
     end
     wη = fill(Float32(1 / N_E), N_E)
 
@@ -288,8 +288,8 @@ end
     end
     μ_table = zeros(Float32, 3, N_E)
     for e in 1:N_E
-        μ_table[2, e] = 0.30f0 - 0.12f0 * (e - 1) / (N_E - 1)
-        μ_table[3, e] = 1.50f0 - 0.90f0 * (e - 1) / (N_E - 1)
+        μ_table[2, e] = 0.3f0 - 0.12f0 * (e - 1) / (N_E - 1)
+        μ_table[3, e] = 1.5f0 - 0.9f0 * (e - 1) / (N_E - 1)
     end
     wη = fill(Float32(1 / N_E), N_E)
 
@@ -343,8 +343,10 @@ end
             detector_row_size = 1.0, detector_col_size = 1.0,
             detector_shape = :arc,
         )
-        geom_h = BS.CTGeometry(scanner_h; n_angles = 16, fov_cm = 10.0,
-            z_cm = 1.0, pitch = 1.0, n_rotations = 2.0)
+        geom_h = BS.CTGeometry(
+            scanner_h; n_angles = 16, fov_cm = 10.0,
+            z_cm = 1.0, pitch = 1.0, n_rotations = 2.0
+        )
         mask_h = mask[17:48, 17:48, 3:6]
         bowtie = Array{Float32}(undef, geom_h.n_cols, geom_h.n_rows, N_E)
         for e in 1:N_E, r in 1:geom_h.n_rows, c in 1:geom_h.n_cols
@@ -354,10 +356,14 @@ end
 
         sino_d = zeros(Float32, geom_h.n_cols, geom_h.n_rows, geom_h.n_angles)
         sino_f = similar(sino_d)
-        BS.dd_fused_poly_project!(sino_d, mask_h, geom_h, μ_table, wη, Val(N_E);
-            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie)
-        BS.dd_fast_fused_poly_project!(sino_f, mask_h, geom_h, μ_table, wη, Val(N_E);
-            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie)
+        BS.dd_fused_poly_project!(
+            sino_d, mask_h, geom_h, μ_table, wη, Val(N_E);
+            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie
+        )
+        BS.dd_fast_fused_poly_project!(
+            sino_f, mask_h, geom_h, μ_table, wη, Val(N_E);
+            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie
+        )
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 
@@ -369,7 +375,8 @@ end
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_fused_poly_project!(sino_d, mask, geom, μ_big, wη, Val(N_E))
         @test_logs (:warn, r"DD_FAST SINGLE-PASS DISABLED.*65"s) BS.dd_fast_fused_poly_project!(
-            sino_f, mask, geom, μ_big, wη, Val(N_E))
+            sino_f, mask, geom, μ_big, wη, Val(N_E)
+        )
         @test sino_f == sino_d                                # same code path, bit-identical
     end
 end
@@ -523,12 +530,14 @@ end
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_shape = :flat)
+        detector_shape = :flat
+    )
     scanner_arc = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_shape = :arc)
+        detector_shape = :arc
+    )
     gf = BS.CTGeometry(scanner_flat; n_angles = 8, fov_cm = 20.0)
     ga = BS.CTGeometry(scanner_arc; n_angles = 8, fov_cm = 20.0)
     @test BS.is_arc(ga) && !BS.is_arc(gf)
@@ -571,7 +580,7 @@ end
         @test count(m) > 3000
         @test sum(relΔ) / length(relΔ) < 0.005
         @test relΔ[ceil(Int, 0.99 * length(relΔ))] < 0.05
-        @test relΔ[end] < 0.10
+        @test relΔ[end] < 0.1
     end
 
     @testset "central columns: arc ≈ flat (small-angle limit)" begin
@@ -602,5 +611,54 @@ end
         BS.dd_fused_poly_project!(sd, mask8, ga, μt, wη, Val(N_E))
         BS.dd_fast_fused_poly_project!(sf, mask8, ga, μt, wη, Val(N_E))
         @test maximum(abs.(sf .- sd)) < 1.0f-4     # path-length ≡ legacy, on arc
+    end
+end
+
+# -----------------------------------------------------------------------------
+# The distance-driven walk's arithmetic is one rounding everywhere (explicit `fma`s, `_dd_sincos`),
+# so the CPU and a device give its path lengths and forward projection bit for bit alike. The
+# scatter's impact, inverted from each ray's water length, amplifies any ulp the two differ by.
+# -----------------------------------------------------------------------------
+@testset "distance-driven walk: CPU and GPU bit for bit" begin
+    if !HAS_GPU
+        @info "Skipping the CPU/GPU bit-for-bit walk test: no GPU backend"
+    else
+        rng = MersenneTwister(0x0DDF)
+        mask = rand(rng, UInt8(0):UInt8(2), 24, 24, 4)
+        volume = rand(rng, Float32, 24, 24, 4)
+        for shape in (:arc, :flat)
+            scanner = BS.EICTScanner(
+                source_to_isocenter = 540.0,
+                source_to_detector = 1080.0,
+                detector_rows = 4,
+                detector_cols = 48,
+                detector_row_size = 0.8,
+                detector_col_size = 0.8,
+                detector_shape = shape,
+            )
+            geom = BS.CTGeometry(
+                scanner;
+                n_angles = 30,
+                n_rows = 4,
+                n_cols = 48,
+                fov_cm = 6.0,
+                z_cm = 0.4,
+            )
+
+            # the material paths of the polychromatic projection (and the scatter)
+            paths_cpu = zeros(Float32, 3, geom.n_cols, geom.n_rows, geom.n_angles)
+            BS.dd_fast_material_paths!(paths_cpu, mask, geom)
+            paths_gpu = to_gpu(zero(paths_cpu))
+            BS.dd_fast_material_paths!(paths_gpu, to_gpu(mask), geom)
+            @test count(>(0), paths_cpu) > 0
+            @test Array(paths_gpu) == paths_cpu
+
+            # the :dd forward projection of a volume
+            sino_cpu = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+            BS.dd_forward_project!(sino_cpu, volume, geom)
+            sino_gpu = to_gpu(zero(sino_cpu))
+            BS.dd_forward_project!(sino_gpu, to_gpu(volume), geom)
+            @test Array(sino_gpu) == sino_cpu
+        end
     end
 end

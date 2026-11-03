@@ -381,10 +381,8 @@ function dd_backproject!(
                 vmin_t_v = vertical_v ? vmx : vmy
                 lp_v = fma(T(il_v) - half, v_long_v, vmin_long_v)
                 mf_v = s_long_v / (s_long_v - lp_v)
-                t0_v = s_tran_v +
-                    (vmin_t_v + T(it_v - Int32(1)) * v_t_v - s_tran_v) * mf_v
-                t1_v = s_tran_v +
-                    (vmin_t_v + T(it_v) * v_t_v - s_tran_v) * mf_v
+                t0_v = _dd_edge(s_tran_v, vmin_t_v, T(it_v - Int32(1)), v_t_v, mf_v)
+                t1_v = _dd_edge(s_tran_v, vmin_t_v, T(it_v), v_t_v, mf_v)
                 z0_v = _dd_edge(sz, vmz, T(iz - Int32(1)), vsz, mf_v)
                 z1_v = _dd_edge(sz, vmz, T(iz), vsz, mf_v)
 
