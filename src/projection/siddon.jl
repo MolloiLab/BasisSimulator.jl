@@ -1196,7 +1196,7 @@ function siddon_fused_spectral_project!(
     n_cols = Int32(size(pilot, 1))
     n_rows = Int32(size(pilot, 2))
     n_angles = Int32(size(pilot, 3))
-    n_elem = n_cols * n_rows * n_angles
+    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
 
     # Volume bounds
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov

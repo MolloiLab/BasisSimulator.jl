@@ -1530,6 +1530,7 @@ readout = MC.DexelEnergyReadout(
         pitch_y_mm = pitch_mm[2],
         neighborhood = 3,
         cloud_sigma_um = 0.01,
+        transport = nothing,  # a scintillator: each dexel keeps the energy left in its own ceramic
     ),
 )
 
@@ -2358,13 +2359,9 @@ let
     same = isdefined(BS, :UFC_FLASH_MC_EFFICIENCY_LUT) &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies == table.energies &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency == table.efficiency
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), has exactly this table (its `UFC_FLASH_MC_EFFICIENCY_LUT`)." :
-            "✗ **The installed BasisSimulator, v$(installed), has a different Flash table from BasisMonteCarlo's copy of v0.15.1's.** Check `BASISSIMULATOR_V0_15_1_EFFICIENCY` against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), has exactly this table (its `UFC_FLASH_MC_EFFICIENCY_LUT`)." :
         "The installed BasisSimulator is v$(installed), which no longer uses this table. The comparisons below are with BasisSimulator v0.15.1's Flash table, which BasisMonteCarlo keeps (`BASISSIMULATOR_V0_15_1_EFFICIENCY`): they do not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -2994,7 +2991,6 @@ function aquilion_spectrum(kVp; flat_mm)
         views = 1200,
         rotation_time = 0.5,
         collimation_mm = 5.0,
-        anode_angle = 10,
     )
     return BS.resolve_source_spectrum_without_bowtie(BS.SimOptions(), protocol; scanner)
 end
@@ -3539,8 +3535,8 @@ clinical_check = let
     m1 = [d.crystal_keV / d.n for d in one_dexel]
     m2 = [d.crystal2_keV2 / d.n for d in one_dexel]
     cell = MC.energy_absorption_efficiency.(grid_runs.with)
-    # the whole arc against one cell, at the air scans' four energies (section 7): about 5 % more,
-    # across the 16 cm, interpolated between them
+    # the whole arc against one cell, from section 7's own air scans: the fan and cone angles (and the
+    # model's arc, not tilted along z) change it a little; interpolated between the scans' energies
     cell_at(x) = MC.interpolate_linear(collect(grid_energies), cell, clamp(x, 20.0, 140.0))
     arc_ratio = [sum(s.energy_keV) / s.photon_keV / cell_at(E) for (E, s) in zip(air_energies, air_scans)]
     ratio_at(x) = MC.interpolate_linear(air_energies, arc_ratio, clamp(x, first(air_energies), last(air_energies)))
@@ -3611,7 +3607,7 @@ end
 let
     rows = String[]
     worst = 0.0
-    for c in clinical_check, (name, v, floor) in (("efficiency, one dexel", c.efficiency, 0.002), ("DQE(0), one dexel", c.dqe, 0.003), ("the whole arc", c.arc, 0.015))
+    for c in clinical_check, (name, v, floor) in (("efficiency, one dexel", c.efficiency, 0.002), ("DQE(0), one dexel", c.dqe, 0.003), ("the whole arc", c.arc, 0.01))
         difference = v.direct - v.table
         allowed = 3v.noise + floor
         pass = abs(difference) <= allowed
@@ -3626,8 +3622,9 @@ let
         $(join(rows, "\n"))
 
         **$(passed) of $(length(rows)) agree.** Allowed: three times the direct simulation's own noise, plus 0.002 for the
-        efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and 0.015 for the whole arc, whose prediction is one cell's efficiency times the arc's own excess over it,
-        measured in section 7's air scans at four energies and interpolated between them. Where they agree, the
+        efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and 0.01 for the whole arc, whose prediction is one cell's efficiency
+        times the arc's own excess over it, measured in section 7's air scans and interpolated between their energies: so
+        this checks the spectrum's weighting, not the arc's geometry, which section 7 reports. Where they agree, the
         single-energy table, weighted by any spectrum, is the clinical beam: what BasisSimulator does with it is exact.
         """
     )
@@ -3681,7 +3678,8 @@ by_depth = reshape(
 )
 
 # ╔═╡ 1549c982-b5aa-54ba-80c0-000deeceece7
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ 95459b06-583d-5fe0-bf96-830980415543
 saved = let
@@ -3742,7 +3740,7 @@ saved = let
         push!(paths, path)
     end
     paths
-end
+end;
 
 # ╔═╡ 09fd9bf9-da85-5488-ac38-c1bd9bf15da8
 # Read them back in BasisSimulator's layout

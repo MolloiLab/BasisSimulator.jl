@@ -1,7 +1,10 @@
-# Scanner models — the constructor defaults, the detector/filter catalog, and the documented
-# parameter set of every clinical scanner the example notebooks model. Every number here is read
-# from src/geometry/scanner.jl, src/api/driver.jl or the notebooks' own constructor calls.
-# (Absorbs the former SCANNERS.md and docs/scanner_dossiers/somatom_definition_flash.md.)
+# Scanner models — the constructor defaults, the detector/filter catalog, and the clinical scanners
+# BasisSimulator documents. Each clinical scanner is a documented constant
+# (src/geometry/clinical_scanners.jl); its parameter tables below are read from the constant itself,
+# so the page and the package cannot disagree. (Absorbs the former SCANNERS.md and
+# docs/scanner_dossiers/somatom_definition_flash.md.)
+
+import BasisSimulator
 
 let BASE = get(ENV, "BASISSIM_BASE", "")
     () -> begin
@@ -35,6 +38,14 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
         notebook(slug, label) = A(:href => "$(BASE)/examples/$(slug)/", :class => link, label)
 
+        # A clinical scanner's parameters, read from its constant (the one source of truth)
+        shown(x) = sprint(show, x)
+        param_table(s) = table(["Keyword", "Value"], [[String(f), shown(getproperty(s, f))] for f in propertynames(s)]; mono = [1, 2])
+        # A dual-source scanner's two chains side by side, and the keywords in which B differs from A
+        pair_table(a, b) = table(["Keyword", "Tube/detector A", "Tube/detector B"],
+            [[String(f), shown(getproperty(a, f)), shown(getproperty(b, f))] for f in propertynames(a)]; mono = [1, 2, 3])
+        differing(a, b) = join([String(f) for f in propertynames(a) if getproperty(a, f) != getproperty(b, f)], ", ")
+
         callout(title, body...) = Div(:class => "rounded-xl border border-accent-200 dark:border-accent-900 bg-accent-50/60 dark:bg-accent-950/30 px-5 py-4 space-y-2",
             Div(:class => eyebrow, title), Div(:class => small, body...))
 
@@ -67,36 +78,46 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
             H2(:id => "overview", :class => h2_cls, "Overview"),
             P(:class => prose,
-                "There are no preset factory functions in the package. The clinical systems below are the ",
-                "documented parameter sets that the example notebooks pass to the constructors, reproduced ",
-                "keyword for keyword, so any of them can be pasted into a session. Parameters a vendor does ",
-                "not publish are marked as modelling assumptions, as the notebooks mark them."),
-            table(["System", "Constructor", "Detector", "Notebooks"], [
-                ["GE Revolution Apex Elite", "EICTScanner", "Gemstone garnet, MC LUT (:lumex)",
+                "Each clinical scanner below is a documented constant: an ", c("EICTScanner"), " or ",
+                c("PCCTScanner"), " like any other, whose docstring gives every value's source and marks the ",
+                "values a vendor does not publish as assumptions. There are no preset functions and no mode ",
+                "keywords. A different scan of a scanner is a variant, made with the same constructor from the ",
+                "constant: every parameter copied, the keywords given replaced."),
+            CodeBlock("""scanner = BS.SOMATOM_FORCE                                      # a clinical scanner
+scanner = BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48)   # a variant of it
+scanner = BS.PCCTScanner(BS.NAEOTOM_ALPHA; pileup = false)       # pile-up off
+scanner = BS.NAEOTOM_ALPHA_UHR                                   # its ultra-high-resolution mode
+protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0)   # protocols vary the same way"""),
+            table(["System", "Constant", "Detector", "Notebooks"], [
+                ["GE Revolution Apex Elite", "REVOLUTION_APEX", "Gemstone garnet, Geant4 table (:lumex)",
                     Span(notebook("01_five_struct_api", "01"), ", ", notebook("02_xcat_custom_materials", "02"), ", ",
                          notebook("03_dual_kvp_switching_vmi", "03"), ", ", notebook("05_xcat_grid_to_recon", "05"), ", ",
                          notebook("06_catsim_vs_basissim", "06"), ", ", notebook("07_qrm_thorax_pure_material_vmi", "07"))],
-                ["Siemens NAEOTOM Alpha", "PCCTScanner", "CdTe 1.6 mm, 4 thresholds",
+                ["Siemens NAEOTOM Alpha", "NAEOTOM_ALPHA, NAEOTOM_ALPHA_UHR", "CdTe 1.6 mm, Geant4 native table; 4 thresholds (UHR: 1)",
                     Span(notebook("04_pcct_vmi", "04"), ", ", notebook("08_qrm_thorax_pure_material_pcct", "08"))],
-                ["Siemens SOMATOM Force", "EICTScanner", "UFC Gd₂O₂S, MC LUT (:ufc)",
+                ["Siemens SOMATOM Force", "SOMATOM_FORCE, SOMATOM_FORCE_B", "UFC Gd₂O₂S, Geant4 table (:ufc)",
                     notebook("09_siemens_force_ufc_dual_source_vmi", "09")],
-                ["Siemens SOMATOM Definition Flash", "EICTScanner", "UFC Gd₂O₂S, Flash MC LUT (:ufc_flash)",
+                ["Siemens SOMATOM Definition Flash", "SOMATOM_DEFINITION_FLASH, …_B", "UFC Gd₂O₂S, Flash Geant4 table (:ufc_flash)",
                     notebook("12_siemens_flash_ufc", "12")],
-                ["Research geometries", "EICTScanner", "Gemstone (:lumex)",
+                ["Research geometries", "plain EICTScanner calls", "Gemstone (:lumex)",
                     Span(notebook("10_titanium_implant", "10"), ", ", notebook("11_helical_scanning", "11"))],
             ]),
             P(:class => small,
                 "Anything that changes between scans (kVp, mA, views, rotation time, collimation, pitch, ",
                 "added filters such as a tin shield) belongs in ", c("CTProtocol"), ", not in the scanner. A ",
-                "dual-source system is modelled as two acquisitions: one scanner per tube/detector chain, each ",
-                "with its own protocol."),
+                "dual-source scanner is two constants, one per tube/detector chain (",
+                c("SOMATOM_FORCE"), " and ", c("SOMATOM_FORCE_B"), "; ", c("SOMATOM_DEFINITION_FLASH"), " and ",
+                c("SOMATOM_DEFINITION_FLASH_B"), "), and a dual-source scan is two ordinary acquisitions, each ",
+                "with its own protocol. Rapid kVp switching is two acquisitions on one scanner, one protocol per kVp."),
 
             # ── Defaults ───────────────────────────────────────────────────────
             H2(:id => "defaults", :class => h2_cls, "Constructor defaults"),
             P(:class => prose,
                 "Every keyword has a default (a CatSim-like research scanner), so ", c("EICTScanner()"),
                 " alone is valid; ", c("PCCTScanner"), " additionally requires ", c("energy_thresholds"),
-                ". Distances are in mm, detector sizes are at the isocentre."),
+                ". Distances are in mm, detector sizes are at the isocentre. A scanner built from the defaults ",
+                "names no scatter kernels, so it simulates only with ", c("SimOptions(use_scatter = false)"),
+                "; a variant of a clinical constant keeps the constant's kernels."),
             H3(:class => h3_cls, "Geometry — both families"),
             table(["Keyword", "Default", "Meaning"], [
                 ["source_to_isocenter", "540.0", "source-to-isocentre distance (SID), mm"],
@@ -107,7 +128,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ["detector_col_offset", "0.25", "quarter-detector offset, columns (rays of opposing views interleave)"],
                 ["detector_shape", ":arc", ":arc (equiangular, focal-spot-centred) or :flat"],
                 ["focal_spot_width / focal_spot_length", "1.0 / 1.0", "focal spot, mm"],
-                ["target_angle", "7.0", "anode angle, degrees"],
+                ["target_angle", "7.0", "anode angle, degrees: the heel effect's and the spectrum's (the IPEM table at the nearest of 8° and 10°)"],
                 ["gantry_rotation_time", "0.5", "s"],
                 ["scan_diameter / gantry_aperture", "500.0 / 700.0", "scan field and bore, mm"],
                 ["flat_filter_material / flat_filter_thickness", ":aluminum / 2.0", "built-in flat filter, mm"],
@@ -116,26 +137,26 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             H3(:class => h3_cls, "EICTScanner — scintillator"),
             table(["Keyword", "Default", "Meaning"], [
                 ["detector_material", ":lumex", "selects the detector-efficiency model"],
-                ["detector_depth", "3.0", "scintillator depth, mm (used by the Beer–Lambert fallback only)"],
-                ["fill_factor_row / fill_factor_col", "0.9 / 0.9", "active-area fraction"],
+                ["detector_depth", "3.0", "scintillator depth, mm; must be the Geant4 table's (or use :beer_lambert)"],
+                ["fill_factor_row / fill_factor_col", "0.9 / 0.9", "active-area fraction, in (0, 1]: scales the quanta, so the noise"],
                 ["detection_gain", "15.0", "electrons per keV"],
-                ["electronic_noise", "5000.0", "DAS noise σ, electrons, added to the counts before the log"],
+                ["electronic_noise", "5000.0", "DAS noise σ, electrons (÷ gain: keV), added to the signal before the log"],
+                ["gain_spread / offset_spread_keV", "0.0 / 0.0", "dexel-to-dexel gain (relative σ) and offset (keV); corrected by calibrate_flat_field"],
+                ["defect_seed", "1", "the fixed pattern of the dexels' defects"],
+                ["scatter_kernels", "\"\"", "its entry of the Geant4 scatter library (\"\" = none: use_scatter = true, the default, throws)"],
+                ["scatter_correction", "true", "the DAS subtracts the scatter it estimates from the measured signal (the patient taken as water)"],
             ]; mono = [1, 2]),
             H3(:class => h3_cls, "PCCTScanner — direct conversion"),
             table(["Keyword", "Default", "Meaning"], [
-                ["energy_thresholds", "required", "keV, ascending; one counting bin per threshold"],
-                ["n_energy_bins", "length(energy_thresholds)", "must equal the threshold count"],
-                ["detector_material / detector_depth", ":CdTe / 1.6", ":CdTe, :CZT or :Si; mm"],
-                ["fill_factor_row / fill_factor_col", "0.9 / 0.9", "active-area fraction"],
-                ["energy_resolution", "0.0", "FWHM, keV"],
-                ["charge_sharing_fwhm", "0.0", "charge-cloud FWHM, mm"],
-                ["dead_time_ns", "0.0", "pulse dead time; pile-up is modelled only when > 0"],
-                ["pixel_mode", ":standard", ":standard, :uhr or :macro"],
-                ["native_dexel_col_mm / native_dexel_row_mm", "0 / 0", "native dexel at the detector face; 0 infers it from the binned pixel"],
-                ["binning_factor", "1", "spatial binning of native dexels"],
-                ["pileup", "true", "Monte Carlo pile-up (needs dead_time_ns > 0)"],
-                ["pileup_correction", "false", "model-based inverse of the pile-up on the recorded bins"],
-                ["scatter_correction", "false", "model-based scatter estimate-and-subtract on the bins"],
+                ["energy_thresholds", "required", "keV, ascending, among the response table's 16; one counting bin per threshold"],
+                                ["detector_material / detector_depth", ":CdTe / 1.6", ":CdTe, :CZT or :Si; mm"],
+                ["dead_time_ns", "0.0", "each native dexel's comparator dead time; pile-up is modelled only when > 0"],
+                ["binning_factor", "1", "native dexels summed digitally per pixel side, after counting (2 = standard, 1 = UHR)"],
+                ["pileup", "true", "pile-up per native dexel (needs dead_time_ns > 0); corrected by calibrate_pileup → apply_pileup!"],
+                ["gain_spread / threshold_spread_keV", "0.0 / 0.0", "native dexels' gain (relative σ) and threshold offsets (keV); corrected by calibrate_flat_field"],
+                ["defect_seed", "1", "the fixed pattern of the dexels' defects"],
+                ["scatter_kernels", "\"\"", "its entry of the Geant4 scatter library, as for EICTScanner"],
+                ["scatter_correction", "true", "subtract the scatter estimated from the recorded counts (the Geant4 kernels, the patient taken as water)"],
                 ["noise_reduction", "0.0", "count-noise blend, 0 = Poisson counts … 1 = expected counts"],
             ]; mono = [1, 2]),
 
@@ -144,29 +165,36 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             H3(:class => h3_cls, "Energy-integrating detector materials"),
             P(:class => small,
                 "With ", c("SimOptions(use_detector_efficiency = true)"), " (the default) the energy-integrating ",
-                "forward model weights every energy by a Monte Carlo absorbed-fraction table η(E), 1–140 keV. ",
-                c("detector_efficiency_mode = :beer_lambert"), " switches to the analytical fallback, which is the only ",
-                "place ", c("detector_depth"), " matters. Any other material symbol is an error."),
-            table(["detector_material", "Scintillator", "η(E) table", "Fallback depth"], [
+                "forward model reads each scintillator's Geant4 flat-field table, 1–140 keV: a photon of energy E ",
+                "leaves a mean signal m₁ = E·efficiency(E) and a mean square m₂ = m₁²/dqe0(E), so the signal is ",
+                "energy-weighted and its noise compound Poisson. A table is made at one depth, the scanner's ",
+                c("detector_depth"), "; ", c("detector_efficiency_mode = :beer_lambert"), " models any depth by ",
+                "analytic absorption. Any other material symbol is an error."),
+            table(["detector_material", "Scintillator", "Geant4 table", "Depth"], [
                 [":lumex", "GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ garnet", "GEMSTONE_MC_EFFICIENCY_LUT", "3.0 mm"],
                 [":ufc", "Siemens UFC Gd₂O₂S:Pr,Ce (SOMATOM Force)", "UFC_MC_EFFICIENCY_LUT", "1.4 mm"],
-                [":ufc_flash", "Siemens UFC Gd₂O₂S:Pr,Ce (SOMATOM Definition Flash)", "UFC_FLASH_MC_EFFICIENCY_LUT", "1.0 mm"],
+                [":ufc_flash", "Siemens UFC Gd₂O₂S:Pr,Ce (SOMATOM Definition Flash)", "UFC_FLASH_MC_EFFICIENCY_LUT", "1.4 mm"],
             ]; mono = [1, 3]),
             P(:class => small,
                 "The garnet table carries the Tb (52.0 keV) and Lu (63.3 keV) K-fluorescence escape dips; the two ",
-                "UFC tables carry the Gd K-edge escape at 50.2 keV. The Flash crystal is thinner than the Force's: ",
-                "the two tables agree below 30 keV and differ by −28 % at 140 keV (0.588 vs 0.816), and a test ",
-                "forbids aliasing them."),
+                "UFC tables carry the Gd K-edge escape at 50.2 keV. The tables are BasisMonteCarlo's Geant4 runs ",
+                "(Gemstone at 6.40 g/cm³, UFC at 7.31 g/cm³), copied in as plain data. No source gives the Flash's ",
+                "crystal depth, so its table is made at 1.4 mm, the only UFC thickness Siemens quotes: it agrees ",
+                "with the Force's to within 0.5 % (0.610 vs 0.612 at 140 keV), the two differing only by their grids."),
             Img(:src => "$(BASE)/assets/flash_ufc_lut_comparison.png",
-                :alt => "Monte Carlo detector efficiency: Flash UFC, Force UFC and Gemstone garnet versus photon energy",
+                :alt => "Geant4 detector efficiency: Flash UFC, Force UFC and Gemstone garnet versus photon energy",
                 :loading => "lazy",
                 :class => "w-full rounded-xl border border-warm-200 dark:border-warm-800 bg-white"),
             H3(:class => h3_cls, "Photon-counting sensors"),
             P(:class => small,
                 c(":CdTe"), ", ", c(":CZT"), " and ", c(":Si"), ". The photon-counting chain always applies a ",
-                "Monte Carlo detector-response matrix (photoelectric, Compton and Rayleigh transport, Fano noise, ",
-                "charge sharing, K-fluorescence) before thresholding into bins, then the Monte Carlo pile-up and ",
-                "the optional pile-up and scatter corrections set on the scanner."),
+                "Geant4 response read at the native dexels (BasisMonteCarlo notebook 03: photon transport in CdTe, ",
+                "the transported charge, 1.9 keV electronic noise, the anti-scatter grid of 4 × 6-dexel cells), ",
+                "the counts of every native dexel (Poisson, neighbours covarying through the photons they share), ",
+                "their pile-up (retriggering comparators after a 10 ns shaper), then the digital sum to pixels and ",
+                "the scatter correction (", c("scatter_correction"), ", on by default as on the energy integrator). Pile-up and the dexels' defects are corrected outside ",
+                c("simulate!"), ", from simulated calibration scans (", c("calibrate_pileup"), ", ",
+                c("calibrate_flat_field"), ")."),
             H3(:class => h3_cls, "Bowtie filters"),
             table(["bowtie_filter", "Profile"], [
                 [":large_body  (:ge_revolution_large)", "CatSim/XCIST large-body profile"],
@@ -181,29 +209,19 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 " or ", c(":titanium"), ") at ", c("flat_filter_thickness"), " mm. Per-scan layers go on the protocol: ",
                 c("CTProtocol(additional_filters = [(\"Ti\", 0.9), (\"Sn\", 0.6)])"), " accepts ", c("\"Al\""), ", ",
                 c("\"Cu\""), ", ", c("\"Sn\""), ", ", c("\"Ti\""), ", ", c("\"C\""), " and ", c("\"W\""), ". Source ",
-                "spectra are the bundled IPEM tables at 8° and 10° anode angles (", c("CTProtocol(anode_angle = 8)"),
-                "), up to 140 kVp."),
+                "spectra are the bundled IPEM tables at 8° and 10° anode angles, read at the angle nearest the ",
+                "scanner's ", c("target_angle"), " (the anode is hardware: one field), up to 140 kVp."),
 
             # ── GE Apex Elite ──────────────────────────────────────────────────
             H2(:id => "ge-revolution-apex-elite", :class => h2_cls, "GE Revolution Apex Elite"),
-            chips("EICTScanner", "Gemstone MC LUT", "256 rows · 160 mm", "Rapid kVp switching"),
+            chips("EICTScanner", "Gemstone Geant4 table", "256 rows · 160 mm", "Rapid kVp switching"),
             P(:class => prose,
                 "A 256-row wide-cone system with 0.625 mm rows and a curved Gemstone (Lumex) garnet array. ",
                 "Notebooks 01, 02 and 05 add clinical DAS noise (3500 e⁻); the VMI and CatSim notebooks ",
                 "(03, 06, 07) set ", c("electronic_noise = 0"), "."),
-            CodeBlock("""scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6,  source_to_detector = 1100.0,
-    detector_rows = 256,          detector_cols = 834,
-    detector_row_size = 0.625,    detector_col_size = 0.6,
-    detector_col_offset = 0.25,   detector_shape = :arc,     # the defaults, written out
-    focal_spot_width = 1.0,       focal_spot_length = 1.0,   target_angle = 10.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex,   detector_depth = 3.0,
-    fill_factor_row = 0.9,        fill_factor_col = 0.9,
-    electronic_noise = 3500.0,    # e⁻, clinical DAS readout (0 in the VMI notebooks)
-    detection_gain = 10.0,        # e⁻/keV
-)"""; title = "Notebooks 01 · 02 · 03 · 05 · 06 · 07"),
+            CodeBlock("""scanner = BS.REVOLUTION_APEX                                       # notebooks 01 · 02 · 05
+scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)   # notebooks 03 · 06 · 07 (VMI, CatSim)"""),
+            param_table(BasisSimulator.REVOLUTION_APEX),
             table(["Protocol (as run)", "kVp", "mA", "Views / rotation", "Collimation", "Added filter"], [
                 ["Single energy (01, 05)", "120", "200 / 250", "500 / 1.0 s", "5 mm", "Al 4.5 mm"],
                 ["Rapid kVp switching (03, 07)", "80 / 140", "(407 × 0.65 / 405 × 0.35) × DOSE_SCALE", "984 / 0.5 s", "5 mm", "Al 4.5 mm"],
@@ -217,80 +235,71 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
             # ── Naeotom Alpha ──────────────────────────────────────────────────
             H2(:id => "siemens-naeotom-alpha", :class => h2_cls, "Siemens NAEOTOM Alpha"),
-            chips("PCCTScanner", "CdTe 1.6 mm", "4 thresholds", "2 × 2 binning"),
+            chips("PCCTScanner", "CdTe 1.6 mm", "4 thresholds", "2 × 2 digital binning"),
             P(:class => prose,
-                "The photon-counting system. Native CdTe dexels of 0.275 × 0.322 mm at the detector face are ",
-                "binned 2 × 2, which at the 1113/610 magnification gives 0.301 × 0.353 mm pixels at the ",
-                "isocentre and 144 rows; notebooks 04 and 08 both span the 50 cm scan field (1659 columns). ",
+                "The photon-counting system. Native CdTe dexels at a 0.34 × 0.364 mm pitch at the detector face (a ",
+                "0.275 × 0.322 mm electrode and its share of the anti-scatter grid's gaps) are summed 2 × 2 after ",
+                "counting, which at the 1113/610 magnification gives 0.373 × 0.399 mm pixels at the isocentre: ",
+                "144 rows (57.6 mm) and 1376 columns over the 50 cm scan field (K243523; Li 2025). Each native ",
+                "dexel piles up on its own, 27 ns of dead time behind a 10 ns shaper (the fit of BasisMonteCarlo ",
+                "notebook 03 to Li 2025's count loss). ",
                 "Four thresholds at 20, 35, 55 and ",
-                "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV."),
-            CodeBlock("""scanner = let native_col = 0.275, native_row = 0.322,   # mm at the detector face
-               sid = 610.0, sdd = 1113.0, bf = 2
-    col_iso = native_col * bf / (sdd / sid)                # 0.301 mm
-    row_iso = native_row * bf / (sdd / sid)                # 0.353 mm
-    BS.PCCTScanner(
-        source_to_isocenter = sid, source_to_detector = sdd,
-        detector_rows = 144, detector_cols = ceil(Int, 500.0 / col_iso),   # the 50 cm scan field
-        detector_row_size = row_iso, detector_col_size = col_iso,
-        detector_shape = :arc, detector_col_offset = 0.25,
-        focal_spot_width = 0.4, focal_spot_length = 0.5, target_angle = 7.0,
-        gantry_rotation_time = 0.5, scan_diameter = 500.0, gantry_aperture = 820.0,
-        flat_filter_material = :aluminum, flat_filter_thickness = 3.0,
-        bowtie_filter = :large_body,                        # both notebooks
-        detector_material = :cdte, detector_depth = 1.6,
-        fill_factor_row = 0.95, fill_factor_col = 0.95,
-        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution = 10.0, charge_sharing_fwhm = 0.08, dead_time_ns = 5.0,
-        pixel_mode = :standard,
-        native_dexel_col_mm = native_col, native_dexel_row_mm = native_row, binning_factor = bf,
-        pileup_correction = true, scatter_correction = true, noise_reduction = 0.0,
-    )
-end"""; title = "Notebooks 04 · 08"),
+                "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV. ",
+                "It is a realistic unit, defects included: its native dexels' gains spread by 2 % and their ",
+                "thresholds by 0.35 keV (BasisMonteCarlo notebook 03's assumption), a fixed pattern from its ",
+                c("defect_seed"), ", corrected as the scanner does it by ", c("calibrate_flat_field"), " → ",
+                c("apply_flat_field!"), "."),
+            CodeBlock("""scanner = BS.NAEOTOM_ALPHA                                         # notebooks 04 · 08"""),
+            param_table(BasisSimulator.NAEOTOM_ALPHA),
+            P(:class => small,
+                "Its ultra-high-resolution mode is its own constant, ", c("NAEOTOM_ALPHA_UHR"), ": every native ",
+                "dexel read on its own, 120 rows of 0.2 mm and 2752 columns, with one threshold (20 keV) at native ",
+                "resolution. A mode is never a keyword."),
             P(:class => small,
                 "Both notebooks scan at 140 kVp and 174 mA × ", c("DOSE_SCALE"), " (the physical CTDIvol of 10.12 mGy), ",
                 "1200 views in 0.5 s, 5 mm collimation, with the tube's 0.9 mm titanium window as ",
                 c("additional_filters = [(\"Ti\", 0.9)]"), " on top of the 3 mm aluminium, exact Poisson counts, ",
+                "pile-up corrected by ", c("calibrate_pileup"), " → ", c("apply_pileup!"), " and then the flat field by ",
+                c("calibrate_flat_field"), " → ", c("apply_flat_field!"), ", ",
                 "and view integration on the photon-counting path (", c("view_samples = 5"), ")."),
 
             # ── Force ──────────────────────────────────────────────────────────
             H2(:id => "somatom-force", :class => h2_cls, "Siemens SOMATOM Force"),
-            chips("EICTScanner", "UFC MC LUT", "Dual source", "Sn 0.6 mm"),
+            chips("EICTScanner", "UFC Geant4 table", "Dual source", "Sn 0.6 mm"),
             P(:class => prose,
                 "Third-generation dual source: 96 rows of 0.6 mm (57.6 mm), 920 channels of 0.054° ",
                 "(0.561 mm at the isocentre). Both tubes use tube A's geometry so the low/high sinogram pair is ",
                 "co-registered ray by ray; the Gammex body fits inside detector B's real 35.5 cm field, so no ",
                 "ray used would be missing on the real detector."),
-            CodeBlock("""scanner = BS.EICTScanner(
-    source_to_isocenter = 595.0, source_to_detector = 1085.6,
-    detector_rows = 96,          detector_cols = 920,
-    detector_row_size = 0.6,     detector_col_size = 0.561,
-    focal_spot_width = 0.8,      focal_spot_length = 1.2,  target_angle = 8.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 3.0,
-    bowtie_filter = :large_body,                 # assumption: Siemens profile unpublished
-    detector_material = :ufc,    detector_depth = 1.4,
-    fill_factor_row = 0.9,       fill_factor_col = 0.9,
-    electronic_noise = 0,        detection_gain = 10.0,
-)
+            CodeBlock("""# one dual-energy scan: two acquisitions, one per tube/detector chain
+scanner_a = BS.SOMATOM_FORCE      # tube/detector A, low kV
+scanner_b = BS.SOMATOM_FORCE_B    # tube/detector B (640 channels, 35.5 cm field), Sn-filtered high kV
 protocol_low  = BS.CTProtocol(kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5,
-                              collimation_mm = 4.8, anode_angle = 8,
+                              collimation_mm = 4.8,
                               additional_filters = [("Ti", 0.9)])
-protocol_high = BS.CTProtocol(kVp = 140, mA = 190.0, views = 1160, rotation_time = 0.5,
-                              collimation_mm = 4.8, anode_angle = 8,
-                              additional_filters = [("Ti", 0.9), ("Sn", 0.6)])"""; title = "Notebook 09"),
+protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 190.0,
+                              additional_filters = [("Ti", 0.9), ("Sn", 0.6)])
+# notebook 09 co-registers the pair ray by ray: tube B runs on tube A's arc (scanner_b = scanner_a),
+# with the phantom inside detector B's real 35.5 cm field"""; title = "Notebook 09"),
+            pair_table(BasisSimulator.SOMATOM_FORCE, BasisSimulator.SOMATOM_FORCE_B),
+            P(:class => small, "Tube/detector B differs from A only in: ", c(differing(BasisSimulator.SOMATOM_FORCE, BasisSimulator.SOMATOM_FORCE_B)), "."),
             P(:class => small,
                 "The clinical abdomen pairs are x/Sn150; the bundled spectra stop at 140 kVp, so the notebook runs ",
                 "100/Sn140 at the published 2:1 current ratio. Assumptions: 8° anode, 3.0 mm Al + 0.9 mm Ti flat ",
                 "filtration (the Vectron-family stack), the CatSim large-body bowtie, 1.4 mm crystal and zero ",
-                "electronic noise. The 0.88 mm tube-B z-offset is applied by shifting the phantom."),
+                "electronic noise. Tube B sits 95° from tube A and detector B 0.88 mm from A along z; neither is a ",
+                "scanner parameter, since each tube's scan is its own full acquisition, and the z offset is applied ",
+                "by shifting tube B's phantom."),
 
             # ── Definition Flash (the former dossier) ──────────────────────────
             H2(:id => "somatom-definition-flash", :class => h2_cls, "Siemens SOMATOM Definition Flash"),
-            chips("EICTScanner", "Flash UFC MC LUT", "Dual source · 95°", "Sn 0.4 mm"),
+            chips("EICTScanner", "Flash UFC Geant4 table", "Dual source · 95°", "Sn 0.4 mm"),
             P(:class => prose,
                 "Second-generation dual source (2008). Two STRATON MX P tubes and two UFC detectors, 95° apart. ",
-                "The detector efficiency is its own Monte Carlo table, ", c("UFC_FLASH_MC_EFFICIENCY_LUT"),
-                " (", c("detector_material = :ufc_flash"), "), not the Force's: same Gd₂O₂S material, thinner ",
-                "crystal. The sourced specification follows; unpublished items are listed as assumptions."),
+                "The detector response is its own Geant4 table, ", c("UFC_FLASH_MC_EFFICIENCY_LUT"),
+                " (", c("detector_material = :ufc_flash"), "): the Force's Gd₂O₂S ceramic at the same 1.4 mm, ",
+                "behind the Flash's own pitch and grid. The sourced specification follows; unpublished items are ",
+                "listed as assumptions."),
             H3(:class => h3_cls, "Identification"),
             table(["Item", "Value"], [
                 ["FDA 510(k)", "K082220 (10/2008, SOMATOM Flash DS); Stellar detector variant K113342 (12/2011); VA44 + 0.5 mm slices K121072 (2012); later K122471, K173630, K230421"],
@@ -335,28 +344,19 @@ protocol_high = BS.CTProtocol(kVp = 140, mA = 190.0, views = 1160, rotation_time
                 ["Vendor reconstruction", "SAFIRE, later ADMIRE; iMAR; 512² matrix"],
             ]),
             H3(:class => h3_cls, "The model"),
-            CodeBlock("""scanner = BS.EICTScanner(                     # tube/detector A, used for both tubes
-    source_to_isocenter = 595.0, source_to_detector = 1085.6,
-    detector_rows = 64,          detector_cols = 736,
-    detector_row_size = 0.6,     detector_col_size = 0.70473,
-    detector_shape = :arc,
-    focal_spot_width = 0.7,      focal_spot_length = 0.7,  target_angle = 7.0,
-    gantry_rotation_time = 0.5,  scan_diameter = 500.0,    gantry_aperture = 780.0,
-    flat_filter_material = :aluminum, flat_filter_thickness = 8.4,
-    bowtie_filter = :large_body,                 # assumption: profile unpublished
-    detector_material = :ufc_flash,              # the Flash table, never :ufc
-    detector_depth = 1.0,
-    fill_factor_row = 0.9,       fill_factor_col = 0.9,
-    electronic_noise = 1500,     # e⁻, Stellar DAS floor (pre-2011 builds ≈ 3500)
-    detection_gain = 10.0,
-)
-# dual energy: 80 kV on tube A, Sn140 on tube B; a full 1152-view rotation each, both currents
+            CodeBlock("""# one dual-energy scan: two acquisitions, one per tube/detector chain
+scanner_a = BS.SOMATOM_DEFINITION_FLASH      # tube/detector A: 80 kV
+scanner_b = BS.SOMATOM_DEFINITION_FLASH_B    # tube/detector B (480 channels, 33.4 cm field): Sn140
 # scaled by DOSE_SCALE to the physical scan's CTDIvol (10.01 mGy)
 protocol_low  = BS.CTProtocol(kVp = 80, mA = 470.0 * DOSE_SCALE, views = 1152, rotation_time = 0.5,
-                              collimation_mm = 4.8, anode_angle = 8)
-protocol_high = BS.CTProtocol(kVp = 140, mA = 182.0 * DOSE_SCALE, views = 1152, rotation_time = 0.5,
-                              collimation_mm = 4.8, anode_angle = 8,
-                              additional_filters = [("Sn", 0.4)])"""; title = "Notebook 12"),
+                              collimation_mm = 4.8)
+protocol_high = BS.CTProtocol(protocol_low; kVp = 140, mA = 182.0 * DOSE_SCALE,
+                              additional_filters = [("Sn", 0.4)])
+# notebook 12 co-registers the pair ray by ray: tube B runs on tube A's arc (scanner_b = scanner_a),
+# with the phantom inside detector B's 33.4 cm field"""; title = "Notebook 12"),
+            pair_table(BasisSimulator.SOMATOM_DEFINITION_FLASH, BasisSimulator.SOMATOM_DEFINITION_FLASH_B),
+            P(:class => small, "Tube/detector B differs from A only in: ",
+                c(differing(BasisSimulator.SOMATOM_DEFINITION_FLASH, BasisSimulator.SOMATOM_DEFINITION_FLASH_B)), "."),
             P(:class => small,
                 "The heel effect is off and every view integrates over its arc (", c("view_samples = 5"), "). ",
                 "Notebook 12 also runs the regular dual-power mode, 120 kV on both tubes at 420 mA × ", c("DOSE_SCALE"), " each, whose two ",
@@ -367,8 +367,8 @@ protocol_high = BS.CTProtocol(kVp = 140, mA = 182.0 * DOSE_SCALE, views = 1152, 
             table(["Item", "Status", "Choice"], [
                 ["Bowtie profile", "unpublished", "CatSim :large_body"],
                 ["Flat-filter composition", "only the Al equivalent is published", "8.4 mm Al equivalent"],
-                ["UFC layer depth", "proprietary", "1.0 mm (inert with the MC table)"],
-                ["Fill factor", "proprietary", "0.9 (cancels in the air calibration)"],
+                ["UFC layer depth", "proprietary", "1.4 mm, the only UFC thickness Siemens quotes, and the depth of its Geant4 table"],
+                ["Fill factor", "proprietary", "0.9 (scales the quanta, so the noise; cancels in the air calibration)"],
                 ["Electronic noise", "never published", "1500 e⁻ Stellar; ≈ 3500 e⁻ pre-2011"],
                 ["Tube-B z-offset", "not published for the Flash", "0 (no-op for z-invariant phantoms)"],
                 ["Detector B truncation", "real: 33 cm", "tube B uses the A arc for a ≤ 33 cm phantom, so the pair is co-registered"],
@@ -378,25 +378,25 @@ protocol_high = BS.CTProtocol(kVp = 140, mA = 182.0 * DOSE_SCALE, views = 1152, 
                 "K173630, K230421 · Siemens SOMATOM Definition Flash datasheet (Dec 2010) and brochure (2016) · ",
                 "NHS Supply Chain CT scanner attributes · DICOM-CT-PD User Manual v3 and the TCIA LDCT-and-Projection-data ",
                 "collection · Petersilka et al., Eur J Radiol 2008;68:362 · Flohr et al., Med Phys 2009;36:5641 · ",
-                "Primak et al., AJR 2010 · Schardt et al., Med Phys 2004;31:2699 · Flash detector Monte Carlo: ",
-                "H. Khodajou-Chokami (2026-08-26)."),
+                "Primak et al., AJR 2010 · Schardt et al., Med Phys 2004;31:2699 · Flash detector response: ",
+                "Geant4, BasisMonteCarlo notebook 05."),
 
             # ── Research geometries ────────────────────────────────────────────
             H2(:id => "research-scanners", :class => h2_cls, "Research geometries"),
             P(:class => prose,
-                "Two notebooks use generic geometries and leave the rest at the defaults: the titanium-implant ",
-                "study (a compact 16-row scanner) and the helical study (a 256 × 0.625 mm, 16 cm wide-cone ",
-                "volume scanner, scanned with 20 mm collimation at pitch 1.0)."),
+                "Two notebooks need a detector no clinical scanner has, so they use variants of ",
+                c("REVOLUTION_APEX"), " that keep its distances (and with them its scatter kernels, which are ",
+                "made for one scanner's source–isocentre and source–detector distances): the titanium-implant ",
+                "study (a compact 16-row detector) and the helical study (the Apex's own 256 × 0.625 mm, 16 cm ",
+                "wide-cone rows, scanned with 20 mm collimation at pitch 1.0). Both keep 512 one-millimetre columns."),
             CodeBlock("""scanner_implant = BS.EICTScanner(            # notebook 10
-    source_to_isocenter = 540.0, source_to_detector = 950.0,
+    BS.REVOLUTION_APEX;
     detector_rows = 16, detector_cols = 512,
     detector_row_size = 1.0, detector_col_size = 1.0,
-    detector_material = :lumex, detector_depth = 3.0,
 )
 scanner_helical = BS.EICTScanner(            # notebook 11
-    source_to_isocenter = 541.0, source_to_detector = 949.0,
-    detector_rows = 256, detector_cols = 512,
-    detector_row_size = 0.625, detector_col_size = 1.0,
+    BS.REVOLUTION_APEX;
+    detector_cols = 512, detector_col_size = 1.0,
 )
 helical = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.5,
                         collimation_mm = 20.0, pitch = 1.0, n_rotations = 16)"""),
@@ -405,12 +405,12 @@ helical = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.
             H2(:id => "new-scanner", :class => h2_cls, "Modelling a new scanner"),
             P(:class => prose, "What a new system needs, in three tiers."),
             table(["Tier", "Where", "What"], [
-                ["A — required", "EICTScanner / PCCTScanner",
-                    "SID and SDD; physical rows × columns and element size at the isocentre (column size at iso = pitch at the detector ÷ magnification); detector shape; focal spot and anode angle; rotation time, scan field, bore; flat filter and bowtie; the detector material, which must map to an existing η(E) table (or a new Monte Carlo run); fill factors; for photon counting, the thresholds, resolution, charge sharing, dead time, native dexel and binning."],
+                ["A — required", "a documented constant of EICTScanner / PCCTScanner",
+                    "SID and SDD; physical rows × columns and element size at the isocentre (column size at iso = pitch at the detector ÷ magnification); detector shape; focal spot and anode angle; rotation time, scan field, bore; flat filter and bowtie; the detector material, which must map to an existing η(E) table (or a new Monte Carlo run); fill factors; for photon counting, the thresholds, resolution, charge sharing, dead time, native dexel and binning; its scatter kernels (an entry of BasisMonteCarlo's Geant4 scatter library at its SID and SDD, named by scatter_kernels: scatter is on by default)."],
                 ["B — protocol", "CTProtocol",
                     "kVp list; mA range; rotation time; views per rotation; collimation options; mode-dependent added filters (e.g. tin); pitch range."],
                 ["C — unpublished", "documented assumptions",
-                    "bowtie profile, scintillator depth, fill factor, absolute electronic noise, exact filter stack, tube-B z-offset. State each one in the notebook, as notebooks 09 and 12 do."],
+                    "bowtie profile, scintillator depth, fill factor, absolute electronic noise, exact filter stack, tube-B z-offset. State each one in the constant's docstring and the notebook, as notebooks 09 and 12 do."],
             ]),
             P(:class => small,
                 "Check a protocol against the hardware with ", c("validate_protocol(protocol, scanner)"),

@@ -1,787 +1,807 @@
 """
-    Forward/Scatter.jl
+    src/detector/scatter.jl
 
-Scatter simulation for CT using analytic kernel convolution.
+Patient scatter in `simulate!`: the Geant4 kernels of [`scatter_kernels`](@ref) superposed onto the
+patient's own rays, for both detector families.
 
-Scatter in CT is caused by Compton and Rayleigh scattering of X-ray photons.
-The scatter contribution depends on:
-- Patient size and density (path length)
-- Primary signal intensity
-- Collimation and air gap
-- Beam energy
+Scatter is smooth, so it is computed on coarse rays (`ScatterPlan`, built with the workspace):
+views every `_SCATTER_VIEW_STEP_DEG` of gantry angle, rays every `_SCATTER_RAY_STEP_DEG` across the
+detector's fan, and groups of detector rows `_SCATTER_GROUP_ROWS` library rows tall. The phantom is
+walked along those rays for each material's path length (`dd_fast_material_paths!`), which gives
+each ray its water-equivalent length (at 70 keV, the library's reference), its length through the
+patient's outline (every material but gases) and its materials' Compton and Rayleigh scattering
+and attenuation against water's. The superposition fills the library's bins (2° columns, rows of
+10–20 mm at the detector) view by view, in the units of the detector's signal; each dexel then
+reads its value interpolated between bins and views. The view stands in its water ellipse as
+BasisMonteCarlo notebook 11 does (`view = :mean`, the geometric mean of the ellipse measured from
+the water-equivalent lengths and the one measured from the outline).
 
-This module implements the convolution-based scatter model inspired by
-Ohnesorge et al. (1999) and used in XCIST/GeCATSim:
+Units: an energy integrator's scatter is added to its mean signal `S₁` (units of `E_ref`) and to
+its second moment `S₂`, each photon weighted by the detector's `m₁` and `m₂/m₁` at the photon's
+energy; a photon counter's is added to each bin's counts, a counted photon split over the bins as
+the response table splits a photon of its energy (`R(E, b) / η(E)`, the library counting each
+photon the sensor absorbs once).
 
-    scatter = convolve(intensity × path_length × C, kernel)
+The correction (the scanner's `scatter_correction`, on by default for both families: a photon
+counter's counts, an energy integrator's DAS) estimates the scatter from the measured data alone: each coarse ray's
+water-equivalent length from its measured transmission (scatter included, inverted through the
+ray's own spectrum), the scatter of that water patient superposed, the estimate subtracted and the
+lengths measured again (`_SCATTER_CORRECTION_PASSES` times). It never sees the phantom, so it is
+realistic, not exact: it treats the patient as water and the view's outline as its
+water-equivalent lengths' (`view = :wet`).
 
-where C is a calibration constant (~0.02-0.03) and kernel is a broad
-low-frequency scatter point spread function.
+Everything after the plan is built runs on the workspace's backend (the GPU, or Julia's threads on
+the CPU): the walk, each ray's lengths and photons, the superposition (`scatter_kernels.jl`), the
+correction's inversion, and the maps to dexels. The plan keeps its own copy of the library there.
 
-Reference:
-- Ohnesorge B, Flohr T, Klingenbeck-Regn K. "Efficient object scatter
-  correction algorithm for third and fourth generation CT scanners."
-  Eur Radiol. 1999;9(3):563-9.
-- XCIST: https://github.com/xcist/main
-
-GPU-native implementation using AcceleratedKernels.jl with spatial domain convolution.
+Outside the library's grids (thickness 140–500 mm, aspect 0.6–2.5, 20–140 keV) the nearest
+kernels stand in, with a warning once per session; an ellipse thinner than the thinnest kernel's
+takes that kernel scaled by the water the ray crosses against what the kernel's own ray crosses.
 """
 
-import AcceleratedKernels as AK
+# The coarse rays' sampling
+const _SCATTER_VIEW_STEP_DEG = 10.0
+const _SCATTER_RAY_STEP_DEG = 0.25
+const _SCATTER_GROUP_ROWS = 3
+const _SCATTER_CORRECTION_PASSES = 2
+
+# The superposition's buffers hold at most this many coarse rays: views beyond go in chunks
+const _SCATTER_CHUNK_RAYS = 32768
+
+# Materials below this density (g/cm³) are gases: outside the patient's outline, and not scattering
+const _SCATTER_GAS_DENSITY = 0.01
 
 """
-    ScatterModel
+    ScatterPlan
 
-Parameters for analytic scatter simulation using XCIST-style convolution model.
+What `simulate!` needs to superpose the scatter library on one workspace's acquisition, built with
+the workspace: the coarse rays (a `CTGeometry` of their own, their fan angles and z groups), the
+detector's weight of a photon in each output channel (`channels[energy, channel]`: an energy
+integrator's `S₁` and `S₂`, a photon counter's bins), and on the device the walk's buffer, the
+scatter field (library bins × channels × coarse views), the correction's estimate, the maps from
+bins and coarse views to dexels and views, and
 
-The scatter contribution at each detector pixel is:
-    S = convolve(I × p × C × scale, kernel)
-
-where:
-- I = primary intensity (exp(-projection))
-- p = path length (-log(I/I₀) = projection value)
-- C = base scatter coefficient (~0.025)
-- scale = user-adjustable scale factor
-- kernel = scatter point spread function
+- `library`: the kernels, their column moments and path lengths, and the grids;
+- `rays`: each coarse ray's photons by library energy and channel through water, by spectral
+  energy for its materials, the weights of its measured signal and its air value, the materials'
+  scattering and attenuation against water's, and the maps from bins to coarse rays;
+- `scratch`: the superposition's buffers (`scatter_kernels.jl`).
 """
-struct ScatterModel
-    # Base scatter coefficient (XCIST uses ~0.025)
-    scatter_coefficient::Float64
-
-    # User-adjustable scale factor (1.0 = nominal scatter)
-    scale_factor::Float64
-
-    # Scatter kernel FWHM (in detector pixels)
-    # Scatter is a broad, low-frequency signal (typical: 30-100 pixels)
-    kernel_fwhm::Float64
-
-    # Scatter kernel type (:gaussian or :exponential)
-    kernel_type::Symbol
+struct ScatterPlan{A4, A3, AI, AT, LB, RY, SC}
+    kernels::ScatterKernels
+    geom::CTGeometry
+    views::Vector{Int}
+    angle_deg::Vector{Float64}
+    z_mm::Vector{Float64}
+    channels::Matrix{Float64}
+    paths::A4
+    measured::A3
+    field::A4
+    estimate::A4
+    footprint_cols::AI
+    footprint_rows::AI
+    view_index::AI
+    col_lo::AI
+    col_hi::AI
+    col_w::AT
+    row_lo::AI
+    row_hi::AI
+    row_w::AT
+    view_lo::AI
+    view_hi::AI
+    view_w::AT
+    library::LB
+    rays::RY
+    scratch::SC
 end
 
-# Maximum scatter kernel size (controls quality vs performance)
-# Scatter kernels are large (FWHM ~50 pixels) but we truncate at 3σ
-const MAX_SCATTER_KERNEL_SIZE = 63
+# Linear interpolation of `x` between the centres of the bins with `edges`, clamped at the ends.
+_bin_bracket(edges, x) = _bracket((edges[1:(end - 1)] .+ edges[2:end]) ./ 2, x)
+
+_device_copy(ref, x::AbstractArray) = copyto!(similar(ref, eltype(x), size(x)...), x)
+
+# The source transmission (bowtie × heel effect, `[cols, rows, energies]`) at the rays of a
+# geometry, or `nothing` without either.
+_scatter_source(bowtie, heel, energies) = function (g::CTGeometry)
+    E = Float64.(energies)
+    b = bowtie !== nothing && bowtie.name != "none" ? compute_bowtie_attenuation_spectral(bowtie, g, E) : nothing
+    h = heel !== nothing ? compute_heel_spectral(heel, g, E) : nothing
+    return b === nothing ? h : (h === nothing ? b : b .* h)
+end
 
 """
-    create_scatter_kernel_spatial(model::ScatterModel) -> Matrix{Float64}
+    _scatter_plan(kernels, geom, energies, weights; source, detection, channels, measured_channels,
+                  correction, air, materials, ref, T)
 
-Create 2D scatter kernel for spatial domain convolution.
-
-Returns a compact kernel (max size MAX_SCATTER_KERNEL_SIZE) for GPU-compatible
-spatial convolution. The kernel is truncated at 3σ.
+The [`ScatterPlan`](@ref) of one workspace. `source(g)` is the source transmission (bowtie × heel,
+`[cols, rows, energies]`, or `nothing`) at the rays of a geometry `g`; `detection[energy]` weighs
+the measured signal of a photon (an energy integrator's `m₁`, a photon counter's counts per
+photon); `channels[energy, channel]` weighs a scattered photon in each output channel, the first
+`measured_channels` of them summing to the measured signal the correction reads (whose buffers are
+empty without the `correction`); `air`
+(`[cols, rows]`) is the measured signal of each dexel in air, in the same units as the data the
+correction reads.
 """
-function create_scatter_kernel_spatial(model::ScatterModel)
-    # Convert FWHM to sigma
-    sigma = model.kernel_fwhm / (2 * sqrt(2 * log(2)))
+function _scatter_plan(
+        k::ScatterKernels,
+        geom::CTGeometry,
+        energies::AbstractVector,
+        weights::AbstractVector;
+        source,
+        detection::AbstractVector,
+        channels::AbstractMatrix,
+        measured_channels::Int,
+        correction::Bool,
+        air::AbstractMatrix,
+        materials,
+        ref,
+        T::Type,
+    )
+    length(materials) <= _PLEN_MAX_MATERIALS || throw(
+        ArgumentError(
+            "scatter walks each material's path length, at most $(_PLEN_MAX_MATERIALS) materials; " *
+                "the phantom has $(length(materials)): call compact_materials(phantom) first"
+        )
+    )
+    sad_mm, sdd_mm = geom.SAD * 10, geom.SDD * 10
+    if abs(sad_mm / k.source_to_isocenter_mm - 1) > 0.02 || abs(sdd_mm / k.source_to_detector_mm - 1) > 0.02
+        @warn "the scatter kernels \"$(k.name)\" were made for a source–isocentre distance of " *
+            "$(k.source_to_isocenter_mm) mm and a source–detector distance of $(k.source_to_detector_mm) mm; " *
+            "this scanner's are $(sad_mm) and $(sdd_mm) mm" maxlog = 1
+    end
+    E = Float64.(energies)
+    w̄ = Float64.(weights) ./ sum(Float64.(weights))
+    outside = sum(w̄[(E .< first(k.energies_keV) - 0.5) .| (E .> last(k.energies_keV) + 0.5)])
+    outside > 1.0e-3 && @warn "$(round(100 * outside; digits = 1)) % of the spectrum lies outside the scatter " *
+        "kernels' $(first(k.energies_keV))–$(last(k.energies_keV)) keV; those photons take the nearest " *
+        "energy's kernels" maxlog = 1
 
-    # Compute kernel extent (truncate at 3σ or max size)
-    extent = min(MAX_SCATTER_KERNEL_SIZE ÷ 2, ceil(Int, 3 * sigma))
-    kernel_size = 2 * extent + 1
+    # ─── The coarse rays: across the detector's fan, in groups of rows, every few views ───
+    cc = column_center(Float64, geom)
+    dexel_angle(c) = rad2deg(
+        is_arc(geom) ? (c - cc) * geom.pixel_size / geom.SAD : atan((c - cc) * geom.pixel_size / geom.SAD)
+    )
+    γ_dexel = [dexel_angle(c) for c in 1:geom.n_cols]
+    γ_min, γ_max = dexel_angle(0.5), dexel_angle(geom.n_cols + 0.5)
+    n_cc = max(1, ceil(Int, (γ_max - γ_min) / _SCATTER_RAY_STEP_DEG))
+    Δγ = (γ_max - γ_min) / n_cc
+    angle_deg = [γ_min + (i - 0.5) * Δγ for i in 1:n_cc]
 
-    kernel = zeros(Float64, kernel_size, kernel_size)
-    center = extent + 1
+    mag = geom.SDD / geom.SAD
+    z_dexel = [(r - (geom.n_rows + 1) / 2) * geom.pixel_row_size * 10 * mag for r in 1:geom.n_rows]
+    width = geom.n_rows * geom.pixel_row_size * 10 * mag
+    rows_lib = k.row_edges_mm
+    row_bin = rows_lib[2] - rows_lib[1]
+    n_g = clamp(round(Int, width / (_SCATTER_GROUP_ROWS * row_bin)), 1, geom.n_rows)
+    h = width / n_g
+    z_lo = [-width / 2 + (g - 1) * h for g in 1:n_g]
+    z_mm = z_lo .+ h / 2
+    row_share = [
+        max(0.0, min(rows_lib[r + 1], z_lo[g] + h) - max(rows_lib[r], z_lo[g])) / row_bin
+            for r in 1:(length(rows_lib) - 1), g in 1:n_g
+    ]
 
-    if model.kernel_type == :gaussian
-        for dy in -extent:extent
-            for dx in -extent:extent
-                r2 = dx^2 + dy^2
-                kernel[center + dx, center + dy] = exp(-r2 / (2 * sigma^2))
-            end
+    n_v = geom.n_angles
+    Δθ = n_v > 1 ? abs(geom.angles[2] - geom.angles[1]) : 2π
+    step = max(1, floor(Int, deg2rad(_SCATTER_VIEW_STEP_DEG) / Δθ))
+    views = collect(1:step:n_v)
+    last(views) == n_v || push!(views, n_v)
+    n_cv = length(views)
+
+    rays = CTGeometry(
+        geom.SAD,
+        geom.SDD,
+        n_cv,
+        n_g,
+        n_cc,
+        deg2rad(Δγ) * geom.SAD,
+        geom.n_rows * geom.pixel_row_size / n_g,
+        geom.angles[views],
+        geom.source_positions[:, views],
+        geom.detector_centers[:, views],
+        geom.detector_u[:, views],
+        geom.detector_v[:, views],
+        geom.fov,
+        geom.pitch,
+        geom.table_feed,
+        :arc,
+        (0.5 - γ_min / Δγ) - (n_cc + 1) / 2,
+    )
+
+    # each coarse ray's footprint on the detector: the dexels it stands for
+    fp_cols = zeros(Int32, 2, n_cc)
+    for i in 1:n_cc
+        inside = findall(c -> abs(γ_dexel[c] - angle_deg[i]) <= Δγ / 2, 1:geom.n_cols)
+        isempty(inside) && (inside = [argmin(abs.(γ_dexel .- angle_deg[i]))])
+        fp_cols[:, i] .= (first(inside), last(inside))
+    end
+    fp_rows = zeros(Int32, 2, n_g)
+    for g in 1:n_g
+        inside = findall(r -> z_lo[g] <= z_dexel[r] < z_lo[g] + h, 1:geom.n_rows)
+        isempty(inside) && (inside = [argmin(abs.(z_dexel .- z_mm[g]))])
+        fp_rows[:, g] .= (first(inside), last(inside))
+    end
+    footprint_mean(A, i, g) = sum(
+        A[c, r] for c in fp_cols[1, i]:fp_cols[2, i], r in fp_rows[1, g]:fp_rows[2, g]
+    ) / ((fp_cols[2, i] - fp_cols[1, i] + 1) * (fp_rows[2, g] - fp_rows[1, g] + 1))
+
+    # ─── Every coarse ray's photons, and the weights of the signal it measures ───
+    # `spectrum[e, i, g]`: the photons of each spectral energy, the ray's share of a library bin;
+    # `lib_share[e, energy]`: each spectral energy between the library's
+    trans = source(rays)
+    cols = k.column_edges_deg
+    ray_share = Δγ / (cols[2] - cols[1])
+    nE = length(E)
+    nE_lib = length(k.energies_keV)
+    n_ch = size(channels, 2)
+    spectrum = zeros(nE, n_cc, n_g)
+    detected = zeros(nE, n_cc, n_g)
+    for g in 1:n_g, i in 1:n_cc
+        for e in 1:nE
+            t = trans === nothing ? 1.0 : trans[i, g, e]
+            spectrum[e, i, g] = w̄[e] * t * ray_share
+            detected[e, i, g] = w̄[e] * t * detection[e]
         end
-    elseif model.kernel_type == :exponential
-        decay = sigma
-        for dy in -extent:extent
-            for dx in -extent:extent
-                r = sqrt(dx^2 + dy^2)
-                kernel[center + dx, center + dy] = exp(-r / decay)
-            end
+        s = sum(@view detected[:, i, g])
+        s > 0 && (detected[:, i, g] ./= s)
+    end
+    lib_share = zeros(nE, nE_lib)
+    for (e, Ek) in enumerate(E)
+        g1, g2, t = _bracket(k.energies_keV, Ek)
+        lib_share[e, g1] += 1 - t
+        lib_share[e, g2] += t
+    end
+    lib_range = zeros(Int32, 2, nE_lib)
+    for g in 1:nE_lib
+        used = findall(!iszero, view(lib_share, :, g))
+        lib_range[:, g] .= isempty(used) ? (1, 0) : (first(used), last(used))
+    end
+    photons = [spectrum[e, i, g] * channels[e, ch] for e in 1:nE, ch in 1:n_ch, i in 1:n_cc, g in 1:n_g]
+    # through water, every process weighed alike
+    water_photons = zeros(nE_lib, n_ch, n_cc, n_g)
+    for g in 1:n_g, i in 1:n_cc, ch in 1:n_ch, e in 1:nE
+        base = photons[e, ch, i, g]
+        base == 0 && continue
+        for gl in 1:nE_lib
+            lib_share[e, gl] == 0 || (water_photons[gl, ch, i, g] += base * lib_share[e, gl])
         end
-    else
-        error("Unknown kernel type: $(model.kernel_type)")
+    end
+    air_coarse = [footprint_mean(air, i, g) for i in 1:n_cc, g in 1:n_g]
+
+    # ─── The materials against water, at the spectrum's energies ───
+    # `kind`: 0 a gas, 1 like water, 2 another; `ratio[m, e, process]`: the material's Compton,
+    # wide- and forward-Rayleigh scattering against water's; `dmu[m, band]`: its attenuation in
+    # each band of the library's path energies against water's of the same water-equivalent length
+    water = XA.Materials.water
+    μ(m, x, kind) = ustrip(u"cm^-1", XA.linear_attenuation_coeff(m, x * u"keV", kind)) / 10
+    bins = _rayleigh_bins(k)
+    all_bins = eachindex(k.scatter_angle_edges_deg[2:end])
+    band_keV(b) = max(1, 5(b - 1)):min(150, 5b - 1)
+    nbands = size(k.paths, 1)
+    band_mu_of(m) = [sum(compute_μ_at_energy(m, Float64(x)) / 10 for x in band_keV(b)) / length(band_keV(b)) for b in 1:nbands]
+    n_m = length(materials)
+    compton_water = [μ(water, Ek, XA.IncoherentScattering()) for Ek in E]
+    rayleigh_water = [μ(water, Ek, XA.CoherentScattering()) for Ek in E]
+    band_mu_water = band_mu_of(water)
+    mu70_water = compute_μ_at_energy(water, 70.0) / 10
+    kind = zeros(Int32, n_m)
+    wet_per_mm = zeros(n_m)
+    ratio = zeros(n_m, nE, 3)
+    dmu = zeros(n_m, nbands)
+    for (j, m) in enumerate(materials)
+        density = hasproperty(m, :density) ? ustrip(u"g/cm^3", m.density) : 1.0
+        mu70 = compute_μ_at_energy(m, 70.0) / 10
+        fractions = hasproperty(m, :composition) ? m.composition : nothing
+        for (e, Ek) in enumerate(E)
+            gc, gw, gf = if fractions === nothing
+                1.0, 1.0, 1.0
+            else
+                _angular_factor(k, fractions, water.composition, 1, Ek, all_bins),
+                    _angular_factor(k, fractions, water.composition, 2, Ek, bins.wide),
+                    _angular_factor(k, fractions, water.composition, 2, Ek, bins.forward)
+            end
+            rr = μ(m, Ek, XA.CoherentScattering())
+            ratio[j, e, 1] = μ(m, Ek, XA.IncoherentScattering()) * gc / compton_water[e]
+            ratio[j, e, 2] = rr * gw / rayleigh_water[e]
+            ratio[j, e, 3] = rr * gf / rayleigh_water[e]
+        end
+        band_mu = band_mu_of(m)
+        wet_per_mm[j] = mu70 / mu70_water
+        dmu[j, :] .= band_mu .- band_mu_water .* wet_per_mm[j]
+        like_water = all(==(1.0), view(ratio, j, :, :)) && band_mu == band_mu_water && mu70 == mu70_water
+        kind[j] = density < _SCATTER_GAS_DENSITY ? 0 : like_water ? 1 : 2
     end
 
-    # Normalize kernel
-    total = sum(kernel)
-    if total > 0
-        kernel ./= total
-    else
-        kernel[center, center] = 1.0
+    # ─── From the library's bins and the coarse views to dexels and views ───
+    col_maps = [_bin_bracket(cols, γ) for γ in γ_dexel]
+    row_maps = [_bin_bracket(rows_lib, z) for z in z_dexel]
+    view_maps = map(1:n_v) do j
+        q = clamp(searchsortedlast(views, j), 1, n_cv)
+        q == n_cv ? (q, q, 0.0) : (q, q + 1, (j - views[q]) / (views[q + 1] - views[q]))
     end
+    ray_maps = [_bin_bracket(cols, γ) for γ in angle_deg]
+    group_maps = [_bin_bracket(rows_lib, z) for z in z_mm]
+    nlc, nlr = length(cols) - 1, length(rows_lib) - 1
+    all(≈(cols[2] - cols[1]), diff(cols)) || throw(
+        ArgumentError(
+            "the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform"
+        )
+    )
+    device_int(v) = _device_copy(ref, Int32.(v))
+    device_real(v) = _device_copy(ref, T.(v))
+    # the library itself as it is (Float32): on the host, the kernels' own arrays
+    device_library(x) = ref isa Array ? x : _device_copy(ref, x)
+    pair(maps) = device_int(reduce(hcat, [[m[1], m[2]] for m in maps]))
+    # each value as the two floats of the workspace's type that sum to it
+    float_pairs(x) = reduce(hcat, [[T(v), T(v - T(v))] for v in x])
+    node_deg = rad2deg.(asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1)))
 
-    return kernel
+    library = (;
+        kernels = device_library(vec(k.kernels)),
+        moments = device_library(vec(k.moments)),
+        paths = device_library(vec(k.paths)),
+        node_deg = device_real(float_pairs(node_deg)),
+        thicknesses = device_real(k.thicknesses_mm),
+        log_aspects = device_real(log.(k.aspects)),
+        impacts = device_real(k.impact_fractions),
+        cols = device_real(cols),
+        column_width = T(cols[2] - cols[1]),
+        grid = T.(
+            (
+                first(k.thicknesses_mm),
+                last(k.thicknesses_mm),
+                first(k.aspects),
+                last(k.aspects),
+                last(k.impact_fractions),
+            )
+        ),
+    )
+    sid = k.source_to_isocenter_mm
+    ray_consts = (;
+        xs = device_real([sid * sind(γ) for γ in angle_deg]),
+        dxs = device_real(_ray_widths([sid * sind(γ) for γ in angle_deg])),
+        angle_deg = device_real(angle_deg),
+        angle = device_real(float_pairs(angle_deg)),
+        row_share = device_real(row_share),
+        water_photons = device_real(water_photons),
+        photons = device_real(photons),
+        lib_share = device_real(lib_share),
+        lib_range = _device_copy(ref, lib_range),
+        detected = device_real(detected),
+        water_mu_per_mm = device_real([compute_μ_at_energy(water, Ek) / 10 for Ek in E]),
+        air = device_real(air_coarse),
+        kind = _device_copy(ref, kind),
+        wet_per_mm = device_real(wet_per_mm),
+        ratio = device_real(ratio),
+        dmu = device_real(dmu),
+        other = any(==(2), kind),
+        ray_cols = pair(ray_maps),
+        ray_col_w = device_real(last.(ray_maps)),
+        group_rows = pair(group_maps),
+        group_row_w = device_real(last.(group_maps)),
+    )
+    n_ray = n_cc * n_g * n_cv
+    n_chunk = n_cc * n_g * clamp(_SCATTER_CHUNK_RAYS ÷ (n_cc * n_g), 1, n_cv)       # whole views
+    scratch = (;
+        wet = similar(ref, T, n_cc, n_g, n_cv),
+        outline = similar(ref, T, n_cc, n_g, n_cv),
+        plain = similar(ref, Bool, n_ray),
+        dmu = fill!(similar(ref, T, nbands, n_ray), zero(T)),
+        weights = similar(ref, T, nE_lib, 3, n_ch, n_chunk),
+        ellipse = similar(ref, T, 3, n_g, n_cv),
+        shapes = similar(ref, T, 5, n_ray),
+        clamped = fill!(similar(ref, Int32, n_ray), Int32(0)),
+        corner = fill!(similar(ref, Int32, 8, n_chunk), Int32(0)),
+        factor = similar(ref, T, n_ch, 8, n_chunk),
+        mix = similar(ref, T, 3nE_lib, n_ch, 8, n_chunk),
+        boxes = similar(ref, T, 3, nlc, n_ch, 8, n_chunk),
+        window = similar(ref, Int32, 2, n_ch, 8, n_chunk),
+        rows = similar(ref, T, nlr, nlc, n_ch, n_g, n_chunk ÷ (n_cc * n_g)),
+    )
+    return ScatterPlan(
+        k,
+        rays,
+        views,
+        angle_deg,
+        z_mm,
+        Float64.(channels),
+        similar(ref, T, n_m, n_cc, n_g, n_cv),
+        correction ? similar(ref, T, n_cc, n_g, n_cv) : similar(ref, T, 0, 0, 0),
+        fill!(similar(ref, T, nlc, nlr, n_ch, n_cv), zero(T)),
+        fill!(similar(ref, T, (correction ? (nlc, nlr, measured_channels, n_cv) : (0, 0, 0, 0))...), zero(T)),
+        device_int(vec(fp_cols)),
+        device_int(vec(fp_rows)),
+        device_int(views),
+        device_int(first.(col_maps)),
+        device_int(getindex.(col_maps, 2)),
+        device_real(last.(col_maps)),
+        device_int(first.(row_maps)),
+        device_int(getindex.(row_maps, 2)),
+        device_real(last.(row_maps)),
+        device_int(first.(view_maps)),
+        device_int(getindex.(view_maps, 2)),
+        device_real(last.(view_maps)),
+        library,
+        ray_consts,
+        scratch,
+    )
 end
 
 # =============================================================================
-# Separable 1D Scatter Kernel (SPEED-BUILD-002)
+# The rays of every coarse view
 # =============================================================================
 
-"""
-    create_scatter_kernel_1d(model::ScatterModel) -> Vector{Float64}
-
-Create 1D Gaussian scatter kernel for separable convolution.
-
-For Gaussian kernels: exp(-(dx²+dy²)/(2σ²)) = exp(-dx²/(2σ²)) × exp(-dy²/(2σ²)).
-The 2D kernel is the outer product of two identical 1D kernels.
-
-Returns nothing for non-Gaussian kernels (fall back to 2D).
-"""
-function create_scatter_kernel_1d(model::ScatterModel)
-    model.kernel_type == :gaussian || return nothing
-
-    sigma = model.kernel_fwhm / (2 * sqrt(2 * log(2)))
-    extent = min(MAX_SCATTER_KERNEL_SIZE ÷ 2, ceil(Int, 3 * sigma))
-    kernel_size = 2 * extent + 1
-
-    kernel_1d = zeros(Float64, kernel_size)
-    center = extent + 1
-    for dx in -extent:extent
-        kernel_1d[center + dx] = exp(-dx^2 / (2 * sigma^2))
+# From the walk's path lengths (cm, `[material, column, group, view]`): each ray's water-equivalent
+# length, its outline, whether it crosses nothing but water-like materials, and if not its
+# materials' attenuation against water's (`dmu[band, ray]`).
+function _scatter_phantom_rays!(p::ScatterPlan)
+    s, r = p.scratch, p.rays
+    n_m = size(p.paths, 1)
+    nb = size(s.dmu, 1)
+    let wet = s.wet, outline = s.outline, plain = s.plain, dmu = s.dmu, paths = p.paths,
+            kind = r.kind, wet_per_mm = r.wet_per_mm, material_dmu = r.dmu, n_m = n_m, nb = nb
+        AK.foreachindex(wet) do ray
+            T = eltype(wet)
+            w, o, water = zero(T), zero(T), true
+            for m in 1:n_m
+                kind[m] == 0 && continue
+                Lm = 10 * paths[m + n_m * (ray - 1)]
+                Lm > 0 || continue
+                w += Lm * wet_per_mm[m]
+                o += Lm
+                kind[m] == 2 && (water = false)
+            end
+            wet[ray] = w
+            outline[ray] = o
+            plain[ray] = water
+            if !water && w > 0
+                for b in 1:nb
+                    d = zero(T)
+                    for m in 1:n_m
+                        kind[m] == 0 && continue
+                        Lm = 10 * paths[m + n_m * (ray - 1)]
+                        Lm > 0 && (d += (Lm / w) * material_dmu[m, b])
+                    end
+                    dmu[b, ray] = d
+                end
+            end
+        end
     end
-    # Normalize the 1D kernel so that outer_product sums to 1
-    # Since 2D kernel = k1d ⊗ k1d, normalize so sum(k1d)² = 1 → sum(k1d) = 1
-    kernel_1d ./= sum(kernel_1d)
+    return p
+end
 
-    return kernel_1d
+# `weights[energy, process, ch, ray]` for the first `n_used` channels of the `n_rays` rays from
+# `ray0 + 1` on (a chunk): each ray's photons by library energy, process and channel, its
+# materials' scattering against water's at each spectral energy (`plain[ray]`: water, every process
+# alike).
+function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
+    s, r = p.scratch, p.rays
+    nE_lib, n_ch = size(s.weights, 1), size(s.weights, 3)
+    n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
+    n_m = size(p.paths, 1)
+    let weights = s.weights, wet = s.wet, plain = s.plain, paths = p.paths, water = r.water_photons,
+            photons = r.photons, lib_share = r.lib_share, lib_range = r.lib_range, kind = r.kind, ratio = r.ratio,
+            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, n_m = n_m, n_used = n_used, ray0 = ray0
+        _foreachindex(1:(nE_lib * 3 * n_ch * n_rays), AK.get_backend(weights)) do idx
+            T = eltype(weights)
+            q = idx - 1
+            gl = q % nE_lib + 1
+            q ÷= nE_lib
+            pr = q % 3 + 1
+            q ÷= 3
+            ch = q % n_ch + 1
+            ray = q ÷ n_ch + 1 + ray0
+            i = (ray - 1) % n_cc + 1
+            g = ((ray - 1) ÷ n_cc) % n_g + 1
+            val = zero(T)
+            if ch <= n_used
+                if plain[ray]
+                    val = water[gl, ch, i, g]
+                elseif wet[ray] > 0
+                    w = wet[ray]
+                    for e in lib_range[1, gl]:lib_range[2, gl]
+                        share = lib_share[e, gl]
+                        share == 0 && continue
+                        f = zero(T)
+                        for m in 1:n_m
+                            kind[m] == 0 && continue
+                            Lm = 10 * paths[m + n_m * (ray - 1)]
+                            Lm > 0 && (f += (Lm / w) * ratio[m, e, pr])
+                        end
+                        val += photons[e, ch, i, g] * share * f
+                    end
+                end
+            end
+            weights[idx] = val
+        end
+    end
+    return p
+end
+
+# The scatter of every coarse view into `out[column, row, ch, view]` (its channels the first of the
+# plan's), the views' ellipses measured from `lengths`, the rays' impacts from `scratch.wet`; with
+# `combine`, the geometric mean of that and what `out` holds. Without `combine`, it marks the rays
+# outside the library's grids in `scratch.clamped`.
+function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray; combine::Bool = false)
+    s, lib, r = p.scratch, p.library, p.rays
+    n_used = size(out, 3)
+    n_cc, n_g, n_cv = size(s.wet)
+    _scatter_ellipses!(s.ellipse, r.xs, r.dxs, lengths)
+    _scatter_ray_shapes!(s.shapes, s.clamped, s.wet, s.ellipse, r.xs, r.angle_deg, lib.grid, !combine)
+
+    # the views in chunks, as many as the buffers hold
+    per_chunk = size(s.rows, 5)
+    for v0 in 0:per_chunk:(n_cv - 1)
+        n_v = min(per_chunk, n_cv - v0)
+        ray0 = v0 * n_cc * n_g
+        n_rays = n_v * n_cc * n_g
+        _scatter_weights!(p, n_used, ray0, n_rays)
+        _scatter_corners!(
+            s.corner,
+            s.factor,
+            s.mix,
+            s.boxes,
+            s.window,
+            s.shapes,
+            s.weights,
+            s.plain,
+            s.dmu,
+            r.angle,
+            lib,
+            n_used,
+            ray0,
+            n_rays,
+        )
+        _scatter_deposit!(
+            s.rows,
+            s.corner,
+            s.factor,
+            s.mix,
+            s.boxes,
+            s.window,
+            s.shapes,
+            s.plain,
+            lib,
+            n_cc,
+            n_used,
+            ray0,
+            n_v * n_g,
+        )
+        _scatter_rows!(out, s.rows, r.row_share, v0, n_v; combine)
+    end
+    return out
+end
+
+# The warning for the rays the superpositions since the last forward scatter found outside the
+# library's grids (`scratch.clamped`). It reads the device, so `simulate!` calls it last.
+function _warn_clamped(p::ScatterPlan)
+    k = p.kernels
+    n = Int(sum(p.scratch.clamped))
+    n > 0 && @warn "scatter: $(n) rays' ellipses lie outside the kernels' " *
+        "$(first(k.thicknesses_mm))–$(last(k.thicknesses_mm)) mm and aspects " *
+        "$(first(k.aspects))–$(last(k.aspects)); the nearest kernels stand in" maxlog = 1
+    return n
 end
 
 """
-    _convolve_separable_h!(output, input, kernel_1d, n_cols, n_rows)
+    _scatter_forward!(plan, phantom) -> plan.field
 
-Horizontal 1D convolution pass via AK.foreachindex.
-Convolves each row of each angle slice with the 1D kernel.
+The scatter of `phantom` on every coarse view, from its own rays: the walk of each material's
+path length along the coarse rays, then the superposition (`view = :mean`). Fills `plan.field` on
+the device.
 """
-function _convolve_separable_h!(
-    output::AbstractArray{T,3},
-    input::AbstractArray{T,3},
-    kernel_1d,
-    n_cols::Int, n_rows::Int
-) where T
-    half_k = size(kernel_1d, 1) ÷ 2
-    let inp = input, out = output, k1d = kernel_1d, nc = Int32(n_cols), nr = Int32(n_rows), hk = Int32(half_k)
-        AK.foreachindex(output) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % nc) + Int32(1)
-            idx_0 = idx_0 ÷ nc
-            row = (idx_0 % nr) + Int32(1)
-            angle = (idx_0 ÷ nr) + Int32(1)
+function _scatter_forward!(p::ScatterPlan, phantom)
+    extent = hasproperty(phantom, :extent) && phantom.extent !== nothing ? Tuple(Float64.(phantom.extent)) : nothing
+    s = p.scratch
+    dd_fast_material_paths!(p.paths, phantom.mask, p.geom; volume_extent = extent)
+    _scatter_phantom_rays!(p)
+    fill!(s.clamped, Int32(0))
+    _superpose!(p.field, p, s.wet)
+    # the geometric mean with the outline's ellipse, which is another only through a material other
+    # than water (a gas is in neither)
+    p.rays.other && _superpose!(p.field, p, s.outline; combine = true)
+    return p.field
+end
 
+# Each coarse ray's water-equivalent length (mm) from its measured signal, `measured / photons`
+# against its air value, less the estimate's scatter at the ray when `subtract`: the length whose
+# transmission through the ray's own spectrum and detector weights is that (Newton's method on the
+# logarithm). Below a millimetre of water the ray is taken to miss the patient (the air
+# calibration's own scale), as the forward model leaves the gases out.
+function _scatter_water_lengths!(p::ScatterPlan, photons::Real, subtract::Bool)
+    s, r = p.scratch, p.rays
+    n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
+    nE = size(r.detected, 1)
+    photons = eltype(s.wet)(photons)
+    let wet = s.wet, measured = p.measured, estimate = p.estimate, air = r.air, detected = r.detected,
+            μ = r.water_mu_per_mm, rc = r.ray_cols, rcw = r.ray_col_w, gr = r.group_rows, grw = r.group_row_w,
+            n_cc = n_cc, n_g = n_g, nE = nE, n_est = size(p.estimate, 3), photons = photons, subtract = subtract
+        AK.foreachindex(wet) do ray
+            T = eltype(wet)
+            o = one(T)
+            q = ray - 1
+            i = q % n_cc + 1
+            g = (q ÷ n_cc) % n_g + 1
+            v = q ÷ (n_cc * n_g) + 1
+            scatter = zero(T)
+            if subtract
+                c0, c1, wc = rc[1, i], rc[2, i], rcw[i]
+                r0, r1, wr = gr[1, g], gr[2, g], grw[g]
+                for ch in 1:n_est
+                    scatter += (o - wr) * ((o - wc) * estimate[c0, r0, ch, v] + wc * estimate[c1, r0, ch, v]) +
+                        wr * ((o - wc) * estimate[c0, r1, ch, v] + wc * estimate[c1, r1, ch, v])
+                end
+            end
+            t = (measured[ray] / photons - scatter) / max(air[i, g], T(1.0e-30))
+            x = zero(T)
+            if t < 1
+                target = log(max(t, T(1.0e-6)))
+                base = nE * (i - 1 + n_cc * (g - 1))
+                μ̄ = zero(T)
+                for e in 1:nE
+                    μ̄ += detected[base + e] * μ[e]
+                end
+                x = -target / μ̄
+                for _ in 1:30
+                    s0, s1 = zero(T), zero(T)
+                    for e in 1:nE
+                        w = detected[base + e] * exp(-μ[e] * x)
+                        s0 += w
+                        s1 += w * μ[e]
+                    end
+                    s0 > 0 || break
+                    step = (log(s0) - target) / (s1 / s0)
+                    x = max(x + step, zero(T))
+                    abs(step) < T(1.0e-4) && break
+                end
+            end
+            wet[ray] = x < 1 ? zero(T) : x
+        end
+    end
+    return p
+end
+
+"""
+    _scatter_estimate!(plan, photons = 1) -> plan.estimate
+
+The correction's estimate of the scatter, from the data alone. `plan.measured[column, group,
+view] / photons` is each coarse ray's mean measured signal over its footprint, scatter included,
+in the units in which the plan's air value is its air value and the fields are the scatter (the
+signal of an energy integrator's `S₁`, or a photon counter's counts summed over its bins, per
+incident photon). Each pass measures every ray's water-equivalent length from its transmission
+less the last estimate, and superposes the scatter of that water patient (`view = :wet`). Fills
+`plan.estimate` on the device, its channels the measured signal's: `S₁` alone for an energy
+integrator, every bin for a photon counter.
+"""
+function _scatter_estimate!(p::ScatterPlan, photons::Real = 1)
+    s = p.scratch
+    fill!(s.plain, true)
+    for pass in 1:_SCATTER_CORRECTION_PASSES
+        _scatter_water_lengths!(p, photons, pass > 1)
+        _superpose!(p.estimate, p, s.wet)
+    end
+    return p.estimate
+end
+
+# =============================================================================
+# On the device
+# =============================================================================
+
+# The mean of `src[col, row, view]` over each coarse ray's footprint, into `out[column, group,
+# view]`; with `i0` (`[cols, rows, …]`), of the counts `i0[col, row, plane] · exp(-src)`, added to
+# what `out` holds.
+function _reduce_footprints!(
+        out::AbstractArray{T, 3},
+        p::ScatterPlan,
+        src::AbstractArray{T, 3};
+        i0 = nothing,
+        plane::Int = 1,
+        accumulate::Bool = false,
+    ) where {T}
+    accumulate || fill!(out, zero(T))
+    n_cc, n_g = Int32(size(out, 1)), Int32(size(out, 2))
+    nc, nr = Int32(size(src, 1)), Int32(size(src, 2))
+    has_i0 = i0 !== nothing
+    let out = out, src = src, fc = p.footprint_cols, fr = p.footprint_rows, vi = p.view_index,
+            i0 = has_i0 ? i0 : p.col_w, h = has_i0, off = Int32(plane - 1) * nc * nr,
+            n_cc = n_cc, n_g = n_g, nc = nc
+        AK.foreachindex(out) do idx
+            q = Int32(idx - 1)
+            i = q % n_cc + Int32(1)
+            g = (q ÷ n_cc) % n_g + Int32(1)
+            v = q ÷ (n_cc * n_g) + Int32(1)
+            iv = vi[v]
             acc = zero(T)
-            for di in -hk:hk
-                src_col = clamp(col + di, Int32(1), nc)
-                @inbounds acc += inp[src_col, row, angle] * k1d[di + hk + Int32(1)]
+            c0, c1 = fc[Int32(2) * i - Int32(1)], fc[Int32(2) * i]
+            r0, r1 = fr[Int32(2) * g - Int32(1)], fr[Int32(2) * g]
+            for r in r0:r1, c in c0:c1
+                x = src[c, r, iv]
+                acc += h ? i0[c + (r - Int32(1)) * nc + off] * exp(-x) : x
             end
-            @inbounds out[idx] = acc
+            out[idx] += acc / T((c1 - c0 + Int32(1)) * (r1 - r0 + Int32(1)))
         end
     end
-    return output
+    return out
 end
 
-"""
-    _convolve_separable_v!(output, input, kernel_1d, n_cols, n_rows)
-
-Vertical 1D convolution pass via AK.foreachindex.
-Convolves each column of each angle slice with the 1D kernel.
-"""
-function _convolve_separable_v!(
-    output::AbstractArray{T,3},
-    input::AbstractArray{T,3},
-    kernel_1d,
-    n_cols::Int, n_rows::Int
-) where T
-    half_k = size(kernel_1d, 1) ÷ 2
-    let inp = input, out = output, k1d = kernel_1d, nc = Int32(n_cols), nr = Int32(n_rows), hk = Int32(half_k)
-        AK.foreachindex(output) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % nc) + Int32(1)
-            idx_0 = idx_0 ÷ nc
-            row = (idx_0 % nr) + Int32(1)
-            angle = (idx_0 ÷ nr) + Int32(1)
-
-            acc = zero(T)
-            for dj in -hk:hk
-                src_row = clamp(row + dj, Int32(1), nr)
-                @inbounds acc += inp[col, src_row, angle] * k1d[dj + hk + Int32(1)]
-            end
-            @inbounds out[idx] = acc
-        end
-    end
-    return output
+# A field's value at dexel (col, row) of view `iv`: bilinear between the library's bins,
+# linear between coarse views.
+@inline function _field_at(F, ch, col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
+    c0, c1, wc = cl[col], chi[col], cw[col]
+    r0, r1, wr = rl[row], rh[row], rw[row]
+    v0, v1, wv = vl[iv], vh[iv], vw[iv]
+    o = one(wc)
+    lo = (o - wr) * ((o - wc) * F[c0, r0, ch, v0] + wc * F[c1, r0, ch, v0]) +
+        wr * ((o - wc) * F[c0, r1, ch, v0] + wc * F[c1, r1, ch, v0])
+    hi = (o - wr) * ((o - wc) * F[c0, r0, ch, v1] + wc * F[c1, r0, ch, v1]) +
+        wr * ((o - wc) * F[c0, r1, ch, v1] + wc * F[c1, r1, ch, v1])
+    return (o - wv) * lo + wv * hi
 end
 
-# add_scatter! / add_scatter DELETED — replaced by unified per-energy scatter path:
-# - estimate_scatter_field!() for spatial distribution (shared EICT + PCCT)
-# - compute_scatter_energy_weights() for per-energy Compton fractions
-# - inject_scatter!() for EICT, inject_scatter_bins!() for PCCT
-
-
-# ScatterCorrectionModel / correct_scatter! / correct_scatter DELETED.
-# Scatter correction is now decoupled from simulate!. The known scatter field
-# and weights are returned from simulate!() for exact model-based subtraction
-# at the notebook level (same pattern as HU calibration via μ_water).
-
-
-# =============================================================================
-# Geometry-Aware Scatter (adapts to scanner configuration)
-# =============================================================================
-
-# Reference geometry constants (CatSim/BasisSimulator defaults)
-# These values define the baseline for which the scatter coefficient was calibrated
-
-"""Reference source-to-isocenter distance (mm) for scatter calibration."""
-const SCATTER_REF_SID_MM = 540.0
-
-"""Reference source-to-detector distance (mm) for scatter calibration."""
-const SCATTER_REF_SDD_MM = 950.0
-
-"""Reference air gap (mm) = SDD - SID for scatter calibration."""
-const SCATTER_REF_AIR_GAP_MM = SCATTER_REF_SDD_MM - SCATTER_REF_SID_MM  # 410.0
-
-"""Base scatter coefficient calibrated for reference geometry (~15% SPR)."""
-const SCATTER_REF_COEFFICIENT = 0.025
-
-"""Physical scatter kernel FWHM at detector (mm) - approximately constant."""
-const SCATTER_PHYSICAL_KERNEL_FWHM_MM = 50.0
-
-
-# =============================================================================
-# Phantom Size Scaling Constants
-# =============================================================================
-
-"""Reference phantom diameter (cm) for scatter calibration (adult body)."""
-const SCATTER_REF_PHANTOM_DIAMETER_CM = 30.0
-
-"""SPR scaling exponent for phantom diameter (empirical: 1.5-2.0)."""
-const SCATTER_SIZE_SCALING_EXPONENT = 1.5
-
-# =============================================================================
-# Per-Energy Scatter Weights (unified EICT + PCCT interface)
-# =============================================================================
-#
-# Energy-dependent scatter is computed per-energy at the tube spectrum level.
-# The analytical model uses the Compton scatter fraction; a future MC LUT
-# implementation would replace this with pre-computed per-energy data.
-#
-# References:
-# - NIST XCOM photon cross-section database
-# - Klein-Nishina formula (theoretical Compton scattering cross-section)
-# =============================================================================
-
-"""
-    compute_scatter_energy_weights(energies::Vector{Float64}) -> Vector{Float64}
-
-Compute per-energy Compton scatter fractions for the tube spectrum.
-
-Returns a weight for each energy representing the probability that a photon
-at that energy contributes to scatter (vs photoelectric absorption). This is
-the **pluggable interface** for the scatter energy model:
-- **Analytical (current):** `1 / (1 + (20/E)³)` — empirical Compton fraction
-  matching NIST XCOM within 5% for 20–140 keV diagnostic range.
-- **MC LUT (future):** Load pre-computed per-energy scatter data from table.
-
-These weights are combined with the spatial scatter field to produce the
-full per-energy scatter contribution. The detector model (EICT integration
-or PCCT DRM binning) then determines how scatter enters the measured signal.
-
-# Returns
-`Vector{Float64}` of length `length(energies)`, values in [0, 1].
-
-# References
-- NIST XCOM: Photon cross-section database (physics.nist.gov/xcom)
-- Klein-Nishina formula: Compton scattering cross-section vs energy
-"""
-function compute_scatter_energy_weights(energies::Vector{Float64})
-    return [1.0 / (1.0 + (20.0 / max(E, 1.0))^3) for E in energies]
-end
-
-"""
-    inject_scatter!(sinogram, scatter_field, scatter_weight)
-
-Add scatter to a single polychromatic sinogram (EICT path).
-
-The scatter contribution at each pixel is `scatter_field × scatter_weight`,
-added in intensity domain. `scatter_weight` is the spectrum-integrated
-Compton fraction: `Σ(w_E × ew_E) / Σ(w_E)` where `ew_E` are per-energy
-weights from `compute_scatter_energy_weights`.
-
-Matches the physics of `inject_scatter_bins!` (PCCT) — same spatial field,
-same per-energy model — but integrated over the full spectrum since an
-energy-integrating detector sums all energies.
-
-# References
-- Ohnesorge B et al., Eur Radiol 1999 (convolution scatter model)
-"""
-function inject_scatter!(
-    sinogram::AbstractArray{T,3},
-    scatter_field::AbstractArray{T,3},
-    scatter_weight::Real
-) where T
-    sw = T(scatter_weight)
-    let sino = sinogram, sf = scatter_field, w = sw
-        AK.foreachindex(sino) do idx
-            proj = sino[idx]
-            clamped = min(proj, T(20))
-            intensity = exp(-clamped)
-            scatter_intensity = sf[idx] * w
-            total = intensity + max(scatter_intensity, zero(T))
-            @inbounds sino[idx] = -log(max(total, T(1e-10)))
+# An energy integrator's signal with the scatter added: S₁ (as `-log S₁` in `sinogram`) and the
+# dispersion S₂/S₁.
+function _add_eict_scatter!(sinogram::AbstractArray{T, 3}, dispersion::AbstractArray{T, 3}, p::ScatterPlan) where {T}
+    nc, nr = Int32(size(sinogram, 1)), Int32(size(sinogram, 2))
+    let s = sinogram, d = dispersion, F = p.field, cl = p.col_lo, chi = p.col_hi, cw = p.col_w,
+            rl = p.row_lo, rh = p.row_hi, rw = p.row_w, vl = p.view_lo, vh = p.view_hi, vw = p.view_w,
+            nc = nc, nr = nr
+        AK.foreachindex(s) do idx
+            q = Int32(idx - 1)
+            col = q % nc + Int32(1)
+            row = (q ÷ nc) % nr + Int32(1)
+            iv = q ÷ (nc * nr) + Int32(1)
+            s1 = _field_at(F, Int32(1), col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
+            s2 = _field_at(F, Int32(2), col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
+            S1 = exp(-s[idx])
+            total = S1 + s1
+            d[idx] = (d[idx] * S1 + s2) / total
+            s[idx] = -log(total)
         end
     end
     return sinogram
 end
 
-"""
-    inject_scatter_bins!(bins, scatter_field, I0, I0_all, bin_scatter_weights; subtract = false)
+# An energy integrator's DAS: the measured signal (`sinogram`, relative to `I0v`) less the
+# estimated scatter, held at one quantum, as a log line integral.
+function _subtract_eict_scatter!(sinogram::AbstractArray{T, 3}, p::ScatterPlan, I0v::T) where {T}
+    nc, nr = Int32(size(sinogram, 1)), Int32(size(sinogram, 2))
+    let s = sinogram, F = p.estimate, cl = p.col_lo, chi = p.col_hi, cw = p.col_w,
+            rl = p.row_lo, rh = p.row_hi, rw = p.row_w, vl = p.view_lo, vh = p.view_hi, vw = p.view_w,
+            nc = nc, nr = nr, floor = one(T) / I0v
+        AK.foreachindex(s) do idx
+            q = Int32(idx - 1)
+            col = q % nc + Int32(1)
+            row = (q ÷ nc) % nr + Int32(1)
+            iv = q ÷ (nc * nr) + Int32(1)
+            e = _field_at(F, Int32(1), col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
+            s[idx] = -log(max(s[idx] - e, floor))
+        end
+    end
+    return sinogram
+end
 
-Add (or with `subtract`, remove) scatter in the per-bin sinograms, per ray.
-
-`scatter_field` is the scatter-to-air fraction from the Ohnesorge convolution of the combined
-transmission; the scatter counts of a ray and bin are `scatter_field × I0_all[col, row] ×
-bin_weight_b` — scaled by that ray's own whole-spectrum air response, so the scatter behind a
-bowtie falls off across the fan with the primary — with `bin_weight_b` from
-`compute_scatter_bin_weights` (the per-energy scatter spectrum through the detector response).
-`I0[col, row, b]` is the per-ray, per-bin air response the bins are normalised against.
-
-# References
-- Ohnesorge B et al., Eur Radiol 1999 (convolution scatter model)
-"""
-function inject_scatter_bins!(
-    bins::Vector{<:AbstractArray{T,3}},
-    scatter_field::AbstractArray{T,3},
-    I0::AbstractArray{T,3},
-    I0_all::AbstractArray{T,2},
-    bin_scatter_weights::Vector{Float64};
-    subtract::Bool = false,
-) where T
-    # DAS-honest floor: a real DAS records at minimum 1 count — with I0 in physical units this
-    # caps line integrals at the true information limit p = ln(I0) instead of a sub-count
-    # ceiling.  (Scatter SUBTRACTION drives starved rays ≤ 0 here; a 1e-10 floor would mint
-    # deterministic p ≈ 33 plateaus.)
-    eps = T(1)
-    sgn = subtract ? -one(T) : one(T)   # +1 = inject (forward), -1 = correct
-    m = Int32(size(I0, 1) * size(I0, 2))
-    for (b, bin_sino) in enumerate(bins)
-        let i0 = I0, off = Int32(b - 1) * m, m = m, frac = T(bin_scatter_weights[b]),
-            i0t = I0_all, bs = bin_sino, sf = scatter_field, s = sgn
-            AK.foreachindex(bs) do idx
-                ray = (Int32(idx - 1) % m) + Int32(1)
-                i0b = i0[ray + off]
-                N_primary = i0b * exp(-bs[idx])
-                N_scatter = sf[idx] * i0t[ray] * frac
-                N_total = N_primary + s * max(N_scatter, zero(T))
-                bs[idx] = -log(max(N_total, eps) / i0b)
+# A photon counter's bins with the scatter added (`sign = 1`, the expected counts before
+# detection) or the estimate subtracted (`sign = -1`, held at one count): `I0[col, row, b]` is
+# each ray's air response, `photons` the incident photons per pixel the fields are relative to.
+function _pcct_scatter!(bins, I0::AbstractArray{T, 3}, p::ScatterPlan, photons::Real, sign::Int) where {T}
+    nc, nr = Int32(size(I0, 1)), Int32(size(I0, 2))
+    m = nc * nr
+    F = sign > 0 ? p.field : p.estimate
+    floor = sign > 0 ? T(1.0e-30) : one(T)
+    for (b, bin) in enumerate(bins)
+        let s = bin, i0 = I0, F = F, cl = p.col_lo, chi = p.col_hi, cw = p.col_w,
+                rl = p.row_lo, rh = p.row_hi, rw = p.row_w, vl = p.view_lo, vh = p.view_hi, vw = p.view_w,
+                nc = nc, nr = nr, m = m, off = Int32(b - 1) * m, ch = Int32(b), n = T(sign * photons), floor = floor
+            AK.foreachindex(s) do idx
+                q = Int32(idx - 1)
+                col = q % nc + Int32(1)
+                row = (q ÷ nc) % nr + Int32(1)
+                iv = q ÷ m + Int32(1)
+                i0b = i0[q % m + Int32(1) + off]
+                N = i0b * exp(-s[idx]) + n * _field_at(F, ch, col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
+                s[idx] = -log(max(N, floor) / i0b)
             end
         end
     end
     return bins
 end
-
-"""
-    compute_scatter_bin_weights(energies, weights, energy_weights, η, R) -> Vector{Float64}
-
-Compute per-bin scatter weights from per-energy weights convolved through the DRM.
-
-This replaces the old `compute_scatter_bin_fractions` with an explicit energy_weights
-input, making the per-energy scatter model visible and pluggable.
-
-The per-bin weight for bin `b` is:
-    `w_b = Σ_E  weights[E] × energy_weights[E] × η[E] × R[E, b]`
-normalized to sum to 1.0.
-
-# Arguments
-- `energies`: Photon energies (keV)
-- `weights`: Tube spectrum weights (photons per energy bin)
-- `energy_weights`: Per-energy Compton scatter fractions from `compute_scatter_energy_weights`
-- `η`: Quantum detection efficiency per energy
-- `R`: Detector response matrix (n_energies × n_bins)
-
-# Returns
-`Vector{Float64}` of length `n_bins`, summing to 1.0.
-"""
-function compute_scatter_bin_weights(
-    energies::Vector{Float64},
-    weights::Vector{Float64},
-    energy_weights::Vector{Float64},
-    η::Vector{Float64},
-    R::Matrix{Float64},
-    kVp::Float64
-)
-    n_bins = size(R, 2)
-    n_R = size(R, 1)
-    scatter_I0_per_bin = zeros(Float64, n_bins)
-
-    for (e_idx, E) in enumerate(energies)
-        w = weights[e_idx]
-        ew = energy_weights[e_idx]
-        w * ew < 1e-12 && continue
-
-        # Map spectrum energy to DRM grid
-        r_idx = clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
-
-        for b in 1:n_bins
-            scatter_I0_per_bin[b] += w * ew * η[e_idx] * R[r_idx, b]
-        end
-    end
-
-    total = sum(scatter_I0_per_bin)
-    if total > 0
-        scatter_I0_per_bin ./= total
-    else
-        fill!(scatter_I0_per_bin, 1.0 / n_bins)
-    end
-
-    return scatter_I0_per_bin
-end
-
-"""
-    estimate_phantom_diameter_cm(mask::AbstractArray{<:Unsigned,3}, voxel_size_mm) -> Float64
-
-Estimate effective phantom diameter from material mask.
-
-Computes the effective diameter as sqrt(width × height) from the bounding box of
-non-air voxels (region index > 0) in the central slice.
-
-# Arguments
-- `mask`: Material index volume [nx, ny, nz], where 0 = air
-- `voxel_size_mm`: Tuple of voxel dimensions (dx, dy, dz) in mm
-
-# Returns
-Effective diameter in cm.
-
-# Notes
-Uses the effective diameter formula: d_eff = sqrt(AP × LAT), which is standard
-in CT dosimetry (AAPM Task Group 220).
-"""
-function estimate_phantom_diameter_cm(
-    mask::AbstractArray{<:Unsigned,3},
-    voxel_size_mm::Union{NTuple{3,<:Real}, AbstractVector{<:Real}}
-)
-    # Convert to CPU if on GPU (bounding box computation is fast on CPU)
-    mask_cpu = Array(mask)
-
-    nx, ny, nz = size(mask_cpu)
-    dx, dy, dz = voxel_size_mm[1], voxel_size_mm[2], voxel_size_mm[3]
-
-    # Find bounding box of non-air voxels across all slices
-    min_x, max_x = nx, 1
-    min_y, max_y = ny, 1
-
-    # Sample central slices to estimate size (faster than full volume)
-    z_mid = nz ÷ 2
-    z_range = max(1, z_mid - 5):min(nz, z_mid + 5)
-
-    for z in z_range
-        for y in 1:ny
-            for x in 1:nx
-                if mask_cpu[x, y, z] > 0
-                    min_x = min(min_x, x)
-                    max_x = max(max_x, x)
-                    min_y = min(min_y, y)
-                    max_y = max(max_y, y)
-                end
-            end
-        end
-    end
-
-    # Compute extents in mm
-    if max_x >= min_x && max_y >= min_y
-        width_mm = (max_x - min_x + 1) * dx
-        height_mm = (max_y - min_y + 1) * dy
-
-        # Effective diameter = sqrt(AP × LAT)
-        effective_diameter_mm = sqrt(width_mm * height_mm)
-
-        # Convert to cm
-        return effective_diameter_mm / 10.0
-    else
-        # No non-air voxels found, return reference size
-        return SCATTER_REF_PHANTOM_DIAMETER_CM
-    end
-end
-
-"""
-    compute_scatter_size_scale(phantom_diameter_cm::Real) -> Float64
-
-Compute scatter scaling factor based on phantom/patient size.
-
-Returns a multiplier for the scatter coefficient. Larger phantoms produce
-more scatter than the reference 30 cm body.
-
-# Scaling Formula
-scale = (diameter / SCATTER_REF_PHANTOM_DIAMETER_CM)^SCATTER_SIZE_SCALING_EXPONENT
-      = (diameter / 30)^1.5
-
-# Typical Values
-| Diameter | Scale | Description |
-|----------|-------|-------------|
-| 15 cm | 0.35 | Pediatric head |
-| 18 cm | 0.47 | Adult head |
-| 20 cm | 0.59 | Pediatric body |
-| 30 cm | 1.00 | Adult body (reference) |
-| 40 cm | 1.54 | Large body |
-| 50 cm | 2.15 | Very large body |
-
-# Example
-```julia
-scale = compute_scatter_size_scale(20.0)  # Pediatric body → 0.59
-scale = compute_scatter_size_scale(40.0)  # Large body → 1.54
-```
-"""
-function compute_scatter_size_scale(phantom_diameter_cm::Real)
-    ratio = phantom_diameter_cm / SCATTER_REF_PHANTOM_DIAMETER_CM
-    scale = ratio ^ SCATTER_SIZE_SCALING_EXPONENT
-
-    # Clamp to reasonable range
-    return clamp(scale, 0.1, 10.0)
-end
-
-"""
-    compute_scatter_geometry_scale(scanner::Scanner) -> Float64
-
-Compute scatter scaling factor based on scanner geometry relative to reference.
-
-Returns a multiplier for the base scatter coefficient. Values < 1.0 indicate
-less scatter than reference (e.g., larger air gap), values > 1.0 indicate
-more scatter than reference.
-
-# Physics
-Scatter intensity at detector scales approximately with (air_gap_ref/air_gap)²
-due to the geometric divergence of scattered photons. This inverse-square
-behavior is consistent with Monte Carlo studies of scatter transport.
-
-# Example
-```julia
-# Reference geometry scanner
-scanner_ref = EICTScanner()  # SID=540, SDD=950
-scale = compute_scatter_geometry_scale(scanner_ref)  # ≈ 1.0
-
-# GE Revolution (larger air gap)
-scanner_ge = EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)
-scale = compute_scatter_geometry_scale(scanner_ge)  # ≈ 0.76
-```
-"""
-function compute_scatter_geometry_scale(scanner::Scanner)
-    # Current air gap
-    air_gap = scanner.source_to_detector - scanner.source_to_isocenter
-
-    # Inverse square scaling: larger air gap → less scatter → scale < 1
-    scale = (SCATTER_REF_AIR_GAP_MM / air_gap)^2
-
-    # Clamp to reasonable range to avoid extreme values
-    return clamp(scale, 0.1, 10.0)
-end
-
-"""
-    compute_scatter_kernel_fwhm_pixels(scanner::Scanner) -> Float64
-
-Compute scatter kernel FWHM in pixels for given scanner geometry.
-
-The physical scatter kernel size (~50 mm FWHM at detector) is approximately
-constant regardless of scanner geometry. This function converts to pixel units
-based on detector pitch.
-
-# Example
-```julia
-# 1.0 mm pitch (reference)
-scanner = EICTScanner(detector_col_size=1.0)
-fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 50.0 pixels
-
-# 0.5 mm pitch (high resolution)
-scanner = EICTScanner(detector_col_size=0.5)
-fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 100.0 pixels
-```
-"""
-function compute_scatter_kernel_fwhm_pixels(scanner::Scanner)
-    # detector_col_size is at isocenter; scatter is physical at detector face
-    magnification = scanner.source_to_detector / scanner.source_to_isocenter
-    detector_face_pitch = scanner.detector_col_size * magnification
-    return SCATTER_PHYSICAL_KERNEL_FWHM_MM / detector_face_pitch
-end
-
-"""
-    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing)
-
-Create a **spatial-only** scatter model scaled for scanner geometry and phantom size.
-
-Energy dependence is handled separately by `compute_scatter_energy_weights()`, which
-returns per-energy Compton fractions. This separation enables pluggable energy models
-(analytical Compton fraction now, MC LUT in future).
-
-# Scaling Behavior
-- Geometry: `SCATTER_REF_COEFFICIENT × (air_gap_ref / air_gap)²`
-- Size: `× (diameter / 30)^1.5`
-- Kernel FWHM: `physical_fwhm_mm / detector_pixel_pitch_mm`
-- `scale_factor` applies on top of all automatic scaling
-
-# Example
-```julia
-scanner = EICTScanner()
-model = geometry_aware_scatter_model(scanner)
-# model.scatter_coefficient ≈ 0.025 × geometry_scale × size_scale
-
-# GE Revolution + large patient
-scanner = EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)
-model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0)
-# geometry_scale ≈ 0.76, size_scale ≈ 1.54
-# model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 ≈ 0.029
-```
-
-See also: [`ScatterModel`](@ref), [`compute_scatter_energy_weights`](@ref)
-"""
-function geometry_aware_scatter_model(
-    scanner::Scanner;
-    scale_factor::Float64 = 1.0,
-    kernel_type::Symbol = :gaussian,
-    phantom_diameter_cm::Union{Nothing, Real} = nothing,
-    mean_energy_keV::Union{Nothing, Real} = nothing  # IGNORED — kept for API compat during transition
-)
-    # Compute geometry-based scaling (air gap)
-    geometry_scale = compute_scatter_geometry_scale(scanner)
-
-    # Compute size-based scaling (phantom diameter)
-    size_scale = if phantom_diameter_cm !== nothing
-        compute_scatter_size_scale(phantom_diameter_cm)
-    else
-        1.0  # Use reference size (30 cm body)
-    end
-
-    # Energy scaling is now handled per-energy via compute_scatter_energy_weights(),
-    # NOT baked into the spatial coefficient. This enables per-energy scatter models
-    # (analytical Compton fraction now, MC LUT in future).
-    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale
-
-    # Compute kernel FWHM in pixels for this detector
-    kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
-
-    return ScatterModel(scatter_coefficient, scale_factor, kernel_fwhm, kernel_type)
-end
-
-
-# geometry_aware_scatter_correction DELETED — scatter correction is now decoupled.
-# simulate!() returns scatter_field + weights for exact model-based subtraction.
-
-
-
-
-
-# =============================================================================
-# Exports
-# =============================================================================
-# Calibration constants (SCATTER_REF_*, SCATTER_PHYSICAL_KERNEL_FWHM_MM,
-# SCATTER_SIZE_SCALING_EXPONENT) and internal scaling helpers
-# (compute_scatter_geometry_scale, compute_scatter_kernel_fwhm_pixels,
-# compute_scatter_size_scale) stay `const`/internal — consumed only by
-# `geometry_aware_scatter_model` inside this file.
-
-export ScatterModel
-export create_scatter_kernel_spatial
-export geometry_aware_scatter_model
-export estimate_phantom_diameter_cm
-
-# Unified per-energy scatter API (shared EICT + PCCT)
-export estimate_scatter_field!
-export compute_scatter_energy_weights
-export inject_scatter!, inject_scatter_bins!
-export compute_scatter_bin_weights
-
-
-# =============================================================================
-# Spatial Scatter Field Estimation (shared EICT + PCCT)
-# =============================================================================
-# The spatial scatter distribution is estimated from the combined polyenergetic
-# sinogram using the Ohnesorge convolution model. Per-energy variation is handled
-# separately by compute_scatter_energy_weights().
-#
-# Ohnesorge B et al., Eur Radiol 1999 — convolution-based scatter model
-# =============================================================================
-
-"""
-    estimate_scatter_field!(output, sinogram, model::ScatterModel; ...) -> output
-
-Compute the scatter intensity spatial distribution WITHOUT modifying the input sinogram.
-
-Ohnesorge convolution model — returns only the spatial scatter intensity field.
-The output is in intensity units relative to I0=1. Used by both EICT and PCCT paths.
-
-# Returns
-`output` filled with scatter intensity at each detector pixel.
-Multiply by `I0_total` to get absolute scatter counts.
-"""
-function estimate_scatter_field!(
-    output::AbstractArray{T,3},
-    sinogram::AbstractArray{T,3},
-    model::ScatterModel;
-    ws_scatter_temp=nothing,
-    ws_kernel_1d=nothing
-) where T
-    n_cols = size(sinogram, 1)
-    n_rows = size(sinogram, 2)
-    C = T(model.scatter_coefficient * model.scale_factor)
-
-    # ─── SEPARABLE PATH (Gaussian kernels) ──────────────────────────────
-    if model.kernel_type == :gaussian
-        kernel_1d = if ws_kernel_1d !== nothing
-            ws_kernel_1d
-        else
-            k1d_cpu = T.(create_scatter_kernel_1d(model))
-            k1d = similar(sinogram, T, length(k1d_cpu))
-            copyto!(k1d, k1d_cpu)
-            k1d
-        end
-
-        scatter_temp = ws_scatter_temp !== nothing ? ws_scatter_temp : similar(sinogram)
-
-        # Step 1: Pre-signal into output
-        let sino = sinogram, pre = output, c = C
-            AK.foreachindex(sino) do idx
-                proj = sino[idx]
-                clamped = min(proj, T(20))
-                @inbounds pre[idx] = exp(-clamped) * proj * c
-            end
-        end
-
-        # Step 2-3: Separable convolution → output holds scatter intensity
-        _convolve_separable_h!(scatter_temp, output, kernel_1d, n_cols, n_rows)
-        _convolve_separable_v!(output, scatter_temp, kernel_1d, n_cols, n_rows)
-
-        return output
-    end
-
-    # ─── FALLBACK: 2D convolution ────────────────────────────────────────
-    kernel_cpu = T.(create_scatter_kernel_spatial(model))
-    kernel_size = size(kernel_cpu, 1)
-    kernel = similar(sinogram, size(kernel_cpu)...)
-    copyto!(kernel, kernel_cpu)
-    half_k = kernel_size ÷ 2
-
-    let kernel = kernel, output = output, half_k = half_k,
-        n_cols = n_cols, n_rows = n_rows, C = C
-        AK.foreachindex(sinogram) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % Int32(n_cols)) + Int32(1)
-            idx_0 = idx_0 ÷ Int32(n_cols)
-            row = (idx_0 % Int32(n_rows)) + Int32(1)
-            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
-
-            scatter_est = zero(T)
-            for dj in -half_k:half_k
-                for di in -half_k:half_k
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
-                    src_prep = sinogram[src_col, src_row, angle]
-                    src_clamped = min(max(src_prep, T(1e-10)), T(20))
-                    scatter_pre = exp(-src_clamped) * src_clamped * C
-                    ki = di + half_k + 1
-                    kj = dj + half_k + 1
-                    scatter_est += scatter_pre * kernel[ki, kj]
-                end
-            end
-            output[idx] = scatter_est
-        end
-    end
-    return output
-end
-
-# compute_scatter_bin_fractions DELETED — replaced by compute_scatter_bin_weights()
-# which takes explicit per-energy weights from compute_scatter_energy_weights().
-

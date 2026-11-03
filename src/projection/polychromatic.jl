@@ -66,7 +66,7 @@
 #
 # CatSim Signal Chain (when enabled via kwargs):
 # 1. Polychromatic forward projection (Beer-Lambert)
-# 2. Physics pipeline (scatter, crosstalk, focal spot, noise, lag)
+# 2. Physics pipeline (crosstalk, focal spot, lag; then the patient scatter and the noise)
 # 3. Heel effect (intensity domain)
 # 4. DAS model (gain + electronic noise)
 # 5. Air scan calibration (CatSim-exact: noise-free air reference)
@@ -274,29 +274,21 @@ function _apply_physics_no_noise!(
         config::PhysicsConfig;
         # Workspace kwargs for zero-allocation path
         ws_output = nothing,             # sinogram-sized scratch (shared by convolution effects)
-        ws_scatter_kernel = nothing,     # pre-computed scatter kernel (GPU)
         ws_optical_crosstalk_kernel = nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
         ws_focal_spot_kernel = nothing,  # pre-computed focal spot kernel (GPU)
         ws_lag_output = nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
         ws_lag_intensity = nothing,      # sinogram-sized intensity scratch for lag
         ws_lag_coeffs = nothing,         # pre-computed lag coefficients (GPU)
-        ws_scatter_temp = nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
-        ws_scatter_kernel_1d = nothing   # 1D Gaussian scatter kernel (separable path)
     ) where {T}
 
     # Apply deterministic physics effects only
     # Skip noise since DAS model handles it
 
-    # Fill factor
-    if config.fill_factor !== nothing
-        apply_fill_factor!(sinogram, config.fill_factor)
-    end
+    # The fill factor is not here: it scales the detected quanta, so the EICT noise applies it
+    # once (I₀·ff), and the air calibration divides it out exactly.
 
-    # NOTE: Scatter injection and correction are now handled in simulate!() using
-    # the unified per-energy scatter model (compute_scatter_energy_weights +
-    # inject_scatter!/inject_scatter_bins!). Scatter is added BEFORE noise and
-    # corrected AFTER noise, matching the clinical scanner signal chain.
-    # See: driver.jl simulate!(ws::EICTWorkspace) and simulate!(ws::PCCTWorkspace)
+    # Patient scatter is simulate!'s (src/detector/scatter.jl): added after these effects, before
+    # the noise, and estimated from the data and subtracted after it.
 
     # Optical crosstalk
     if config.optical_crosstalk !== nothing
@@ -314,9 +306,7 @@ function _apply_physics_no_noise!(
         )
     end
 
-    # Detector efficiency η(E) is now applied in the spectral sum inside
-    # _forward_project_poly! (ws_η kwarg) and in the noise I₀ scaling,
-    # so no separate sinogram-domain application is needed here.
+    # The detector response m₁(E) weights the spectral sum inside _forward_project_poly!.
 
     # NOTE: Skip noise - handled by DAS model in signal chain
 
@@ -443,12 +433,14 @@ function _forward_project_poly!(
         ws_detector_v = nothing,
         # Override volume bounds for phantom FOV
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        # Detector efficiency η(E) per energy bin (weights spectral sum)
-        ws_η::Union{Nothing, Vector{Float64}} = nothing,
         # Bowtie spectral transmission [n_cols, n_rows, n_energies]
         ws_bowtie_spectral = nothing,
-        # Fused kernel: pre-computed wη on GPU [n_energies], enables single-pass projection
-        ws_wη_gpu = nothing,
+        # Per-energy weights on the device (the spectrum times the detector's m₁), enabling the
+        # single-pass projection
+        ws_w1_gpu = nothing,
+        # A second weighted sum over the same rays (the detector's m₂): `ws_out2 = −log Σ w₂ B e^{−L}`
+        ws_w2_gpu = nothing,
+        ws_out2 = nothing,
         # Control flag: true = fused single-pass kernel, false = sequential energy loop
         # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
         # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
@@ -464,6 +456,12 @@ function _forward_project_poly!(
 
     n_energies = length(energies)
 
+    (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
+        throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
+    ws_out2 === nothing || (ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing) || throw(
+        ArgumentError("the second sum needs the workspace's attenuation table and weights")
+    )
+
     # Validated here, before any of the branches below could quietly not use it: `paths` only
     # means anything on the :dd_fast two-pass path, and being ignored would look like a
     # speed-up that never happened.
@@ -473,7 +471,7 @@ function _forward_project_poly!(
                 "paths= is the :dd_fast two-pass projection; got projector=:$(projector)"
             )
         )
-        (ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing) || throw(
+        (ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing) || throw(
             ArgumentError(
                 "paths= needs the workspace's attenuation table and spectral weights"
             )
@@ -492,50 +490,51 @@ function _forward_project_poly!(
     # =========================================================================
     if fused && ws_μ_table_gpu !== nothing
         @info "FUSED PATH: n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
-        # Build wη on GPU if not provided via workspace
-        wη_dev = if ws_wη_gpu !== nothing
-            ws_wη_gpu
+        # The spectrum alone when no detector weights are given
+        w1_dev = if ws_w1_gpu !== nothing
+            ws_w1_gpu
         else
             weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
-            η_vec = ws_η !== nothing ? ws_η : ones(Float64, n_energies)
-            wη_cpu = T.(weights_norm .* η_vec)
             _buf = similar(sinogram, T, n_energies)
-            copyto!(_buf, wη_cpu)
+            copyto!(_buf, T.(weights_norm))
             _buf
         end
 
-        _project_fused_poly!(
-            projector,
-            sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
-            volume_extent = volume_extent,
-            ws_source_positions = ws_source_positions,
-            ws_detector_centers = ws_detector_centers,
-            ws_detector_u = ws_detector_u,
-            ws_detector_v = ws_detector_v,
-            ws_bowtie_spectral = ws_bowtie_spectral
-        )
+        for (out, w_dev) in ((sinogram, w1_dev), (ws_out2, ws_w2_gpu))
+            out === nothing && continue
+            _project_fused_poly!(
+                projector,
+                out, mask, geom, ws_μ_table_gpu, w_dev, Val(n_energies);
+                volume_extent = volume_extent,
+                ws_source_positions = ws_source_positions,
+                ws_detector_centers = ws_detector_centers,
+                ws_detector_u = ws_detector_u,
+                ws_detector_v = ws_detector_v,
+                ws_bowtie_spectral = ws_bowtie_spectral
+            )
+        end
 
         return sinogram
     end
 
     # =========================================================================
-    # TILED PATH (SPEED-BUILD-V2-002): K=16 per tile, 15 tiles for 234 bins
-    # Default when μ_table_gpu + wη_gpu available. 3.66× faster than unfused.
+    # Workspace weights on the device: the single-pass :dd_fast path, else the
+    # tiled path (K = 16 energies per walk). 3.66× faster than unfused.
     # =========================================================================
-    if ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing
+    if ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing
         # ---------------------------------------------------------------------
         # SINGLE-PASS PATH (:dd_fast, ≤64 materials): the path-length DD kernel
         # accumulates per-MATERIAL path lengths (energy-independent registers),
-        # so all n_energies convert once per cell — ONE volume walk instead of
-        # n_tiles.  Identical DD footprint/weights; float ordering only.
+        # so all n_energies — and both weighted sums — convert once per cell:
+        # ONE volume walk instead of n_tiles.
         # :siddon (and :dd_fast above 64 materials) keep the tiled path below
         # (those kernels hold per-energy registers → K=16 required).
         # ---------------------------------------------------------------------
         if paths !== nothing
             @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1
             dd_fast_poly_from_paths!(
-                sinogram, paths, ws_μ_table_gpu, ws_wη_gpu;
-                ws_bowtie_spectral = ws_bowtie_spectral
+                sinogram, paths, ws_μ_table_gpu, ws_w1_gpu;
+                ws_bowtie_spectral, ws_w2_gpu, ws_out2,
             )
             return sinogram
         end
@@ -544,13 +543,15 @@ function _forward_project_poly!(
             @info "SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
             dd_fast_fused_poly_project!(
                 sinogram, mask, geom,
-                ws_μ_table_gpu, ws_wη_gpu, Val(n_energies);
-                volume_extent = volume_extent,
-                ws_source_positions = ws_source_positions,
-                ws_detector_centers = ws_detector_centers,
-                ws_detector_u = ws_detector_u,
-                ws_detector_v = ws_detector_v,
-                ws_bowtie_spectral = ws_bowtie_spectral
+                ws_μ_table_gpu, ws_w1_gpu, Val(n_energies);
+                volume_extent,
+                ws_source_positions,
+                ws_detector_centers,
+                ws_detector_u,
+                ws_detector_v,
+                ws_bowtie_spectral,
+                ws_w2_gpu,
+                ws_out2,
             )
             return sinogram
         end
@@ -562,56 +563,54 @@ function _forward_project_poly!(
         # + subset copies per tile. Avoids runtime offset arithmetic that causes
         # 71% GPU slowdown vs compile-time constant indices.
         TILE_K = 16
-        n_energies_padded = cld(n_energies, TILE_K) * TILE_K
-        n_tiles = n_energies_padded ÷ TILE_K
+        n_tiles = cld(n_energies, TILE_K)
 
-        # Use I_transmitted buffer for accumulation
+        # Subset buffers (small allocations: μ=1.7KB, w=64B, bt=512KB)
         I_transmitted = ws_I_transmitted !== nothing ? ws_I_transmitted : similar(sinogram)
-        fill!(I_transmitted, zero(T))
-
-        # Subset buffers (small allocations: μ=1.7KB, wη=64B, bt=512KB)
-        n_regions = size(ws_μ_table_gpu, 1)
-        μ_sub = similar(sinogram, T, n_regions, TILE_K)
-        wη_sub = similar(sinogram, T, TILE_K)
+        μ_sub = similar(sinogram, T, size(ws_μ_table_gpu, 1), TILE_K)
+        w_sub = similar(sinogram, T, TILE_K)
         has_bt = ws_bowtie_spectral !== nothing
         bt_sub = has_bt ? similar(sinogram, T, size(sinogram, 1), size(sinogram, 2), TILE_K) : nothing
 
-        for tile_idx in 1:n_tiles
-            ts = (tile_idx - 1) * TILE_K + 1
-            te = ts + TILE_K - 1
+        # The tiled kernel has one accumulator: each weighted sum is its own set of walks.
+        for (out, w_dev) in ((sinogram, ws_w1_gpu), (ws_out2, ws_w2_gpu))
+            out === nothing && continue
+            fill!(I_transmitted, zero(T))
+            for tile_idx in 1:n_tiles
+                ts = (tile_idx - 1) * TILE_K + 1
+                te = ts + TILE_K - 1
 
-            # Copy subset of μ_table and wη for this tile
-            copyto!(μ_sub, @view ws_μ_table_gpu[:, ts:te])
-            copyto!(wη_sub, @view ws_wη_gpu[ts:te])
-            if has_bt
-                copyto!(bt_sub, @view ws_bowtie_spectral[:, :, ts:te])
-            end
+                copyto!(μ_sub, @view ws_μ_table_gpu[:, ts:te])
+                copyto!(w_sub, @view w_dev[ts:te])
+                if has_bt
+                    copyto!(bt_sub, @view ws_bowtie_spectral[:, :, ts:te])
+                end
 
-            # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
-            _project_fused_poly!(
-                projector,
-                sinogram, mask, geom,
-                μ_sub, wη_sub, Val(TILE_K);
-                volume_extent = volume_extent,
-                ws_source_positions = ws_source_positions,
-                ws_detector_centers = ws_detector_centers,
-                ws_detector_u = ws_detector_u,
-                ws_detector_v = ws_detector_v,
-                ws_bowtie_spectral = bt_sub
-            )
+                # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
+                _project_fused_poly!(
+                    projector,
+                    out, mask, geom,
+                    μ_sub, w_sub, Val(TILE_K);
+                    volume_extent = volume_extent,
+                    ws_source_positions = ws_source_positions,
+                    ws_detector_centers = ws_detector_centers,
+                    ws_detector_u = ws_detector_u,
+                    ws_detector_v = ws_detector_v,
+                    ws_bowtie_spectral = bt_sub
+                )
 
-            # Accumulate: undo -log, add partial Beer-Lambert sum
-            let I_trans = I_transmitted
-                AK.foreachindex(sinogram) do idx
-                    I_trans[idx] += exp(-sinogram[idx])
+                # Accumulate: undo -log, add partial Beer-Lambert sum
+                let I_trans = I_transmitted, out = out
+                    AK.foreachindex(out) do idx
+                        I_trans[idx] += exp(-out[idx])
+                    end
                 end
             end
-        end
 
-        # Final -log
-        let I_trans = I_transmitted, eps_val = T(1.0e-10)
-            AK.foreachindex(sinogram) do idx
-                sinogram[idx] = -log(max(I_trans[idx], eps_val))
+            let I_trans = I_transmitted, out = out, eps_val = T(1.0e-10)
+                AK.foreachindex(out) do idx
+                    out[idx] = -log(max(I_trans[idx], eps_val))
+                end
             end
         end
 
@@ -619,7 +618,8 @@ function _forward_project_poly!(
     end
 
     # =========================================================================
-    # UNFUSED PATH: sequential energy loop (fallback when no μ_table_gpu)
+    # UNFUSED PATH: sequential energy loop over the spectrum alone (no
+    # attenuation table on the device, so no detector weights either)
     # =========================================================================
 
     # Normalize weights (use pre-computed if available)
@@ -655,31 +655,28 @@ function _forward_project_poly!(
             volume_extent = volume_extent
         )
 
-        # Accumulate Beer-Lambert: I += w × η(E) × T_bt(E,col,row) × exp(-line_integral)
+        # Accumulate Beer-Lambert: I += w × T_bt(E,col,row) × exp(-line_integral)
         w = weights_norm[e_idx]
-        # η(E) reshapes effective spectrum — accounts for detector absorption + fluorescence escape
-        η_e = ws_η !== nothing ? T(ws_η[e_idx]) : one(T)
 
         if ws_bowtie_spectral !== nothing
             # Per-pixel bowtie transmission from [n_cols, n_rows, n_energies] array
             nc = size(sinogram, 1)
             nr = size(sinogram, 2)
-            nc_nr = nc * nr
-            bt_offset = (e_idx - 1) * nc_nr
-            let w = w, η_e = η_e, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc, nr = nr, I_trans = I_transmitted, sm = sino_mono
+            bt_offset = (e_idx - 1) * nc * nr
+            let w = w, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc, nr = nr, I_trans = I_transmitted, sm = sino_mono
                 AK.foreachindex(I_trans) do idx
                     idx_0 = Int32(idx - 1)
                     col = (idx_0 % Int32(nc)) + Int32(1)
                     row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
                     bt_val = bt[col + (row - 1) * nc + bt_off]
-                    I_trans[idx] += w * η_e * bt_val * exp(-sm[idx])
+                    I_trans[idx] += w * bt_val * exp(-sm[idx])
                 end
             end
         else
             # Scalar-weight path (no bowtie)
-            let w_eff = w * η_e, I_trans = I_transmitted, sm = sino_mono
+            let w = w, I_trans = I_transmitted, sm = sino_mono
                 AK.foreachindex(I_trans) do idx
-                    I_trans[idx] += w_eff * exp(-sm[idx])
+                    I_trans[idx] += w * exp(-sm[idx])
                 end
             end
         end

@@ -1,101 +1,55 @@
 # =============================================================================
 # MC-Simulated Detector Response Matrix (DRM) for PCCT Detectors
 # =============================================================================
-# Author: Hamidreza Khodajou-Chokami, PhD.
-#
-# Loads pre-computed CdTe detector response R(E,t) from Monte Carlo (MC)
-# transport simulations and converts it to BasisSimulator's DRM format.
-#
-# The MC response matrix R(E,t) captures the full detector physics:
-#   1. Full photon transport in CdTe (photoelectric, Compton, Rayleigh)
-#   2. Fano noise on charge generation
-#   3. Dreier 2018 charge cloud transport (thermal diffusion + Coulomb repulsion)
-#   4. 3×3 pixel erf-based charge splitting (Gaussian charge sharing)
-#   5. Electronic noise (per-pixel Gaussian)
-#   6. Energy threshold comparison (cumulative counts ≥ threshold)
-#
-# Because the MC R matrix already includes charge sharing and spatial effects,
-# the analytical charge sharing model (apply_charge_sharing!) should be
-# DISABLED when using this DRM.
-#
-# Reference:
-# - Stierstorfer K, 2018 — Charge cloud model
-# - Dreier 2018 — Charge transport
+# The CdTe detector response R(E, t), counts above each threshold per incident photon, from the
+# native-dexel Geant4 table (native_table.jl): photon transport in CdTe, the transported charge
+# (drift, diffusion, repulsion, Shockley–Ramo induction, trapping), electronic noise, the
+# anti-scatter grid. Converted here to the per-bin response matrix the projector applies.
 # =============================================================================
 
 using Serialization
 
 """
-    default_mc_drm_path() -> String
+    default_mc_drm_path()
 
-Return the path to the bundled MC detector response file
-(`cdte_response_v4.jls`, co-located with this source file in
-`src/detector/pcct/`).
+The photon-counting response BasisSimulator uses: [`PCCT_NATIVE_TABLE_PATH`](@ref), the NAEOTOM
+Alpha's CdTe from Geant4 (the cell's mean native dexel, the anti-scatter grid included).
 """
-function default_mc_drm_path()
-    return joinpath(@__DIR__, "cdte_response_v4.jls")
-end
+default_mc_drm_path() = PCCT_NATIVE_TABLE_PATH
 
 """
     MCResponseData
 
-Container for MC-simulated CdTe detector response data.
-
-# Fields
-- `energies_keV::Vector{Int}`: Incident photon energies [keV] (typically 1:140)
-- `thresholds_keV::Vector{Int}`: Energy threshold values [keV]
-- `R_total::Matrix{Float64}`: [n_energies × n_thresholds] — cumulative counts per
-  incident photon above each threshold (summed over 3×3 pixel neighborhood)
-- `R_perpixel::Array{Float64,4}`: [n_energies × 3 × 3 × n_thresholds] — per-pixel response
-- `Var_total::Matrix{Float64}`: [n_energies × n_thresholds] — variance of total counts
-- `Cov_total::Array{Float64,3}`: [n_energies × n_thresholds × n_thresholds] — covariance
-- `Cov_pixpair::Array{Float64,5}`: [n_energies × 9 × 9 × n_thresholds × n_thresholds]
+A photon-counting response: `energies_keV` and `thresholds_keV` (`Int`), `R_total[E, t]` (the
+counts above each threshold per incident photon, absorption included) and `Cov_total[E, ti, tj]`
+(their covariance per incident photon).
 """
 struct MCResponseData
     energies_keV::Vector{Int}
     thresholds_keV::Vector{Int}
     R_total::Matrix{Float64}
-    R_perpixel::Array{Float64,4}
-    Var_total::Matrix{Float64}
-    Cov_total::Array{Float64,3}
-    Cov_pixpair::Array{Float64,5}
+    Cov_total::Array{Float64, 3}
 end
 
 """
-    load_mc_response(npz_path::String) -> MCResponseData
+    load_mc_response(path::String) -> MCResponseData
 
-Load MC-simulated CdTe detector response from a .npz file.
-
-The NPZ file must contain arrays produced by the MC detector simulation code:
-- `energies_keV`: (n_E,) incident energies
-- `thresholds_keV`: (n_t,) threshold values
-- `R_total`: (n_E, n_t) cumulative counts ≥ threshold per incident photon
-- `R_perpixel`: (n_E, 3, 3, n_t) per-pixel response
-- `Var_total`: (n_E, n_t) variance
-- `Cov_total`: (n_E, n_t, n_t) covariance
-- `Cov_pixpair`: (n_E, 9, 9, n_t, n_t) pixel-pair covariance
-
-# Example
-```julia
-data = load_mc_response(default_mc_drm_path())
-println("Energies: \$(data.energies_keV[1])–\$(data.energies_keV[end]) keV")
-println("Thresholds: \$(data.thresholds_keV) keV")
-println("R_total size: \$(size(data.R_total))")
-```
+Read a photon-counting response: the native-dexel table ([`PCCT_NATIVE_TABLE_PATH`](@ref), read
+as the grid cell's mean dexel) or a single-dexel table with `energies_keV`, `thresholds_keV`,
+`R_total` and `Cov_total` (BasisSimulator v0.15.1's `cdte_response_v4`).
 """
-function load_mc_response(npz_path::String)
-    @assert isfile(npz_path) "MC response file not found: $npz_path"
-
-    d = open(deserialize, npz_path)
-
+function load_mc_response(path::String)
+    isfile(path) || throw(ArgumentError("photon-counting response not found: $(path)"))
+    path == PCCT_NATIVE_TABLE_PATH && return _native_table_response(pcct_native_table())
+    d = open(deserialize, path)
+    haskey(d, "schema_version") && throw(
+        ArgumentError("$(path) is a native-dexel table; BasisSimulator reads its own copy, PCCT_NATIVE_TABLE_PATH")
+    )
     return MCResponseData(
         Int.(d["energies_keV"]),
         Int.(d["thresholds_keV"]),
         Float64.(d["R_total"]),
-        Float64.(d["R_perpixel"]),
-        Float64.(d["Var_total"]),
         Float64.(d["Cov_total"]),
-        Float64.(d["Cov_pixpair"])
     )
 end
 
@@ -117,14 +71,16 @@ This is cumulative (like survival function). For energy BINS we need:
 # Returns
 - `Matrix{Float64}`: [n_E × n_t] differential bin counts
 """
-function mc_cumulative_to_bins(R_cumulative::Matrix{Float64},
-    thresholds_keV::Vector{Int})
+function mc_cumulative_to_bins(
+        R_cumulative::Matrix{Float64},
+        thresholds_keV::Vector{Int}
+    )
     n_E, n_t = size(R_cumulative)
     R_bins = zeros(Float64, n_E, n_t)
 
-    for k in 1:(n_t-1)
+    for k in 1:(n_t - 1)
         # Bin k: counts between threshold[k] and threshold[k+1]
-        R_bins[:, k] = max.(R_cumulative[:, k] .- R_cumulative[:, k+1], 0.0)
+        R_bins[:, k] = max.(R_cumulative[:, k] .- R_cumulative[:, k + 1], 0.0)
     end
     # Last bin: counts ≥ highest threshold (everything above)
     R_bins[:, n_t] = max.(R_cumulative[:, n_t], 0.0)
@@ -162,9 +118,11 @@ det = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [20.0,
 D = compute_mc_drm(det, 120.0)  # uses bundled response file
 ```
 """
-function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
-    npz_path::String=default_mc_drm_path(),
-    n_energy_points::Int=200)
+function compute_mc_drm(
+        detector::PhotonCountingDetector, kVp::Real;
+        npz_path::String = default_mc_drm_path(),
+        n_energy_points::Int = 200
+    )
     # Load MC data
     mc = load_mc_response(npz_path)
 
@@ -188,12 +146,12 @@ function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
     for e_idx in 1:n_mc_E
         for target_b in 1:n_target_bins
             T_low = target_thresholds[target_b]
-            T_high = target_b < n_target_bins ? target_thresholds[target_b+1] : Inf
+            T_high = target_b < n_target_bins ? target_thresholds[target_b + 1] : Inf
 
             # Sum all MC bins whose energy range overlaps with target bin [T_low, T_high)
             for mc_b in 1:length(mc_thresholds)
                 mc_T_low = mc_thresholds[mc_b]
-                mc_T_high = mc_b < length(mc_thresholds) ? mc_thresholds[mc_b+1] : Inf
+                mc_T_high = mc_b < length(mc_thresholds) ? mc_thresholds[mc_b + 1] : Inf
 
                 # Check if MC bin overlaps with target bin
                 overlap_low = max(T_low, mc_T_low)
@@ -219,7 +177,7 @@ function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
     end
 
     # Step 3: Interpolate to BasisSimulator's uniform energy grid
-    E_grid = range(1.0, Float64(kVp), length=n_energy_points)
+    E_grid = range(1.0, Float64(kVp), length = n_energy_points)
     D = zeros(Float64, n_energy_points, n_target_bins)
 
     for b in 1:n_target_bins
@@ -231,7 +189,7 @@ function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
                 D[i, b] = D_native[end, b]
             else
                 # Find bracketing indices
-                idx_low = clamp(Int(floor(E - mc_E[1])) + 1, 1, n_mc_E - 1)
+                idx_low = clamp(searchsortedlast(mc_E, E), 1, n_mc_E - 1)
                 idx_high = idx_low + 1
                 E_low = mc_E[idx_low]
                 E_high = mc_E[idx_high]
@@ -241,22 +199,15 @@ function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
         end
     end
 
-    # Ensure physical constraints: row sums ≤ 1.0, values ≥ 0
-    for i in 1:n_energy_points
-        row_sum = sum(D[i, :])
-        if row_sum > 1.0
-            D[i, :] ./= row_sum
-        end
-        for b in 1:n_target_bins
-            D[i, b] = max(D[i, b], 0.0)
-        end
-    end
+    # Counts are never negative. A row may sum above 1: a photon whose charge two dexels share
+    # counts in both, so counts per incident photon exceed one at the low thresholds.
+    D .= max.(D, 0.0)
 
     return D
 end
 
 """
-    compute_mc_count_moments(detector, energies, weights; η=nothing, R=nothing)
+    compute_mc_count_moments(detector, energies, weights; R=nothing)
 
 Compute spectrum-averaged first and second moments of differential PCCT bin
 counts from the bundled Monte Carlo detector response. The returned covariance
@@ -273,17 +224,20 @@ function compute_mc_count_moments(
         detector::PhotonCountingDetector,
         energies::AbstractVector,
         weights::AbstractVector;
-        η = nothing,
         R = nothing,
         response_path::String = default_mc_drm_path(),
     )
-    length(energies) == length(weights) || throw(DimensionMismatch(
-        "energies and weights must have equal length"
-    ))
+    length(energies) == length(weights) || throw(
+        DimensionMismatch(
+            "energies and weights must have equal length"
+        )
+    )
     isempty(energies) && throw(ArgumentError("energies must be nonempty"))
-    all(isfinite, weights) && all(>=(0), weights) || throw(ArgumentError(
-        "weights must be finite and nonnegative"
-    ))
+    all(isfinite, weights) && all(>=(0), weights) || throw(
+        ArgumentError(
+            "weights must be finite and nonnegative"
+        )
+    )
     sum(weights) > 0 || throw(ArgumentError("weights must have positive sum"))
 
     mc = load_mc_response(response_path)
@@ -318,11 +272,11 @@ function compute_mc_count_moments(
 
     kVp = Float64(maximum(energies))
     R_use = R === nothing ? compute_mc_drm(detector, kVp) : Float64.(R)
-    η_use = η === nothing ?
-        quantum_efficiency_vector(detector.material, detector.thickness_mm, energies) : η
-    size(R_use, 2) == n_bins || throw(DimensionMismatch(
-        "R has $(size(R_use, 2)) bins; detector has $n_bins"
-    ))
+    size(R_use, 2) == n_bins || throw(
+        DimensionMismatch(
+            "R has $(size(R_use, 2)) bins; detector has $n_bins"
+        )
+    )
 
     mean_eff = zeros(Float64, n_bins)
     second_eff = zeros(Float64, n_bins, n_bins)
@@ -355,25 +309,26 @@ function compute_mc_count_moments(
         scale = [m_raw[b] > eps(Float64) ? d[b] / m_raw[b] : 0.0 for b in 1:n_bins]
         Dscale = Diagonal(scale)
         C = Dscale * C_raw * Dscale
-        ηi = Float64(η_use[i])
-        event_mean = ηi .* d
-        # Bernoulli detection gate followed by a compound-Poisson incident
-        # process: Cov_total = η(C + dd′).
-        event_second = ηi .* (C .+ d * transpose(d))
+        event_mean = d
+        # A compound-Poisson incident process (R per incident photon, absorption included):
+        # Cov_total = C + dd′.
+        event_second = C .+ d * transpose(d)
         mean_eff .+= w .* event_mean
         second_eff .+= w .* event_second
     end
 
     second_eff .= (second_eff .+ transpose(second_eff)) ./ 2
-    fano = [mean_eff[b] > eps(Float64) ? second_eff[b, b] / mean_eff[b] : 1.0
-            for b in 1:n_bins]
+    fano = [
+        mean_eff[b] > eps(Float64) ? second_eff[b, b] / mean_eff[b] : 1.0
+            for b in 1:n_bins
+    ]
     correlation = Matrix{Float64}(I, n_bins, n_bins)
     for j in 1:n_bins, i in 1:n_bins
         denom = sqrt(max(second_eff[i, i] * second_eff[j, j], 0.0))
         correlation[i, j] = denom > eps(Float64) ? second_eff[i, j] / denom : (i == j ? 1.0 : 0.0)
     end
     correlation .= clamp.(correlation, -1.0, 1.0)
-    (mean = mean_eff, fano = fano, correlation = correlation, covariance = second_eff)
+    return (mean = mean_eff, fano = fano, correlation = correlation, covariance = second_eff)
 end
 
 export compute_mc_count_moments

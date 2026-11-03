@@ -1503,6 +1503,7 @@ readout = MC.DexelEnergyReadout(
         pitch_y_mm = pitch_mm[2],
         neighborhood = 3,
         cloud_sigma_um = 0.01,
+        transport = nothing,  # a scintillator: each dexel keeps the energy left in its own ceramic
     ),
 )
 
@@ -2329,13 +2330,9 @@ let
     same = isdefined(BS, :UFC_FLASH_MC_EFFICIENCY_LUT) &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies == table.energies &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency == table.efficiency
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), ships exactly this table (as its Definition Flash's)." :
-            "✗ **The installed BasisSimulator, v$(installed), has a different Flash table from BasisMonteCarlo's copy of v0.15.1's.** Check `BASISSIMULATOR_V0_15_1_EFFICIENCY` against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), ships exactly this table (as its Definition Flash's)." :
         "The installed BasisSimulator is v$(installed). The comparison below is with BasisSimulator v0.15.1's Flash table, which BasisMonteCarlo keeps (`BASISSIMULATOR_V0_15_1_EFFICIENCY`): it does not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -2967,7 +2964,6 @@ function ict_spectrum(kVp; flat_mm)
         views = 1200,
         rotation_time = 0.5,
         collimation_mm = 5.0,
-        anode_angle = 10,
     )
     return BS.resolve_source_spectrum_without_bowtie(BS.SimOptions(), protocol; scanner)
 end
@@ -3474,11 +3470,11 @@ clinical_check = let
     m2 = [d.crystal2_keV2 / d.n for d in one_dexel]
     cell = MC.energy_absorption_efficiency.(grid_runs.with)
     at(table, x) = MC.interpolate_linear(E, table, x)
-    # the most the whole arc differs from one dexel's cell in section 7's air scans: its angles
-    arc_spread = maximum(
-        abs(sum(scan.energy_keV) / scan.photon_keV / cell[findfirst(==(E), collect(grid_energies))] - 1)
-            for (scan, E) in zip(air_scans, air_energies)
-    )
+    # the whole arc against one cell, from section 7's own air scans: the fan and cone angles (and the
+    # model's arc, not tilted along z) change it a little; interpolated between the scans' energies
+    cell_at(x) = MC.interpolate_linear(collect(grid_energies), cell, clamp(x, 20.0, 140.0))
+    arc_ratio = [sum(s.energy_keV) / s.photon_keV / cell_at(E) for (E, s) in zip(air_energies, air_scans)]
+    ratio_at(x) = MC.interpolate_linear(air_energies, arc_ratio, clamp(x, first(air_energies), last(air_energies)))
     noise(values) = sqrt(sum(abs2, values .- mean(values)) / (length(values) - 1) / length(values))
     map(enumerate(clinical_beams)) do (k, b)
         e, w = b.spectrum.energies_keV, b.spectrum.weights
@@ -3500,9 +3496,8 @@ clinical_check = let
                 direct = dqe_of(chunks),
                 noise = noise([dqe_of([c]) for c in chunks]),
             ),
-            arc_spread,
             arc = (
-                table = sum(w .* e .* [MC.interpolate_linear(collect(grid_energies), cell, clamp(x, 20.0, 140.0)) for x in e]) / sum(w .* e),
+                table = sum(w .* e .* [cell_at(x) * ratio_at(x) for x in e]) / sum(w .* e),
                 direct = arc_of(sum(arcs)),
                 noise = noise(arc_of.(arcs)),
             ),
@@ -3546,7 +3541,7 @@ end
 let
     rows = String[]
     worst = 0.0
-    for c in clinical_check, (name, v, floor) in (("efficiency, one dexel", c.efficiency, 0.002), ("DQE(0), one dexel", c.dqe, 0.003), ("the whole arc", c.arc, 0.002 + c.arc_spread * c.arc.table))
+    for c in clinical_check, (name, v, floor) in (("efficiency, one dexel", c.efficiency, 0.002), ("DQE(0), one dexel", c.dqe, 0.003), ("the whole arc", c.arc, 0.01))
         difference = v.direct - v.table
         allowed = 3v.noise + floor
         pass = abs(difference) <= allowed
@@ -3561,9 +3556,9 @@ let
         $(join(rows, "\n"))
 
         **$(passed) of $(length(rows)) agree.** Allowed: three times the direct simulation's own noise, plus 0.002 for the
-        efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and for the whole arc, whose dexels see the
-        beam at the fan and cone angles that one straight dexel does not, the most section 7 found the whole arc to differ from
-        one dexel's cell: $(round(100clinical_check[1].arc_spread; digits = 1)) %, mostly the outer rows (plus 0.002). Where they agree, the
+        efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and 0.01 for the whole arc, whose prediction is one cell's efficiency
+        times the arc's own excess over it, measured in section 7's air scans and interpolated between their energies: so
+        this checks the spectrum's weighting, not the arc's geometry, which section 7 reports. Where they agree, the
         single-energy table, weighted by any spectrum, is the clinical beam: what BasisSimulator does with it is exact.
         """
     )
@@ -3617,7 +3612,8 @@ by_depth = reshape(
 )
 
 # ╔═╡ 55a7667e-c0bc-5685-8ac3-dd8dc1077898
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ ff228af5-db4f-5f96-bdf7-fd9de37b4fea
 saved = let
@@ -3678,7 +3674,7 @@ saved = let
         push!(paths, path)
     end
     paths
-end
+end;
 
 # ╔═╡ c57c863f-8b8d-514b-9a96-a1dac0cd9a41
 # Read them back in BasisSimulator's layout

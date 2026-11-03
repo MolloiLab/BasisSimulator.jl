@@ -1,436 +1,142 @@
 # =============================================================================
-# Monte Carlo Pulse Pileup Model for PCCT Detectors
+# Pulse pile-up of a photon-counting dexel
 # =============================================================================
 #
-# Author: Hamidreza Khodajou-Chokami, PhD. (original PR #10)
-# Per-photon trigger-bin tracking added in 2026 cleanup so the resulting
-# spectral migration matrix S is non-degenerate and column-sums encode
-# count loss directly.
-#
-# This file provides the building blocks for Monte Carlo dead-time pile-up
-# simulation:
-#   1. `simulate_pulse_train`   — one MC trial: Poisson arrivals → spectrum
-#                                 sampling → dead-time gating with energy
-#                                 summation; returns per-event recorded
-#                                 energies + the bin of the photon that
-#                                 triggered each event.
-#   2. `compute_mc_pileup_matrix` — averages many trials into the (true_bin →
-#                                  recorded_bin) migration matrix S.
-#                                  S[i, j] = P(true bin-j photon recorded in
-#                                  bin i). Column sums ≤ 1, the deficit being
-#                                  the count-loss for bin-j photons that piled
-#                                  up into other events.
-#
-# `simulate!(::PCCTWorkspace)` (see `src/api/driver.jl`) caches S in the
-# workspace at construction time and applies it as `recorded = S × counts`,
-# combined with a renormalized I0 baseline `I0_recorded = S × I0_truth`.  There is
-# no analytical count-factor / Taguchi model.
-#
-# References:
-# - Taguchi 2010, Med Phys 37:3957-3969 (analytical pileup model — superseded)
-# - Yang 2025, Med Phys 52:3658-3674 (seminonparalyzable model)
-# - Zambon & Amato 2023, Front Phys 11:1205638 (retrigger model)
+# The pile-up model fitted in BasisMonteCarlo notebook 03 (section 10) to the count loss of two
+# clinical NAEOTOM Alphas (Li et al. 2025, Med Phys 52:e70045), re-implemented from its saved
+# inputs (`pcct_native_table().pileup`): each photon makes `pulses_per_photon` pulses in a dexel
+# (charge sharing gives a dexel pulses from its neighbours' photons too) with heights
+# `heights[E, h]`; every pulse is a first-order CR-RC shape of FWHM `shaper_fwhm_ns`; pulses that
+# overlap add; one retriggering comparator per threshold counts every peak of the summed signal
+# above its threshold at least `dead_time_ns` after its own last count. Each dexel piles up on its
+# own: a 2 × 2 binned pixel is the digital sum of four counters, each at a quarter of its rate.
 # =============================================================================
 
 using Random
 
-"""
-    PileupResult
+const _PILEUP_MATRIX_CACHE = Dict{UInt64, Matrix{Float64}}()
+const _PILEUP_MATRIX_LOCK = ReentrantLock()
 
-Result from a single MC pulse train simulation.
-
-# Fields
-- `n_true::Int`: Number of true photons arriving at detector
-- `n_recorded::Int`: Number of recorded events (after pileup/dead-time)
-- `true_energies::Vector{Float64}`: Energies of arriving photons [keV]
-- `recorded_energies::Vector{Float64}`: Energies of recorded events [keV]
-- `true_bin_counts::Vector{Int}`: Photon counts per energy bin (true)
-- `recorded_bin_counts::Vector{Int}`: Photon counts per energy bin (recorded)
-- `trigger_bins::Vector{Int}`: For each recorded event, the bin of the
-  *triggering* photon (the first photon to break dead time).  Photons that
-  pile up afterwards contribute energy to the event but do not get their own
-  trigger entry — that is the count-loss mechanism.  Used by
-  `compute_mc_pileup_matrix` to build a non-degenerate (true → recorded)
-  migration matrix.  `0` indicates a sub-threshold trigger.
-"""
-struct PileupResult
-    n_true::Int
-    n_recorded::Int
-    true_energies::Vector{Float64}
-    recorded_energies::Vector{Float64}
-    true_bin_counts::Vector{Int}
-    recorded_bin_counts::Vector{Int}
-    trigger_bins::Vector{Int}
-end
+# A first-order CR-RC pulse of unit height: (x/τ)·e^{1 − x/τ}, whose FWHM is 2.4464 τ.
+const _CRRC_FWHM_PER_TAU = 2.446386
+@inline _crrc(x::Float64, τ::Float64) = x <= 0 ? 0.0 : (x / τ) * exp(1 - x / τ)
 
 """
-    simulate_pulse_train(spectrum_weights, energies, count_rate, dead_time_ns;
-                          observation_time_s=1e-3,
-                          model=:seminonparalyzable,
-                          f_retrigger=0.3,
-                          thresholds_keV=[20.0, 35.0, 55.0, 70.0],
-                          rng=Random.default_rng()) -> PileupResult
+    compute_mc_pileup_matrix(thresholds_keV, spectrum_weights, energies, count_rate,
+                             dead_time_ns; n_pulses = 200_000, seed = 42) -> Matrix
 
-Simulate a single pulse train with dead-time effects and pileup.
-
-Generates Poisson-distributed photon arrival times for one pixel, assigns
-energies from the incident spectrum, and applies dead-time gating with
-energy summation for piled-up events.
-
-# Arguments
-- `spectrum_weights`: Normalized spectral weights (probability per energy bin)
-- `energies`: Energy values in keV corresponding to weights
-- `count_rate`: True photon count rate [photons/s per pixel]
-- `dead_time_ns`: Detector dead time [nanoseconds]
-
-# Keyword Arguments
-- `observation_time_s`: Duration to simulate [seconds] (default: 1 ms)
-- `model`: Dead-time model — `:nonparalyzable` or `:seminonparalyzable`
-- `f_retrigger`: Retrigger probability for seminonparalyzable (default: 0.3)
-- `thresholds_keV`: Energy thresholds for binning
-- `rng`: Random number generator
-
-# Returns
-- `PileupResult` with true and recorded counts per bin
-"""
-function simulate_pulse_train(
-    spectrum_weights::AbstractVector{<:Real},
-    energies::AbstractVector{<:Real},
-    count_rate::Real,
-    dead_time_ns::Real;
-    observation_time_s::Real=1e-3,
-    model::Symbol=:seminonparalyzable,
-    f_retrigger::Float64=0.3,
-    thresholds_keV::AbstractVector{<:Real}=[20.0, 35.0, 55.0, 70.0],
-    rng::AbstractRNG=Random.default_rng()
-)
-    τ_s = Float64(dead_time_ns) * 1e-9  # Dead time in seconds
-    rate = Float64(count_rate)
-    T_obs = Float64(observation_time_s)
-    n_thresh = length(thresholds_keV)
-
-    # Normalize spectrum weights to probability distribution
-    w = Float64.(spectrum_weights)
-    w_sum = sum(w)
-    if w_sum > 0.0
-        w ./= w_sum
-    else
-        w .= 1.0 / length(w)
-    end
-
-    # Build cumulative distribution for energy sampling
-    E_vals = Float64.(energies)
-    cdf = cumsum(w)
-
-    # Generate Poisson number of photons in observation window
-    expected_count = rate * T_obs
-    n_photons = Poisson_approx(rng, expected_count)
-
-    if n_photons == 0
-        return PileupResult(0, 0,
-            Float64[], Float64[],
-            zeros(Int, n_thresh), zeros(Int, n_thresh),
-            Int[])
-    end
-
-    # Generate arrival times (sorted uniform in [0, T_obs])
-    # Explicitly create Vector to avoid scalar dispatch when n_photons=1
-    arrival_times = Vector{Float64}(undef, n_photons)
-    for i in 1:n_photons
-        arrival_times[i] = rand(rng) * T_obs
-    end
-    sort!(arrival_times)
-
-    # Sample photon energies from spectrum
-    photon_energies = Vector{Float64}(undef, n_photons)
-    for i in 1:n_photons
-        u = rand(rng)
-        idx = searchsortedfirst(cdf, u)
-        idx = clamp(idx, 1, length(E_vals))
-        photon_energies[i] = E_vals[idx]
-    end
-
-    # Apply dead-time gating and pileup.
-    # `trigger_bins[k]` records the bin of the photon that triggered event k
-    # (the photon that broke dead time). Photons that pile up onto an
-    # already-open event contribute energy but do NOT seed a new trigger —
-    # that is the count-loss mechanism.
-    recorded_energies = Float64[]
-    trigger_bins      = Int[]
-    it = 1
-    while it <= n_photons
-        # This photon triggers an event
-        event_energy = photon_energies[it]
-        event_time   = arrival_times[it]
-        trigger_bin  = _find_threshold_bin(event_energy, thresholds_keV)
-
-        if model == :seminonparalyzable
-            # Seminonparalyzable: dead time can be retriggered
-            dead_end = event_time + τ_s
-            jt = it + 1
-            while jt <= n_photons && arrival_times[jt] < dead_end
-                # This photon arrives during dead time → pileup (energy adds)
-                event_energy += photon_energies[jt]
-                # Check retrigger: with probability f_retrigger, dead time resets
-                if rand(rng) < f_retrigger
-                    dead_end = arrival_times[jt] + τ_s
-                end
-                jt += 1
-            end
-            push!(recorded_energies, event_energy)
-            push!(trigger_bins, trigger_bin)
-            it = jt
-        else
-            # Nonparalyzable: fixed dead time, no retrigger
-            dead_end = event_time + τ_s
-            jt = it + 1
-            while jt <= n_photons && arrival_times[jt] < dead_end
-                event_energy += photon_energies[jt]
-                jt += 1
-            end
-            push!(recorded_energies, event_energy)
-            push!(trigger_bins, trigger_bin)
-            it = jt
-        end
-    end
-
-    # Bin true and recorded photons
-    true_bins = zeros(Int, n_thresh)
-    rec_bins  = zeros(Int, n_thresh)
-
-    for E in photon_energies
-        b = _find_threshold_bin(E, thresholds_keV)
-        if b > 0
-            true_bins[b] += 1
-        end
-    end
-
-    for E in recorded_energies
-        b = _find_threshold_bin(E, thresholds_keV)
-        if b > 0
-            rec_bins[b] += 1
-        end
-    end
-
-    return PileupResult(
-        n_photons, length(recorded_energies),
-        photon_energies, recorded_energies,
-        true_bins, rec_bins,
-        trigger_bins,
-    )
-end
-
-"""
-    _find_threshold_bin(E, thresholds) -> Int
-
-Find which energy bin a photon with energy E belongs to.
-Returns 0 if below lowest threshold.
-"""
-function _find_threshold_bin(E::Float64, thresholds::AbstractVector{<:Real})
-    n = length(thresholds)
-    if E < thresholds[1]
-        return 0
-    end
-    for b in n:-1:1
-        if E >= thresholds[b]
-            return b
-        end
-    end
-    return 0
-end
-
-"""
-    Poisson_approx([rng], λ) -> Int
-
-Draw from a Poisson distribution by inverse CDF for small λ, Gaussian approximation for large λ.
-
-`rng` must be passed by anything that promises reproducibility: without it this draws from the
-global stream, and `simulate_pulse_train` — which chooses its photon count here — would give a
-different pulse train on every call despite being handed a seeded generator.
-"""
-function Poisson_approx(rng::AbstractRNG, λ::Float64)
-    if λ <= 0.0
-        return 0
-    elseif λ < 30.0
-        # Knuth's algorithm for small λ
-        L = exp(-λ)
-        k = 0
-        p = 1.0
-        while true
-            k += 1
-            p *= rand(rng)
-            if p < L
-                return k - 1
-            end
-        end
-    else
-        # Gaussian approximation for large λ
-        return max(0, round(Int, λ + sqrt(λ) * randn(rng)))
-    end
-end
-
-Poisson_approx(λ::Float64) = Poisson_approx(Random.default_rng(), λ)
-
-"""
-    compute_mc_pileup_matrix(thresholds_keV, spectrum_weights, energies,
-                              count_rate, dead_time_ns;
-                              n_trials=10000,
-                              observation_time_s=1e-3,
-                              model=:seminonparalyzable,
-                              seed=42) -> Matrix{Float64}
-
-Compute the spectral-migration matrix `S` from Monte Carlo pulse-train
-simulations.  `S[i, j]` = fraction of true bin-`j` photons that end up
-recorded in bin `i`.  Column sums are ≤ 1 — the column-`j` deficit is the
-count-loss for bin-`j` photons that fell during another event's dead time
-and contributed energy without seeding a recorded event of their own.
-
-# Algorithm
-For each MC trial we run `simulate_pulse_train` (Poisson arrivals →
-spectrum-CDF energies → dead-time gating with energy summation), and the
-trial result links each recorded event to the bin of its *triggering*
-photon (the one that broke dead time). We accumulate
-`transition_counts[recorded_bin, trigger_bin] += 1` per event, count every
-incident photon in `total_true[bin]`, and divide column-wise:
-`S[i, j] = transition_counts[i, j] / total_true[j]`.
-
-This is non-degenerate by construction (each column reflects what happens
-to the photons of a specific true bin) and obeys the physical asymmetry
-that pile-up can only push counts UP in energy (S[i, j] ≈ 0 for i < j).
-
-# Arguments
-- `thresholds_keV`: Energy threshold values [keV]
-- `spectrum_weights`: Normalized spectral weights
-- `energies`: Energy values [keV]
-- `count_rate`: True photon count rate [photons/s per pixel]
-- `dead_time_ns`: Detector dead time [ns]
-
-# Keyword Arguments
-- `n_trials`: Number of MC pulse trains to simulate (default: 10000)
-- `observation_time_s`: Duration per trial (default: 1 ms)
-- `model`: `:nonparalyzable` or `:seminonparalyzable`
-- `seed`: Random seed for reproducibility
-
-# Returns
-- `Matrix{Float64}`: [n_bins × n_bins] spectral migration matrix
-
-# Example
-```julia
-energies, weights = load_spectrum(120)
-S = compute_mc_pileup_matrix(
-    [20.0, 35.0, 55.0, 70.0],
-    weights, energies,
-    1e8, 5.0;   # 100 Mcps, 5 ns dead time
-    n_trials=50000
-)
-```
+The pile-up of one dexel at `count_rate` incident photons per second, as the migration matrix of
+its energy bins: `S[i, j]`, the counts recorded in bin `i` per count of bin `j` at zero rate. A
+pulse train of `n_pulses` pulses from the spectrum (`spectrum_weights` on `energies`) runs
+through the shaper and one retriggering comparator per threshold with dead time
+`dead_time_ns`; each count is charged to the bin of the pulse that dominates its peak. Columns
+sum to less than one: piled-up pulses are lost, or counted in a higher bin. Memoised per
+argument set ([`empty_pileup_cache!`](@ref)).
 """
 function compute_mc_pileup_matrix(
-    thresholds_keV::AbstractVector{<:Real},
-    spectrum_weights::AbstractVector{<:Real},
-    energies::AbstractVector{<:Real},
-    count_rate::Real,
-    dead_time_ns::Real;
-    n_trials::Int=10000,
-    observation_time_s::Real=1e-3,
-    model::Symbol=:seminonparalyzable,
-    seed::Int=42
-)
-    # The matrix is a pure function of its arguments — every draw inside goes through the
-    # `MersenneTwister(seed)` below, including the per-trial photon count, which used to come
-    # from the global stream and made this irreproducible. The 5000-trial Monte Carlo costs
-    # ~17 s, 93 % of building a photon-counting workspace, so it is memoised for the life of the
-    # process; callers get a copy they may mutate.
-    key = hash((
-        Float64.(thresholds_keV), Float64.(spectrum_weights), Float64.(energies),
-        Float64(count_rate), Float64(dead_time_ns), n_trials, Float64(observation_time_s),
-        model, seed,
-    ))
+        thresholds_keV::AbstractVector{<:Real},
+        spectrum_weights::AbstractVector{<:Real},
+        energies::AbstractVector{<:Real},
+        count_rate::Real,
+        dead_time_ns::Real;
+        n_pulses::Integer = 200_000,
+        seed::Integer = 42,
+    )
+    key = hash(
+        (
+            Float64.(thresholds_keV), Float64.(spectrum_weights), Float64.(energies),
+            Float64(count_rate), Float64(dead_time_ns), n_pulses, seed,
+        )
+    )
     cached = lock(() -> get(_PILEUP_MATRIX_CACHE, key, nothing), _PILEUP_MATRIX_LOCK)
     cached === nothing || return copy(cached)
 
-    rng = MersenneTwister(seed)
-    n_bins = length(thresholds_keV)
-    thresh = Float64.(thresholds_keV)
-
-    # ─── Safety guard: cap expected photons per trial ───────────────────────
-    # `simulate_pulse_train` allocates `Vector{Float64}` of length `n_photons`
-    # for arrival times and energies.  If the user passes an unrealistic
-    # `count_rate` (e.g. a synthetic test scanner with overwhelming mAs/view),
-    # `expected_count = count_rate × observation_time` can blow up to 10¹¹+
-    # photons per trial, requiring hundreds of GB to allocate the arrival-time
-    # vector.  Shrink `observation_time` so each trial samples no more than
-    # ~10⁶ photons; MC statistics still converge over `n_trials`.
-    MAX_PHOTONS_PER_TRIAL = 1.0e6
-    obs_time_s = Float64(observation_time_s)
-    expected = Float64(count_rate) * obs_time_s
-    if expected > MAX_PHOTONS_PER_TRIAL
-        scale       = MAX_PHOTONS_PER_TRIAL / expected
-        obs_time_s *= scale
-        @warn """
-        compute_mc_pileup_matrix: expected $(round(expected; sigdigits=3)) photons
-        per trial at count_rate=$(count_rate) photons/s — would cause arrival-
-        time vector to blow up. Shrunk observation_time_s from $(observation_time_s)
-        to $(obs_time_s) so each trial samples ≤ $(MAX_PHOTONS_PER_TRIAL) photons.
-        MC statistics still converge across $(n_trials) trials.
-        """ maxlog=1
-    end
-
-    # transition_counts[i, j] tallies (true bin j → recorded bin i) events.
-    # total_true[j] tallies every incident bin-j photon, including those that
-    # fell in a dead-time window — the deficit gives count-loss naturally.
-    transition_counts = zeros(Float64, n_bins, n_bins)
-    total_true        = zeros(Float64, n_bins)
-
-    for trial in 1:n_trials
-        result = simulate_pulse_train(
-            spectrum_weights, energies, count_rate, dead_time_ns;
-            observation_time_s = obs_time_s,
-            model = model,
-            thresholds_keV = thresh,
-            rng = rng,
+    pu = pcct_native_table().pileup
+    thr = Float64.(thresholds_keV)
+    nb = length(thr)
+    w = _table_weights(pu.energies, energies, spectrum_weights)
+    H = vec(sum(w .* pu.heights; dims = 1))                 # pulses per photon, per height bin
+    per_photon = sum(H)
+    rate_ns = Float64(count_rate) * per_photon * 1.0e-9     # pulses per ns
+    S = Matrix{Float64}(I, nb, nb)
+    if rate_ns > 0 && per_photon > 0
+        S = _comparator_migration(
+            thr, H ./ per_photon, pu.edges, rate_ns, Float64(dead_time_ns),
+            pu.shaper_fwhm_ns / _CRRC_FWHM_PER_TAU, Int(n_pulses), MersenneTwister(seed),
         )
-
-        # Every incident photon counts toward the true-bin denominator.
-        for b in 1:n_bins
-            total_true[b] += result.true_bin_counts[b]
-        end
-
-        # Each recorded event has a known triggering-photon bin AND a known
-        # recorded bin (computed from the energy-summed event energy).  Bin
-        # the migration directly: trigger_bin → recorded_bin += 1.
-        for k in 1:result.n_recorded
-            trig_b = result.trigger_bins[k]
-            rec_b  = _find_threshold_bin(result.recorded_energies[k], thresh)
-            if trig_b > 0 && rec_b > 0
-                transition_counts[rec_b, trig_b] += 1.0
-            end
-        end
-    end
-
-    # Normalize column-wise: S[i, j] = N_recorded(j → i) / N_true(j).
-    S = zeros(Float64, n_bins, n_bins)
-    for j in 1:n_bins
-        if total_true[j] > 0.0
-            for i in 1:n_bins
-                S[i, j] = transition_counts[i, j] / total_true[j]
-            end
-        else
-            S[j, j] = 1.0  # No data for true bin j → fall back to identity column
-        end
     end
     lock(() -> (_PILEUP_MATRIX_CACHE[key] = copy(S)), _PILEUP_MATRIX_LOCK)
     return S
 end
 
-const _PILEUP_MATRIX_CACHE = Dict{UInt64, Matrix{Float64}}()
-const _PILEUP_MATRIX_LOCK = ReentrantLock()
+# The pulse train: arrival times, heights and their bins; the summed signal's peaks, each
+# charged to its dominant pulse; one comparator per threshold.
+function _comparator_migration(thr, p_height, edges, rate_ns, dead_ns, τ, n, rng)
+    nb = length(thr)
+    cdf = cumsum(p_height)
+    centres = (edges[1:(end - 1)] .+ edges[2:end]) ./ 2
+    t = cumsum(randexp(rng, n) ./ rate_ns)
+    h = [centres[min(searchsortedfirst(cdf, rand(rng) * cdf[end]), length(centres))] for _ in 1:n]
+    bin_of(x) = searchsortedlast(thr, x)                    # 0 below the lowest threshold
+    truth = zeros(nb)
+    for x in h
+        b = bin_of(x)
+        b > 0 && (truth[b] += 1)
+    end
+
+    reach = 10τ                                             # a pulse is spent after 10 τ
+    dt = τ / 16
+    peaks_t, peaks_s, peaks_bin = Float64[], Float64[], Int[]
+    i = 1
+    while i <= n
+        j = i                                               # the cluster of overlapping pulses
+        while j < n && t[j + 1] - t[j] < reach
+            j += 1
+        end
+        lo = i
+        s_prev2, s_prev, peak_dom = -Inf, -Inf, 0
+        for x in t[i]:dt:(t[j] + reach)
+            while lo <= j && x - t[lo] > reach
+                lo += 1
+            end
+            s, best, dom = 0.0, -1.0, 0
+            for k in lo:j
+                t[k] > x && break
+                c = h[k] * _crrc(x - t[k], τ)
+                s += c
+                c > best && (best = c; dom = k)
+            end
+            if s_prev > s_prev2 && s_prev >= s && s_prev > 0
+                push!(peaks_t, x - dt)
+                push!(peaks_s, s_prev)
+                push!(peaks_bin, peak_dom)
+            end
+            s_prev2, s_prev = s_prev, s
+            peak_dom = dom > 0 ? bin_of(h[dom]) : 0
+        end
+        i = j + 1
+    end
+
+    C = zeros(nb, nb)                                       # counts at comparator k, by bin
+    for k in 1:nb
+        last = -Inf
+        for (x, s, b) in zip(peaks_t, peaks_s, peaks_bin)
+            (s > thr[k] && x - last >= dead_ns) || continue
+            last = x
+            b > 0 && (C[k, b] += 1)
+        end
+    end
+    S = zeros(nb, nb)
+    for j in 1:nb
+        truth[j] > 0 || (S[j, j] = 1; continue)
+        for i in 1:nb
+            S[i, j] = (C[i, j] - (i < nb ? C[i + 1, j] : 0.0)) / truth[j]
+        end
+    end
+    return S
+end
 
 "Forget every memoised pile-up migration matrix (see [`compute_mc_pileup_matrix`](@ref))."
 empty_pileup_cache!() = lock(() -> (empty!(_PILEUP_MATRIX_CACHE); nothing), _PILEUP_MATRIX_LOCK)
 
-# =============================================================================
-# Exports
-# =============================================================================
-
-export PileupResult, simulate_pulse_train, compute_mc_pileup_matrix, empty_pileup_cache!
+export compute_mc_pileup_matrix, empty_pileup_cache!

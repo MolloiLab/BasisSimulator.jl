@@ -1562,6 +1562,7 @@ readout = MC.DexelEnergyReadout(
         pitch_y_mm = pitch_mm[2],
         neighborhood = 3,
         cloud_sigma_um = 0.01,
+        transport = nothing,  # a scintillator: each dexel keeps the energy left in its own ceramic
     ),
 )
 
@@ -2381,20 +2382,16 @@ ceiling on the efficiency, and at high energy the table reaches it.
 table = MC.BASISSIMULATOR_V0_15_1_EFFICIENCY.ufc_flash
 
 # ╔═╡ a4b69209-db1a-47bc-8435-58654e47a56d
-# Is BasisMonteCarlo's copy the table the installed BasisSimulator uses? Up to v0.15.1 it must be,
-# exactly; from v0.16.0 BasisSimulator uses this notebook's table, and the copy stands alone
+# Does the installed BasisSimulator still use v0.15.1's table? Either way the comparisons below use
+# BasisMonteCarlo's verbatim copy of it, so they do not change with BasisSimulator's version
 let
     installed = pkgversion(BS)
     same = isdefined(BS, :UFC_FLASH_MC_EFFICIENCY_LUT) &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies == table.energies &&
         BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency == table.efficiency
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), uses exactly this table." :
-            "✗ **The installed BasisSimulator, v$(installed), has a different table from BasisMonteCarlo's copy of v0.15.1's.** Check `BASISSIMULATOR_V0_15_1_EFFICIENCY` against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), uses exactly this table." :
         "The installed BasisSimulator is v$(installed), which no longer uses this table. The comparisons below are with BasisSimulator v0.15.1's table, which BasisMonteCarlo keeps (`BASISSIMULATOR_V0_15_1_EFFICIENCY`): they do not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -3231,7 +3228,6 @@ function flash_spectrum(kVp; tin_mm = 0.0, flat_mm = 8.4)
         views = 1160,
         rotation_time = 0.5,
         collimation_mm = 4.8,
-        anode_angle = 8,
         additional_filters = filters,
     )
     return BS.resolve_source_spectrum_without_bowtie(BS.SimOptions(), protocol; scanner)
@@ -3878,7 +3874,8 @@ by_depth = reshape(
 )
 
 # ╔═╡ 1394fdc2-d531-5449-9aa0-1264ec197dcc
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ 096f1101-d468-50fd-b476-a105db66af80
 saved = let
@@ -3912,7 +3909,7 @@ saved = let
     )
     Serialization.serialize(path, contents)
     path
-end
+end;
 
 # ╔═╡ ccd89431-c3da-5885-bd96-2e1c6ddcbbff
 # Read it back in BasisSimulator's layout

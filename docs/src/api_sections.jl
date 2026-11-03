@@ -94,7 +94,9 @@ cupping correction, PCCT pile-up correction, and the calibration helpers.
 Both detector families use Monte Carlo–derived response models. The energy-integrating (EICT)
 path uses per-energy efficiency lookup tables, fill factor, optical crosstalk and lag. The
 photon-counting (PCCT) path uses the full detector response matrix and the pile-up model.
-Scatter estimation and injection are also here.
+Patient scatter is the Geant4 scatter library (BasisMonteCarlo's kernels, one artifact per
+scanner, `scatter_kernels`) superposed on each acquisition's own rays, and its correction from the
+measured data.
 """),
     (id = "constants", title = "Constants & labels", intro = """
 The semantic region labels that the built-in phantom masks store (air, water, the Gammex 472

@@ -1550,6 +1550,7 @@ readout = MC.DexelEnergyReadout(
         pitch_y_mm = pitch_mm[2],
         neighborhood = 3,
         cloud_sigma_um = 0.01,
+        transport = nothing,  # a scintillator: each dexel keeps the energy left in its own ceramic
     ),
 )
 
@@ -2496,20 +2497,16 @@ the efficiency.
 table = MC.BASISSIMULATOR_V0_15_1_EFFICIENCY.gemstone
 
 # ╔═╡ e165adb1-2895-48f3-b063-326d1ef88539
-# Is BasisMonteCarlo's copy the table the installed BasisSimulator uses? Up to v0.15.1 it must be,
-# exactly; from v0.16.0 BasisSimulator uses this notebook's table, and the copy stands alone
+# Does the installed BasisSimulator still use v0.15.1's table? Either way the comparisons below use
+# BasisMonteCarlo's verbatim copy of it, so they do not change with BasisSimulator's version
 let
     installed = pkgversion(BS)
     same = isdefined(BS, :GEMSTONE_MC_EFFICIENCY_LUT) &&
         BS.GEMSTONE_MC_EFFICIENCY_LUT.energies == table.energies &&
         BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency == table.efficiency
-    message = if installed <= v"0.15.1"
-        same ?
-            "✓ The installed BasisSimulator, v$(installed), uses exactly this table." :
-            "✗ **The installed BasisSimulator, v$(installed), has a different table from BasisMonteCarlo's copy of v0.15.1's.** Check `BASISSIMULATOR_V0_15_1_EFFICIENCY` against BasisSimulator v0.15.1."
-    else
+    message = same ?
+        "✓ The installed BasisSimulator, v$(installed), uses exactly this table." :
         "The installed BasisSimulator is v$(installed), which no longer uses this table. The comparisons below are with BasisSimulator v0.15.1's table, which BasisMonteCarlo keeps (`BASISSIMULATOR_V0_15_1_EFFICIENCY`): they do not change with BasisSimulator's version."
-    end
     Markdown.parse(message)
 end
 
@@ -3973,7 +3970,8 @@ by_depth = reshape(
 )
 
 # ╔═╡ 3e1c3140-a3e4-5297-9faa-a403a0c3482d
-table_dir = joinpath(@__DIR__, "..", "..", "tables")
+# The machine path stays out of the rendered page
+table_dir = joinpath(@__DIR__, "..", "..", "tables");
 
 # ╔═╡ 2ba11eeb-f02c-5028-8c7b-3ec4edc3219d
 saved = let
@@ -4009,7 +4007,7 @@ saved = let
     )
     Serialization.serialize(path, contents)
     path
-end
+end;
 
 # ╔═╡ fe7f4f17-2218-5691-8c95-15a0e171c1ce
 # Read it back in BasisSimulator's layout
