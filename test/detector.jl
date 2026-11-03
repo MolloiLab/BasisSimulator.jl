@@ -15,7 +15,7 @@
 #                          quantum_efficiency(+vector), get_detector_material_*,
 #                          spatial_bin!
 #   pcct/mc_response.jl  → load_mc_response, compute_mc_drm, mc_cumulative_to_bins
-#   pcct/mc_pileup.jl    → compute_mc_pileup_matrix, pileup_counts!
+#   pcct/mc_pileup.jl    → compute_mc_pileup_matrix
 #   pcct/native_table.jl → pcct_event_classes, pcct_count!
 #
 # Coverage policy: every exported symbol from src/detector/ is exercised with
@@ -410,6 +410,25 @@ end
     @test draw(7) != draw(8)
 end
 
+@testset "_poisson_draw — the device's Float32 sampler on counter-based streams" begin
+    # the acceptance test's log-pmf keeps Float32 exact where the counts are large
+    for (k, λ) in ((15, 12.0), (21, 30.0), (1.0e4 + 37, 1.0e4), (1.0e5 - 410, 1.0e5), (1.0e6 + 900, 1.0e6))
+        exact = k * log(λ) - λ - BS._log_factorial(Int(k))
+        @test BS._log_poisson_pmf(Float32(k), Float32(λ)) ≈ exact atol = 2.0e-3
+    end
+    for λ in (0.5f0, 9.9f0, 10.1f0, 50.0f0, 1.0f4, 2.0f5)
+        s = [first(BS._poisson_draw(BS._DrawStream(UInt64(3), 1, i, 1, 1), λ)) for i in 1:200_000]
+        @test all(x -> x >= 0 && isinteger(x), s)
+        @test mean(Float64.(s)) ≈ λ rtol = 0.01
+        @test std(Float64.(s))^2 ≈ λ rtol = 0.02
+        z = (s .- mean(s)) ./ std(s)
+        @test mean(Float64.(z) .^ 3) ≈ 1 / sqrt(λ) atol = 0.03
+    end
+    # a stream is a pure function of its key
+    @test BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 77.0f0) == BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 77.0f0)
+    @test first(BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 1.0f4)) != first(BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 6), 1.0f4))
+end
+
 @testset "pcct_count!: Poisson dexels, shared photons covary, the digital sum is over-dispersed" begin
     e, w = BS.resolve_source_spectrum_without_bowtie(
         BS.SimOptions(), BS.CTProtocol(kVp = 120.0, mAs = 100.0, views = 10); scanner = BS.NAEOTOM_ALPHA,
@@ -435,8 +454,17 @@ end
         p.c1 for p in classes.pairs if (p.dx, p.dy) in ((1, 0), (0, 1), (1, 1), (1, -1)) &&
             !(p.dx == 1 && p.dy == -1)
     ) + 2 * sum(p.c1 for p in classes.pairs if (p.dx, p.dy) == (1, -1))
-    binned = BS._digital_sum(d, 2)
+    a2, b2 = (BS.pcct_count!([zeros(32, 32, 40)], expected, classes; seed, binning = 2)[1] for seed in (1, 2))
+    @test sum(a2) == sum(a)                                  # the same dexels, summed
+    binned = (a2 .- b2) ./ sqrt(2)
     @test sum(abs2, binned) / length(binned) / (4λ) ≈ 1 + inside / 2 atol = 0.03
+    # in Float32 (the device's precision) the same statistics
+    a32 = BS.pcct_count!([zeros(Float32, 64, 64, 40)], [fill(Float32(λ), 64, 64, 40)], classes; seed = 1)[1]
+    b32 = BS.pcct_count!([zeros(Float32, 64, 64, 40)], [fill(Float32(λ), 64, 64, 40)], classes; seed = 2)[1]
+    d32 = (a32 .- b32) ./ sqrt(2)
+    @test sum(Float64, a32) / length(a32) ≈ λ rtol = 2.0e-3
+    @test sum(abs2, d32) / length(d32) / λ ≈ 1 atol = 0.02
+    @test sum(d32[1:(end - 1), :, :] .* d32[2:end, :, :]) / sum(abs2, d32[1:(end - 1), :, :]) ≈ shared_x atol = 0.01
     @test_throws ArgumentError BS.pcct_event_classes([22.0], e, w)    # not among the table's
 end
 
@@ -456,9 +484,8 @@ end
     # the loss grows with the rate × dead time
     S2 = BS.compute_mc_pileup_matrix(thresholds, w, e, 1.0e7, 27.0; seed = 3)
     @test sum(S2) < sum(S)
-    # pileup_counts!: an air dexel at the grid's top rate takes the top matrix
-    I0 = fill(1000.0, 2, 2, 4)
-    counts = [fill(1000.0, 2, 2, 1) for _ in 1:4]
-    BS.pileup_counts!(counts, I0, cat(Matrix(1.0I, 4, 4), S; dims = 3), [0.0, 5.0e6], 5.0e6)
-    @test [counts[i][1, 1, 1] for i in 1:4] ≈ S * fill(1000.0, 4)
+    # pcct_count!'s pile-up: an air dexel at the grid's top rate takes the top matrix, before the sum
+    pileup = (S = cat(Matrix(1.0I, 4, 4), S; dims = 3), rates = [0.0, 5.0e6], rate_air = 5.0e6, counts_air = 4000.0)
+    counts = BS.pcct_count!([zeros(1, 1, 1) for _ in 1:4], [fill(1000.0, 2, 2, 1) for _ in 1:4], nothing; binning = 2, pileup)
+    @test [counts[i][1, 1, 1] for i in 1:4] ≈ 4 .* (S * fill(1000.0, 4))
 end

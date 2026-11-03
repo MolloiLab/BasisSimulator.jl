@@ -525,10 +525,10 @@ acquisition = let
     seconds = Dict{Symbol, Float64}()
     # pile-up, calibrated as a scanner does: air scans at rising currents (few views: a rate curve)
     pileup = BS.calibrate_pileup(scanner, BS.CTProtocol(protocol; views = 40), recon_opts;
-        sim_opts = draw_options(; DRAWS[:reference]...))
+        sim_opts = draw_options(; DRAWS[:reference]...), like = phantom.mask)
     # the flat field, as a scanner does it: an air scan at low flux gives each pixel's gain per bin
     flat = BS.calibrate_flat_field(scanner, protocol, recon_opts;
-        sim_opts = draw_options(; DRAWS[:reference]...))
+        sim_opts = draw_options(; DRAWS[:reference]...), like = phantom.mask)
     for name in (:reference, :calibration, :measured)     # the noise-free draw first: it projects
         opts = draw_options(; DRAWS[name]...)
         t0 = time()

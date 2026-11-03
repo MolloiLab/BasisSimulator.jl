@@ -187,46 +187,128 @@ function pcct_event_classes(thresholds::AbstractVector, energies::AbstractVector
 end
 
 """
-    pcct_count!(counts, expected, classes; seed = nothing)
+    pcct_count!(counts, expected, classes; seed = nothing, binning = 1, pileup = nothing) -> counts
 
-Draw the counts of every native dexel from its expected counts `expected[b][col, row, view]`
-(bins `b`), photon by photon class: each dexel's unshared counts, and for every pair of
-neighbours and class of [`pcct_event_classes`](@ref) one Poisson count added to both. A
-neighbour beyond the detector's edge takes no share: the edge dexel keeps its own. Views are
-drawn in parallel, each from its own stream seeded by `(seed, view)`, so a seed fixes the
-realisation whatever the thread count; `seed = nothing` draws a fresh one.
+Count every native dexel from its expected counts `expected[b][col, row, view]` (bins `b`) and
+sum them digitally, `binning × binning` dexels per pixel, into `counts[b]`; the arrays may live
+on any backend, and one kernel does it all there.
+
+- The noise, photon class by photon class (`classes` from [`pcct_event_classes`](@ref);
+  `nothing` counts the expected counts): each dexel's unshared counts, and for every pair of
+  neighbours and class one Poisson count added to both. A neighbour beyond the detector's edge
+  takes no share: the edge dexel keeps its own.
+- The pile-up of each dexel at its own rate, before the sum (`pileup`, or `nothing`):
+  `(; S, rates, rate_air, counts_air)`, the migration matrices `S[:, :, k]`
+  ([`compute_mc_pileup_matrix`](@ref)) at the count rates `rates` (linear from 0); a dexel's rate
+  is `rate_air` times its counts over `counts_air`, the brightest dexel's air counts.
+
+Every draw has its own counter-based stream, keyed by `(seed, class, dexel, view)`: a seed fixes
+the realisation on a backend whatever the thread count or launch order (`seed = nothing` draws a
+fresh one), and the two dexels of a shared photon draw it alike.
 """
-function pcct_count!(counts::AbstractVector, expected::AbstractVector, classes; seed = nothing)
+function pcct_count!(
+        counts::AbstractVector,
+        expected::AbstractVector,
+        classes;
+        seed = nothing,
+        binning::Integer = 1,
+        pileup = nothing,
+    )
     nb = length(expected)
     nc, nr, nv = size(expected[1])
+    length(counts) == nb || throw(DimensionMismatch("one counts array per bin"))
+    size(counts[1]) == (nc ÷ binning, nr ÷ binning, nv) ||
+        throw(DimensionMismatch("the counts must be the expected counts summed $binning × $binning"))
+    T = eltype(counts[1])
+    device(x) = copyto!(similar(counts[1], eltype(x), size(x)), x)
     base = seed === nothing ? rand(Random.default_rng(), UInt64) : UInt64(seed)
-    Threads.@threads for v in 1:nv
-        rng = Random.Xoshiro(hash((base, v)))
-        for b in 1:nb
-            λ, out, s = expected[b], counts[b], classes.single[b]
-            @inbounds for r in 1:nr, c in 1:nc
-                out[c, r, v] = _poisson_sample(rng, Float64(λ[c, r, v]) * s)
-            end
-        end
-        for p in classes.pairs
-            λ1, λ2, o1, o2 = expected[p.b], expected[p.b2], counts[p.b], counts[p.b2]
-            @inbounds for r in 1:nr, c in 1:nc
-                cn, rn = c + p.dx, r + p.dy
-                if 1 <= cn <= nc && 1 <= rn <= nr
-                    x = _poisson_sample(rng, (λ1[c, r, v] * p.c1 + λ2[cn, rn, v] * p.c2) / 2)
-                    o1[c, r, v] += x
-                    o2[cn, rn, v] += x
-                else
-                    o1[c, r, v] += _poisson_sample(rng, λ1[c, r, v] * p.c1)
-                end
-                # the second dexel of a pair whose first lies beyond the edge
-                cp, rp = c - p.dx, r - p.dy
-                (1 <= cp <= nc && 1 <= rp <= nr) ||
-                    (o2[c, r, v] += _poisson_sample(rng, λ2[c, r, v] * p.c2))
-            end
-        end
+    pairs = if classes === nothing
+        nothing
+    else
+        (
+            dx = device(Int32[p.dx for p in classes.pairs]),
+            dy = device(Int32[p.dy for p in classes.pairs]),
+            b = device(Int32[p.b for p in classes.pairs]),
+            b2 = device(Int32[p.b2 for p in classes.pairs]),
+            c1 = device(T[p.c1 for p in classes.pairs]),
+            c2 = device(T[p.c2 for p in classes.pairs]),
+            single = ntuple(b -> T(classes.single[b]), nb),
+        )
     end
+    pile = if pileup === nothing
+        nothing
+    else
+        (
+            S = device(T.(pileup.S)),
+            r0 = T(pileup.rates[1]),
+            dr = T(pileup.rates[2] - pileup.rates[1]),
+            K = Int32(length(pileup.rates)),
+            scale = T(pileup.rate_air / pileup.counts_air),
+        )
+    end
+    pile === nothing || pile.K >= 2 || throw(ArgumentError("pcct_count!: at least two count rates"))
+    _pcct_count!(Tuple(counts), Tuple(expected), pairs, pile, base, Int32(binning))
     return counts
+end
+
+function _pcct_count!(out::NTuple{NB}, λ::NTuple{NB}, pairs, pile, base, bf) where {NB}
+    nc, nr = Int32.(size(λ[1])[1:2])
+    pixels = CartesianIndices(size(out[1]))
+    AK.foreachindex(out[1]) do idx
+        cb, rb, v = Tuple(pixels[idx])
+        acc = ntuple(_ -> zero(eltype(out[1])), Val(NB))
+        for j in Int32(0):(bf - Int32(1)), i in Int32(0):(bf - Int32(1))
+            c, r = (Int32(cb) - Int32(1)) * bf + Int32(1) + i, (Int32(rb) - Int32(1)) * bf + Int32(1) + j
+            n = pairs === nothing ? ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB)) :
+                _dexel_counts(λ, pairs, base, c, r, v, nc, nr)
+            pile === nothing || (n = _pile_up(n, pile))
+            acc = acc .+ n
+        end
+        map((o, a) -> (@inbounds o[cb, rb, v] = a; nothing), out, acc)
+    end
+    return out
+end
+
+@inline _add_at(n::NTuple{NB}, b, x) where {NB} = ntuple(i -> i == b ? n[i] + x : n[i], Val(NB))
+
+# One dexel's counts in every bin: its unshared counts, then each class it shares with a forward
+# neighbour (`+ (dx, dy)`, counted in bin `b`) and with a backward one (`− (dx, dy)`, in `b2`). A
+# shared photon is the draw of the pair's first dexel, so both dexels draw it alike.
+@inline function _dexel_counts(λ::NTuple{NB}, pairs, base, c, r, v, nc, nr) where {NB}
+    own = ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB))
+    n = ntuple(b -> first(_poisson_draw(_DrawStream(base, b, c, r, v), own[b] * pairs.single[b])), Val(NB))
+    np = Int32(length(pairs.dx))
+    for p in Int32(1):np
+        dx, dy, b, b2 = @inbounds pairs.dx[p], pairs.dy[p], pairs.b[p], pairs.b2[p]
+        c1, c2 = @inbounds pairs.c1[p], pairs.c2[p]
+        cn, rn = c + dx, r + dy
+        rate = if 1 <= cn <= nc && 1 <= rn <= nr
+            fma(own[b], c1, @inbounds(λ[b2][cn, rn, v]) * c2) / 2
+        else
+            own[b] * c1
+        end
+        n = _add_at(n, b, first(_poisson_draw(_DrawStream(base, NB + p, c, r, v), rate)))
+        cp, rp = c - dx, r - dy
+        x = if 1 <= cp <= nc && 1 <= rp <= nr
+            first(_poisson_draw(_DrawStream(base, NB + p, cp, rp, v), fma(@inbounds(λ[b][cp, rp, v]), c1, own[b2] * c2) / 2))
+        else
+            first(_poisson_draw(_DrawStream(base, NB + np + p, c, r, v), own[b2] * c2))
+        end
+        n = _add_at(n, b2, x)
+    end
+    return n
+end
+
+# A dexel's counts piled up at its own rate: `S` linear in rate between the grid's matrices.
+@inline function _pile_up(n::NTuple{NB, T}, pile) where {NB, T}
+    x = clamp((pile.scale * sum(n) - pile.r0) / pile.dr, zero(T), T(pile.K - 1))
+    k = min(unsafe_trunc(Int32, x), pile.K - Int32(2))
+    f = x - k
+    S = pile.S
+    return ntuple(
+        i -> sum(ntuple(j -> @inbounds(((1 - f) * S[i, j, k + 1] + f * S[i, j, k + 2]) * n[j]), Val(NB))),
+        Val(NB),
+    )
 end
 
 # Internal: the simulator's plumbing, reached as `BasisSimulator.pcct_count!` etc. (not exported).

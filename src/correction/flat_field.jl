@@ -74,20 +74,34 @@ function _pcct_dexel_defects(s::PCCTScanner, nc, nr, energies, weights)
     )
 end
 
-# Apply them to expected counts `[b][c, r, v]` against the air counts `I0[c, r, b]`.
-function _apply_pcct_defects!(expected, I0, d)
-    nb = length(expected)
-    for v in axes(expected[1], 3), r in axes(expected[1], 2), c in axes(expected[1], 1)
-        p = -log(max(sum(expected[b][c, r, v] for b in 1:nb), 1.0e-30) / max(sum(@view I0[c, r, :]), 1.0e-30))
-        x = clamp(p / d.p_hard, 0.0, 2.0)
-        for b in 1:nb
-            expected[b][c, r, v] *= d.air[c, r, b] + x * (d.hard[c, r, b] - d.air[c, r, b])
-        end
-    end
+# Apply them to expected counts `[b][c, r, v]` against the air counts `I0[c, r, b]`, in one kernel
+# on the arrays' backend (the factors `d.air`, `d.hard` live there too).
+function _apply_pcct_defects!(expected::AbstractVector, I0, d)
+    _apply_pcct_defects!(Tuple(expected), I0, d.air, d.hard, eltype(expected[1])(d.p_hard))
     return expected
 end
 
-_air_phantom() = Phantom(zeros(UInt8, 4, 4, 2), Dict{Int, Any}(0 => XA.Materials.air), (0.05, 0.05, 0.05))
+function _apply_pcct_defects!(λ::NTuple{NB}, I0, air, hard, p_hard) where {NB}
+    dexels = CartesianIndices(size(λ[1]))
+    AK.foreachindex(λ[1]) do idx
+        c, r, v = Tuple(dexels[idx])
+        e = ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB))
+        a = sum(ntuple(b -> @inbounds(I0[c, r, b]), Val(NB)))
+        tiny = oftype(p_hard, 1.0e-30)
+        x = clamp(-log(max(sum(e), tiny) / max(a, tiny)) / p_hard, zero(p_hard), oftype(p_hard, 2))
+        for b in 1:NB
+            @inbounds λ[b][c, r, v] = e[b] * (air[c, r, b] + x * (hard[c, r, b] - air[c, r, b]))
+        end
+    end
+    return λ
+end
+
+# The calibrations' air scans run on the backend of `like`, an array such as the scan's own
+# `phantom.mask` (`simulate!` runs where the phantom's mask lives).
+_air_phantom(like::AbstractArray) =
+    Phantom(fill!(similar(like, UInt8, 4, 4, 2), 0x00), Dict{Int, Any}(0 => XA.Materials.air), (0.05, 0.05, 0.05))
+# The mean over the views of a sinogram, `[cols, rows]`, on the host in Float64.
+_view_mean(x::AbstractArray{<:Real, 3}) = Float64.(Array(dropdims(sum(x; dims = 3); dims = 3))) ./ size(x, 3)
 _calibration_options(o::SimOptions) = SimOptions(o; use_noise = false, use_scatter = false)
 
 """
@@ -103,7 +117,8 @@ struct FlatFieldCalibration{G <: AbstractArray, O}
 end
 
 """
-    calibrate_flat_field(scanner, protocol, recon_opts; sim_opts = SimOptions()) -> FlatFieldCalibration
+    calibrate_flat_field(scanner, protocol, recon_opts; sim_opts = SimOptions(), like = zeros(UInt8, 0))
+        -> FlatFieldCalibration
 
 Calibrate the flat field of `scanner` the way a scanner does it, from simulated air scans
 through the protocol's beam (noise-free: a calibration averages far more views than a scan).
@@ -111,14 +126,23 @@ An energy integrator is scanned at the protocol's current and at a quarter of it
 each dexel's gain from its offset; a photon counter is scanned once, without pile-up (a
 low-flux calibration), and each bin's air counts give its gain. Use it with
 [`apply_flat_field!`](@ref) on scans of the same scanner and protocol.
+
+The scans run on the backend of `like`: pass the scan's `phantom.mask` to calibrate where the scan
+runs (on the GPU, say); the default is the CPU.
 """
-function calibrate_flat_field(scanner::EICTScanner, protocol::CTProtocol, recon_opts; sim_opts::SimOptions = SimOptions())
-    opts, air = _calibration_options(sim_opts), _air_phantom()
+function calibrate_flat_field(
+        scanner::EICTScanner,
+        protocol::CTProtocol,
+        recon_opts;
+        sim_opts::SimOptions = SimOptions(),
+        like::AbstractArray = zeros(UInt8, 0),
+    )
+    opts, air = _calibration_options(sim_opts), _air_phantom(like)
     y = map((protocol, CTProtocol(protocol; mA = protocol.mA / 4))) do p
         ws = create_eict_workspace(scanner, p, opts, recon_opts, air)
         try
             simulate!(ws, air, p, opts; report_dose = false)
-            dropdims(sum(exp.(-Float64.(Array(ws.sinogram))); dims = 3); dims = 3) ./ size(ws.sinogram, 3)
+            _view_mean(exp.(.-ws.sinogram))
         finally
             release_backend!(ws)
         end
@@ -127,14 +151,19 @@ function calibrate_flat_field(scanner::EICTScanner, protocol::CTProtocol, recon_
     return FlatFieldCalibration((4 .* y[1] .- y[2]) ./ 3, (y[2] .- y[1]) ./ 3)
 end
 
-function calibrate_flat_field(scanner::PCCTScanner, protocol::CTProtocol, recon_opts; sim_opts::SimOptions = SimOptions())
-    opts, air = _calibration_options(sim_opts), _air_phantom()
+function calibrate_flat_field(
+        scanner::PCCTScanner,
+        protocol::CTProtocol,
+        recon_opts;
+        sim_opts::SimOptions = SimOptions(),
+        like::AbstractArray = zeros(UInt8, 0),
+    )
+    opts, air = _calibration_options(sim_opts), _air_phantom(like)
     s = PCCTScanner(scanner; pileup = false)
     ws = create_workspace(s, protocol, opts, recon_opts, air)
     try
         bins = simulate!(ws, air, protocol, opts; report_dose = false, capture_raw_counts = false).pcct_sino.bins
-        nv = size(bins[1], 3)
-        gain = cat((dropdims(sum(exp.(-Float64.(Array(b))); dims = 3); dims = 3) ./ nv for b in bins)...; dims = 3)
+        gain = cat((_view_mean(exp.(.-b)) for b in bins)...; dims = 3)
         return FlatFieldCalibration(gain, nothing)
     finally
         release_backend!(ws)
@@ -179,7 +208,7 @@ end
 
 """
     calibrate_pileup(scanner::PCCTScanner, protocol, recon_opts; sim_opts = SimOptions(),
-                     currents = [1/16, 1/8, 1/4, 1/2, 1, 2]) -> PileupCalibration
+                     currents = [1/16, 1/8, 1/4, 1/2, 1, 2], like = zeros(UInt8, 0)) -> PileupCalibration
 
 Calibrate pile-up the way a scanner can, from simulated air scans at the protocol's tube current
 times each of `currents`: the pile-up-free counts of every pixel are the lowest current's,
@@ -187,19 +216,21 @@ scaled linearly with the current, and each bin's ratio of those to the recorded 
 tabulated against the pixel's recorded counts (every pixel and current, binned in log counts).
 Tabulated against the recorded count rate, it serves scans of any view count, so the calibration
 scans may use few views (`CTProtocol(protocol; views = 40)`). Use it with [`apply_pileup!`](@ref).
+The scans run on the backend of `like`, as for [`calibrate_flat_field`](@ref).
 """
 function calibrate_pileup(
         scanner::PCCTScanner, protocol::CTProtocol, recon_opts;
         sim_opts::SimOptions = SimOptions(), currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2],
+        like::AbstractArray = zeros(UInt8, 0),
     )
-    opts, air = _calibration_options(sim_opts), _air_phantom()
+    opts, air = _calibration_options(sim_opts), _air_phantom(like)
     levels = sort(Float64.(collect(currents)))
     counts = map(levels) do x
         p = CTProtocol(protocol; mA = protocol.mA * x)
         ws = create_workspace(PCCTScanner(scanner; pileup = true), p, opts, recon_opts, air)
         try
             r = simulate!(ws, air, p, opts; report_dose = false, capture_raw_counts = true)
-            [dropdims(sum(Float64.(Array(c)); dims = 3); dims = 3) ./ size(c, 3) for c in r.raw_counts]
+            [_view_mean(c) for c in r.raw_counts]
         finally
             release_backend!(ws)
         end
@@ -237,28 +268,33 @@ that bin's counts.
 function apply_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::PileupCalibration, protocol::CTProtocol)
     nb = length(bins)
     size(cal.ratio, 1) == nb == size(I0, 3) || throw(DimensionMismatch("one calibration curve and I0 plane per bin"))
-    host = [Float64.(Array(b)) for b in bins]
-    I0h = Float64.(Array(I0))
-    x, κ = cal.recorded, cal.ratio
-    for v in axes(host[1], 3), r in axes(host[1], 2), c in axes(host[1], 1)
-        n = sum(I0h[c, r, b] * exp(-host[b][c, r, v]) for b in 1:nb) / (protocol.rotation_time / protocol.views)
-        if n <= x[1]
-            i, f = 1, 0.0
-        elseif n >= x[end]
-            i, f = length(x), 0.0
-        else
-            i = searchsortedlast(x, n)
-            f = (n - x[i]) / (x[i + 1] - x[i])
-        end
-        j = min(i + 1, length(x))
-        for b in 1:nb
-            host[b][c, r, v] -= log((1 - f) * κ[b, i] + f * κ[b, j])
-        end
-    end
-    for (b, bin) in enumerate(bins)
-        copyto!(bin, eltype(bin).(host[b]))
-    end
+    T = eltype(bins[1])
+    device(x) = copyto!(similar(bins[1], T, size(x)), T.(Array(x)))
+    _apply_pileup!(Tuple(bins), device(I0), device(cal.recorded), device(cal.ratio), T(protocol.rotation_time / protocol.views))
     return bins
+end
+
+function _apply_pileup!(h::NTuple{NB}, I0, x, κ, time_per_view) where {NB}
+    rays = CartesianIndices(size(h[1]))
+    K = length(x)
+    AK.foreachindex(h[1]) do idx
+        c, r, v = Tuple(rays[idx])
+        n = sum(ntuple(b -> @inbounds(I0[c, r, b] * exp(-h[b][c, r, v])), Val(NB))) / time_per_view
+        i, f = 1, zero(time_per_view)
+        if n >= @inbounds x[K]
+            i = K
+        elseif n > @inbounds x[1]
+            while @inbounds x[i + 1] <= n
+                i += 1
+            end
+            f = @inbounds (n - x[i]) / (x[i + 1] - x[i])
+        end
+        j = min(i + 1, K)
+        for b in 1:NB
+            @inbounds h[b][c, r, v] -= log((1 - f) * κ[b, i] + f * κ[b, j])
+        end
+    end
+    return h
 end
 
 export calibrate_flat_field, apply_flat_field!, calibrate_pileup, apply_pileup!

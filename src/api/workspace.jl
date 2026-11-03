@@ -38,9 +38,6 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # ─── Spatial kernel scratch (GPU-side) ───
     scratch::A3                # ONE buffer for spatial kernels
 
-    # ─── Noise CPU staging (CPU RNG, exact Poisson sampling) ───
-    noise_staging::Array{T, 3}  # CPU buffer for GPU↔CPU noise transfer
-
     # ─── Pre-computed CPU vectors/matrices ───
     R::Matrix{Float64}          # spectral response matrix (n_energies × n_bins)
     R_energies::Vector{Float64} # energy grid for R matrix
@@ -53,12 +50,9 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # forms counts as `I0[col, row, b] · exp(-p)`.
     I0::A3                      # [n_cols, n_rows, n_bins], binned resolution, backend
     I0_all::A2                  # [n_cols, n_rows]: Σ_b I0, the whole-spectrum air response per ray
-    I0_cpu::Array{Float64, 3}   # the same on the host, for the CPU noise draw
+    I0_cpu::Array{Float64, 3}   # the same on the host
     I0_native::Union{Nothing, A3}  # [native cols, native rows, n_bins] when bf > 1
     thresholds_T::Vector{T}     # T-typed thresholds (n_bins)
-
-    # ─── RNG state ───
-    rng::MersenneTwister        # pre-allocated RNG (reset with seed each call)
 
     # ─── μ lookup table (pre-computed for all energies × materials) ───
     μ_lut_cpu::Vector{T}                     # μ LUT CPU buffer (n_regions)
@@ -102,7 +96,7 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # rate (linear in rate, as the loss is) and the correction inverts that same per-ray matrix, so the bins
     # stay `-log(recorded / I0[col, row, b])` and `I0 · exp(-bin) = recorded count` holds per ray.
     pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
-    defects::Union{Nothing, NamedTuple}                # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`)
+    defects::Union{Nothing, NamedTuple}                # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`), on the backend
     scatter_correction::Bool                           # PCCTScanner.scatter_correction
     scatter::Union{Nothing, ScatterPlan}               # the scatter library on this acquisition's rays (nothing: use_scatter off)
     noise_reduction::Float64                           # PCCTScanner.noise_reduction
@@ -184,8 +178,6 @@ function create_workspace(
         sino_buf = allocate_backend(sino_shape)
         scratch = allocate_backend(sino_shape)
 
-        # CPU-side staging buffer (CPU Poisson RNG → GPU transfer)
-        noise_staging = zeros(T, sino_shape)
         energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
         n_energies = length(energies)
         config = build_physics_config(scanner, sim_opts, energies, weights_vec)
@@ -221,8 +213,6 @@ function create_workspace(
 
         # Pre-compute T-typed thresholds
         thresholds_T_vec = T.(thresholds)
-
-        rng = MersenneTwister(0)
 
         # μ lookup table — pre-compute μ for all regions × all energies
         n_regions = length(mats)
@@ -499,10 +489,15 @@ function create_workspace(
             nothing
         end
 
+        # ─── The dexels' defect factors, on the backend (the detection applies them there) ───
+        _defects = let g = bf > 1 ? _native_geom : geom, d = _pcct_dexel_defects(scanner, g.n_cols, g.n_rows, energies, weights_vec)
+            on_backend(x) = copyto!(allocate_backend(size(x)...), T.(x))
+            d === nothing ? nothing : (air = on_backend(d.air), hard = on_backend(d.hard), p_hard = d.p_hard)
+        end
+
         return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
             bins, μ_volume, sino_buf, scratch,
-            noise_staging,
-            R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec, rng,
+            R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec,
             μ_lut_cpu, μ_lut_gpu, μ_table,
             geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
             _native_bins, _native_sino_buf,
@@ -510,7 +505,7 @@ function create_workspace(
             tube_scratch, _pcct_focal_kernel,
             _μ_table_gpu, _W_matrix_gpu, _bowtie_spectral_gpu, _native_bowtie_spectral_gpu, _outputs_flat, _native_outputs_flat,
             _use_pileup,
-            _pcct_dexel_defects(scanner, (bf > 1 ? _native_geom : geom).n_cols, (bf > 1 ? _native_geom : geom).n_rows, energies, weights_vec),
+            _defects,
             scanner.scatter_correction, _scatter, Float64(scanner.noise_reduction),
             pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec), _pileup_S,
             _pileup_rates, _count_rate_air,

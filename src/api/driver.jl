@@ -79,55 +79,62 @@ function _capture_pcct_raw_counts(
 end
 
 
-# The photon-counting detection of `simulate!`: the expected counts of every native dexel (the
-# projection's native counts scaled, group by group, to the binned bins, which carry the focal-spot
-# blur and the scatter), their counting noise (`pcct_count!`), their pile-up at each dexel's own
-# rate, and the digital sum to pixels. Writes the bins as `-log(max(N, 1) / I0)` and, when given,
-# the summed counts before that floor into `raw`.
-function _pcct_detect!(ws::PCCTWorkspace, bins, use_noise::Bool, seed, raw)
+# The photon-counting detection of `simulate!`, on the workspace's backend: the expected counts
+# of every native dexel (the projection's native counts scaled, group by group, to the binned
+# bins, which carry the focal-spot blur and the scatter; in place of the native projection), its
+# defects, then one kernel for the counting noise, the pile-up at each dexel's own rate and the
+# digital sum to pixels (`pcct_count!`). Writes the bins as `-log(max(N, 1) / I0)` and, when
+# given, the summed counts before that floor into `raw`.
+function _pcct_detect!(ws::PCCTWorkspace{T}, bins, use_noise::Bool, seed, raw) where {T}
     nb = length(bins)
     bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
-    I0 = ws.I0_cpu
-    expected_binned = [I0[:, :, b] .* exp.(-Float64.(Array(bins[b]))) for b in 1:nb]
+    I0 = ws.I0
+    I0_dexel = bf == 1 ? I0 : ws.I0_native
     expected = if bf == 1
-        expected_binned
+        [view(I0, :, :, b) .* exp.(.-bins[b]) for b in 1:nb]
     else
-        map(1:nb) do b
-            native = Float64.(Array(ws.native_bins[b]))
-            target = expected_binned[b]
-            for v in axes(native, 3), r in axes(target, 2), c in axes(target, 1)
-                group = view(native, ((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), v)
-                total = sum(group)
-                total > 0 ? (group .*= target[c, r, v] / total) : (group .= target[c, r, v] / bf^2)
-            end
-            native
+        for b in 1:nb
+            _scale_to_pixels!(ws.native_bins[b], bins[b], view(I0, :, :, b), bf)
         end
+        ws.native_bins
     end
-    if ws.defects !== nothing                       # each dexel's gain and threshold offsets
-        _apply_pcct_defects!(expected, bf == 1 ? I0 : Array{Float64}(ws.I0_native), ws.defects)
+    ws.defects === nothing || _apply_pcct_defects!(expected, I0_dexel, ws.defects)
+    pileup = if ws.pileup && ws.pileup_S !== nothing
+        (S = ws.pileup_S, rates = ws.pileup_rates, rate_air = ws.pileup_rate_air, counts_air = maximum(sum(I0_dexel; dims = 3)))
+    else
+        nothing
     end
-    counts = use_noise ? pcct_count!([similar(e) for e in expected], expected, ws.noise_classes; seed) : expected
-    if ws.pileup && ws.pileup_S !== nothing
-        pileup_counts!(counts, bf == 1 ? I0 : Array{Float64}(ws.I0_native), ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
-    end
-    nr = ws.noise_reduction
+    counts = raw === nothing ? [similar(b) for b in bins] : raw
+    pcct_count!(counts, expected, use_noise ? ws.noise_classes : nothing; seed, binning = bf, pileup)
+    nr = T(ws.noise_reduction)
     for b in 1:nb
-        N = bf == 1 ? counts[b] : _digital_sum(counts[b], bf)
-        use_noise && nr > 0 && (N .= expected_binned[b] .+ (1 - nr) .* (N .- expected_binned[b]))
-        raw === nothing || copyto!(raw[b], eltype(raw[b]).(N))
-        copyto!(bins[b], eltype(bins[b]).(.-log.(max.(N, 1.0) ./ I0[:, :, b])))
+        N, i0 = counts[b], view(I0, :, :, b)
+        use_noise && nr > 0 && (N .= i0 .* exp.(.-bins[b]) .+ (1 - nr) .* (N .- i0 .* exp.(.-bins[b])))
+        bins[b] .= .-log.(max.(N, one(T)) ./ i0)
     end
+    bf == 1 && release_backend!(expected; collect = false)
+    raw === nothing && release_backend!(counts; collect = false)
     return bins
 end
 
-# A 2-D digital sum of `bf × bf` native dexels per pixel, view by view.
-function _digital_sum(native::AbstractArray{<:Real, 3}, bf::Integer)
-    nc, nr = size(native, 1) ÷ bf, size(native, 2) ÷ bf
-    out = zeros(Float64, nc, nr, size(native, 3))
-    for v in axes(native, 3), r in 1:nr, c in 1:nc
-        out[c, r, v] = sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), v])
+# Scale each pixel's `bf × bf` native dexels so that they sum to its expected counts
+# `I0 · e^{−p}` (an empty group shares them evenly).
+function _scale_to_pixels!(native::AbstractArray{<:Real, 3}, binned, I0, bf::Integer)
+    pixels = CartesianIndices(size(binned))
+    n = Int32(bf)
+    AK.foreachindex(binned) do idx
+        c, r, v = Tuple(pixels[idx])
+        target = @inbounds I0[c, r] * exp(-binned[idx])
+        c0, r0 = (Int32(c) - Int32(1)) * n, (Int32(r) - Int32(1)) * n
+        total = zero(eltype(native))
+        for j in Int32(1):n, i in Int32(1):n
+            total += @inbounds native[c0 + i, r0 + j, v]
+        end
+        for j in Int32(1):n, i in Int32(1):n
+            @inbounds native[c0 + i, r0 + j, v] = total > 0 ? native[c0 + i, r0 + j, v] * (target / total) : target / (n * n)
+        end
     end
-    return out
+    return native
 end
 
 """
@@ -169,7 +176,9 @@ is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
 
 The noise is drawn per native dexel, photon class by photon class (`pcct_count!`): each
 dexel Poisson, neighbours covarying through the photons they share, so a 2 × 2 binned pixel's
-variance exceeds its mean. Views are drawn in parallel from streams seeded by `(seed, view)`.
+variance exceeds its mean. The detection runs on the phantom's backend, every draw from its own
+counter-based stream keyed by `(seed, class, dexel, view)`, so a seed fixes the realisation on a
+backend whatever the thread count.
 
 Capturing raw counts allocates one additional full-size array per energy bin;
 pass `capture_raw_counts=false` only when memory-constrained.

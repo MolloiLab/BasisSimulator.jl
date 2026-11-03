@@ -1,6 +1,6 @@
 # The NAEOTOM Alpha's two modes against BasisMonteCarlo's tables: standard (2 × 2 digitally binned)
 # and UHR (native dexels). Air scans: the counts, their Fano factors and the correlation of
-# neighbours. CPU only. The binned table (lib/BasisMonteCarlo/tables) is reference data for the
+# neighbours, on the backend `to_gpu` picks (api.jl). The binned table (lib/BasisMonteCarlo/tables) is reference data for the
 # test; BasisSimulator itself reads only its native table.
 
 using Serialization: deserialize
@@ -9,7 +9,7 @@ using Statistics: var
 const _BINNED_TABLE = joinpath(pkgdir(BS), "lib", "BasisMonteCarlo", "tables", "naeotom_alpha_cdte_binned2x2_v1.jls")
 
 function _alpha_air_draws(scanner)
-    air = BS.Phantom(zeros(UInt8, 8, 8, 2), Dict{Int, Any}(0 => BS.XA.Materials.air), (0.1, 0.1, 0.1))
+    air = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 2)), Dict{Int, Any}(0 => BS.XA.Materials.air), (0.1, 0.1, 0.1))
     opts(seed) = BS.SimOptions(; use_scatter = false, use_heel_effect = false, use_focal_spot = false, seed)
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 20.0, views = 40)
     recon = BS.ReconOptions(; matrix_size = (64, 64, 1), fov_cm = 10.0, z_cm = 0.2)

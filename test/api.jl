@@ -1514,7 +1514,6 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
         end
         @test size(ws.sino_buf) == sino_shape
         @test size(ws.scratch) == sino_shape
-        @test size(ws.combined) == sino_shape
 
         # Spectral arrays sized to bin / energy counts.
         @test size(ws.I0, 3) == length(s.scanner.energy_thresholds)
