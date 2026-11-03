@@ -325,14 +325,15 @@ end
 # RELEASE: the assets are a data release of their own, tag `scatter-kernels-v2` (made before the
 # package release, so that the hashes below can be registered with it; RELEASING.md). Fill `sha256`
 # and `tree_hash` from `lib/BasisMonteCarlo/scripts/split_scatter_library.jl --archive`, which
-# writes the per-scanner files and prints both; an entry whose `sha256` is empty is not released.
+# writes the per-scanner files and prints both. These are the kernels of notebook 10's run of
+# 2026-11-03 (scorecard 52 of 52; notebook 11, 37 of 37).
 const _SCATTER_RELEASE_URL = "https://github.com/MolloiLab/BasisSimulator.jl/releases/download/scatter-kernels-v2"
 
-_scatter_artifact(stem) = ScatterKernelArtifact(
+_scatter_artifact(stem, sha256, tree_hash) = ScatterKernelArtifact(
     "$(stem).toml",
     "$(_SCATTER_RELEASE_URL)/$(stem).zip",
-    "",     # RELEASE: placeholder
-    "",     # RELEASE: placeholder
+    sha256,
+    tree_hash,
 )
 
 """
@@ -342,12 +343,36 @@ The scatter library's entries and the artifact each ships as: `Dict(entry => (fi
 sha256, tree_hash))`. A scanner's `scatter_kernels` field names one of these.
 """
 const SCATTER_KERNEL_ARTIFACTS = Dict{String, ScatterKernelArtifact}(
-    "SOMATOM Force" => _scatter_artifact("somatom_force"),
-    "SOMATOM Definition Flash" => _scatter_artifact("somatom_definition_flash"),
-    "NAEOTOM Alpha" => _scatter_artifact("naeotom_alpha"),
-    "Revolution Apex" => _scatter_artifact("revolution_apex"),
-    "Brilliance iCT" => _scatter_artifact("brilliance_ict"),
-    "Aquilion ONE" => _scatter_artifact("aquilion_one"),
+    "SOMATOM Force" => _scatter_artifact(
+        "somatom_force",
+        "bf75c5d4a2cd795ffba12ac94de326bbf3113b9a99c243885c79e7168a831b6a",
+        "ff300294a6c65e083e0b1356fba7d2fa19910948",
+    ),
+    "SOMATOM Definition Flash" => _scatter_artifact(
+        "somatom_definition_flash",
+        "ced5ba8c10f24e47db93341cdcf7db75adb1d3fea52abf990e005e438c0e24d6",
+        "33201d6836e85d8d989259d328d87203bb4a12cc",
+    ),
+    "NAEOTOM Alpha" => _scatter_artifact(
+        "naeotom_alpha",
+        "9790e51c326bb6431cda259f3e94adbbb49f3c6a3ec91d3988637669b807388d",
+        "f0a3a0c2a492fb4fbda03b99ac78afdcaa92ab21",
+    ),
+    "Revolution Apex" => _scatter_artifact(
+        "revolution_apex",
+        "13578a4f09eca822930ec50e075811211ed1da5a32f276378cff81ba8fe91397",
+        "93e888558045216c18e4609df3d9113af12e468d",
+    ),
+    "Brilliance iCT" => _scatter_artifact(
+        "brilliance_ict",
+        "1ed67fbd220260923021a18240b6fb4118121575176d908338bc7164a996e78a",
+        "d66216a3a5d3216cba3435d908555e49f0234779",
+    ),
+    "Aquilion ONE" => _scatter_artifact(
+        "aquilion_one",
+        "f0c4d8a373c21bdd8fd9fa1ca2d1d822b66d6395337460f9faa987e4cce5d2ac",
+        "9b5e3229471e8cb2da9196b2c7f1f2ddcdfc5757",
+    ),
 )
 
 const _SCATTER_KERNELS = Dict{String, ScatterKernels}()
