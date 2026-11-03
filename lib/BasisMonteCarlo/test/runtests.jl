@@ -644,6 +644,40 @@ using Random: Xoshiro
         )
         r = only(BasisMonteCarlo.single_scatter(strips, s, node, [E], water_parts))
         @test sum(r.compton .+ r.wide .+ r.forward) ≈ sum(quadrature) rtol = 0.02
+
+        # A single ray describes no patient: it stands in its ellipse, and its kernels keep their own
+        # single scatter (through a water that scatters, the scan is the same as through one that
+        # does not)
+        S .= 1.0f-3
+        water_lib = ShapeScatterLibrary(
+            [s],
+            thicknesses,
+            aspects,
+            impacts,
+            energies,
+            Dict(s.name => S),
+            Dict(s.name => zero(S)),
+            Dict(s.name => zero(S)),
+            lib.primary,
+            lib.paths,
+            lib.offsets,
+            lib.spreads,
+            lib.angles,
+            a.total,
+            a.compton,
+            a.rayleigh,
+            Dict{String, Any}(),
+        )
+        one_ray(library) = BasisMonteCarlo.library_scan(
+            library,
+            s.name,
+            [(angle_deg = 3.0, wet_mm = 200.0, weight = 1.0)];
+            collimation_mm = 40.0,
+            spectrum = ([60.0], [1.0]),
+            ellipse = (thickness_mm = 250.0, width_mm = 300.0, centre_mm = 0.0),
+        ).scatter
+        @test sum(one_ray(lib)) > 0
+        @test one_ray(water_lib) == one_ray(lib)
     end
 
     @testset "charge transport: induction and trapping" begin

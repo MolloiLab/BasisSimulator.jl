@@ -644,7 +644,8 @@ kernels' Compton, wide Rayleigh and forward Rayleigh parts are scaled by the ray
 how much less of each gets out of the ray's materials than of water (the kernel's `paths` against
 the ray's `delta_mu_per_mm`), and moved to the ray's own column. Each kernel gives up its single
 scatter ([`single_scatter`](@ref) in its [`WaterEllipse`](@ref)) for the ray's own in the patient
-as the rays describe it ([`RayStrips`](@ref)), scaled the same way, where the ray's lands.
+as the rays describe it ([`RayStrips`](@ref)), scaled the same way, where the ray's lands. A single
+ray describes no patient: it stands in its ellipse as its kernels do, and they keep their own.
 """
 function library_scan(
         lib::ShapeScatterLibrary,
@@ -685,15 +686,17 @@ function library_scan(
     compton_weight, rayleigh_weight, forward_weight = zeros(nE), zeros(nE), zeros(nE)
     escape_compton, escape_rayleigh = zeros(nE), zeros(nE)
 
-    # Single scatter: water, as the kernels were made in; the patient as its rays describe it; each
-    # kernel's own, computed once
+    # Single scatter: water, as the kernels were made in; the patient as its rays describe it (a
+    # single ray describes none: it stands in its ellipse, as its kernels do, and they keep their
+    # own); each kernel's own, computed once
     water = (
         total = lib.water_mu_per_mm,
         compton = lib.water_compton_per_mm,
         rayleigh = lib.water_rayleigh_per_mm,
         tables = cached_scattering_tables(DETECTOR_MATERIALS[:Water]),
     )
-    patient = RayStrips(rays, sid)
+    swap = length(rays) >= 2
+    patient = swap ? RayStrips(rays, sid) : nothing
     kernel_singles = Dict{NTuple{3, Int}, Any}()
     function kernel_single(tT, tr, tu)
         return get!(kernel_singles, (tT, tr, tu)) do
@@ -773,7 +776,7 @@ function library_scan(
                 (tu, wu) in ((iu[1], 1 - iu[3]), (iu[2], iu[3]))
             wg = wT * wr * wu
             wg == 0 && continue
-            single = kernel_single(tT, tr, tu)
+            single = swap ? kernel_single(tT, tr, tu) : nothing
             # the kernel's multiple scatter, each process's scatter less its single scatter (never
             # below none), and each column's of it and its first and second moments about the
             # column's centre, as the kernel's scatter landed there
@@ -790,9 +793,14 @@ function library_scan(
                 end
                 escape_compton[g] += wg * out_c
                 escape_rayleigh[g] += wg * out_r
-                part = (compton_weight[g] * out_c) .* max.(ks .- kr .- single[g].compton, 0.0) .+
-                    (rayleigh_weight[g] * out_r) .* max.(kr .- kf .- single[g].wide, 0.0) .+
-                    (forward_weight[g] * out_r) .* max.(kf .- single[g].forward, 0.0)
+                part = if swap
+                    (compton_weight[g] * out_c) .* max.(ks .- kr .- single[g].compton, 0.0) .+
+                        (rayleigh_weight[g] * out_r) .* max.(kr .- kf .- single[g].wide, 0.0) .+
+                        (forward_weight[g] * out_r) .* max.(kf .- single[g].forward, 0.0)
+                else
+                    (compton_weight[g] * out_c) .* (ks .- kr) .+ (rayleigh_weight[g] * out_r) .* (kr .- kf) .+
+                        (forward_weight[g] * out_r) .* kf
+                end
                 kernel .+= part
                 for c in 1:nc
                     m = sum(Base.view(part, c, :))
@@ -837,6 +845,7 @@ function library_scan(
         end
 
         # The ray's own single scatter in the patient, scaled as its kernels are, where it lands
+        swap || continue
         own = single_scatter(patient, s, ray.angle_deg, lib.energies_keV[used], water)
         single = zeros(nc, nr)
         for (k, g) in enumerate(used)
