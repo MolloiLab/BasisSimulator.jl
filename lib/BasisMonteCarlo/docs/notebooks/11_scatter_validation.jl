@@ -504,7 +504,7 @@ column.
 """
 
 # ╔═╡ f20ef946-92af-51a4-b778-2a29e23e4804
-water_mu = [MC.geant4_attenuation(MC.DetectorMaterial(:Water), Float64(E)) for E in 1:150]
+water_mu = [MC.geant4_attenuation(MC.DetectorMaterial(:Water), Float64(E); physics) for E in 1:150]
 
 # ╔═╡ 6d28368c-4aae-566f-bdfc-140f80a10b98
 """The fraction of the beam's photons a water-equivalent length lets through, unscattered."""
