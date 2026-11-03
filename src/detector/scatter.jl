@@ -16,6 +16,17 @@ reads its value interpolated between bins and views. The view stands in its wate
 BasisMonteCarlo notebook 11 does (`view = :mean`, the geometric mean of the ellipse measured from
 the water-equivalent lengths and the one measured from the outline).
 
+The kernels bring only their multiple scatter: each kernel's own single scatter, a quadrature in
+its water ellipse, is taken out when the library is loaded, and each coarse ray adds its own, the
+same quadrature through the patient as its view's rays describe it (each ray's water-equivalent
+length spread over its outline chord; BasisMonteCarlo's `single_scatter` in its `RayStrips`),
+weighed by the same photons and escape factors, at the ray's own columns (`_scatter_single!`, on
+the device). A thorax's mediastinum stops the scatter a ray beside it sends inward, and its lungs
+let out what it sends outward, as water kernels cannot; for a patient that is its own water
+ellipse the two single scatters are the same. In single precision the quadrature's yes/no
+decisions (which strip, inside it or not, which cell of water's angular tables) are taken again in
+double-float near their lines, so that they fall as in double precision.
+
 Units: an energy integrator's scatter is added to its mean signal `S₁` (units of `E_ref`) and to
 its second moment `S₂`, each photon weighted by the detector's `m₁` and `m₂/m₁` at the photon's
 energy; a photon counter's is added to each bin's counts, a counted photon split over the bins as
@@ -28,7 +39,7 @@ water-equivalent length from its measured transmission (scatter included, invert
 ray's own spectrum), the scatter of that water patient superposed, the estimate subtracted and the
 lengths measured again (`_SCATTER_CORRECTION_PASSES` times). It never sees the phantom, so it is
 realistic, not exact: it treats the patient as water and the view's outline as its
-water-equivalent lengths' (`view = :wet`).
+water-equivalent lengths' (`view = :wet`, and the rays' single scatter through that water).
 
 Everything after the plan is built runs on the workspace's backend (the GPU, or Julia's threads on
 the CPU): the walk, each ray's lengths and photons, the superposition (`scatter_kernels.jl`), the
@@ -36,7 +47,8 @@ correction's inversion, and the maps to dexels. The plan keeps its own copy of t
 
 Outside the library's grids (thickness 140–500 mm, aspect 0.6–2.5, 20–140 keV) the nearest
 kernels stand in, with a warning once per session; an ellipse thinner than the thinnest kernel's
-takes that kernel scaled by the water the ray crosses against what the kernel's own ray crosses.
+takes that kernel's multiple scatter scaled by the water the ray crosses against what the kernel's
+own ray crosses (its single scatter is the ray's own).
 """
 
 # The coarse rays' sampling
@@ -61,10 +73,12 @@ integrator's `S₁` and `S₂`, a photon counter's bins), and on the device the 
 scatter field (library bins × channels × coarse views), the correction's estimate, the maps from
 bins and coarse views to dexels and views, and
 
-- `library`: the kernels, their column moments and path lengths, and the grids;
+- `library`: the kernels (their multiple scatter), their column moments and path lengths, the
+  grids, and the single-scatter quadrature's tables (`single`);
 - `rays`: each coarse ray's photons by library energy and channel through water, by spectral
   energy for its materials, the weights of its measured signal and its air value, the materials'
-  scattering and attenuation against water's, and the maps from bins to coarse rays;
+  scattering and attenuation against water's, the maps from bins to coarse rays, and the rays'
+  places and directions as double-floats and the library columns their own single scatter reaches;
 - `scratch`: the superposition's buffers (`scatter_kernels.jl`).
 """
 struct ScatterPlan{A4, A3, AI, AT, LB, RY, SC}
@@ -164,6 +178,12 @@ function _scatter_plan(
     γ_dexel = [dexel_angle(c) for c in 1:geom.n_cols]
     γ_min, γ_max = dexel_angle(0.5), dexel_angle(geom.n_cols + 0.5)
     n_cc = max(1, ceil(Int, (γ_max - γ_min) / _SCATTER_RAY_STEP_DEG))
+    # a view's rays describe its patient (the ellipse, the strips): one ray describes none
+    n_cc >= 2 || throw(
+        ArgumentError(
+            "the scatter superposition needs a fan of at least two coarse rays ($(2 * _SCATTER_RAY_STEP_DEG)°); this detector spans $(γ_max - γ_min)°"
+        )
+    )
     Δγ = (γ_max - γ_min) / n_cc
     angle_deg = [γ_min + (i - 0.5) * Δγ for i in 1:n_cc]
 
@@ -327,6 +347,7 @@ function _scatter_plan(
             "the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform"
         )
     )
+    nE_lib <= 64 || throw(ArgumentError("the scatter kernels \"$(k.name)\" have $(nE_lib) energies; the superposition takes at most 64"))
     device_int(v) = _device_copy(ref, Int32.(v))
     device_real(v) = _device_copy(ref, T.(v))
     # the library itself as it is (Float32): on the host, the kernels' own arrays
@@ -335,6 +356,31 @@ function _scatter_plan(
     # each value as the two floats of the workspace's type that sum to it
     float_pairs(x) = reduce(hcat, [[T(v), T(v - T(v))] for v in x])
     node_deg = rad2deg.(asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1)))
+    sid = k.source_to_isocenter_mm
+
+    # The rays' own single scatter: the quadrature's tables, in the workspace's type (water's
+    # angular tables as read), and the library columns it reaches from each coarse ray's own
+    tables = _single_tables(
+        T;
+        cols,
+        rows = rows_lib,
+        sdd = k.source_to_detector_mm,
+        energies = k.energies_keV,
+        water = (mu = k.water_mu_per_mm, compton = k.water_compton_per_mm, rayleigh = k.water_rayleigh_per_mm),
+        water_pdf = k.water_pdf,
+        detector = (efficiency = k.efficiency, mu = k.detector_mu_per_mm, depth = k.detector_depth_mm),
+        energy_weighted = k.energy_weighted,
+        grid = k.grid,
+        grid_height = k.grid_height_mm,
+        grid_opening = k.grid_opening_mm,
+        single = k.single_scatter,
+        forward_deg = k.forward_rayleigh_deg,
+    )
+    C = k.single_scatter.columns_each_side
+    n_win = k.grid === :none ? nlc : min(nlc, 2C + 1)
+    window0 = [k.grid === :none ? 0 : clamp(searchsortedlast(cols, γ), 1, nlc) - C - 1 for γ in angle_deg]
+    xs = [sid * sind(γ) for γ in angle_deg]
+    ray_pairs, boundary_pairs = _ray_pairs(T, angle_deg, sid)
 
     library = (;
         kernels = device_library(vec(k.kernels)),
@@ -355,12 +401,19 @@ function _scatter_plan(
                 last(k.impact_fractions),
             )
         ),
+        sid2 = _pair(T, sid),
+        π2 = _pair(T, Float64(π)),
+        single = map(x -> x isa AbstractArray ? _device_copy(ref, x) : x, tables),
     )
-    sid = k.source_to_isocenter_mm
     ray_consts = (;
-        xs = device_real([sid * sind(γ) for γ in angle_deg]),
-        dxs = device_real(_ray_widths([sid * sind(γ) for γ in angle_deg])),
+        xs = device_real(xs),
+        dxs = device_real(_ray_widths(xs)),
         angle_deg = device_real(angle_deg),
+        angle_first = T(first(angle_deg)),
+        angle_step = T(Δγ),
+        pairs = device_real(ray_pairs),
+        boundaries = device_real(boundary_pairs),
+        window0 = device_int(window0),
         angle = device_real(float_pairs(angle_deg)),
         row_share = device_real(row_share),
         water_photons = device_real(water_photons),
@@ -390,8 +443,11 @@ function _scatter_plan(
         weights = similar(ref, T, nE_lib, 3, n_ch, n_chunk),
         ellipse = similar(ref, T, 3, n_g, n_cv),
         shapes = similar(ref, T, 5, n_ray),
+        strips = similar(ref, T, 4, n_ray),
         clamped = fill!(similar(ref, Int32, n_ray), Int32(0)),
         corner = fill!(similar(ref, Int32, 8, n_chunk), Int32(0)),
+        corner_weight = similar(ref, T, 8, n_chunk),
+        single = similar(ref, T, n_chunk, nlr, n_ch, n_win),
         factor = similar(ref, T, n_ch, 8, n_chunk),
         mix = similar(ref, T, 3nE_lib, n_ch, 8, n_chunk),
         boxes = similar(ref, T, 3, nlc, n_ch, 8, n_chunk),
@@ -519,15 +575,17 @@ function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
 end
 
 # The scatter of every coarse view into `out[column, row, ch, view]` (its channels the first of the
-# plan's), the views' ellipses measured from `lengths`, the rays' impacts from `scratch.wet`; with
-# `combine`, the geometric mean of that and what `out` holds. Without `combine`, it marks the rays
-# outside the library's grids in `scratch.clamped`.
-function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray; combine::Bool = false)
+# plan's), the views' ellipses measured from `lengths`, the rays' impacts from `scratch.wet`, the
+# patient for the rays' own single scatter from `scratch.wet` spread over `outline`; with `combine`,
+# the geometric mean of that and what `out` holds. Without `combine`, it marks the rays outside the
+# library's grids in `scratch.clamped`.
+function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray, outline::AbstractArray; combine::Bool = false)
     s, lib, r = p.scratch, p.library, p.rays
     n_used = size(out, 3)
     n_cc, n_g, n_cv = size(s.wet)
     _scatter_ellipses!(s.ellipse, r.xs, r.dxs, lengths)
     _scatter_ray_shapes!(s.shapes, s.clamped, s.wet, s.ellipse, r.xs, r.angle_deg, lib.grid, !combine)
+    _scatter_strips!(s.strips, r.pairs, s.wet, outline, lib.sid2, lib.π2)
 
     # the views in chunks, as many as the buffers hold
     per_chunk = size(s.rows, 5)
@@ -538,6 +596,7 @@ function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray;
         _scatter_weights!(p, n_used, ray0, n_rays)
         _scatter_corners!(
             s.corner,
+            s.corner_weight,
             s.factor,
             s.mix,
             s.boxes,
@@ -552,6 +611,23 @@ function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray;
             ray0,
             n_rays,
         )
+        _scatter_single_weights!(s.weights, s.corner_weight, s.mix, s.plain, n_used, ray0, n_rays)
+        _scatter_single!(
+            s.single,
+            s.weights,
+            s.shapes,
+            s.strips,
+            r.angle_deg,
+            r.pairs,
+            r.boundaries,
+            r.window0,
+            r.angle_first,
+            r.angle_step,
+            lib.single,
+            ray0,
+            n_rays,
+            Val(n_used),
+        )
         _scatter_deposit!(
             s.rows,
             s.corner,
@@ -559,6 +635,8 @@ function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray;
             s.mix,
             s.boxes,
             s.window,
+            s.single,
+            r.window0,
             s.shapes,
             s.plain,
             lib,
@@ -596,10 +674,10 @@ function _scatter_forward!(p::ScatterPlan, phantom)
     dd_fast_material_paths!(p.paths, phantom.mask, p.geom; volume_extent = extent)
     _scatter_phantom_rays!(p)
     fill!(s.clamped, Int32(0))
-    _superpose!(p.field, p, s.wet)
+    _superpose!(p.field, p, s.wet, s.outline)
     # the geometric mean with the outline's ellipse, which is another only through a material other
     # than water (a gas is in neither)
-    p.rays.other && _superpose!(p.field, p, s.outline; combine = true)
+    p.rays.other && _superpose!(p.field, p, s.outline, s.outline; combine = true)
     return p.field
 end
 
@@ -678,7 +756,8 @@ function _scatter_estimate!(p::ScatterPlan, photons::Real = 1)
     fill!(s.plain, true)
     for pass in 1:_SCATTER_CORRECTION_PASSES
         _scatter_water_lengths!(p, photons, pass > 1)
-        _superpose!(p.estimate, p, s.wet)
+        # a water patient: its outline is its water-equivalent lengths
+        _superpose!(p.estimate, p, s.wet, s.wet)
     end
     return p.estimate
 end
