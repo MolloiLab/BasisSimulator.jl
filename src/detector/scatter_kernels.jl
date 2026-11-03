@@ -20,7 +20,17 @@ workspace's backend: each view stands in the water ellipse of its rays' water-eq
 each ray takes the kernel of the impact whose chord is its own water-equivalent length, its
 Compton, wide- and forward-Rayleigh parts scaled by its materials' scattering against water's and
 by how much less of each gets out of them, and is moved across the fan to the ray's own angle,
-column by column as boxes of the width the scatter landed with.
+column by column as boxes of the width the scatter landed with (the mirror image for a ray left of
+the ellipse's axis).
+
+A kernel's ray is surrounded by water as its ellipse places it; a patient's is not (a thorax is
+dense in the middle and light at the sides, so the scatter a ray beside the mediastinum sends
+inward is stopped there and what it sends out through a lung escapes). So each kernel keeps only
+its multiple scatter: its own single scatter, a quadrature in its water ellipse
+(BasisMonteCarlo's `single_scatter`), is taken out when the library is loaded. Each ray adds back
+its own single scatter, the same quadrature in the patient as the view's rays describe it
+(`_RayStrips`: each ray's water-equivalent length spread over its outline), scaled by the same
+photons and escape factors, at its own columns.
 """
 
 import TOML
@@ -35,7 +45,7 @@ import TOML
 Read a scatter library written by BasisMonteCarlo's `write_scatter_library`, with nothing but Base
 and TOML: the header's contents, with `"arrays"` replaced by
 `Dict(scanner => Dict(kind => Array{Float32}))`. With `entry`, only that scanner's arrays and the
-shared `elements` table are read. A copy of BasisMonteCarlo's reference reader.
+shared `elements` tables are read. A copy of BasisMonteCarlo's reference reader.
 """
 function read_scatter_library(header_path::AbstractString; entry::Union{Nothing, AbstractString} = nothing)
     header = TOML.parsefile(header_path)
@@ -66,12 +76,13 @@ incident photon of a pencil beam; signal in keV for an energy-integrating detect
 - `source_to_isocenter_mm`, `source_to_detector_mm`, `column_edges_deg` (across the fan from the
   ray, 2° bins), `row_edges_mm` (along z at the detector): the scanner the kernels were made on.
 - `thicknesses_mm`, `aspects`, `impact_fractions`, `energies_keV`: the grids.
-- `kernels[row, column, energy, process, impact, aspect, thickness]`: the scatter whose last
-  scattering was a Compton (process 1), a Rayleigh wider than `forward_rayleigh_deg` (2) or a
-  forward Rayleigh (3), and all of it (4).
-- `moments[column, k, energy, process, impact, aspect, thickness]`: each column's scatter (k = 1)
-  and its first and second moments of where in the column it landed, in degrees from the
-  column's centre (k = 2, 3).
+- `kernels[row, column, energy, process, impact, aspect, thickness]`: the multiple scatter (each
+  process's scatter less the kernel's own single scatter, never below none) whose last scattering
+  was a Compton (process 1), a Rayleigh wider than `forward_rayleigh_deg` (2) or a forward
+  Rayleigh (3), and all of it (4).
+- `moments[column, k, energy, process, impact, aspect, thickness]`: each column's multiple scatter
+  (k = 1) and its first and second moments of where in the column it landed, in degrees from the
+  column's centre (k = 2, 3), the library's offsets and spreads of its scatter there.
 - `paths[band, process, energy, impact, aspect, thickness]`: the mean length (mm) the detected
   photons of each process (1 Compton, 2 Rayleigh) travelled in the water with an energy in each
   5-keV band of `path_energy_edges_keV`.
@@ -81,6 +92,15 @@ incident photon of a pencil beam; signal in keV for an energy-integrating detect
   bins, cm²/g.
 - `node_offsets_mm[impact, aspect, thickness]`: where each kernel's own ray passes its ellipse's
   axis.
+- For the single scatter: water's attenuation on a 1-keV grid from 1 keV, in all and by Compton
+  and Rayleigh scattering (`water_mu_per_mm`, `water_compton_per_mm`, `water_rayleigh_per_mm`,
+  per mm); `water_pdf[cell, keV, process]`, water's chance per steradian of scattering (1
+  Compton, 2 Rayleigh) in equal cells of the cosine of the angle from −1; the detector's
+  `efficiency` (signal per photon at each keV, before the energy weighting), its attenuation
+  `detector_mu_per_mm` and depth `detector_depth_mm` (for the obliquity); the anti-scatter `grid`
+  (`:none`, `:across` the fan or `:both` ways), its `grid_height_mm` and `grid_opening_mm`
+  (across, along; `Inf` for none); and the quadrature, `single_scatter` = (depths along the ray,
+  points per column, points per row, columns either side of the ray's own).
 """
 struct ScatterKernels
     name::String
@@ -99,6 +119,16 @@ struct ScatterKernels
     paths::Array{Float32, 6}
     angles::Array{Float32, 3}
     water_mu_per_mm::Vector{Float64}
+    water_compton_per_mm::Vector{Float64}
+    water_rayleigh_per_mm::Vector{Float64}
+    water_pdf::Array{Float32, 3}
+    efficiency::Vector{Float64}
+    detector_mu_per_mm::Vector{Float64}
+    detector_depth_mm::Float64
+    grid::Symbol
+    grid_height_mm::Float64
+    grid_opening_mm::NTuple{2, Float64}
+    single_scatter::@NamedTuple{depths::Int, points_per_column::Int, points_per_row::Int, columns_each_side::Int}
     scatter_angle_edges_deg::Vector{Float64}
     forward_rayleigh_deg::Float64
     path_energy_edges_keV::Vector{Float64}
@@ -124,47 +154,92 @@ function ScatterKernels(header::Dict, name::AbstractString, path::AbstractString
             ArgumentError("the entry \"$(name)\" of $(path) has no `$(kind)` array (a v2 library has it)")
         )
     end
+    # the single scatter's data: a library written before BasisMonteCarlo swapped each kernel's
+    # single scatter for the patient's has none
+    elements = header["arrays"]["elements"]
+    missing_data = vcat(
+        [key for key in ("water_compton_per_mm", "water_rayleigh_per_mm", "water_pdf_cells", "single_scatter") if !haskey(header, key)],
+        [key for key in ("efficiency", "detector_mu_per_mm", "detector_depth_mm", "grid", "grid_height_mm", "grid_opening_mm") if !haskey(s, key)],
+        haskey(elements, "water_pdf") ? String[] : ["elements/water_pdf"],
+    )
+    isempty(missing_data) || throw(
+        ArgumentError(
+            "the scatter library $(path) has no $(join(missing_data, ", ")): it predates the single-scatter " *
+                "quadrature (BasisMonteCarlo's `single_scatter`); write it again with BasisMonteCarlo's `write_scatter_library`"
+        )
+    )
     axes = header["axes"]
     thicknesses = Float64.(axes["thickness_mm"])
     aspects = Float64.(axes["aspect"])
     impacts = Float64.(axes["impact_fraction"])
     energies = Float64.(axes["energy_keV"])
+    sid = Float64(s["source_to_isocenter_mm"])
 
-    # Compton, wide Rayleigh, forward Rayleigh and all the scatter, each (row, column) slice next to
-    # its energies and processes, so that one corner of the grid is one contiguous block
-    S, R, F = A["scatter"], A["rayleigh"], A["forward"]
-    O, Sd = A["offsets"], A["spreads"]
-    nc, nr, nu, na, nT, nE = size(S)
-    kernels = Array{Float32}(undef, nr, nc, nE, 4, nu, na, nT)
-    moments = Array{Float32}(undef, nc, 3, nE, 4, nu, na, nT)
-    for iT in 1:nT, ia in 1:na, iu in 1:nu, iE in 1:nE
-        total = view(S, :, :, iu, ia, iT, iE)
-        rayleigh = view(R, :, :, iu, ia, iT, iE)
-        forward = view(F, :, :, iu, ia, iT, iE)
-        kernels[:, :, iE, 1, iu, ia, iT] .= transpose(total .- rayleigh)
-        kernels[:, :, iE, 2, iu, ia, iT] .= transpose(rayleigh .- forward)
-        kernels[:, :, iE, 3, iu, ia, iT] .= transpose(forward)
-        kernels[:, :, iE, 4, iu, ia, iT] .= transpose(total)
-        for p in 1:4, c in 1:nc
-            mass = sum(view(kernels, :, c, iE, p, iu, ia, iT))
-            o, sd = O[c, iu, ia, iT, iE], Sd[c, iu, ia, iT, iE]
-            moments[c, 1, iE, p, iu, ia, iT] = mass
-            moments[c, 2, iE, p, iu, ia, iT] = mass * o
-            moments[c, 3, iE, p, iu, ia, iT] = mass * (sd^2 + o^2)
-        end
-    end
+    kernels = _kernel_processes(A["scatter"], A["rayleigh"], A["forward"])
+    nr, nc, nE, _, nu, na, nT = size(kernels)
 
     # where each kernel's own ray passes the axis of its ellipse
     node_offsets = [
         _kernel_offset(T / 2, _kernel_half_width(T, r), u)
             for u in impacts, r in aspects, T in thicknesses
     ]
-    scattering = header["arrays"]["elements"]["scattering"]
+
+    # Each kernel's multiple scatter: each process's scatter less the kernel's own single scatter
+    # in its water ellipse, never below none, and all of it their sum
+    grid = Symbol(s["grid"])
+    grid in (:none, :across, :both) || throw(ArgumentError("the scatter library $(path) has grid `$(grid)`; a grid is none, across or both"))
+    opening = Tuple(x < 0 ? Inf : Float64(x) for x in s["grid_opening_mm"])
+    quadrature = header["single_scatter"]
+    single = (;
+        depths = Int(quadrature["depths"]),
+        points_per_column = Int(quadrature["points_per_column"]),
+        points_per_row = Int(quadrature["points_per_row"]),
+        columns_each_side = Int(quadrature["columns_each_side"]),
+    )
+    water_pdf = elements["water_pdf"]
+    size(water_pdf, 1) == header["water_pdf_cells"] || throw(
+        ArgumentError("the scatter library $(path) has $(size(water_pdf, 1)) cells of `water_pdf`, its header $(header["water_pdf_cells"])")
+    )
+    water = (
+        mu = Float64.(header["water_mu_per_mm"]),
+        compton = Float64.(header["water_compton_per_mm"]),
+        rayleigh = Float64.(header["water_rayleigh_per_mm"]),
+    )
+    detector = (
+        efficiency = Float64.(s["efficiency"]),
+        mu = Float64.(s["detector_mu_per_mm"]),
+        depth = Float64(s["detector_depth_mm"]),
+    )
+    tables = _single_tables(
+        Float64;
+        cols = Float64.(s["column_edges_deg"]),
+        rows = Float64.(s["row_edges_mm"]),
+        sdd = Float64(s["source_to_detector_mm"]),
+        energies,
+        water,
+        water_pdf,
+        detector,
+        energy_weighted = Bool(s["energy_weighted"]),
+        grid,
+        grid_height = Float64(s["grid_height_mm"]),
+        grid_opening = opening,
+        single,
+        forward_deg = Float64(header["forward_rayleigh_deg"]),
+    )
+    nodes = vec(
+        [
+            (T / 2, _kernel_half_width(T, r), rad2deg(asin(clamp(node_offsets[iu, ia, iT] / sid, -1, 1))))
+                for (iu, u) in enumerate(impacts), (ia, r) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
+        ]
+    )
+    _remove_single_scatter!(reshape(kernels, nr, nc, nE, 4, :), tables, nodes, sid)
+    moments = _kernel_moments(kernels, A["offsets"], A["spreads"])
+
     return ScatterKernels(
         String(name),
         String(path),
         Bool(s["energy_weighted"]),
-        Float64(s["source_to_isocenter_mm"]),
+        sid,
         Float64(s["source_to_detector_mm"]),
         Float64.(s["column_edges_deg"]),
         Float64.(s["row_edges_mm"]),
@@ -176,14 +251,58 @@ function ScatterKernels(header::Dict, name::AbstractString, path::AbstractString
         moments,
         permutedims(A["paths"], (2, 1, 6, 3, 4, 5)),
         A["angles"],
-        Float64.(header["water_mu_per_mm"]),
+        water.mu,
+        water.compton,
+        water.rayleigh,
+        water_pdf,
+        detector.efficiency,
+        detector.mu,
+        detector.depth,
+        grid,
+        Float64(s["grid_height_mm"]),
+        opening,
+        single,
         Float64.(header["scatter_angle_edges_deg"]),
         Float64(header["forward_rayleigh_deg"]),
         Float64.(header["path_energy_edges_keV"]),
         Int.(header["element_Z"]),
-        scattering,
+        elements["scattering"],
         node_offsets,
     )
+end
+
+# `kernels[row, column, energy, process, impact, aspect, thickness]` from the library's
+# `scatter[column, row, impact, aspect, thickness, energy]`, `rayleigh` and `forward`: Compton (the
+# scatter less its Rayleigh part), wide Rayleigh (less its forward part) and forward Rayleigh, each
+# (row, column) slice next to its energies and processes, so that one corner of the grid is one
+# contiguous block; process 4 (all of it) is filled with the multiple scatter
+# (`_remove_single_scatter!`).
+function _kernel_processes(S::AbstractArray{Float32, 6}, R::AbstractArray{Float32, 6}, F::AbstractArray{Float32, 6})
+    nc, nr, nu, na, nT, nE = size(S)
+    kernels = Array{Float32}(undef, nr, nc, nE, 4, nu, na, nT)
+    for iT in 1:nT, ia in 1:na, iu in 1:nu, iE in 1:nE, c in 1:nc, r in 1:nr
+        total, rayleigh, forward = S[c, r, iu, ia, iT, iE], R[c, r, iu, ia, iT, iE], F[c, r, iu, ia, iT, iE]
+        kernels[r, c, iE, 1, iu, ia, iT] = total - rayleigh
+        kernels[r, c, iE, 2, iu, ia, iT] = rayleigh - forward
+        kernels[r, c, iE, 3, iu, ia, iT] = forward
+    end
+    return kernels
+end
+
+# `moments[column, k, energy, process, impact, aspect, thickness]`: each column's scatter (k = 1)
+# and its first and second moments about the column's centre (k = 2, 3), as the kernel's scatter
+# landed there (`offsets` and `spreads[column, impact, aspect, thickness, energy]`, degrees).
+function _kernel_moments(kernels::Array{Float32, 7}, O::AbstractArray{Float32, 5}, Sd::AbstractArray{Float32, 5})
+    nr, nc, nE, n_p, nu, na, nT = size(kernels)
+    moments = Array{Float32}(undef, nc, 3, nE, n_p, nu, na, nT)
+    for iT in 1:nT, ia in 1:na, iu in 1:nu, iE in 1:nE, p in 1:n_p, c in 1:nc
+        mass = sum(view(kernels, :, c, iE, p, iu, ia, iT))
+        o, sd = O[c, iu, ia, iT, iE], Sd[c, iu, ia, iT, iE]
+        moments[c, 1, iE, p, iu, ia, iT] = mass
+        moments[c, 2, iE, p, iu, ia, iT] = mass * o
+        moments[c, 3, iE, p, iu, ia, iT] = mass * (sd^2 + o^2)
+    end
+    return moments
 end
 
 Base.show(io::IO, k::ScatterKernels) = print(
@@ -362,28 +481,32 @@ _kernel_offset(a, b, impact_fraction) = impact_fraction * _kernel_seen_half_widt
 # The length (mm) of the kernel ray of impact `u` inside its ellipse: a line passing the centre of
 # an ellipse at `u` times its half-width `h` across the line crosses it for 2ab·√(1 − u²)/h.
 # `q = √(1 − u²)` is passed by `_kernel_impact`, exact near the edge where 1 − u² is not.
-_kernel_chord(a, b, u, q = sqrt(max(zero(u), 1 - u^2))) = 2a * b * q / _kernel_seen_half_width(a, b, u)
+_kernel_chord(a, b, u, q = _complement(u)) = 2a * b * q / _kernel_seen_half_width(a, b, u)
 
-# `(u, √(1 − u²))` for u = k·2⁻ⁿ, from 1 − u = (2ⁿ − k)·2⁻ⁿ, exact in any float type near the edge.
-@inline function _dyadic_impact(::Type{T}, k::Int, n::Int) where {T}
-    scale = T(2.0^-n)
-    w = T((1 << n) - k) * scale
-    return (T(k) * scale, sqrt(w * (2 - w)))
-end
+# √(1 − x²), for x in [0, 1]
+@inline _complement(x) = sqrt(max(zero(x), (one(x) - x) * (one(x) + x)))
 
 # The impact fraction `u` in [0, 1) whose kernel ray crosses the ellipse (b, a) for `length_mm`,
-# and `√(1 − u²)`: bisection to 2⁻³⁰ on dyadic steps (BasisMonteCarlo's `kernel_impact`); 0 when
-# the ray through the axis (2a long) is no longer than that.
+# and `q = √(1 − u²)`, both to the float type's precision (BasisMonteCarlo's `kernel_impact`):
+# bisection on u while u ≤ q, and nearer the edge on q, whose digits 1 − u² would lose (a 0.03 mm
+# chord of a 16 cm circle has q ≈ 1e-4). 0 when the ray through the axis (2a long) is no longer than
+# that, to rounding.
 function _kernel_impact(a, b, length_mm)
     T = typeof(a)
-    2a <= length_mm && return (zero(T), one(T))
-    lo, hi = 0, 1 << 30
-    for _ in 1:30
-        mid = (lo + hi) >> 1
-        u, q = _dyadic_impact(T, mid, 30)
-        _kernel_chord(a, b, u, q) > length_mm ? (lo = mid) : (hi = mid)
+    o = one(T)
+    2a <= length_mm * (o + T(1.0e-9)) && return (zero(T), o)
+    half = sqrt(T(0.5))
+    near_axis = _kernel_chord(a, b, half, half) <= length_mm
+    # the chord falls with u and rises with q
+    lo, hi = zero(T), half
+    for _ in 1:80
+        mid = (lo + hi) / 2
+        (mid == lo || mid == hi) && break
+        x, y = near_axis ? (mid, _complement(mid)) : (_complement(mid), mid)
+        (_kernel_chord(a, b, x, y) > length_mm) == near_axis ? (lo = mid) : (hi = mid)
     end
-    return _dyadic_impact(T, lo + hi, 31)
+    mid = (lo + hi) / 2
+    return near_axis ? (mid, _complement(mid)) : (_complement(mid), mid)
 end
 
 # Linear interpolation weights of `x` on the sorted grid `xs`, clamped: (i, i + 1, weight of i + 1).
@@ -407,12 +530,66 @@ _ray_widths(xs) = [
         for i in eachindex(xs)
 ]
 
+# For rays at `angle_deg` from the central ray (sorted, at least two): `rays[(x, width, sin, cos), ray]`,
+# where each passes the isocentre `sid` mm from the focal spot, the width across the view it stands
+# for and its direction, and `boundaries[(sin, cos), k]`, the direction halfway between rays k and
+# k + 1, each value the (hi, lo) pair of `T`s that sums to its Float64 (`_scatter_strips!`, `_RayStrips`)
+function _ray_pairs(::Type{T}, angle_deg, sid) where {T}
+    xs = [sid * sind(γ) for γ in angle_deg]
+    rays = reduce(
+        hcat,
+        [[_pair(T, x)..., _pair(T, w)..., _pair(T, sind(γ))..., _pair(T, cosd(γ))...] for (x, w, γ) in zip(xs, _ray_widths(xs), angle_deg)],
+    )
+    halfway = (angle_deg[1:(end - 1)] .+ angle_deg[2:end]) ./ 2
+    boundaries = reduce(hcat, [[_pair(T, sind(β))..., _pair(T, cosd(β))...] for β in halfway])
+    return rays, boundaries
+end
+
 # `(sum, compensation) + x`, Kahan's: the device sums in single precision.
 @inline function _kahan(sum, c, x)
     y = x - c
     t = sum + y
     return (t, (t - sum) - y)
 end
+
+# Double-float arithmetic: a value as the pair (hi, lo) of floats of the workspace's type that sum
+# to it, about twice its digits (Dekker's, with the fused multiply-add). The single scatter's yes/no
+# decisions (which strip a point is in, whether it is inside it, which cell of the angular tables)
+# are taken again in it when single precision is too near the line to tell, so that they fall as
+# in double precision (and on every backend: Metal has no Float64).
+@inline function _two_prod(a, b)
+    p = a * b
+    return (p, fma(a, b, -p))
+end
+@inline function _quick_two_sum(a, b)
+    s = a + b
+    return (s, b - (s - a))
+end
+@inline function _dd_add(a::NTuple{2}, b::NTuple{2})
+    s = a[1] + b[1]
+    v = s - a[1]
+    e = (a[1] - (s - v)) + (b[1] - v)
+    return _quick_two_sum(s, e + (a[2] + b[2]))
+end
+@inline _dd_sub(a::NTuple{2}, b::NTuple{2}) = _dd_add(a, (-b[1], -b[2]))
+@inline function _dd_mul(a::NTuple{2}, b::NTuple{2})
+    p, e = _two_prod(a[1], b[1])
+    return _quick_two_sum(p, e + (a[1] * b[2] + a[2] * b[1]))
+end
+@inline function _dd_div(a::NTuple{2}, b::NTuple{2})
+    q = a[1] / b[1]
+    r = _dd_sub(a, _dd_mul((q, zero(q)), b))
+    return _quick_two_sum(q, r[1] / b[1])
+end
+@inline function _dd_sqrt(a::NTuple{2})
+    s = sqrt(a[1])
+    s > 0 || return (s, zero(s))
+    r = _dd_sub(a, _two_prod(s, s))
+    return _quick_two_sum(s, r[1] / (2s))
+end
+@inline _dd(x) = (x, zero(x))
+# a Float64 as the pair of `T`s that sum to it (on the host)
+_pair(::Type{T}, x::Real) where {T} = (T(x), T(Float64(x) - Float64(T(x))))
 
 # The water ellipse of one view: its chords across the view have the patient's water (the zeroth
 # moment of the rays' lengths across the fan), centre (the first) and spread (the second). A ray's
@@ -439,6 +616,391 @@ function _view_ellipse(xs, dxs, lengths)
     b = 2 * sqrt(spread / m0)
     b > 0 || return empty
     return (a = m0 / (π * b), b = b, centre = x0)
+end
+
+# =============================================================================
+# Single scatter (BasisMonteCarlo's `single_scatter`)
+# =============================================================================
+#
+# The scatter of a pencil ray's first scattering on the scanner's detector, a deterministic
+# quadrature of what forced detection integrates along the ray: the ray leaves the focal spot (the
+# origin; the central ray along +y) at an angle across the fan, at z = 0, through a medium that
+# scatters and attenuates as water of its water-equivalent density. At each of `depths` sites along
+# it: its chance per mm of each scattering, the attenuation on the way there and, toward
+# `points_per_column × points_per_row` points of every bin of the detector within
+# `columns_each_side` columns of the ray's own (a grid lets no single scatter through beyond; every
+# column without a grid): water's angular distribution, the way out (its in-plane water-equivalent
+# length lengthened by the elevation), the grid, the detector's efficiency (with the obliquity) and,
+# for an energy integrator, the energy. Compton, wide Rayleigh and forward Rayleigh (an angle below
+# `forward_rayleigh_deg`) apart. Generic in the float type: the device runs it in the workspace's.
+
+const _ELECTRON_REST_KEV = 510.99895
+
+# The medium of a kernel: water, an elliptical cylinder of semi-axes `a` along the central ray and `b`
+# across it, its axis `axis` mm from the focal spot on the central ray (BasisMonteCarlo's `WaterEllipse`).
+struct _WaterEllipse{T}
+    a::T
+    b::T
+    axis::T
+end
+
+# A patient as one view-group's coarse rays describe it (BasisMonteCarlo's `RayStrips`): ray `i`'s
+# water-equivalent length spread evenly over its outline chord, which starts `strips[1:2, base + i]`
+# mm from the focal spot (a double-float), is `strips[3, …]` long and has the density `strips[4, …]`.
+# The `n` rays are at `first + (i − 1) · step` degrees; a point belongs to the ray nearest its
+# direction from the focal spot, `boundaries[:, k]` (sin, cos of the angle halfway between rays k and
+# k + 1, double-floats) the line between them. Uniform along z.
+struct _RayStrips{A, B, T}
+    strips::A
+    boundaries::B
+    base::Int
+    n::Int
+    first::T
+    step::T
+end
+
+# Where the ray at `γ` degrees from the focal spot enters the medium (mm from the focal spot, a
+# double-float), how long it is inside, and its density there (BasisMonteCarlo's `ray_segment`)
+@inline function _ray_segment(m::_WaterEllipse, γ)
+    z = zero(m.a)
+    sγ, cγ = sincos(deg2rad(γ))
+    qy = -m.axis / m.a
+    ux, uy = sγ / m.b, cγ / m.a
+    A, B, C = ux^2 + uy^2, qy * uy, qy^2 - 1
+    disc = B^2 - A * C
+    disc > 0 || return (_dd(z), z, z)
+    return (_dd((-B - sqrt(disc)) / A), 2sqrt(disc) / A, one(z))
+end
+
+# (the strip of a coarse ray: by its number, or by its angle)
+@inline function _ray_segment(m::_RayStrips, i::Int)
+    j = m.base + i
+    return ((m.strips[1, j], m.strips[2, j]), m.strips[3, j], m.strips[4, j])
+end
+@inline _ray_segment(m::_RayStrips, γ::AbstractFloat) =
+    _ray_segment(m, clamp(unsafe_trunc(Int, round((γ - m.first) / m.step)), 0, m.n - 1) + 1)
+
+# The water-equivalent length (mm) from the in-plane point `P` to the edge of the medium along the
+# unit direction `ω` (BasisMonteCarlo's `exit_wet`; both double-floats, `((x hi, x lo), (y hi, y lo))`):
+# through an ellipse, its chord beyond the point (BasisMonteCarlo's `ellipse_chord`); through the
+# strips, the density every 2 mm, out of the patient at the first point outside it after one inside.
+@inline function _exit_wet(m::_WaterEllipse, P, ω)
+    x, y, s, c = P[1][1], P[2][1], ω[1][1], ω[2][1]
+    ox, oy = x / m.b, (y - m.axis) / m.a
+    ux, uy = s / m.b, c / m.a
+    A = ux^2 + uy^2
+    B = 2 * (ox * ux + oy * uy)
+    C = ox^2 + oy^2 - 1
+    disc = B^2 - 4A * C
+    disc <= 0 && return zero(x)
+    t1, t2 = (-B - sqrt(disc)) / (2A), (-B + sqrt(disc)) / (2A)
+    return max(zero(x), t2) - max(zero(x), t1)
+end
+
+# A point of the way out, `t` mm from `P` along `ω`, as a double-float
+@inline _dd_along(P, ω, t) = (_dd_add(P[1], _dd_mul(_dd(t), ω[1])), _dd_add(P[2], _dd_mul(_dd(t), ω[2])))
+
+@inline function _exit_wet(m::_RayStrips, P, ω)
+    T = typeof(P[1][1])
+    step = T(2)
+    near = T(1.0e-3)            # mm, and steps: well beyond single precision's error on either
+    total, t, inside = zero(T), step / 2, false
+    while t < T(1000)
+        x, y = P[1][1] + t * ω[1][1], P[2][1] + t * ω[2][1]
+        # the nearest ray (BasisMonteCarlo's `nearest_ray`, a tie to the later one), in double-float
+        # when the point is near the line between two
+        f = (rad2deg(atan(x, y)) - m.first) / m.step + T(0.5)
+        k = floor(f)
+        i = clamp(unsafe_trunc(Int, clamp(k, -one(k), oftype(k, m.n))), 0, m.n - 1) + 1
+        frac = f - k
+        b = frac < T(0.5) ? i - 1 : i
+        if 0 <= k < m.n && min(frac, 1 - frac) < near && 1 <= b < m.n
+            X, Y = _dd_along(P, ω, t)
+            s = _dd_sub(
+                _dd_mul(X, (m.boundaries[3, b], m.boundaries[4, b])),
+                _dd_mul(Y, (m.boundaries[1, b], m.boundaries[2, b])),
+            )
+            i = s[1] >= 0 ? b + 1 : b
+        end
+        # inside its strip, in double-float when the point is near either end of it
+        j = m.base + i
+        entry, L = m.strips[1, j], m.strips[3, j]
+        r = sqrt(x^2 + y^2)
+        within = r - entry >= 0 && entry + L - r >= 0
+        if L > 0 && min(abs(r - entry), abs(entry + L - r)) < near
+            X, Y = _dd_along(P, ω, t)
+            r2 = _dd_add(_dd_mul(X, X), _dd_mul(Y, Y))
+            E = (entry, m.strips[2, j])
+            F = _dd_add(E, _dd(L))
+            within = _dd_sub(r2, _dd_mul(E, E))[1] >= 0 && _dd_sub(_dd_mul(F, F), r2)[1] >= 0
+        end
+        ρ = L > 0 && within ? m.strips[4, j] : zero(T)
+        ρ > 0 && (inside = true)
+        inside && ρ == 0 && break
+        total += ρ * step
+        t += step
+    end
+    return total
+end
+
+# The fraction a focused grid lets through at `α` (rad) from its focus, one way
+@inline _grid_acceptance(α, height, opening) = isinf(opening) ? one(α) : max(zero(α), 1 - height * abs(tan(α)) / opening)
+
+# Linear interpolation of a table on the 1-keV grid from 1 keV, clamped (BasisMonteCarlo's `on_kev_grid`)
+@inline function _on_kev_grid(table, E)
+    n = length(table)
+    e = clamp(E, one(E), oftype(E, n))
+    i = min(unsafe_trunc(Int, floor(e)), n - 1)
+    return table[i] + (e - i) * (table[i + 1] - table[i])
+end
+
+# The single-scatter quadrature's inputs in the float type `T`, as plain arrays and numbers: the
+# library's columns and rows, the direction of each column point (`column_points[(sin, cos) as
+# (hi, lo) pairs, point, column]`), the scanner's source–detector distance (and as a pair, `sdd2`),
+# water's attenuation on the 1-keV grid (`total`) and at the library's `energies` (`mu[energy, (all,
+# Compton, Rayleigh)]`), its angular tables (`pdf`, as read) and each energy's lower row of them and
+# the upper row's weight, the detector's efficiency, attenuation × depth (`mud`, 0 for no obliquity)
+# and 1/(1 − e^{−mud}), the grid (0 none, 1 across, 2 both), the quadrature's counts, the forward
+# Rayleigh's (1 − cos θ)/2 (and as a pair), and whether water scatters at all.
+function _single_tables(
+        ::Type{T};
+        cols,
+        rows,
+        sdd,
+        energies,
+        water,
+        water_pdf,
+        detector,
+        energy_weighted,
+        grid,
+        grid_height,
+        grid_opening,
+        single,
+        forward_deg,
+    ) where {T}
+    E = Float64.(energies)
+    mu = [_on_kev_grid(table, Ek) for Ek in E, table in (water.mu, water.compton, water.rayleigh)]
+    n_keV = size(water_pdf, 2)
+    pdf_row = [min(floor(Int, clamp(Ek, 1, n_keV)), n_keV - 1) for Ek in E]
+    mud = [detector.depth > 0 && μ > 0 ? μ * detector.depth : 0.0 for μ in detector.mu]
+    Q, nc = single.points_per_column, length(cols) - 1
+    column_points = zeros(T, 4, Q, nc)
+    for c in 1:nc, q in 1:Q
+        s, co = sincos(deg2rad(Float64(T(cols[c]) + (q - T(0.5)) / Q * (T(cols[2]) - T(cols[1])))))
+        column_points[:, q, c] .= (_pair(T, s)..., _pair(T, co)...)
+    end
+    forward = (1 - cosd(forward_deg)) / 2
+    return (;
+        cols = T.(cols),
+        rows = T.(rows),
+        column_points,
+        sdd = T(sdd),
+        sdd2 = _pair(T, sdd),
+        energies = T.(E),
+        total = T.(water.mu),
+        mu = T.(mu),
+        pdf = water_pdf,
+        pdf_row = Int32.(pdf_row),
+        pdf_t = T.(clamp.(E, 1, n_keV) .- pdf_row),
+        efficiency = T.(detector.efficiency),
+        mud = T.(mud),
+        norm = T.([m > 0 ? 1 / (1 - exp(-m)) : 0.0 for m in mud]),
+        energy_weighted = Bool(energy_weighted),
+        grid = grid === :none ? 0 : grid === :across ? 1 : 2,
+        grid_height = T(grid_height),
+        opening = T.(grid_opening),
+        depths = single.depths,
+        points_per_column = single.points_per_column,
+        points_per_row = single.points_per_row,
+        columns_each_side = single.columns_each_side,
+        forward = _pair(T, forward),
+        scatters = any(>(0), view(mu, :, 2)) || any(>(0), view(mu, :, 3)),
+    )
+end
+
+# The detector's signal per photon of `E` keV arriving at `obliquity` (the cosine to its normal): its
+# efficiency, its path lengthened by the obliquity, and the energy for an energy integrator
+@inline function _single_efficiency(E, obliquity, efficiency, mud, norm, energy_weighted)
+    k = clamp(unsafe_trunc(Int, round(E)), 1, length(efficiency))
+    η = efficiency[k]
+    m = mud[k]
+    m > 0 && (η *= (1 - exp(-m / obliquity)) * norm[k])
+    return energy_weighted ? η * E : η
+end
+
+# One column point of the detector (`D` mm from the focal spot, `Δ` rad across the fan from the ray)
+# seen from a site of the ray `t` mm from the focal spot, in the plane: the length ℓ of the way to it
+# and its part `along` the column point's direction, 1 − cos φ for the angle φ it turns off the ray,
+# and the grid's acceptance across the fan (1 without one). Each is BasisMonteCarlo's (from the
+# site's and the point's coordinates) written in Δ, so that nothing cancels in single precision:
+# the fan angle `atan(sγ dy − cγ dx, sγ dx + cγ dy)` is `atan(t sin Δ, D − t cos Δ)`, and the way
+# to the point is `D cos Δ − t` along the ray and `D sin Δ` across it.
+@inline function _single_column(t, Δ, D, grid, height, opening)
+    sΔ, cΔ = sincos(Δ)
+    along = D - t * cΔ
+    ℓ = sqrt(along^2 + (t * sΔ)^2)
+    g = grid == 0 ? one(t) : _grid_acceptance(atan(t * sΔ, along), height, opening)
+    c = (D * cΔ - t) / ℓ
+    turn = c > 0 ? (D * sΔ / ℓ)^2 / (1 + c) : 1 - c
+    return ℓ, along, turn, g
+end
+
+# One point of the detector `z` mm along the rows from a column point (`_single_column`): its solid
+# angle (`area` mm² of detector) times the grid's acceptance `g` (0: none of it through), the
+# scattering angle as (1 − cos θ)/2, cos θ = cos ε cos φ for the elevation ε (which keeps its digits
+# near the ray, where the forward Rayleigh peak's cells are narrow, as 1 − cos θ in single precision
+# does not), the obliquity at the detector, and the factor that lengthens the in-plane way out by
+# the elevation. The elevation's angle off the grid's focus is BasisMonteCarlo's
+# `atan(z, ℓ) − atan(z, D)` as one arctangent (the difference of two near ones loses its digits).
+@inline function _single_point(ℓ, along, turn, z, D, area, g, grid, height, opening)
+    L2 = ℓ^2 + z^2
+    L = sqrt(L2)
+    grid == 2 && (g *= _grid_acceptance(atan(z * (D - ℓ), ℓ * D + z^2), height, opening))
+    facing = along / L
+    obliquity = max(oftype(L, 1.0e-3), abs((facing + (z / D) * (z / L)) / sqrt(1 + (z / D)^2)))
+    cos_ε = ℓ / L
+    half_versine = ((z / L)^2 / (1 + cos_ε) + cos_ε * turn) / 2
+    return area * abs(facing) / L2 * g, half_versine, obliquity, L / ℓ
+end
+
+# The unit direction from the site `P` to the column point (sγ, cγ) `D` mm from the focal spot, all
+# double-floats: the way out's
+@inline function _dd_way(P, sγ, cγ, D)
+    dx = _dd_sub(_dd_mul(D, sγ), P[1])
+    dy = _dd_sub(_dd_mul(D, cγ), P[2])
+    ℓ = _dd_sqrt(_dd_add(_dd_mul(dx, dx), _dd_mul(dy, dy)))
+    return (_dd_div(dx, ℓ), _dd_div(dy, ℓ))
+end
+
+# (1 − cos θ)/2 as `_single_point` has it, in double-float: from the site `t` mm along the ray, the
+# angle Δ between the ray and the column point (its sine and cosine), D and z
+@inline function _dd_half_versine(t, sΔ, cΔ, D, z)
+    o = _dd(one(z))
+    dot = _dd_sub(_dd_mul(D, cΔ), t)
+    cross = _dd_mul(D, sΔ)
+    ℓ2 = _dd_add(_dd_mul(dot, dot), _dd_mul(cross, cross))
+    ℓ = _dd_sqrt(ℓ2)
+    c = _dd_div(dot, ℓ)
+    turn = c[1] > 0 ? _dd_div(_dd_div(_dd_mul(cross, cross), ℓ2), _dd_add(o, c)) : _dd_sub(o, c)
+    z2 = _two_prod(z, z)
+    L2 = _dd_add(ℓ2, z2)
+    cos_ε = _dd_div(ℓ, _dd_sqrt(L2))
+    v = _dd_add(_dd_div(_dd_div(z2, L2), _dd_add(o, cos_ε)), _dd_mul(cos_ε, turn))
+    return (v[1] / 2, v[2] / 2)
+end
+
+# The cell of water's angular tables (equal in cos θ from −1) holding the angle whose (1 − cos θ)/2
+# is `v`, and the Rayleigh scattering's process (3 forward, below `forward`, else 2), each again in
+# double-float (`_dd_half_versine(t, sΔ, cΔ, D, z)`) when single precision is too near the line to tell
+@inline function _single_cell(v, cells, forward, t, sΔ, cΔ, D, z)
+    f = v * cells
+    frac = f - floor(f)
+    near = oftype(v, 3.0e-3)
+    if min(frac, 1 - frac) < near || abs(v - forward[1]) < near * forward[1]
+        v2 = _dd_half_versine(t, sΔ, cΔ, D, z)
+        g = _dd_mul(v2, _dd(oftype(v, cells)))
+        c = ceil(g[1])
+        c = g[1] == c && g[2] > 0 ? c + 1 : c
+        return clamp(cells + 1 - unsafe_trunc(Int, c), 1, cells), _dd_sub(v2, forward)[1] < 0 ? 3 : 2
+    end
+    return clamp(cells + 1 - unsafe_trunc(Int, ceil(f)), 1, cells), v < forward[1] ? 3 : 2
+end
+
+# The Compton and the Rayleigh scatter (per mm of path, per steradian, signal per photon) of a site
+# at water-equivalent depth `τ` toward a point of the detector at the angle whose (1 − cos θ)/2 is
+# `v` (cell `j`), its way out `path` long, at the library's energy `e`
+@inline function _single_energy(t, e, j, v, τ, path, obliquity)
+    E = t.energies[e]
+    μT, μC, μR = t.mu[e, 1], t.mu[e, 2], t.mu[e, 3]
+    i, w = t.pdf_row[e], t.pdf_t[e]
+    o = one(w)
+    pdf_c = (o - w) * t.pdf[j, i, 1] + w * t.pdf[j, i + 1, 1]
+    pdf_r = (o - w) * t.pdf[j, i, 2] + w * t.pdf[j, i + 1, 2]
+    rayleigh = μR * pdf_r * exp(-μT * (τ + path)) *
+        _single_efficiency(E, obliquity, t.efficiency, t.mud, t.norm, t.energy_weighted)
+    E′ = E / (o + E / oftype(E, _ELECTRON_REST_KEV) * 2v)
+    compton = μC * pdf_c * exp(-μT * τ - _on_kev_grid(t.total, E′) * path) *
+        _single_efficiency(E′, obliquity, t.efficiency, t.mud, t.norm, t.energy_weighted)
+    return compton, rayleigh
+end
+
+# The single scatter of the pencil ray at `angle_deg` through `medium`, added to `out[row, column,
+# energy, process]` (Compton, wide Rayleigh, forward Rayleigh; per incident photon of each of the
+# library's energies), the columns binned at the scanner's own: BasisMonteCarlo's `single_scatter`.
+function _single_scatter!(out::AbstractArray{<:Real, 4}, medium, angle_deg, t)
+    T = eltype(t.energies)
+    cols, rows = t.cols, t.rows
+    nc, nr = length(cols) - 1, length(rows) - 1
+    t.scatters || return out
+    u = T(angle_deg)
+    entry, L, ρ = _ray_segment(medium, u)
+    (L > 0 && ρ > 0) || return out
+    M, Q, Z, C = t.depths, t.points_per_column, t.points_per_row, t.columns_each_side
+    Δc, Δr = cols[2] - cols[1], rows[2] - rows[1]
+    D = t.sdd
+    dt = L / M
+    s64, c64 = sincos(deg2rad(Float64(angle_deg)))
+    su2, cu2 = _pair(T, s64), _pair(T, c64)
+    own = clamp(searchsortedlast(cols, angle_deg), 1, nc)
+    window = t.grid == 0 ? (1:nc) : (max(1, own - C):min(nc, own + C))
+    area = D * deg2rad(Δc / Q) * (Δr / Z)
+    for m in 1:M
+        # the scattering site (a double-float: the way out's decisions are taken from it), and the
+        # water-equivalent length the photon crossed to reach it
+        depth = _dd_div(_two_prod(T(m) - T(0.5), L), _dd(T(M)))
+        site = _dd_add(entry, depth)
+        P = (_dd_mul(site, su2), _dd_mul(site, cu2))
+        τ = ρ * depth[1]
+        for ci in window, qc in 1:Q
+            γ = cols[ci] + (qc - T(0.5)) / Q * Δc
+            ℓ, along, turn, g_fan = _single_column(site[1], deg2rad(u - γ), D, t.grid, t.grid_height, t.opening[1])
+            g_fan > 0 || continue
+            sγ = (t.column_points[1, qc, ci], t.column_points[2, qc, ci])
+            cγ = (t.column_points[3, qc, ci], t.column_points[4, qc, ci])
+            exit = _exit_wet(medium, P, _dd_way(P, sγ, cγ, t.sdd2))
+            sΔ = _dd_sub(_dd_mul(su2, cγ), _dd_mul(cu2, sγ))
+            cΔ = _dd_add(_dd_mul(cu2, cγ), _dd_mul(su2, sγ))
+            for ri in 1:nr, qz in 1:Z
+                z = rows[ri] + (qz - T(0.5)) / Z * Δr
+                w, v, obliquity, lengthen = _single_point(ℓ, along, turn, z, D, area, g_fan, t.grid, t.grid_height, t.opening[2])
+                w > 0 || continue
+                j, p = _single_cell(v, size(t.pdf, 1), t.forward, site, sΔ, cΔ, t.sdd2, z)
+                for e in eachindex(t.energies)
+                    compton, rayleigh = _single_energy(t, e, j, v, τ, exit * lengthen, obliquity)
+                    out[ri, ci, e, 1] += ρ * dt * w * compton
+                    out[ri, ci, e, p] += ρ * dt * w * rayleigh
+                end
+            end
+        end
+    end
+    return out
+end
+
+# Each kernel's multiple scatter, in place of its scatter: `kernels[row, column, energy, process,
+# node]`, each process (Compton, wide and forward Rayleigh) less the node's own single scatter in its
+# water ellipse at its own ray, never below none, and all of it (process 4) their sum. `nodes[node]`
+# is (a, b, angle_deg): the ellipse's semi-axes along and across the ray, its axis `sid` from the focal
+# spot, and the angle of the kernel's own ray from the central ray. Once per library entry, on the
+# host's threads.
+function _remove_single_scatter!(kernels::AbstractArray{Float32, 5}, tables, nodes, sid)
+    nr, nc, nE = size(kernels, 1), size(kernels, 2), size(kernels, 3)
+    let kernels = kernels, tables = tables, nodes = nodes, sid = sid
+        _foreachindex(eachindex(nodes), AK.get_backend(kernels)) do node
+            a, b, angle = nodes[node]
+            single = zeros(nr, nc, nE, 3)
+            _single_scatter!(single, _WaterEllipse(a, b, sid), angle, tables)
+            for e in 1:nE, c in 1:nc, r in 1:nr
+                total = 0.0
+                for p in 1:3
+                    left = max(Float64(kernels[r, c, e, p, node]) - single[r, c, e, p], 0.0)
+                    kernels[r, c, e, p, node] = left
+                    total += left
+                end
+                kernels[r, c, e, 4, node] = total
+            end
+        end
+    end
+    return kernels
 end
 
 # =============================================================================
@@ -486,15 +1048,20 @@ end
 # 1. `_scatter_ellipses!`: each view-group's water ellipse, from its rays' lengths.
 # 2. `_scatter_ray_shapes!`: each ray's own ellipse (thickness, aspect), its impact, and how much of
 #    the nearest kernels it takes.
-# 3. `_scatter_corners!`: for each of the 8 kernels of the grid around a ray (its corners) and each
+# 3. `_scatter_strips!`: each view-group's patient as its rays describe it, for their single scatter.
+# 4. `_scatter_corners!`: for each of the 8 kernels of the grid around a ray (its corners) and each
 #    channel: the weights of the kernel's energies and processes (the ray's photons and how much
 #    less of each process's scatter gets out of its materials than of the kernel's water), and,
-#    for each of the kernel's columns, where it lands once moved to the ray's angle: a box of the
-#    width the scatter landed with (degrees from a library column's left edge, so that single
-#    precision keeps the slivers of it a column takes).
-# 4. `_scatter_deposit!`: each library bin (row relative to the rays' own, column, channel) of each
-#    view-group gathers the boxes over it, each the kernel's column mixed by the corner's weights.
-# 5. `_scatter_rows!`: each library bin of each view, the groups' scatter laid over the rows of
+#    for each of the kernel's columns, where its multiple scatter lands once moved to the ray's
+#    angle: a box of the width the scatter landed with (degrees from a library column's left edge,
+#    so that single precision keeps the slivers of it a column takes).
+# 5. `_scatter_single_weights!`: each ray's photons by energy and process, scaled by the escape
+#    factors of its corners.
+# 6. `_scatter_single!`: each ray's own single scatter in the patient, at its own columns.
+# 7. `_scatter_deposit!`: each library bin (row relative to the rays' own, column, channel) of each
+#    view-group gathers the boxes over it, each the kernel's column mixed by the corner's weights,
+#    and its rays' own single scatter.
+# 8. `_scatter_rows!`: each library bin of each view, the groups' scatter laid over the rows of
 #    their beams.
 
 # `a + b` and its rounding error, exactly (Knuth's two-sum).
@@ -525,8 +1092,9 @@ function _scatter_ellipses!(
 end
 
 # `shapes[(thickness, aspect, impact, side, weight), ray]`: each ray's own ellipse (as thick as
-# the view's, or as the ray's water-equivalent length `wet` if longer), its signed impact, the side
-# of the axis it passes on, and the weight of the kernels standing in for it (0: no scatter).
+# the view's, or as the ray's water-equivalent length `wet` if longer, then at impact 0), its
+# impact, the side of the axis it passes on (-1: left, its kernels mirrored), and the weight of the
+# kernels standing in for it (0: no scatter).
 # With `mark`, `clamped[ray]` is set to 1 for a ray outside the library's grids (and otherwise left
 # as it is). `grid` = (thinnest, thickest, narrowest, widest, last impact).
 function _scatter_ray_shapes!(
@@ -560,7 +1128,6 @@ function _scatter_ray_shapes!(
                 side = offset >= 0 ? o : -o
                 a_ray = max(a, L / 2)
                 u, q = _kernel_impact(a_ray, b, L)
-                u *= side
                 aspect = b / a_ray
                 thickness = 2a_ray
                 inside = T_min <= thickness <= T_max && r_min <= aspect <= r_max
@@ -571,10 +1138,10 @@ function _scatter_ray_shapes!(
                 amount = o
                 if thickness < T_min
                     r_node = clamp(aspect, r_min, r_max)
-                    chord = _kernel_chord(T_min / 2, _kernel_half_width(T_min, r_node), abs(u), q)
+                    chord = _kernel_chord(T_min / 2, _kernel_half_width(T_min, r_node), u, q)
                     amount = min(o, L / max(chord, o))
                 end
-                graze = abs(u) > u_last ? q / sqrt(o - u_last^2) : o
+                graze = u > u_last ? q / sqrt(o - u_last^2) : o
                 weight = graze * amount
             end
             shapes[1, ray] = thickness
@@ -589,8 +1156,9 @@ function _scatter_ray_shapes!(
 end
 
 # For each channel `ch <= n_used`, corner `c` (0–7: bits thickness, aspect, impact) and ray:
-# `corner[c, ray]`, the kernel's place in the grid (0-based); `factor[ch, c, ray]`, its weight
-# (0: none); `mix[slot, ch, c, ray]`, the weights of its library energies and processes (`3nE`
+# `corner[c, ray]`, the kernel's place in the grid (0-based); `corner_weight[c, ray]`, its share of
+# the ray (the interpolation's weight alone, 0: none); `factor[ch, c, ray]`, its weight with the
+# ray's (0: no scatter lands); `mix[slot, ch, c, ray]`, the weights of its library energies and processes (`3nE`
 # slots of Compton, wide and forward Rayleigh, or for a ray of water `nE` slots of all the
 # scatter); `boxes[(edge, lo, hi), column, ch, c, ray]`, where each of its columns (in the order
 # of the ray's side) lands, from the left edge of library column `edge` (degrees; `lo = hi = Inf`
@@ -610,6 +1178,7 @@ end
 # every ray's, the others the chunk's.
 function _scatter_corners!(
         corner::AbstractMatrix{Int32},
+        corner_weight::AbstractMatrix{T},
         factor::AbstractArray{T, 3},
         mix::AbstractArray{T, 4},
         boxes::AbstractArray{T, 5},
@@ -629,8 +1198,8 @@ function _scatter_corners!(
     n_cc = size(angle, 2)
     nu, na = length(lib.impacts), length(lib.log_aspects)
     nb = size(dmu, 1)
-    let corner = corner, factor = factor, mix = mix, boxes = boxes, window = window, shapes = shapes,
-            weights = weights, plain = plain, dmu = dmu, angle = angle,
+    let corner = corner, corner_weight = corner_weight, factor = factor, mix = mix, boxes = boxes, window = window,
+            shapes = shapes, weights = weights, plain = plain, dmu = dmu, angle = angle,
             moments = lib.moments, paths = lib.paths, node = lib.node_deg, thick = lib.thicknesses,
             log_r = lib.log_aspects, impacts = lib.impacts, w_col = lib.column_width,
             nE = nE, n_ch = n_ch, nc = nc, n_cc = n_cc, nu = nu, na = na, nb = nb, n_used = n_used, ray0 = ray0
@@ -645,11 +1214,12 @@ function _scatter_corners!(
             factor[idx] = zero(T)
             window[1, ch, c + 1, local_ray] = Int32(1)
             window[2, ch, c + 1, local_ray] = Int32(0)
+            ch == 1 && (corner_weight[c + 1, local_ray] = zero(T))
             @inbounds if ch <= n_used && weight > 0
                 u = shapes[3, ray]
                 iT = _bracket(thick, shapes[1, ray])
                 ir = _bracket(log_r, log(shapes[2, ray]))
-                iu = _bracket(impacts, abs(u))
+                iu = _bracket(impacts, u)
                 bT, br, bu = (c >> 2) & 1, (c >> 1) & 1, c & 1
                 tT, wT = bT == 0 ? (iT[1], o - iT[3]) : (iT[2], iT[3])
                 tr, wr = br == 0 ? (ir[1], o - ir[3]) : (ir[2], ir[3])
@@ -658,6 +1228,7 @@ function _scatter_corners!(
                 if wg != 0
                     k = ((tT - 1) * na + (tr - 1)) * nu + (tu - 1)
                     corner[c + 1, local_ray] = Int32(k)
+                    ch == 1 && (corner_weight[c + 1, local_ray] = wg)
 
                     # this corner's weights: how much less of each process's scatter gets out of the
                     # ray's materials than of the kernel's water
@@ -692,13 +1263,14 @@ function _scatter_corners!(
                     s_lo = s_err + (angle[2, i] - side * node[2, k + 1])
                     whole = round(s_hi / w_col)
                     rest = s_hi - whole * w_col
-                    mirror = u < 0
+                    mirror = side < 0
                     mbase = 3nc * 4nE * k
                     d_lo, d_hi = typemax(Int32), typemin(Int32)
 
                     # Each column moved by the ray's angle from the kernel's own, as what it holds:
                     # the scatter centred where it landed in the column and spread as it landed, a
-                    # box of that width (the mirror image for a ray left of the axis)
+                    # box of that width (the mirror image for a ray left of the axis, by its side
+                    # even through the axis)
                     for ii in 1:nc
                         src = mirror ? nc + 1 - ii : ii
                         m0, m1, m2 = zero(T), zero(T), zero(T)
@@ -742,9 +1314,228 @@ function _scatter_corners!(
     return factor
 end
 
+# `strips[(entry hi, entry lo, outline, density), ray]`: each view-group's patient as its rays
+# describe it (BasisMonteCarlo's `RayStrips`): each ray's water-equivalent length `wet` spread evenly
+# over its length through the outline (`outline`), that length centred where the view-group's
+# outline ellipse (its moments of the outline lengths, BasisMonteCarlo's `view_ellipse`) centres the
+# ray's chord, at the point of the ray nearest the ellipse's centre in the ellipse's own measure
+# (on the ray at the isocentre without an ellipse). In double-float throughout (the strips' ends
+# decide what a point is in, `_exit_wet`): `rays[(x, width, sin, cos) as (hi, lo) pairs, ray]`, where
+# each coarse ray passes the isocentre (`sid` mm from the focal spot, a pair, as `π` is), the width
+# across the view it stands for, and its direction.
+function _scatter_strips!(
+        strips::AbstractMatrix{T},
+        rays::AbstractMatrix{T},
+        wet::AbstractArray{T, 3},
+        outline::AbstractArray{T, 3},
+        sid::NTuple{2, T},
+        π2::NTuple{2, T},
+    ) where {T}
+    n_cc = size(wet, 1)
+    let strips = strips, rays = rays, wet = wet, outline = outline, sid = sid, π2 = π2, n_cc = n_cc
+        _foreachindex(1:(size(wet, 2) * size(wet, 3)), AK.get_backend(strips)) do gv
+            base = (gv - 1) * n_cc
+            z = _dd(zero(T))
+            m0, m1 = z, z
+            @inbounds for i in 1:n_cc
+                w = _dd_mul(_dd(outline[base + i]), (rays[3, i], rays[4, i]))
+                m0 = _dd_add(m0, w)
+                m1 = _dd_add(m1, _dd_mul((rays[1, i], rays[2, i]), w))
+            end
+            a2, b2, x0 = z, z, z
+            if m0[1] > 0
+                x0 = _dd_div(m1, m0)
+                spread = z
+                @inbounds for i in 1:n_cc
+                    d = _dd_sub((rays[1, i], rays[2, i]), x0)
+                    spread = _dd_add(spread, _dd_mul(_dd_mul(d, d), _dd_mul(_dd(outline[base + i]), (rays[3, i], rays[4, i]))))
+                end
+                b = _dd_mul(_dd(T(2)), _dd_sqrt(_dd_div(spread, m0)))
+                if b[1] > 0
+                    a = _dd_div(m0, _dd_mul(π2, b))
+                    a2, b2 = _dd_mul(a, a), _dd_mul(b, b)
+                end
+            end
+            @inbounds for i in 1:n_cc
+                sγ, cγ = (rays[5, i], rays[6, i]), (rays[7, i], rays[8, i])
+                L = outline[base + i]
+                middle = if a2[1] > 0 && b2[1] > 0
+                    _dd_div(
+                        _dd_add(_dd_div(_dd_mul(x0, sγ), b2), _dd_div(_dd_mul(sid, cγ), a2)),
+                        _dd_add(_dd_div(_dd_mul(sγ, sγ), b2), _dd_div(_dd_mul(cγ, cγ), a2)),
+                    )
+                else
+                    _dd_mul(sid, cγ)
+                end
+                entry = _dd_sub(middle, _dd(L / 2))
+                strips[1, base + i] = entry[1]
+                strips[2, base + i] = entry[2]
+                strips[3, base + i] = L
+                strips[4, base + i] = L > 0 ? wet[base + i] / L : zero(T)
+            end
+        end
+    end
+    return strips
+end
+
+# `weights[energy, process, ch, ray]` for the first `n_used` channels of the `n_rays` rays from
+# `ray0 + 1` on, in place: each ray's photons by library energy and process (`_scatter_weights!`),
+# each scaled by how much less of its scatter gets out of the ray's materials than of the water of
+# its corners' kernels, mixed by the corners' shares of the ray alone (`corner_weight`, `mix`;
+# BasisMonteCarlo's escape factors): the weights of the ray's own single scatter.
+function _scatter_single_weights!(
+        weights::AbstractArray{T, 4},
+        corner_weight::AbstractMatrix{T},
+        mix::AbstractArray{T, 4},
+        plain::AbstractVector{Bool},
+        n_used::Int,
+        ray0::Int,
+        n_rays::Int,
+    ) where {T}
+    nE, n_ch = size(weights, 1), size(weights, 3)
+    let weights = weights, corner_weight = corner_weight, mix = mix, plain = plain, nE = nE, n_ch = n_ch,
+            n_used = n_used, ray0 = ray0
+        _foreachindex(1:(nE * n_ch * n_rays), AK.get_backend(weights)) do idx
+            q = idx - 1
+            g = q % nE + 1
+            q ÷= nE
+            ch = q % n_ch + 1
+            local_ray = q ÷ n_ch + 1
+            ch <= n_used || return
+            # a ray of water's kernels hold all their scatter, each process weighed alike
+            water = plain[local_ray + ray0]
+            @inbounds for p in 1:3
+                slot = water ? g : g + (p - 1) * nE
+                s = zero(T)
+                for c in 1:8
+                    w = corner_weight[c, local_ray]
+                    w == 0 && continue
+                    s += w * mix[slot, ch, c, local_ray]
+                end
+                weights[g, p, ch, local_ray] = s
+            end
+        end
+    end
+    return weights
+end
+
+# The channels' sums `acc` with one energy `e` of a point added: its Compton and its Rayleigh scatter
+# (wide, process 2, or forward, 3: `p`) weighed by the ray's `weights[e, process, ch, ray]`
+@inline _single_add(acc::NTuple{N}, weights, e, p, ray, compton, rayleigh) where {N} =
+    ntuple(k -> acc[k] + (weights[e, 1, k, ray] * compton + weights[e, p, k, ray] * rayleigh), Val(N))
+
+# `single[ray, row, ch, column]` for the `n_rays` rays from `ray0 + 1` on: each ray's own single
+# scatter (`_single_scatter!`) through the patient its view-group's rays describe (`strips`), its
+# energies and processes weighed by `weights` (`_scatter_single_weights!`) into the first `N`
+# channels, on the library's rows relative to the ray's own and its columns from `window0[i] + 1`
+# (its own column and `columns_each_side` either side behind a grid, every column without one; a
+# ray at the coarse ray `i`). `t` is the quadrature's tables on the device (`_single_tables`),
+# `angle_deg` the coarse rays' angles, `first` + (i − 1) `step`, `rays` their directions
+# (`_scatter_strips!`) and `boundaries` the lines between them (`_RayStrips`). A thread for each
+# column of a ray, a warp's 32 threads one column of 32 rays: alike, they take the same branches.
+function _scatter_single!(
+        single::AbstractArray{T, 4},
+        weights::AbstractArray{T, 4},
+        shapes::AbstractMatrix{T},
+        strips::AbstractMatrix{T},
+        angle_deg::AbstractVector{T},
+        rays::AbstractMatrix{T},
+        boundaries::AbstractMatrix{T},
+        window0::AbstractVector{Int32},
+        first::T,
+        step::T,
+        t,
+        ray0::Int,
+        n_rays::Int,
+        ::Val{N},
+    ) where {T, N}
+    nr, nc, n_win = size(single, 2), length(t.cols) - 1, size(single, 4)
+    nE = size(weights, 1)
+    n_cc = length(angle_deg)
+    let single = single, weights = weights, shapes = shapes, strips = strips, angle_deg = angle_deg, rays = rays,
+            boundaries = boundaries, window0 = window0, first = first, step = step, cols = t.cols, rows = t.rows,
+            column_points = t.column_points, energies = t.energies, total = t.total, mu = t.mu, pdf = t.pdf,
+            pdf_row = t.pdf_row, pdf_t = t.pdf_t, efficiency = t.efficiency, mud = t.mud, norm = t.norm,
+            energy_weighted = t.energy_weighted, grid = t.grid, height = t.grid_height, opening = t.opening,
+            M = t.depths, Q = t.points_per_column, Z = t.points_per_row, forward = t.forward, scatters = t.scatters,
+            D = t.sdd, D2 = t.sdd2, nr = nr, nc = nc, n_win = n_win, nE = nE, n_cc = n_cc, ray0 = ray0, n_rays = n_rays
+        _foreachindex(1:(32 * n_win * cld(n_rays, 32)), AK.get_backend(single)) do idx
+            q = idx - 1
+            lane = q % 32
+            q ÷= 32
+            w = q % n_win + 1
+            local_ray = (q ÷ n_win) * 32 + lane + 1
+            local_ray > n_rays && return
+            @inbounds for k in 1:N, ri in 1:nr
+                single[local_ray, ri, k, w] = zero(T)
+            end
+            ray = local_ray + ray0
+            i = (ray - 1) % n_cc + 1
+            ci = w + Int(window0[i])
+            (scatters && 1 <= ci <= nc && shapes[5, ray] > 0) || return
+            medium = _RayStrips(strips, boundaries, ray - i, n_cc, first, step)
+            entry, L, ρ = _ray_segment(medium, i)
+            (L > 0 && ρ > 0) || return
+            # the library energies the ray has photons of
+            used = UInt64(0)
+            @inbounds for e in 1:nE, k in 1:N, p in 1:3
+                weights[e, p, k, local_ray] != 0 && (used |= UInt64(1) << (e - 1))
+            end
+            used == 0 && return
+            tables = (; energies, total, mu, pdf, pdf_row, pdf_t, efficiency, mud, norm, energy_weighted)
+            cells = size(pdf, 1)
+            Δc, Δr = cols[2] - cols[1], rows[2] - rows[1]
+            area = D * deg2rad(Δc / Q) * (Δr / Z)
+            u = angle_deg[i]
+            su2, cu2 = (rays[5, i], rays[6, i]), (rays[7, i], rays[8, i])
+            dt = L / M
+            @inbounds for m in 1:M
+                # the scattering site (a double-float: the way out's decisions are taken from it), and
+                # the water-equivalent length the photon crossed to reach it
+                depth = _dd_div(_two_prod(T(m) - T(0.5), L), _dd(T(M)))
+                site = _dd_add(entry, depth)
+                P = (_dd_mul(site, su2), _dd_mul(site, cu2))
+                τ = ρ * depth[1]
+                for qc in 1:Q
+                    γ = cols[ci] + (qc - T(0.5)) / Q * Δc
+                    ℓ, along, turn, g_fan = _single_column(site[1], deg2rad(u - γ), D, grid, height, opening[1])
+                    g_fan > 0 || continue
+                    sγ = (column_points[1, qc, ci], column_points[2, qc, ci])
+                    cγ = (column_points[3, qc, ci], column_points[4, qc, ci])
+                    exit = _exit_wet(medium, P, _dd_way(P, sγ, cγ, D2))
+                    sΔ = _dd_sub(_dd_mul(su2, cγ), _dd_mul(cu2, sγ))
+                    cΔ = _dd_add(_dd_mul(cu2, cγ), _dd_mul(su2, sγ))
+                    for ri in 1:nr
+                        acc = ntuple(_ -> zero(T), Val(N))
+                        for qz in 1:Z
+                            z = rows[ri] + (qz - T(0.5)) / Z * Δr
+                            wp, v, obliquity, lengthen = _single_point(ℓ, along, turn, z, D, area, g_fan, grid, height, opening[2])
+                            wp > 0 || continue
+                            j, p = _single_cell(v, cells, forward, site, sΔ, cΔ, D2, z)
+                            s = ρ * dt * wp
+                            path = exit * lengthen
+                            for e in 1:nE
+                                (used >> (e - 1)) & 1 == 0 && continue
+                                compton, rayleigh = _single_energy(tables, e, j, v, τ, path, obliquity)
+                                acc = _single_add(acc, weights, e, p, local_ray, s * compton, s * rayleigh)
+                            end
+                        end
+                        for k in 1:N
+                            single[local_ray, ri, k, w] += acc[k]
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return single
+end
+
 # `rows[row, column, ch, group, view]`: the scatter of a view-group's rays relative to their own
-# row, each library bin gathering the corners' boxes over its column, for the `n_gv` view-groups
-# of the chunk whose rays start after `ray0` (`shapes`, `plain`: every ray's; the rest the chunk's).
+# row, each library bin gathering the corners' boxes over its column and the rays' own single
+# scatter (`single`, `_scatter_single!`; ray `i` holds the columns from `window0[i] + 1`), for the
+# `n_gv` view-groups of the chunk whose rays start after `ray0` (`shapes`, `plain`: every ray's; the
+# rest the chunk's).
 function _scatter_deposit!(
         rows::AbstractArray{T, 5},
         corner::AbstractMatrix{Int32},
@@ -752,6 +1543,8 @@ function _scatter_deposit!(
         mix::AbstractArray{T, 4},
         boxes::AbstractArray{T, 5},
         window::AbstractArray{Int32, 4},
+        single::AbstractArray{T, 4},
+        window0::AbstractVector{Int32},
         shapes::AbstractMatrix{T},
         plain::AbstractVector{Bool},
         lib,
@@ -766,6 +1559,7 @@ function _scatter_deposit!(
     block = L * 4nE
     lanes = 32 * cld(nr, 32)
     let rows = rows, corner = corner, factor = factor, mix = mix, boxes = boxes, window = window,
+            single = single, window0 = window0, n_win = Int32(size(single, 4)),
             shapes = shapes, plain = plain, kernels = lib.kernels, w_col = lib.column_width,
             nr = Int32(nr), nc = Int32(nc), n_ch = Int32(n_ch), nE = Int32(nE), L = Int32(L), block = Int32(block),
             n_cc = Int32(n_cc), n_used = Int32(n_used), lanes = Int32(lanes), ray0 = Int32(ray0)
@@ -783,7 +1577,12 @@ function _scatter_deposit!(
             @inbounds if ch <= n_used
                 for i in Int32(1):n_cc
                     ray = gv * n_cc + i
-                    mirror = shapes[3, ray + ray0] < 0
+                    # the ray's own single scatter, where it lands
+                    w = ci - window0[i]
+                    if Int32(1) <= w <= n_win
+                        acc, comp = _kahan(acc, comp, single[ray, dr, ch, w])
+                    end
+                    mirror = shapes[4, ray + ray0] < 0
                     slot0, n_slots = plain[ray + ray0] ? (Int32(3) * nE, nE) : (Int32(0), Int32(3) * nE)
                     for c in Int32(1):Int32(8)
                         f = factor[ch, c, ray]

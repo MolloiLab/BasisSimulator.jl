@@ -113,10 +113,38 @@ onward they are written by hand, and releases are cut by hand — see
   Every step after the workspace is built runs on its backend, all coarse rays and views at once (GPU kernels, or
   the same kernels on Julia's threads): the walk, the superposition, the correction's inversion and the maps to
   dexels, with the plan's own copy of the library on the device. On a SOMATOM Force chest scan (920 × 96 dexels,
-  1152 views, GPU) scatter and its correction add about 0.04 s to a 0.49 s `simulate!` (2.4 s before).
-  Against BasisMonteCarlo's own `library_scan` on the same rays and data (SOMATOM Force, Aquilion ONE; 32 cm cylinder,
-  36 × 26 cm ellipse) the superposition, in single precision, agrees to 3e-6 per bin; against `library_scan` on exact rays every 0.05° to
-  ≤ 1.7 % per bin (4 % at the patient-edge peak of a 20 cm cylinder on the Aquilion), 0.9 % at the centre.
+  1152 views, GPU) scatter and its correction added about 0.04 s to a 0.49 s `simulate!` (2.4 s before) before the
+  single-scatter swap (next item), whose cost on a GPU is still to be measured.
+  Against `library_scan` on exact rays every 0.05° (before the single-scatter swap, next item) to ≤ 1.7 % per bin (4 %
+  at the patient-edge peak of a 20 cm cylinder on the Aquilion), 0.9 % at the centre.
+- **Each kernel's single scatter is swapped for the ray's own in the patient**, as BasisMonteCarlo's `library_scan`
+  now does (its library v2, notebook 11: 37 of 37 checks, the thorax fixed; water kernels put 13 % too much scatter
+  at its centre). A kernel's ray is surrounded by water as its ellipse places it; a thorax's mediastinum stops what
+  a ray beside it sends inward and its lungs let out what it sends outward. `scatter_kernels` now takes each kernel's
+  own single scatter out when it loads the entry (a deterministic quadrature of what forced detection integrates
+  along its ray, in its water ellipse: 32 depths, 4 × 2 points per bin, 8 columns either side behind a grid; per
+  process, never below none; once per entry and session, on the host's threads) and keeps the multiple scatter, its
+  column moments rebuilt; each coarse ray adds its own single scatter, the same quadrature through the patient as its
+  view's rays describe it (each ray's water-equivalent length spread over its outline chord, centred where the view's
+  outline ellipse centres it, the way out stepped every 2 mm), weighed by the ray's photons and its corners' escape
+  factors, at its own columns (a GPU kernel, both ellipses of `view = :mean` and the correction's water patient).
+  Single precision takes the quadrature's yes/no decisions again in double-float near their lines. The library file
+  must carry the quadrature's data (`water_compton_per_mm`, `water_rayleigh_per_mm`, `elements/water_pdf`, each
+  scanner's `efficiency`, `detector_mu_per_mm`, `detector_depth_mm` and grid, `single_scatter`); an older one is refused,
+  naming what it lacks. Also from `library_scan`: a ray left of the ellipse's axis takes its kernels' mirror image by
+  its side, even at impact 0 (before, by the sign of its impact, so not there), and a grazing ray's impact and
+  `√(1 − u²)` are solved to the float type's precision (before, to 2⁻³⁰: 1.5e-5 off at a 1 mm chord, 2 % at 30 µm).
+  **What moved** (SOMATOM Force, 18 views): on notebook 11's thorax, the beam along its short axis, the central
+  column's scatter falls 11 % (the three central columns 5 %) and the columns beside it rise 2 %; over all views the
+  field moves by under 2 % but in the patient's edge columns (+5–8 %); on a 32 cm water cylinder by 0.2 % at the
+  centre, 0.6 % in all. Loading an entry takes about 6 s on 8 threads (25 s before: the reader's arrays are now
+  typed). On the CPU the single scatter costs about 10–14 ms per coarse ray in the patient and thread: on the
+  Force chest scan (8 threads) the forward scatter takes 74 s (6 s before) and the correction's estimate 63 s (0.7 s).
+  Against BasisMonteCarlo's own `library_scan` on the same rays and data (identical lengths; SOMATOM Force and
+  Aquilion ONE on a 32 cm cylinder, a 36 × 26 cm ellipse and notebook 11's thorax, NAEOTOM Alpha and Revolution Apex
+  on the cylinder; no rays left out) the superposition agrees per bin above 1e-3 of the peak to 9.3e-9 in double
+  precision and 5.6e-6 in single (the median 1e-7); a single-precision workspace on its own walk, whose lengths
+  differ from the double walk's by up to 1e-3 mm, to 2e-5–2e-4.
 - **The scatter correction estimates from the data alone.** The energy integrator's DAS and the photon counter
   (`scatter_correction = true` on either) measure every coarse ray's water-equivalent length from its measured
   transmission (scatter included, inverted through the ray's spectrum), superpose the scatter of that water patient
@@ -208,10 +236,14 @@ onward they are written by hand, and releases are cut by hand — see
   (ratio 1 ± 0.02); NEQ in air = ff·N·DQE(0) to 2 % (Force, 120 kV: DQE(0) = 0.832); the variance behind 20 and
   30 cm of water against `D/λ` and the rising dispersion; the electronic term; water BHC against a 70 keV scan
   (< 1 HU, cupping < 2 HU); and a noise-free dual-kVp decomposition returning the water path.
-- Tests (`test/scatter.jl`, on a synthetic library written in the library's format by `test/scatter_library.jl`): the
-  reader's round trip, the kernels' geometry and clamped interpolation, the error for a scanner with no kernels, a
-  centred cylinder's symmetric profile, linearity in mAs, both families' units, the data-driven correction, an
-  empty field (no scatter), and CPU/GPU agreement.
+- Tests (`test/scatter.jl`, on a synthetic library written in the library's format by `test/scatter_library.jl`, its
+  kernels holding their own single scatter by the library's quadrature): the reader's round trip (and the multiple
+  scatter left after loading), the kernels' geometry and clamped interpolation, a grazing ray's impact against
+  BigFloat (1e-12, single precision 1e-6), the quadrature through a water ellipse's own strips against the ellipse
+  (2 %), a 30 cm water cylinder with and without the swap (1.5 % in all, 1 % at the centre), lungs either side of a
+  mediastinum (≥ 10 % less at the centre, ≥ 5 % more beside it), a ray left of the axis at impact 0 mirrored by its
+  side, the error for a scanner with no kernels, a centred cylinder's symmetric profile, linearity in mAs, both
+  families' units, the data-driven correction, an empty field (no scatter), and CPU/GPU agreement.
 
 ### Documented
 - **The notebooks and the scanners page follow v0.16:** every documentation notebook uses the scanner constants
