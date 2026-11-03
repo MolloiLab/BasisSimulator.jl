@@ -537,6 +537,7 @@ let
     )
     fig
 end
+
 # ╔═╡ 420ca537-a700-5d72-8901-ab9c5fdcb42f
 thicknesses_mm = collect(140.0:20.0:500.0)
 
@@ -579,6 +580,7 @@ kernel_halves = MC.simulate_sweep(
 # ╔═╡ 673d1dfc-4b31-4673-a44e-e5255186ea3b
 # Each kernel: its two halves added
 kernel_tallies = [MC.merge_tallies(kernel_halves[(2j - 1):(2j)]) for j in eachindex(kernel_grid)]
+
 # ╔═╡ ac791f75-a62f-424a-a893-c12e5492ed7e
 # Geant4's attenuation of water at every keV, in all and by Compton and Rayleigh scattering: the
 # primary of any ray is then Beer–Lambert, exact, and so is forced detection's way out of the patient
@@ -794,6 +796,7 @@ let
         """
     )
 end
+
 # ╔═╡ fc4b31b5-83a1-5f18-8570-4be1f5c7985a
 # Kernels between the grid's points: thicknesses, aspects and an energy the library interpolates
 held_out_cases = vcat(
