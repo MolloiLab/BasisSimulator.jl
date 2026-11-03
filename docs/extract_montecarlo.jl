@@ -14,7 +14,7 @@
 #     its `version` line); lib/BasisMonteCarlo/docs/Project.toml and its Manifest-v*.toml lockfiles; the committed
 #     reference data in lib/BasisMonteCarlo/docs/reference_data/; and the exporter (Snapshot's
 #     locked tree, docs/build_env/Manifest.toml, docs/extract_all.jl, this file and
-#     MC_EXPORT_CONTRACT). Not docs/Manifest.toml, which these notebooks never load, and not the
+#     MC_EXPORT_CONTRACT). Not docs/Manifest-v*.toml, which these notebooks never load, and not the
 #     root src/ (see AGENTS.md, "The documentation site"). Mirrored in
 #     docs/verify_notebook_exports.py.
 #   • Names: Snapshot names an export after its notebook, so each one is exported into a scratch

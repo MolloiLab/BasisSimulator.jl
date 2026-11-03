@@ -12,6 +12,8 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.1...v0.16.0) (2026-11-03)
+
 ### Breaking
 - **The energy-integrating detector integrates energy.** Each photon of energy `E` leaves a mean signal
   `m₁ = E·efficiency` and a mean square `m₂ = m₁²/dqe0` (`eid_signal_moments`). One projector walk forms both
@@ -208,25 +210,6 @@ onward they are written by hand, and releases are cut by hand — see
   scatter on) takes 505 s (was 3462 s) and 3.8 GB of host memory (was 12.6 GB); a full NAEOTOM Alpha scan
   (1376 × 144 pixels, 1152 views) fits in 6.7 GB of host and 44.5 GB of device memory, its detection about 2 s.
 
-### Fixed
-- **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
-- **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
-  applied once, to the quanta (`I₀·ff`).
-- **The electronic noise** was converted to photons with the spectrum's mean energy; it is in keV (÷ gain), in the
-  signal's own units.
-- **An empty field scattered** (the EICT scatter was estimated from a sinogram carrying the bowtie and the detector
-  response); the library's superposition leaves gases out of the patient, so air scatters nothing.
-- **A large photon-counting scan threw a `BoundsError`** in the fused spectral projectors (`:dd_fast`, `:dd`,
-  Siddon): bin b sits at offset (b − 1) × rays in one flat buffer, and that Int32 offset wrapped once it passed
-  2³¹, as the NAEOTOM Alpha's full detector does at native resolution from 904 views on. The offset is an `Int`.
-- **The CPU and the GPU projected differently by ulps**: a GPU compiler fuses `a * b + c` into one rounding on its
-  own, the CPU's does not, and CUDA's `sin`/`cos` are not Julia's. The distance-driven walk (`:dd_fast`'s material
-  paths, the `:dd` projector and its transpose) now writes every multiply-add as an explicit `fma` and takes its fan
-  angles' sine and cosine from one polynomial (`_dd_sincos`), so the material paths and the `:dd` forward projection
-  are bit for bit alike on the CPU and the device. The scatter's impact, inverted from each ray's water length,
-  amplified their ulps into a scatter field 2 × 10⁻⁵ apart; it now agrees to the CPU's within 10⁻⁵. Projections
-  move by at most 10⁻⁵ relative on either side (the new roundings lie between the old CPU's and the old GPU's).
-
 ### Added
 - **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and
   `PCCTScanner(; gain_spread, threshold_spread_keV, defect_seed)`: each dexel's own gain and offset (energy
@@ -256,6 +239,25 @@ onward they are written by hand, and releases are cut by hand — see
   mediastinum (≥ 10 % less at the centre, ≥ 5 % more beside it), a ray left of the axis at impact 0 mirrored by its
   side, the error for a scanner with no kernels, a centred cylinder's symmetric profile, linearity in mAs, both
   families' units, the data-driven correction, an empty field (no scatter), and CPU/GPU agreement.
+
+### Fixed
+- **The air calibration without a bowtie** read `−log η̄` (≈ 0.12 for the Force) in every ray; it reads zero.
+- **The fill factor** was in the counts but not the air reference, and taken back out by a post-log offset; it is
+  applied once, to the quanta (`I₀·ff`).
+- **The electronic noise** was converted to photons with the spectrum's mean energy; it is in keV (÷ gain), in the
+  signal's own units.
+- **An empty field scattered** (the EICT scatter was estimated from a sinogram carrying the bowtie and the detector
+  response); the library's superposition leaves gases out of the patient, so air scatters nothing.
+- **A large photon-counting scan threw a `BoundsError`** in the fused spectral projectors (`:dd_fast`, `:dd`,
+  Siddon): bin b sits at offset (b − 1) × rays in one flat buffer, and that Int32 offset wrapped once it passed
+  2³¹, as the NAEOTOM Alpha's full detector does at native resolution from 904 views on. The offset is an `Int`.
+- **The CPU and the GPU projected differently by ulps**: a GPU compiler fuses `a * b + c` into one rounding on its
+  own, the CPU's does not, and CUDA's `sin`/`cos` are not Julia's. The distance-driven walk (`:dd_fast`'s material
+  paths, the `:dd` projector and its transpose) now writes every multiply-add as an explicit `fma` and takes its fan
+  angles' sine and cosine from one polynomial (`_dd_sincos`), so the material paths and the `:dd` forward projection
+  are bit for bit alike on the CPU and the device. The scatter's impact, inverted from each ray's water length,
+  amplified their ulps into a scatter field 2 × 10⁻⁵ apart; it now agrees to the CPU's within 10⁻⁵. Projections
+  move by at most 10⁻⁵ relative on either side (the new roundings lie between the old CPU's and the old GPU's).
 
 ### Documented
 - **The notebooks and the scanners page follow v0.16:** every documentation notebook uses the scanner constants

@@ -7,7 +7,7 @@ LocalPreferences.toml
 # Pkg lockfiles: a package commits none, but the docs are applications whose exact locks are part
 # of every notebook export's fingerprint (docs/extract_all.jl).
 Manifest*.toml
-!docs/Manifest.toml
+!docs/Manifest-v*.toml
 !docs/build_env/Manifest.toml
 !lib/BasisMonteCarlo/docs/Manifest-v*.toml
 

@@ -30,11 +30,11 @@ echo "▶ instantiate docs env (no-op if Snapshot already warmed it)"
 # The committed lock is part of every notebook export fingerprint. Never
 # resolve it during deployment: build exactly what was verified, and fail if
 # instantiation unexpectedly rewrites the lock.
-manifest_before="$(shasum -a 256 Manifest.toml | awk '{print $1}')"
+manifest_before="$(cat Manifest*.toml | shasum -a 256 | awk '{print $1}')"
 julia --project=. -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate()'
-manifest_after="$(shasum -a 256 Manifest.toml | awk '{print $1}')"
+manifest_after="$(cat Manifest*.toml | shasum -a 256 | awk '{print $1}')"
 test "$manifest_before" = "$manifest_after" || {
-    echo "docs/Manifest.toml changed during instantiate; refusing unverified build" >&2
+    echo "a docs/Manifest*.toml lockfile changed during instantiate; refusing unverified build" >&2
     exit 1
 }
 python3 verify_notebook_exports.py

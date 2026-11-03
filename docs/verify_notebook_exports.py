@@ -132,7 +132,13 @@ def snapshot_tree_hash() -> str:
 
 def export_fingerprint(path: Path, snapshot_tree: str) -> str:
     build_lock = source_hash(DOCS / "build_env" / "Manifest.toml")
-    docs_lock = source_hash(DOCS / "Manifest.toml")
+    # every docs lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
+    docs_locks = sorted(
+        path for path in DOCS.iterdir() if re.fullmatch(r"Manifest(-v[0-9.]+)?\.toml", path.name)
+    )
+    docs_lock = hashlib.sha256(
+        "\0".join(f"{path.name}:{source_hash(path)}" for path in docs_locks).encode("utf-8")
+    ).hexdigest()
     driver = source_hash(DOCS / "extract_all.jl")
     payload = "\0".join(
         (source_hash(path), simulator_input_hash(), snapshot_tree, build_lock,

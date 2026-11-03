@@ -186,7 +186,7 @@ version = "0.1.0"
 deps = ["AcceleratedKernels", "Artifacts", "DelimitedFiles", "Downloads", "FFTW", "JSON", "LinearAlgebra", "Random", "SHA", "Serialization", "Statistics", "TOML", "Unitful", "XrayAttenuation", "p7zip_jll"]
 path = "../../.."
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
-version = "0.15.1"
+version = "0.16.0"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

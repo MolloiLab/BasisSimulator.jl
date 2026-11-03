@@ -161,16 +161,16 @@ uuid = "18cc8868-cbac-4acf-b575-c8ff214dc66f"
 version = "1.4.0"
 
 [[deps.BasisMonteCarlo]]
-deps = ["Distributed", "Geant4", "Libdl", "Random", "Scratch", "Serialization", "SpecialFunctions", "Statistics", "Unitful", "XrayAttenuation"]
+deps = ["Distributed", "Geant4", "Libdl", "Random", "Scratch", "Serialization", "SpecialFunctions", "Statistics", "TOML", "Unitful", "XrayAttenuation"]
 path = ".."
 uuid = "0b891c0b-e8e1-4e40-a495-80b72b146dae"
 version = "0.1.0"
 
 [[deps.BasisSimulator]]
-deps = ["AcceleratedKernels", "Artifacts", "DelimitedFiles", "Downloads", "FFTW", "JSON", "LinearAlgebra", "Random", "SHA", "Serialization", "Statistics", "Unitful", "XrayAttenuation", "p7zip_jll"]
+deps = ["AcceleratedKernels", "Artifacts", "DelimitedFiles", "Downloads", "FFTW", "JSON", "LinearAlgebra", "Random", "SHA", "Serialization", "Statistics", "TOML", "Unitful", "XrayAttenuation", "p7zip_jll"]
 path = "../../.."
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
-version = "0.15.1"
+version = "0.16.0"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

@@ -134,7 +134,12 @@ end
 function export_fingerprint(slug::AbstractString)
     snapshot_tree = string(Pkg.dependencies()[SNAPSHOT_UUID].tree_hash)
     build_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "build_env", "Manifest.toml"))))
-    docs_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "Manifest.toml"))))
+    # every docs lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
+    docs_locks = sort([name for name in readdir(@__DIR__) if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)])
+    docs_lock = bytes2hex(sha256(join(
+        ["$(name):$(bytes2hex(sha256(read(joinpath(@__DIR__, name)))))" for name in docs_locks],
+        '\0',
+    )))
     driver = bytes2hex(sha256(read(@__FILE__)))
     payload = join((source_hash(slug), simulator_input_hash(), snapshot_tree,
         build_lock, docs_lock, driver, EXPORT_CONTRACT), '\0')

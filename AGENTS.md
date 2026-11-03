@@ -138,9 +138,9 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   simulations, so it rewrites what the notebook saves (`lib/BasisMonteCarlo/tables/`). Their
   fingerprint hashes the notebook, `lib/BasisMonteCarlo/src/`, `lib/BasisMonteCarlo/Project.toml`
   (not its `version` line), `lib/BasisMonteCarlo/docs/Project.toml` and its committed
-  `Manifest.toml`, `lib/BasisMonteCarlo/docs/reference_data/`, and the exporter
+  `Manifest-v*.toml` lockfiles, `lib/BasisMonteCarlo/docs/reference_data/`, and the exporter
   (`docs/build_env/Manifest.toml`, `docs/extract_all.jl`, `docs/extract_montecarlo.jl`); not
-  `docs/Manifest.toml` or the root `src/`, so a BasisSimulator change does not re-render them.
+  `docs/Manifest-v*.toml` or the root `src/`, so a BasisSimulator change does not re-render them.
   Because `docs/extract_all.jl` is in every BasisSimulator export's fingerprint, a change that only
   concerns these notebooks goes in `docs/extract_montecarlo.jl`. The kV sliders of 04–08 are forced
   fallbacks (`MC_FORCE_FALLBACK_BONDS`, mirrored in the verifier). A notebook not rendered yet has
