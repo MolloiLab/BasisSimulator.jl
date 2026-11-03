@@ -783,9 +783,10 @@ end
 # library's columns and rows, the direction of each column point (`column_points[(sin, cos) as
 # (hi, lo) pairs, point, column]`), the scanner's source–detector distance (and as a pair, `sdd2`),
 # water's attenuation on the 1-keV grid (`total`) and at the library's `energies` (`mu[energy, (all,
-# Compton, Rayleigh)]`), its angular tables (`pdf`, as read) and each energy's lower row of them and
-# the upper row's weight, the detector's efficiency, attenuation × depth (`mud`, 0 for no obliquity)
-# and 1/(1 − e^{−mud}), the grid (0 none, 1 across, 2 both), the quadrature's counts, the forward
+# Compton, Rayleigh)]`), its angular tables at each of the library's energies (`pdf[cell, energy,
+# (Compton, Rayleigh)]`, between the 1-keV rows read), the detector's efficiency, attenuation × depth
+# (`mud`, 0 for no obliquity) and 1/(1 − e^{−mud}), and the same at each library energy (`at_energy[energy,
+# (efficiency, mud, norm, E / mₑc²)]`: what the quadrature takes once per energy, not per point), the grid (0 none, 1 across, 2 both), the quadrature's counts, the forward
 # Rayleigh's (1 − cos θ)/2 (and as a pair), and whether water scatters at all.
 function _single_tables(
         ::Type{T};
@@ -807,7 +808,15 @@ function _single_tables(
     mu = [_on_kev_grid(table, Ek) for Ek in E, table in (water.mu, water.compton, water.rayleigh)]
     n_keV = size(water_pdf, 2)
     pdf_row = [min(floor(Int, clamp(Ek, 1, n_keV)), n_keV - 1) for Ek in E]
+    pdf_t = T.(clamp.(E, 1, n_keV) .- pdf_row)
+    pdf = [
+        (one(T) - pdf_t[e]) * T(water_pdf[j, pdf_row[e], p]) + pdf_t[e] * T(water_pdf[j, pdf_row[e] + 1, p])
+            for j in axes(water_pdf, 1), e in eachindex(E), p in 1:2
+    ]
     mud = [detector.depth > 0 && μ > 0 ? μ * detector.depth : 0.0 for μ in detector.mu]
+    efficiency, mud, norm = T.(detector.efficiency), T.(mud), T.([m > 0 ? 1 / (1 - exp(-m)) : 0.0 for m in mud])
+    k = [clamp(unsafe_trunc(Int, round(T(Ek))), 1, length(efficiency)) for Ek in E]
+    at_energy = hcat(efficiency[k], mud[k], norm[k], T.(E) ./ T(_ELECTRON_REST_KEV))
     Q, nc = single.points_per_column, length(cols) - 1
     column_points = zeros(T, 4, Q, nc)
     for c in 1:nc, q in 1:Q
@@ -824,12 +833,11 @@ function _single_tables(
         energies = T.(E),
         total = T.(water.mu),
         mu = T.(mu),
-        pdf = water_pdf,
-        pdf_row = Int32.(pdf_row),
-        pdf_t = T.(clamp.(E, 1, n_keV) .- pdf_row),
-        efficiency = T.(detector.efficiency),
-        mud = T.(mud),
-        norm = T.([m > 0 ? 1 / (1 - exp(-m)) : 0.0 for m in mud]),
+        pdf,
+        efficiency,
+        mud,
+        norm,
+        at_energy,
         energy_weighted = Bool(energy_weighted),
         grid = grid === :none ? 0 : grid === :across ? 1 : 2,
         grid_height = T(grid_height),
@@ -844,13 +852,16 @@ function _single_tables(
 end
 
 # The detector's signal per photon of `E` keV arriving at `obliquity` (the cosine to its normal): its
-# efficiency, its path lengthened by the obliquity, and the energy for an energy integrator
+# efficiency `η`, its path (attenuation × depth `m`, `norm` = 1/(1 − e^{−m})) lengthened by the
+# obliquity, and the energy for an energy integrator; `_single_efficiency` looks them up at `E`
+@inline function _detected(η, m, norm, E, obliquity, energy_weighted)
+    m > 0 && (η *= (1 - exp(-m / obliquity)) * norm)
+    return energy_weighted ? η * E : η
+end
+
 @inline function _single_efficiency(E, obliquity, efficiency, mud, norm, energy_weighted)
     k = clamp(unsafe_trunc(Int, round(E)), 1, length(efficiency))
-    η = efficiency[k]
-    m = mud[k]
-    m > 0 && (η *= (1 - exp(-m / obliquity)) * norm[k])
-    return energy_weighted ? η * E : η
+    return _detected(efficiency[k], mud[k], norm[k], E, obliquity, energy_weighted)
 end
 
 # One column point of the detector (`D` mm from the focal spot, `Δ` rad across the fan from the ray)
@@ -937,14 +948,11 @@ end
 @inline function _single_energy(t, e, j, v, τ, path, obliquity)
     E = t.energies[e]
     μT, μC, μR = t.mu[e, 1], t.mu[e, 2], t.mu[e, 3]
-    i, w = t.pdf_row[e], t.pdf_t[e]
-    o = one(w)
-    pdf_c = (o - w) * t.pdf[j, i, 1] + w * t.pdf[j, i + 1, 1]
-    pdf_r = (o - w) * t.pdf[j, i, 2] + w * t.pdf[j, i + 1, 2]
-    rayleigh = μR * pdf_r * exp(-μT * (τ + path)) *
-        _single_efficiency(E, obliquity, t.efficiency, t.mud, t.norm, t.energy_weighted)
-    E′ = E / (o + E / oftype(E, _ELECTRON_REST_KEV) * 2v)
-    compton = μC * pdf_c * exp(-μT * τ - _on_kev_grid(t.total, E′) * path) *
+    η, m, norm, recoil = t.at_energy[e, 1], t.at_energy[e, 2], t.at_energy[e, 3], t.at_energy[e, 4]
+    o = one(E)
+    rayleigh = μR * t.pdf[j, e, 2] * exp(-μT * (τ + path)) * _detected(η, m, norm, E, obliquity, t.energy_weighted)
+    E′ = E / (o + recoil * 2v)
+    compton = μC * t.pdf[j, e, 1] * exp(-μT * τ - _on_kev_grid(t.total, E′) * path) *
         _single_efficiency(E′, obliquity, t.efficiency, t.mud, t.norm, t.energy_weighted)
     return compton, rayleigh
 end
@@ -1446,9 +1454,16 @@ function _scatter_single_weights!(
 end
 
 # The channels' sums `acc` with one energy `e` of a point added: its Compton and its Rayleigh scatter
-# (wide, process 2, or forward, 3: `p`) weighed by the ray's `own[ray, e, process, ch]`
-@inline _single_add(acc::NTuple{N}, own, e, p, ray, compton, rayleigh) where {N} =
-    ntuple(k -> @inbounds(acc[k] + (own[ray, e, 1, k] * compton + own[ray, e, p, k] * rayleigh)), Val(N))
+# (wide, process 2, or forward, 3: `p`) weighed by the ray's `own[ray, e, process, ch]`. Written out
+# channel by channel: a closure (`ntuple(k -> …)`) is not inlined into a GPU kernel, and the call
+# passes `acc` through memory once per energy and point.
+@generated function _single_add(acc::NTuple{N}, own, e, p, ray, compton, rayleigh) where {N}
+    sums = [:(@inbounds(acc[$k] + (own[ray, e, 1, $k] * compton + own[ray, e, p, $k] * rayleigh))) for k in 1:N]
+    return quote
+        Base.@_inline_meta
+        tuple($(sums...))
+    end
+end
 
 # `single[ray, row, ch, column]` for the `n_rays` rays from `ray0 + 1` on: each ray's own single
 # scatter (`_single_scatter!`) through the patient its view-group's rays describe (`strips`), its
@@ -1480,7 +1495,7 @@ function _scatter_single!(
     let single = single, weights = weights, strips = strips, angle_deg = angle_deg, rays = rays,
             boundaries = boundaries, window0 = window0, first = first, step = step, cols = t.cols, rows = t.rows,
             column_points = t.column_points, energies = t.energies, total = t.total, mu = t.mu, pdf = t.pdf,
-            pdf_row = t.pdf_row, pdf_t = t.pdf_t, efficiency = t.efficiency, mud = t.mud, norm = t.norm,
+            at_energy = t.at_energy, efficiency = t.efficiency, mud = t.mud, norm = t.norm,
             energy_weighted = t.energy_weighted, grid = t.grid, height = t.grid_height, opening = t.opening,
             M = t.depths, Q = t.points_per_column, Z = t.points_per_row, forward = t.forward, scatters = t.scatters,
             D = t.sdd, D2 = t.sdd2, nr = nr, nc = nc, n_win = n_win, nE = nE, n_cc = n_cc, ray0 = ray0, n_rays = n_rays
@@ -1507,7 +1522,7 @@ function _scatter_single!(
                 weights[local_ray, e, p, k] != 0 && (used |= UInt64(1) << (e - 1))
             end
             used == 0 && return
-            tables = (; energies, total, mu, pdf, pdf_row, pdf_t, efficiency, mud, norm, energy_weighted)
+            tables = (; energies, total, mu, pdf, at_energy, efficiency, mud, norm, energy_weighted)
             cells = size(pdf, 1)
             Δc, Δr = cols[2] - cols[1], rows[2] - rows[1]
             area = D * deg2rad(Δc / Q) * (Δr / Z)
