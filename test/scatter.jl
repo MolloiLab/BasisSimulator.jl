@@ -202,10 +202,10 @@ end
         wet = [abs(sid * sind(γ)) < R ? 2 * sqrt(R^2 - (sid * sind(γ))^2) : 0.0 for γ in plan.angle_deg]
         copyto!(s.wet, repeat(T.(wet), 1, size(s.wet, 2), size(s.wet, 3)))
         fill!(s.plain, true)
-        BS._scatter_weights!(plan, 1)
-        out = similar(plan.estimate)
-        n = BS._superpose!(out, plan, s.wet)
-        (; out = Array(out), n)
+        out = similar(plan.field, size(plan.field, 1), size(plan.field, 2), 1, size(plan.field, 4))
+        fill!(s.clamped, Int32(0))
+        BS._superpose!(out, plan, s.wet)
+        (; out = Array(out), n = Int(sum(s.clamped)))
     end
     thin, inside, thickest = scan(35.0), scan(80.0), scan(400.0)
     @test thin.n > 0 && thickest.n > 0 && inside.n == 0
@@ -248,7 +248,8 @@ end
     n_R = size(on.ws.R, 1)
     ri = clamp(round(Int, (E - 1) / (on.ws.kVp - 1) * (n_R - 1)) + 1, 1, n_R)
     @test plan.channels[e, :] ≈ on.ws.R[ri, :] ./ BS.quantum_efficiency(det.material, det.thickness_mm, E)
-    @test size(plan.estimate, 3) == 4
+    @test size(corrected.ws.scatter.estimate, 3) == 4
+    @test isempty(plan.estimate) && isempty(plan.measured)          # no correction, no buffers for it
 
     # the counts the scatter adds, bin by bin, at the centre of the detector
     photons = BS.compute_detector_I0(on.ws.geom, protocol, sum(on.ws.weights))
@@ -270,12 +271,18 @@ end
     if !(@isdefined(HAS_GPU)) || !HAS_GPU
         @warn "Skipping the scatter CPU/GPU agreement: no GPU backend."
     else
-        cpu_phantom = _scatter_phantom(; a_cm = 30.0, b_cm = 20.0, shift_cm = 2.0)
-        gpu_phantom = BS.Phantom(to_gpu(cpu_phantom.mask), cpu_phantom.materials, cpu_phantom.voxel_size, cpu_phantom.origin, cpu_phantom.extent)
+        # an off-centre water ellipse with a bone insert: the materials' path as well as water's
+        water = _scatter_phantom(; a_cm = 30.0, b_cm = 20.0, shift_cm = 2.0)
+        mask = copy(water.mask)
+        mask[70:80, 75:85, :] .= 0x02
+        materials = Dict{Int, Any}(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water, 2 => BS.XA.Materials.corticalbone)
+        cpu_phantom = BS.Phantom(mask, materials, water.voxel_size)
+        gpu_phantom = BS.Phantom(to_gpu(mask), materials, water.voxel_size)
         cpu = _eict_scatter_scan(_SCATTER_EICT, cpu_phantom)
         gpu = _eict_scatter_scan(_SCATTER_EICT, gpu_phantom)
-        @test Array(gpu.ws.scatter.field) ≈ Array(cpu.ws.scatter.field) rtol = 1.0e-3
-        @test Array(gpu.ws.scatter.estimate) ≈ Array(cpu.ws.scatter.estimate) rtol = 1.0e-3
-        @test gpu.sinogram ≈ cpu.sinogram rtol = 1.0e-4
+        @test cpu.ws.scatter.rays.other
+        @test Array(gpu.ws.scatter.field) ≈ Array(cpu.ws.scatter.field) rtol = 1.0e-5
+        @test Array(gpu.ws.scatter.estimate) ≈ Array(cpu.ws.scatter.estimate) rtol = 1.0e-5
+        @test gpu.sinogram ≈ cpu.sinogram rtol = 1.0e-5
     end
 end

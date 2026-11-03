@@ -49,6 +49,9 @@ const _SCATTER_CORRECTION_PASSES = 2
 # and their path lengths averaged: the same footprint, `_SCATTER_WALK_SPLIT²` times the threads
 const _SCATTER_WALK_SPLIT = 4
 
+# The superposition's buffers hold at most this many coarse rays: views beyond go in chunks
+const _SCATTER_CHUNK_RAYS = 32768
+
 # Materials below this density (g/cm³) are gases: outside the patient's outline, and not scattering
 const _SCATTER_GAS_DENSITY = 0.01
 
@@ -114,13 +117,14 @@ end
 
 """
     _scatter_plan(kernels, geom, energies, weights; source, detection, channels, measured_channels,
-                  air, materials, ref, T)
+                  correction, air, materials, ref, T)
 
 The [`ScatterPlan`](@ref) of one workspace. `source(g)` is the source transmission (bowtie × heel,
 `[cols, rows, energies]`, or `nothing`) at the rays of a geometry `g`; `detection[energy]` weighs
 the measured signal of a photon (an energy integrator's `m₁`, a photon counter's counts per
 photon); `channels[energy, channel]` weighs a scattered photon in each output channel, the first
-`measured_channels` of them summing to the measured signal the correction reads; `air`
+`measured_channels` of them summing to the measured signal the correction reads (whose buffers are
+empty without the `correction`); `air`
 (`[cols, rows]`) is the measured signal of each dexel in air, in the same units as the data the
 correction reads.
 """
@@ -133,6 +137,7 @@ function _scatter_plan(
         detection::AbstractVector,
         channels::AbstractMatrix,
         measured_channels::Int,
+        correction::Bool,
         air::AbstractMatrix,
         materials,
         ref,
@@ -367,12 +372,14 @@ function _scatter_plan(
         wet_per_mm = device_real(wet_per_mm),
         ratio = device_real(ratio),
         dmu = device_real(dmu),
+        other = any(==(2), kind),
         ray_cols = pair(ray_maps),
         ray_col_w = device_real(last.(ray_maps)),
         group_rows = pair(group_maps),
         group_row_w = device_real(last.(group_maps)),
     )
     n_ray = n_cc * n_g * n_cv
+    n_chunk = n_cc * n_g * clamp(_SCATTER_CHUNK_RAYS ÷ (n_cc * n_g), 1, n_cv)       # whole views
     k_walk = _SCATTER_WALK_SPLIT
     scratch = (;
         walk_paths = similar(ref, T, n_m, k_walk * n_cc, k_walk * n_g, n_cv),
@@ -380,16 +387,16 @@ function _scatter_plan(
         outline = similar(ref, T, n_cc, n_g, n_cv),
         plain = similar(ref, Bool, n_ray),
         dmu = fill!(similar(ref, T, nbands, n_ray), zero(T)),
-        weights = similar(ref, T, nE_lib, 3, n_ch, n_ray),
+        weights = similar(ref, T, nE_lib, 3, n_ch, n_chunk),
         ellipse = similar(ref, T, 3, n_g, n_cv),
         shapes = similar(ref, T, 5, n_ray),
-        clamped = similar(ref, Int32, n_ray),
-        corner = fill!(similar(ref, Int32, 8, n_ray), Int32(0)),
-        factor = similar(ref, T, n_ch, 8, n_ray),
-        mix = similar(ref, T, 3nE_lib, n_ch, 8, n_ray),
-        boxes = similar(ref, T, 3, nlc, n_ch, 8, n_ray),
-        window = similar(ref, Int32, 2, n_ch, 8, n_ray),
-        rows = similar(ref, T, nlr, nlc, n_ch, n_g, n_cv),
+        clamped = fill!(similar(ref, Int32, n_ray), Int32(0)),
+        corner = fill!(similar(ref, Int32, 8, n_chunk), Int32(0)),
+        factor = similar(ref, T, n_ch, 8, n_chunk),
+        mix = similar(ref, T, 3nE_lib, n_ch, 8, n_chunk),
+        boxes = similar(ref, T, 3, nlc, n_ch, 8, n_chunk),
+        window = similar(ref, Int32, 2, n_ch, 8, n_chunk),
+        rows = similar(ref, T, nlr, nlc, n_ch, n_g, n_chunk ÷ (n_cc * n_g)),
     )
     return ScatterPlan(
         k,
@@ -400,9 +407,9 @@ function _scatter_plan(
         z_mm,
         Float64.(channels),
         similar(ref, T, n_m, n_cc, n_g, n_cv),
-        similar(ref, T, n_cc, n_g, n_cv),
+        correction ? similar(ref, T, n_cc, n_g, n_cv) : similar(ref, T, 0, 0, 0),
         fill!(similar(ref, T, nlc, nlr, n_ch, n_cv), zero(T)),
-        fill!(similar(ref, T, nlc, nlr, measured_channels, n_cv), zero(T)),
+        fill!(similar(ref, T, (correction ? (nlc, nlr, measured_channels, n_cv) : (0, 0, 0, 0))...), zero(T)),
         device_int(vec(fp_cols)),
         device_int(vec(fp_rows)),
         device_int(views),
@@ -488,18 +495,19 @@ function _scatter_phantom_rays!(p::ScatterPlan)
     return p
 end
 
-# `weights[energy, process, ch, ray]` for the first `n_used` channels: each ray's photons by library
-# energy, process and channel, its materials' scattering against water's at each spectral energy
-# (`plain[ray]`: water, every process alike).
-function _scatter_weights!(p::ScatterPlan, n_used::Int)
+# `weights[energy, process, ch, ray]` for the first `n_used` channels of the `n_rays` rays from
+# `ray0 + 1` on (a chunk): each ray's photons by library energy, process and channel, its
+# materials' scattering against water's at each spectral energy (`plain[ray]`: water, every process
+# alike).
+function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
     s, r = p.scratch, p.rays
     nE_lib, n_ch = size(s.weights, 1), size(s.weights, 3)
     n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
     n_m = size(p.paths, 1)
     let weights = s.weights, wet = s.wet, plain = s.plain, paths = p.paths, water = r.water_photons,
             photons = r.photons, lib_share = r.lib_share, lib_range = r.lib_range, kind = r.kind, ratio = r.ratio,
-            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, n_m = n_m, n_used = n_used
-        AK.foreachindex(weights) do idx
+            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, n_m = n_m, n_used = n_used, ray0 = ray0
+        _foreachindex(1:(nE_lib * 3 * n_ch * n_rays), AK.get_backend(weights)) do idx
             T = eltype(weights)
             q = idx - 1
             gl = q % nE_lib + 1
@@ -507,7 +515,7 @@ function _scatter_weights!(p::ScatterPlan, n_used::Int)
             pr = q % 3 + 1
             q ÷= 3
             ch = q % n_ch + 1
-            ray = q ÷ n_ch + 1
+            ray = q ÷ n_ch + 1 + ray0
             i = (ray - 1) % n_cc + 1
             g = ((ray - 1) ÷ n_cc) % n_g + 1
             val = zero(T)
@@ -537,46 +545,63 @@ end
 
 # The scatter of every coarse view into `out[column, row, ch, view]` (its channels the first of the
 # plan's), the views' ellipses measured from `lengths`, the rays' impacts from `scratch.wet`; with
-# `combine`, the geometric mean of that and what `out` holds. Returns the number of rays outside
-# the library's grids.
+# `combine`, the geometric mean of that and what `out` holds. Without `combine`, it marks the rays
+# outside the library's grids in `scratch.clamped`.
 function _superpose!(out::AbstractArray, p::ScatterPlan, lengths::AbstractArray; combine::Bool = false)
     s, lib, r = p.scratch, p.library, p.rays
     n_used = size(out, 3)
+    n_cc, n_g, n_cv = size(s.wet)
     _scatter_ellipses!(s.ellipse, r.xs, r.dxs, lengths)
-    _scatter_ray_shapes!(s.shapes, s.clamped, s.wet, s.ellipse, r.xs, r.angle_deg, lib.grid)
-    _scatter_corners!(
-        s.corner,
-        s.factor,
-        s.mix,
-        s.boxes,
-        s.window,
-        s.shapes,
-        s.weights,
-        s.plain,
-        s.dmu,
-        r.angle,
-        lib,
-        n_used,
-    )
-    _scatter_deposit!(
-        s.rows,
-        s.corner,
-        s.factor,
-        s.mix,
-        s.boxes,
-        s.window,
-        s.shapes,
-        s.plain,
-        lib,
-        length(p.angle_deg),
-        n_used,
-    )
-    _scatter_rows!(out, s.rows, r.row_share; combine)
-    return Int(sum(s.clamped))
+    _scatter_ray_shapes!(s.shapes, s.clamped, s.wet, s.ellipse, r.xs, r.angle_deg, lib.grid, !combine)
+
+    # the views in chunks, as many as the buffers hold
+    per_chunk = size(s.rows, 5)
+    for v0 in 0:per_chunk:(n_cv - 1)
+        n_v = min(per_chunk, n_cv - v0)
+        ray0 = v0 * n_cc * n_g
+        n_rays = n_v * n_cc * n_g
+        _scatter_weights!(p, n_used, ray0, n_rays)
+        _scatter_corners!(
+            s.corner,
+            s.factor,
+            s.mix,
+            s.boxes,
+            s.window,
+            s.shapes,
+            s.weights,
+            s.plain,
+            s.dmu,
+            r.angle,
+            lib,
+            n_used,
+            ray0,
+            n_rays,
+        )
+        _scatter_deposit!(
+            s.rows,
+            s.corner,
+            s.factor,
+            s.mix,
+            s.boxes,
+            s.window,
+            s.shapes,
+            s.plain,
+            lib,
+            n_cc,
+            n_used,
+            ray0,
+            n_v * n_g,
+        )
+        _scatter_rows!(out, s.rows, r.row_share, v0, n_v; combine)
+    end
+    return out
 end
 
-function _warn_clamped(p::ScatterPlan, n::Int)
+# The warning for the rays the superpositions since the last forward scatter found outside the
+# library's grids (`scratch.clamped`). It reads the device, so `simulate!` calls it last.
+function _warn_clamped(p::ScatterPlan)
     k = p.kernels
+    n = Int(sum(p.scratch.clamped))
     n > 0 && @warn "scatter: $(n) rays' ellipses lie outside the kernels' " *
         "$(first(k.thicknesses_mm))–$(last(k.thicknesses_mm)) mm and aspects " *
         "$(first(k.aspects))–$(last(k.aspects)); the nearest kernels stand in" maxlog = 1
@@ -596,10 +621,11 @@ function _scatter_forward!(p::ScatterPlan, phantom)
     dd_fast_material_paths!(s.walk_paths, phantom.mask, p.walk; volume_extent = extent)
     _scatter_join_footprints!(p.paths, s.walk_paths)
     _scatter_phantom_rays!(p)
-    _scatter_weights!(p, size(p.field, 3))
-    _warn_clamped(p, _superpose!(p.field, p, s.wet))
-    # the geometric mean with the outline's ellipse, where that is another
-    s.outline == s.wet || _superpose!(p.field, p, s.outline; combine = true)
+    fill!(s.clamped, Int32(0))
+    _superpose!(p.field, p, s.wet)
+    # the geometric mean with the outline's ellipse, which is another only through a material other
+    # than water (a gas is in neither)
+    p.rays.other && _superpose!(p.field, p, s.outline; combine = true)
     return p.field
 end
 
@@ -676,13 +702,10 @@ integrator, every bin for a photon counter.
 function _scatter_estimate!(p::ScatterPlan, photons::Real = 1)
     s = p.scratch
     fill!(s.plain, true)
-    _scatter_weights!(p, size(p.estimate, 3))
-    clamped = 0
     for pass in 1:_SCATTER_CORRECTION_PASSES
         _scatter_water_lengths!(p, photons, pass > 1)
-        clamped += _superpose!(p.estimate, p, s.wet)
+        _superpose!(p.estimate, p, s.wet)
     end
-    _warn_clamped(p, clamped)
     return p.estimate
 end
 

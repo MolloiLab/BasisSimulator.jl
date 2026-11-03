@@ -334,6 +334,7 @@ function simulate!(
     # body phantom, so a head protocol wants `(; phantom = :head16)` and a dual-source scanner
     # `(; n_tubes = 2)`.
 
+    ws.scatter === nothing || _warn_clamped(ws.scatter)      # here, where reading the device waits for nothing
     result = (
         pcct_sino = pcct_sino,
         I0_bins = ws.I0,            # per ray: [n_cols, n_rows, n_bins], the air response of each ray and bin
@@ -553,6 +554,7 @@ function simulate!(
     end
 
     # BHC is decoupled — applied at notebook level
+    ws.scatter === nothing || _warn_clamped(ws.scatter)      # here, where reading the device waits for nothing
     dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing
     return keep_projection ? (; dose, projection = kept) : (; dose)
 end

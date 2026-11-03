@@ -524,8 +524,8 @@ end
 # `shapes[(thickness, aspect, impact, side, weight), ray]`: each ray's own ellipse (as thick as
 # the view's, or as the ray's water-equivalent length `wet` if longer), its signed impact, the side
 # of the axis it passes on, and the weight of the kernels standing in for it (0: no scatter).
-# `clamped[ray]` is 1 for a ray outside the library's grids. `grid` = (thinnest, thickest,
-# narrowest, widest, last impact).
+# With `mark`, `clamped[ray]` is set to 1 for a ray outside the library's grids (and otherwise left
+# as it is). `grid` = (thinnest, thickest, narrowest, widest, last impact).
 function _scatter_ray_shapes!(
         shapes::AbstractMatrix{T},
         clamped::AbstractArray{Int32},
@@ -534,10 +534,11 @@ function _scatter_ray_shapes!(
         xs::AbstractVector{T},
         angle_deg::AbstractVector{T},
         grid::NTuple{5, T},
+        mark::Bool,
     ) where {T}
     n_cc = size(wet, 1)
     let shapes = shapes, clamped = clamped, wet = wet, ellipse = ellipse, xs = xs, angle_deg = angle_deg,
-            grid = grid, n_cc = n_cc
+            grid = grid, n_cc = n_cc, mark = mark
         AK.foreachindex(wet) do ray
             T_min, T_max, r_min, r_max, u_last = grid
             o = one(T)
@@ -578,7 +579,7 @@ function _scatter_ray_shapes!(
             shapes[3, ray] = u
             shapes[4, ray] = side
             shapes[5, ray] = weight
-            clamped[ray] = outside
+            mark && outside == 1 && (clamped[ray] = outside)
         end
     end
     return shapes
@@ -601,6 +602,9 @@ end
 # `weights[energy, process, ch, ray]` are the ray's photons by library energy, process and
 # channel; `dmu[band, ray]` its materials' attenuation against water's (not read for a ray of
 # water, `plain[ray]`).
+#
+# For the `n_rays` rays from `ray0 + 1` on (a chunk of the views): `shapes`, `plain`, `dmu` are
+# every ray's, the others the chunk's.
 function _scatter_corners!(
         corner::AbstractMatrix{Int32},
         factor::AbstractArray{T, 3},
@@ -614,6 +618,8 @@ function _scatter_corners!(
         angle::AbstractMatrix{T},
         lib,
         n_used::Int,
+        ray0::Int,
+        n_rays::Int,
     ) where {T}
     nE, n_ch = size(weights, 1), size(weights, 3)
     nc = length(lib.cols) - 1
@@ -624,17 +630,18 @@ function _scatter_corners!(
             weights = weights, plain = plain, dmu = dmu, angle = angle,
             moments = lib.moments, paths = lib.paths, node = lib.node_deg, thick = lib.thicknesses,
             log_r = lib.log_aspects, impacts = lib.impacts, w_col = lib.column_width,
-            nE = nE, n_ch = n_ch, nc = nc, n_cc = n_cc, nu = nu, na = na, nb = nb, n_used = n_used
-        AK.foreachindex(factor) do idx
+            nE = nE, n_ch = n_ch, nc = nc, n_cc = n_cc, nu = nu, na = na, nb = nb, n_used = n_used, ray0 = ray0
+        _foreachindex(1:(n_ch * 8 * n_rays), AK.get_backend(factor)) do idx
             o = one(T)
             q = idx - 1
             ch = q % n_ch + 1
             c = (q ÷ n_ch) % 8
-            ray = q ÷ (8n_ch) + 1
+            local_ray = q ÷ (8n_ch) + 1
+            ray = local_ray + ray0
             weight = shapes[5, ray]
             factor[idx] = zero(T)
-            window[1, ch, c + 1, ray] = Int32(1)
-            window[2, ch, c + 1, ray] = Int32(0)
+            window[1, ch, c + 1, local_ray] = Int32(1)
+            window[2, ch, c + 1, local_ray] = Int32(0)
             @inbounds if ch <= n_used && weight > 0
                 u = shapes[3, ray]
                 iT = _bracket(thick, shapes[1, ray])
@@ -647,14 +654,14 @@ function _scatter_corners!(
                 wg = wT * wr * wu
                 if wg != 0
                     k = ((tT - 1) * na + (tr - 1)) * nu + (tu - 1)
-                    corner[c + 1, ray] = Int32(k)
+                    corner[c + 1, local_ray] = Int32(k)
 
                     # this corner's weights: how much less of each process's scatter gets out of the
                     # ray's materials than of the kernel's water
                     water = plain[ray]
                     if water
                         for g in 1:nE
-                            mix[g, ch, c + 1, ray] = weights[g, 1, ch, ray]
+                            mix[g, ch, c + 1, local_ray] = weights[g, 1, ch, local_ray]
                         end
                     else
                         for pp in 1:2, g in 1:nE
@@ -665,10 +672,10 @@ function _scatter_corners!(
                             end
                             escape = exp(-path)
                             if pp == 1
-                                mix[g, ch, c + 1, ray] = weights[g, 1, ch, ray] * escape
+                                mix[g, ch, c + 1, local_ray] = weights[g, 1, ch, local_ray] * escape
                             else
-                                mix[g + nE, ch, c + 1, ray] = weights[g, 2, ch, ray] * escape
-                                mix[g + 2nE, ch, c + 1, ray] = weights[g, 3, ch, ray] * escape
+                                mix[g + nE, ch, c + 1, local_ray] = weights[g, 2, ch, local_ray] * escape
+                                mix[g + 2nE, ch, c + 1, local_ray] = weights[g, 3, ch, local_ray] * escape
                             end
                         end
                     end
@@ -693,7 +700,7 @@ function _scatter_corners!(
                         src = mirror ? nc + 1 - ii : ii
                         m0, m1, m2 = zero(T), zero(T), zero(T)
                         for j in 1:n_slots
-                            w = mix[j, ch, c + 1, ray]
+                            w = mix[j, ch, c + 1, local_ray]
                             w == 0 && continue
                             b = mbase + 3nc * (slot0 + j - 1) + src
                             m0 += w * moments[b]
@@ -716,13 +723,13 @@ function _scatter_corners!(
                                 d_hi = max(d_hi, Int32(last_col - ii + 1))
                             end
                         end
-                        boxes[1, ii, ch, c + 1, ray] = edge
-                        boxes[2, ii, ch, c + 1, ray] = lo
-                        boxes[3, ii, ch, c + 1, ray] = hi
+                        boxes[1, ii, ch, c + 1, local_ray] = edge
+                        boxes[2, ii, ch, c + 1, local_ray] = lo
+                        boxes[3, ii, ch, c + 1, local_ray] = hi
                     end
                     if d_lo <= d_hi
-                        window[1, ch, c + 1, ray] = d_lo
-                        window[2, ch, c + 1, ray] = d_hi
+                        window[1, ch, c + 1, local_ray] = d_lo
+                        window[2, ch, c + 1, local_ray] = d_hi
                         factor[idx] = wg * weight
                     end
                 end
@@ -733,7 +740,8 @@ function _scatter_corners!(
 end
 
 # `rows[row, column, ch, group, view]`: the scatter of a view-group's rays relative to their own
-# row, each library bin gathering the corners' boxes over its column.
+# row, each library bin gathering the corners' boxes over its column, for the `n_gv` view-groups
+# of the chunk whose rays start after `ray0` (`shapes`, `plain`: every ray's; the rest the chunk's).
 function _scatter_deposit!(
         rows::AbstractArray{T, 5},
         corner::AbstractMatrix{Int32},
@@ -746,6 +754,8 @@ function _scatter_deposit!(
         lib,
         n_cc::Int,
         n_used::Int,
+        ray0::Int,
+        n_gv::Int,
     ) where {T}
     nr, nc, n_ch = size(rows, 1), size(rows, 2), size(rows, 3)
     nE = size(mix, 1) ÷ 3
@@ -755,9 +765,9 @@ function _scatter_deposit!(
     let rows = rows, corner = corner, factor = factor, mix = mix, boxes = boxes, window = window,
             shapes = shapes, plain = plain, kernels = lib.kernels, w_col = lib.column_width,
             nr = Int32(nr), nc = Int32(nc), n_ch = Int32(n_ch), nE = Int32(nE), L = Int32(L), block = Int32(block),
-            n_cc = Int32(n_cc), n_used = Int32(n_used), lanes = Int32(lanes)
+            n_cc = Int32(n_cc), n_used = Int32(n_used), lanes = Int32(lanes), ray0 = Int32(ray0)
         # the rows in whole warps: a warp is one bin's column, all its threads taking the same branches
-        _foreachindex(1:(lanes * nc * n_ch * size(rows, 4) * size(rows, 5)), AK.get_backend(rows)) do idx
+        _foreachindex(1:(lanes * nc * n_ch * n_gv), AK.get_backend(rows)) do idx
             q = Int32(idx - 1)
             dr = q % lanes + Int32(1)
             dr > nr && return
@@ -770,8 +780,8 @@ function _scatter_deposit!(
             @inbounds if ch <= n_used
                 for i in Int32(1):n_cc
                     ray = gv * n_cc + i
-                    mirror = shapes[3, ray] < 0
-                    slot0, n_slots = plain[ray] ? (Int32(3) * nE, nE) : (Int32(0), Int32(3) * nE)
+                    mirror = shapes[3, ray + ray0] < 0
+                    slot0, n_slots = plain[ray + ray0] ? (Int32(3) * nE, nE) : (Int32(0), Int32(3) * nE)
                     for c in Int32(1):Int32(8)
                         f = factor[ch, c, ray]
                         f == 0 && continue
@@ -801,27 +811,30 @@ function _scatter_deposit!(
     return rows
 end
 
-# `out[column, row, ch, view]`: the scatter of each view, its groups' `rows` laid over each row of
-# their beams (`row_share[row, group]`); with `combine`, the geometric mean of that and what `out`
-# holds.
+# `out[column, row, ch, view]` for the `n_v` views from `v0 + 1` on (the chunk's, `rows`): the
+# scatter of each view, its groups' `rows` laid over each row of their beams (`row_share[row,
+# group]`); with `combine`, the geometric mean of that and what `out` holds.
 function _scatter_rows!(
         out::AbstractArray{T, 4},
         rows::AbstractArray{T, 5},
-        row_share::AbstractMatrix{T};
+        row_share::AbstractMatrix{T},
+        v0::Int,
+        n_v::Int;
         combine::Bool,
     ) where {T}
     nc, nr, n_ch = size(out, 1), size(out, 2), size(out, 3)
     n_g = size(rows, 4)
     let out = out, rows = rows, row_share = row_share, nc = nc, nr = nr, n_ch = n_ch, n_g = n_g,
-            mid = (nr + 1) ÷ 2, combine = combine
-        AK.foreachindex(out) do idx
-            q = idx - 1
+            mid = (nr + 1) ÷ 2, combine = combine, v0 = v0
+        _foreachindex(1:(nc * nr * n_ch * n_v), AK.get_backend(out)) do q1
+            q = q1 - 1
             ci = q % nc + 1
             q ÷= nc
             ri = q % nr + 1
             q ÷= nr
             ch = q % n_ch + 1
             v = q ÷ n_ch + 1
+            idx = q1 + nc * nr * n_ch * v0
             s = zero(T)
             for g in 1:n_g, r0 in 1:nr
                 share = row_share[r0, g]
