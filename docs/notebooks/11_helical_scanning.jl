@@ -198,6 +198,31 @@ scanner = BS.EICTScanner(
     detector_col_size = 1.0,
 );
 
+# ╔═╡ 31a9e8a0-c16a-511e-a0a0-c0610c198163
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 11000004-0000-4000-8000-000000000003
 begin
     protocol_helical = BS.CTProtocol(
@@ -571,6 +596,7 @@ md"""
 # ╠═11000003-0000-4000-8000-000000000004
 # ╟─11000004-0000-4000-8000-000000000001
 # ╠═11000004-0000-4000-8000-000000000002
+# ╟─31a9e8a0-c16a-511e-a0a0-c0610c198163
 # ╠═11000004-0000-4000-8000-000000000003
 # ╟─11000005-0000-4000-8000-000000000001
 # ╠═11000005-0000-4000-8000-000000000002

@@ -150,6 +150,31 @@ it, each with a calibration from simulated air scans. See the
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
 scanner = BS.NAEOTOM_ALPHA
 
+# ╔═╡ d15334a3-db15-541c-b1a3-ab862db955f4
+# Every keyword of `scanner`: the documented constant `NAEOTOM_ALPHA`, with any field this notebook changes marked
+let s = scanner, constant = BS.NAEOTOM_ALPHA
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `NAEOTOM_ALPHA`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.NAEOTOM_ALPHA`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.NAEOTOM_ALPHA; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 040e1000-0000-4000-8000-000000000102
 md"""
 ### Protocol and Dose
@@ -952,6 +977,7 @@ end
 # ╠═5248ba55-965a-41f7-845c-99616018b475
 # ╟─040e1000-0000-4000-8000-000000000101
 # ╠═2c157064-8567-450b-bc08-c2606084a77f
+# ╟─d15334a3-db15-541c-b1a3-ab862db955f4
 # ╟─040e1000-0000-4000-8000-000000000102
 # ╠═04b00000-0000-4000-8000-000000000001
 # ╠═04b00000-0000-4000-8000-000000000002

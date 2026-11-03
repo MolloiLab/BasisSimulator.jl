@@ -137,6 +137,31 @@ the arc the gantry turns per view (`view_arc`).
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
 scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)
 
+# ╔═╡ eeed376c-8d0d-52ba-b48e-715ba6d3123e
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 040e1000-0000-4000-8000-000000000102
 md"""
 ### 3. `CTProtocol()` Struct
@@ -977,6 +1002,7 @@ applied to any VMI.
 # ╠═5248ba55-965a-41f7-845c-99616018b475
 # ╟─040e1000-0000-4000-8000-000000000101
 # ╠═2c157064-8567-450b-bc08-c2606084a77f
+# ╟─eeed376c-8d0d-52ba-b48e-715ba6d3123e
 # ╟─040e1000-0000-4000-8000-000000000102
 # ╠═03c00001-0000-4000-8000-000000000001
 # ╠═03c00001-0000-4000-8000-000000000002

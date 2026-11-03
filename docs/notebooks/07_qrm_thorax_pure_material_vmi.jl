@@ -382,6 +382,31 @@ the geometry (834 columns × 0.6 mm on an arc with the quarter-detector offset, 
 # ╔═╡ 07030001-0000-4000-8000-000000000010
 scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)
 
+# ╔═╡ 524abd9e-0288-5a3b-b911-28cb8ee1ec73
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 07030002-0000-4000-8000-000000000001
 md"""
 ### 3. Dual-kVp Protocols (Rapid kVp Switching)
@@ -1301,6 +1326,7 @@ end
 # ╟─07020001-0000-4000-8000-000000000062
 # ╟─07030001-0000-4000-8000-000000000001
 # ╠═07030001-0000-4000-8000-000000000010
+# ╟─524abd9e-0288-5a3b-b911-28cb8ee1ec73
 # ╟─07030002-0000-4000-8000-000000000001
 # ╠═07030002-0000-4000-8000-000000000010
 # ╠═07030002-0000-4000-8000-000000000011

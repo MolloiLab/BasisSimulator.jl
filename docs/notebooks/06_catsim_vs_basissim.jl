@@ -231,6 +231,31 @@ simulators see the same bowtie. Electronic noise is zero, as noise is off everyw
 # ╔═╡ 06000002-0000-4000-8000-000000000010
 scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)
 
+# ╔═╡ a8ac0e53-23ec-533d-a797-af31d0867766
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 06000003-0000-4000-8000-000000000001
 md"""
 ### 2. Protocol, physics and grid
@@ -830,6 +855,7 @@ or a clinical-size detector, scale `n_voxels` and the scanner; the wrapper forwa
 # ╟─060000f1-0000-4000-8000-000000000001
 # ╟─06000002-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000010
+# ╟─a8ac0e53-23ec-533d-a797-af31d0867766
 # ╟─06000003-0000-4000-8000-000000000001
 # ╠═06000003-0000-4000-8000-000000000010
 # ╠═06000003-0000-4000-8000-000000000020

@@ -398,6 +398,31 @@ The bowtie makes the air response vary across the fan, so the spectral model is 
 # ╔═╡ 08030001-0000-4000-8000-000000000010
 scanner = BS.NAEOTOM_ALPHA;
 
+# ╔═╡ 87a264c8-e748-573c-84b3-99debe660f48
+# Every keyword of `scanner`: the documented constant `NAEOTOM_ALPHA`, with any field this notebook changes marked
+let s = scanner, constant = BS.NAEOTOM_ALPHA
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `NAEOTOM_ALPHA`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.NAEOTOM_ALPHA`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.NAEOTOM_ALPHA; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 08030002-0000-4000-8000-000000000001
 md"""
 ### 3. `CTProtocol`: 140 kVp, 5.0 mm Collimation, at the Physical Scan's Dose
@@ -1309,6 +1334,7 @@ end
 # ╟─08020001-0000-4000-8000-000000000062
 # ╟─08030001-0000-4000-8000-000000000001
 # ╠═08030001-0000-4000-8000-000000000010
+# ╟─87a264c8-e748-573c-84b3-99debe660f48
 # ╟─08030002-0000-4000-8000-000000000001
 # ╠═08030002-0000-4000-8000-000000000011
 # ╠═08030002-0000-4000-8000-000000000012

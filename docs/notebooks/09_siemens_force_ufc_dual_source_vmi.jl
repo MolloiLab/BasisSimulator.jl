@@ -249,6 +249,31 @@ the geometry was measured from an actual clinical Force by Wang et al.):
 # Tube/detector A geometry — shared by both modeled tubes (see md above).
 scanner = BS.SOMATOM_FORCE;
 
+# ╔═╡ a25dda2c-bb62-534b-be16-0f1de34a44f1
+# Every keyword of `scanner`: the documented constant `SOMATOM_FORCE`, with any field this notebook changes marked
+let s = scanner, constant = BS.SOMATOM_FORCE
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `SOMATOM_FORCE`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.SOMATOM_FORCE`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.SOMATOM_FORCE; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 09000005-0000-4000-8000-000000000001
 md"""
 ## 4. Protocols: One Dual-Source DE Acquisition
@@ -1626,6 +1651,7 @@ UFC Geant4 table (BS.UFC_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
 # ╠═09000003-0000-4000-8000-000000000020
 # ╟─09000004-0000-4000-8000-000000000001
 # ╠═09000004-0000-4000-8000-000000000010
+# ╟─a25dda2c-bb62-534b-be16-0f1de34a44f1
 # ╟─09000005-0000-4000-8000-000000000001
 # ╠═09000005-0000-4000-8000-000000000010
 # ╠═09000005-0000-4000-8000-000000000020

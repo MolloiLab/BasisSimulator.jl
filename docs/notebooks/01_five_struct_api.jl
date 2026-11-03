@@ -239,6 +239,31 @@ every parameter copied, the keywords given replaced.
 # ╔═╡ 03000002-0000-4000-8000-000000000001
 scanner = BS.REVOLUTION_APEX
 
+# ╔═╡ 006e51e3-bb52-5e9f-9cde-8d1ec973b9bd
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 03000003-0000-4000-8000-000000000001
 Markdown.parse("""
 Scanner: $(scanner.detector_rows) rows × $(scanner.detector_cols) columns, detector shape
@@ -911,6 +936,7 @@ Every other notebook reuses this pattern: build the structs, create a workspace,
 # ╟─02000005-0000-4000-8000-000000000001
 # ╟─03000001-0000-4000-8000-000000000001
 # ╠═03000002-0000-4000-8000-000000000001
+# ╟─006e51e3-bb52-5e9f-9cde-8d1ec973b9bd
 # ╟─03000003-0000-4000-8000-000000000001
 # ╟─04000001-0000-4000-8000-000000000001
 # ╠═04000002-0000-4000-8000-000000000001

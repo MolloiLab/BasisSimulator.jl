@@ -319,6 +319,31 @@ while the detector reads it (`view_samples = 5`). Reconstruction: 512 × 512 ove
 # counts before the log, as a real DAS does, so iterative reconstruction can act on it.
 scanner = BS.REVOLUTION_APEX
 
+# ╔═╡ 0f01cfb1-2f77-583c-a21d-8168bca60aec
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 07000003-0000-4000-8000-000000000001
 protocol = BS.CTProtocol(
     kVp = 120,
@@ -636,6 +661,7 @@ Three ideas on top of the five-struct API of notebook 01:
 # ╟─07000000-0000-4000-8000-000000000000
 # ╟─07000001-0000-4000-8000-000000000001
 # ╠═07000002-0000-4000-8000-000000000001
+# ╟─0f01cfb1-2f77-583c-a21d-8168bca60aec
 # ╠═07000003-0000-4000-8000-000000000001
 # ╠═07000004-0000-4000-8000-000000000001
 # ╠═07000005-0000-4000-8000-000000000001

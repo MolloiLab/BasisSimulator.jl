@@ -280,6 +280,31 @@ at 95°** in the same gantry.  Every value below is sourced in the
 # two channels stay co-registered ray by ray (see md above).
 flash_scanner = BS.SOMATOM_DEFINITION_FLASH;
 
+# ╔═╡ a4f39820-16e5-5809-b70a-5b3f64c6fb38
+# Every keyword of `flash_scanner`: the documented constant `SOMATOM_DEFINITION_FLASH`, with any field this notebook changes marked
+let s = flash_scanner, constant = BS.SOMATOM_DEFINITION_FLASH
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`flash_scanner` is `$(nameof(typeof(s)))`, from the documented constant `SOMATOM_DEFINITION_FLASH`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.SOMATOM_DEFINITION_FLASH`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.SOMATOM_DEFINITION_FLASH; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
+
 # ╔═╡ 12000006-0000-4000-8000-000000000001
 md"""
 ## 4. Physics Switches: `SimOptions`
@@ -2026,6 +2051,7 @@ DUAL ENERGY: 80 kVp (A) + Sn140 kVp (B, 0.4 mm Sn), × DOSE_SCALE
 # ╠═12000003-0000-4000-8000-000000000020
 # ╟─12000004-0000-4000-8000-000000000001
 # ╠═12000004-0000-4000-8000-000000000010
+# ╟─a4f39820-16e5-5809-b70a-5b3f64c6fb38
 # ╟─12000006-0000-4000-8000-000000000001
 # ╠═12000006-0000-4000-8000-000000000010
 # ╟─12000005-0000-4000-8000-000000000001
