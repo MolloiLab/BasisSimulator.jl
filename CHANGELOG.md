@@ -219,7 +219,8 @@ onward they are written by hand, and releases are cut by hand — see
   paths, the `:dd` projector and its transpose) now writes every multiply-add as an explicit `fma` and takes its fan
   angles' sine and cosine from one polynomial (`_dd_sincos`), so the material paths and the `:dd` forward projection
   are bit for bit alike on the CPU and the device. The scatter's impact, inverted from each ray's water length,
-  amplified their ulps into a scatter field 2 × 10⁻⁵ apart; it now agrees to the CPU's within 10⁻⁵.
+  amplified their ulps into a scatter field 2 × 10⁻⁵ apart; it now agrees to the CPU's within 10⁻⁵. Projections
+  move by at most 10⁻⁵ relative on either side (the new roundings lie between the old CPU's and the old GPU's).
 
 ### Added
 - **Dexel defects and their flat field.** `EICTScanner(; gain_spread, offset_spread_keV, defect_seed)` and
