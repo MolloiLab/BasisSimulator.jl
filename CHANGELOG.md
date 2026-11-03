@@ -28,7 +28,7 @@ onward they are written by hand, and releases are cut by hand — see
   1.4 mm for both Siemens scanners. `SOMATOM_DEFINITION_FLASH.detector_depth` is 1.4 mm (was 1.0). A table is
   made at one depth, so `DetectorEfficiency(material, thickness_mm, MC_LUT)` refuses another;
   `detector_efficiency_mode = :beer_lambert` models any depth (`m₁ = E·q`, `m₂ = E²·q`). The Beer–Lambert
-  attenuation tables are scaled to the same densities.
+  attenuation tables are scaled to the same densities. The tables are those BasisMonteCarlo's notebooks 04–06 save as they stand (reproducible bit for bit; the Gemstone and Definition Flash tables moved by ≤ 0.004 from an earlier draw of the same runs).
 - **Removed:** `compute_eid_efficiency_vector`, `get_gemstone_mc_efficiency`, `get_ufc_mc_efficiency`,
   `get_ufc_flash_mc_efficiency` (the tables are the exported `*_MC_EFFICIENCY_LUT`s; the response is internal); `detector_efficiency_gemstone`, `detector_efficiency_ufc`,
   `detector_efficiency_ufc_flash` (→ `DetectorEfficiency(material, thickness_mm, mode)` with the scanner's own
