@@ -149,7 +149,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             title     = "The NAEOTOM Alpha Detector",
             summary   = "The photon-counting detector built in Geant4 from one dexel up: grid, oblique photons, " *
                         "2 × 2 binning, charge sharing, thresholds and pile-up, compared point by point with " *
-                        "BasisSimulator's MCNP response table.",
+                        "BasisSimulator v0.15.1's MCNP response table.",
             thumbnail = "mc-03_alpha_detector.webp",
             tags      = ["PCCT", "Geant4", "NAEOTOM Alpha"],
         ),
@@ -164,7 +164,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
         "mc-05_siemens_flash" => (
             title     = "The SOMATOM Definition Flash Detector",
             summary   = "The Flash's UFC detector and grid in Geant4, checked against Siemens' data sheets and " *
-                        "the FDA clearances; the current table reproduced, where it parts from the documented " *
+                        "the FDA clearances; BasisSimulator v0.15.1's table reproduced, where it parts from the documented " *
                         "detector, and a better one with its Swank factor.",
             thumbnail = "mc-05_siemens_flash.webp",
             tags      = ["EID", "Geant4", "UFC", "Dual-source"],
@@ -172,7 +172,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
         "mc-06_ge_revolution_apex" => (
             title     = "The GE Gemstone Detector: Revolution Apex",
             summary   = "GE's Gemstone garnet scintillator and 3D collimator in Geant4, checked against the FDA " *
-                        "clearances, GE's patents and the literature; the current table reproduced, and a new " *
+                        "clearances, GE's patents and the literature; BasisSimulator v0.15.1's table reproduced, and a new " *
                         "one for a garnet that can exist.",
             thumbnail = "mc-06_ge_revolution_apex.webp",
             tags      = ["EID", "Geant4", "Gemstone"],
@@ -197,25 +197,25 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             title     = "Scatter in Water Cylinders",
             summary   = "A fan beam through 20 to 50 cm water cylinders in Geant4, scored by forced detection " *
                         "with no grid, a 1-D and a 2-D grid, against published measurements and " *
-                        "BasisSimulator's current model, closed by a scorecard.",
+                        "BasisSimulator v0.15.1's analytic model, closed by a scorecard.",
             thumbnail = "mc-09_scatter_water_cylinders.webp",
             tags      = ["Scatter", "Geant4", "Anti-scatter grid", "Scorecard"],
         ),
         "mc-10_scatter_library" => (
-            title     = "A Scatter Library over Water-Equivalent Diameter",
-            summary   = "Geant4 pencil-beam scatter kernels for water cylinders of 20 to 50 cm, every ray and " *
-                        "energy, scored on six scanners' detectors at once, closed by a pass/fail scorecard " *
-                        "against direct Monte Carlo of whole fan beams.",
+            title     = "A Scatter Library over Patient Shape",
+            summary   = "Geant4 pencil-beam scatter kernels in water ellipses 14 to 50 cm thick and 0.6 to 2.5 " *
+                        "times as wide, every ray and energy, scored on six scanners' detectors at once and shipped " *
+                        "to BasisSimulator per scanner; closed by a 52-check scorecard against direct Monte Carlo.",
             thumbnail = "mc-10_scatter_library.webp",
-            tags      = ["Scatter", "Geant4", "WED", "Scorecard"],
+            tags      = ["Scatter", "Geant4", "Ellipses", "Scorecard"],
         ),
         "mc-11_scatter_validation" => (
-            title     = "Validating the Scatter Library Beyond Water Cylinders",
-            summary   = "Five phantoms that are not water cylinders, simulated directly in Geant4, against the " *
-                        "library's water-equivalent-diameter prediction and BasisSimulator's current model, on " *
-                        "a 2-D-grid and a 1-D-grid scanner, with a scorecard.",
+            title     = "Validating the Scatter Library Beyond Water",
+            summary   = "Ellipses, an off-centre cylinder, Gammex 472 and two thoraxes (one held out) simulated " *
+                        "directly in Geant4, against the library and BasisSimulator v0.15.1's analytic model, on " *
+                        "a 2-D-grid and a 1-D-grid scanner; 37 of 37 checks pass.",
             thumbnail = "mc-11_scatter_validation.webp",
-            tags      = ["Scatter", "Geant4", "WED", "Validation"],
+            tags      = ["Scatter", "Geant4", "Thorax", "Validation"],
         ),
     )
 
@@ -285,9 +285,15 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
                     "Complete studies, each run end to end (on a GPU; the detector-physics notebooks on CPU workers): ",
                     "the code, the prose and every figure, rendered ",
                     "in place. Each page links to the notebook's source, which opens in Pluto."),
-                Div(:class => "flex flex-wrap gap-2 pt-2",
+                # One row of section links per package: BasisSimulator.jl's notebooks, then BasisMonteCarlo.jl's
+                [Div(:class => "flex flex-wrap items-center gap-2 pt-2",
+                    Span(:class => "w-44 text-[10px] tracking-[0.15em] uppercase font-mono text-warm-500", package),
                     [A(:href => "#$(id)", :class => "px-3 py-1 rounded-full border border-warm-300 dark:border-warm-700 text-xs text-warm-700 dark:text-warm-300 hover:border-accent-400 hover:text-accent-600 dark:hover:text-accent-400 no-underline transition-colors",
-                        "$(t) · $(length(slugs))") for (id, t, _, slugs) in groups]...)
+                        "$(t) · $(length(slugs))") for (id, t, _, slugs) in rows]...)
+                 for (package, rows) in (
+                    ("BasisSimulator.jl", [g for g in groups if !all(startswith("mc-"), g[4])]),
+                    ("BasisMonteCarlo.jl", [g for g in groups if all(startswith("mc-"), g[4])]),
+                 ) if !isempty(rows)]...
             ),
             if isempty(groups)
                 Div(:class => "py-16 border border-dashed border-warm-300 dark:border-warm-700 rounded-xl text-center",
