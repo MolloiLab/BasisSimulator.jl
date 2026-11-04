@@ -25,6 +25,12 @@ onward they are written by hand, and releases are cut by hand — see
   `SimOptions(use_lag = false)` → `EICTScanner(REVOLUTION_APEX; use_lag = false)` with `SimOptions()`.
   The numbers do not change: each switch on the scanner gives v0.16.0's result bit for bit (`test/eict_signal.jl`
   pins them).
+- **The calibrations take the scan's phantom and run on its device (`like` is gone):** `calibrate_flat_field(scanner,
+  protocol, recon_opts, phantom; sim_opts)` (both families) and `calibrate_pileup(scanner, protocol, recon_opts,
+  phantom; sim_opts, currents)`, the phantom positional after `recon_opts` as in `create_workspace`. A phantom on
+  the GPU calibrates on the GPU, one on the CPU on the CPU (v0.16.0 defaulted to the CPU); the scans are of air,
+  never the phantom. Migrate: `calibrate_pileup(scanner, protocol, recon; sim_opts, like = phantom.mask)` →
+  `calibrate_pileup(scanner, protocol, recon, phantom; sim_opts)`.
 
 ### Changed
 - **The calibrations scan two views:** an air scan does not change as the gantry turns, so `calibrate_flat_field`

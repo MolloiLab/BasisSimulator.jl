@@ -28,7 +28,7 @@ end
     @test BS.EICTScanner(ideal; defect_seed = 1) == _EICT_TEST_SCANNER
     truth = _scan(ideal, phantom, protocol, opts)
     raw = _scan(defective, phantom, protocol, opts)
-    cal = BS.calibrate_flat_field(defective, protocol, _EICT_RECON; sim_opts = opts, like = phantom.mask)
+    cal = BS.calibrate_flat_field(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
     corrected = BS.apply_flat_field!(copy(raw), cal)
     @test _rms(raw .- truth) > 0.01                           # a 2 % gain spread rings
     @test _rms(corrected .- truth) < 1.0e-4                   # gain and offset are energy-blind: exact
@@ -47,7 +47,7 @@ end
     defective = BS.PCCTScanner(base; gain_spread = 0.02, threshold_spread_keV = 0.35, defect_seed = 3)
     truth = _scan(base, phantom, protocol, opts).bins
     raw = _scan(defective, phantom, protocol, opts).bins
-    cal = BS.calibrate_flat_field(defective, protocol, _EICT_RECON; sim_opts = opts, like = phantom.mask)
+    cal = BS.calibrate_flat_field(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
     corrected = BS.apply_flat_field!([copy(b) for b in raw], cal)
     before = _rms(reduce(vcat, vec.(raw .- truth)))
     after = _rms(reduce(vcat, vec.(corrected .- truth)))
@@ -69,7 +69,7 @@ end
     )
     free = _scan(BS.PCCTScanner(base; pileup = false), phantom, protocol, opts).bins
     piled = _scan(base, phantom, protocol, opts)
-    cal = BS.calibrate_pileup(base, protocol, _EICT_RECON; sim_opts = opts, like = phantom.mask)
+    cal = BS.calibrate_pileup(base, protocol, _EICT_RECON, phantom; sim_opts = opts)
     corrected = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
     before = _rms(reduce(vcat, vec.(piled.bins .- free)))
     after = _rms(reduce(vcat, vec.(corrected .- free)))
@@ -85,7 +85,6 @@ end
     # and `_pileup` scan exactly the protocol and options they are given).
     full = _noise_free(; use_focal_spot = true, view_samples = 5)
     phantom = _on_backend(_eict_cylinder(; diameter_cm = 20.0))
-    like = phantom.mask
 
     eict = BS.EICTScanner(
         _EICT_TEST_SCANNER;
@@ -95,8 +94,8 @@ end
         use_lag = true,
     )
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 120)
-    few = BS.calibrate_flat_field(eict, protocol, _EICT_RECON; sim_opts = full, like)
-    ref = BS._flat_field(eict, protocol, _EICT_RECON, full, like)
+    few = BS.calibrate_flat_field(eict, protocol, _EICT_RECON, phantom; sim_opts = full)
+    ref = BS._flat_field(eict, protocol, _EICT_RECON, full, phantom)
     @test maximum(abs.(few.gain .- ref.gain)) < 2.0e-5
     @test maximum(abs.(few.offset .- ref.offset)) < 2.0e-5
 
@@ -109,15 +108,57 @@ end
         scatter_correction = false,
     )
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 2.0, views = 120)
-    few = BS.calibrate_flat_field(pcct, protocol, _EICT_RECON; sim_opts = full, like)
-    ref = BS._flat_field(pcct, protocol, _EICT_RECON, full, like)
+    few = BS.calibrate_flat_field(pcct, protocol, _EICT_RECON, phantom; sim_opts = full)
+    ref = BS._flat_field(pcct, protocol, _EICT_RECON, full, phantom)
     @test maximum(abs.(few.gain .- ref.gain)) < 2.0e-5
 
     # pile-up: the corrections the two calibrations make to one scan
     piled = _scan(pcct, phantom, protocol, full)
     currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2]
     corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
-    a = corrected(BS.calibrate_pileup(pcct, protocol, _EICT_RECON; sim_opts = full, like))
-    b = corrected(BS._pileup(pcct, protocol, _EICT_RECON, full, like, currents))
+    a = corrected(BS.calibrate_pileup(pcct, protocol, _EICT_RECON, phantom; sim_opts = full))
+    b = corrected(BS._pileup(pcct, protocol, _EICT_RECON, full, phantom, currents))
     @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 2.0e-5
+end
+
+@testset "the calibrations run on the scan phantom's device" begin
+    # A phantom on the CPU calibrates on the CPU, one on the GPU on the GPU; the calibration
+    # scans air on that device, never the phantom, and both devices agree.
+    opts = _noise_free()
+    cpu = _eict_cylinder(; diameter_cm = 20.0)
+    @test BS._air_phantom(cpu).mask isa Array
+    eict = BS.EICTScanner(_EICT_TEST_SCANNER; gain_spread = 0.02, offset_spread_keV = 2.0e4, defect_seed = 7)
+    pcct = BS.PCCTScanner(
+        BS.NAEOTOM_ALPHA;
+        detector_rows = 2,
+        detector_cols = 96,
+        detector_col_size = 3.0,
+        detector_row_size = 1.0,
+        scatter_correction = false,
+    )
+    p_eict = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 60)
+    p_pcct = BS.CTProtocol(; kVp = 120.0, mAs = 2.0, views = 30)
+    calibrations(phantom) = (
+        eict = BS.calibrate_flat_field(eict, p_eict, _EICT_RECON, phantom; sim_opts = opts),
+        pcct = BS.calibrate_flat_field(pcct, p_pcct, _EICT_RECON, phantom; sim_opts = opts),
+        pileup = BS.calibrate_pileup(pcct, p_pcct, _EICT_RECON, phantom; sim_opts = opts),
+    )
+    on_cpu = calibrations(cpu)
+    @test on_cpu.eict.gain isa Matrix{Float64} && on_cpu.pcct.gain isa Array{Float64, 3}
+    if !HAS_GPU
+        @info "Skipping the GPU calibration: no GPU backend"
+    else
+        gpu = _on_backend(cpu)
+        air = BS._air_phantom(gpu).mask
+        @test !(air isa Array) && typeof(air) == typeof(similar(gpu.mask, UInt8, 4, 4, 2))
+        on_gpu = calibrations(gpu)
+        @test maximum(abs.(on_gpu.eict.gain .- on_cpu.eict.gain)) < 2.0e-5
+        @test maximum(abs.(on_gpu.eict.offset .- on_cpu.eict.offset)) < 2.0e-5
+        @test maximum(abs.(on_gpu.pcct.gain .- on_cpu.pcct.gain)) < 2.0e-5
+        # the pile-up curves, as the correction they make to one scan
+        piled = _scan(pcct, cpu, p_pcct, opts)
+        corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, p_pcct)
+        a, b = corrected(on_gpu.pileup), corrected(on_cpu.pileup)
+        @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 2.0e-5
+    end
 end

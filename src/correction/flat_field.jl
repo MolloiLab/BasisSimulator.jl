@@ -96,10 +96,13 @@ function _apply_pcct_defects!(λ::NTuple{NB}, I0, air, hard, p_hard) where {NB}
     return λ
 end
 
-# The calibrations' air scans run on the backend of `like`, an array such as the scan's own
-# `phantom.mask` (`simulate!` runs where the phantom's mask lives).
-_air_phantom(like::AbstractArray) =
-    Phantom(fill!(similar(like, UInt8, 4, 4, 2), 0x00), Dict{Int, Any}(0 => XA.Materials.air), (0.05, 0.05, 0.05))
+# The calibrations' air scans run on the scan's phantom's device (`simulate!` runs where the
+# phantom's mask lives); they scan air, never the patient.
+_air_phantom(phantom::Phantom) = Phantom(
+    fill!(similar(phantom.mask, UInt8, 4, 4, 2), 0x00),
+    Dict{Int, Any}(0 => XA.Materials.air),
+    (0.05, 0.05, 0.05),
+)
 # The mean over the views of a sinogram, `[cols, rows]`, on the host in Float64.
 _view_mean(x::AbstractArray{<:Real, 3}) = Float64.(Array(dropdims(sum(x; dims = 3); dims = 3))) ./ size(x, 3)
 
@@ -135,7 +138,7 @@ struct FlatFieldCalibration{G <: AbstractArray, O}
 end
 
 """
-    calibrate_flat_field(scanner, protocol, recon_opts; sim_opts = SimOptions(), like = zeros(UInt8, 0))
+    calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts = SimOptions())
         -> FlatFieldCalibration
 
 Calibrate the flat field of `scanner` the way a scanner does it, from simulated air scans
@@ -152,22 +155,23 @@ offsets differ from those of the protocol's full views by at most 2e-5 (measured
 offsets of a SOMATOM Force with gain and offset spreads), and the calibration takes 1.0 s on an
 NVIDIA L40S for notebook 04's Alpha protocol (2.6 s with its 1200 × 5 views).
 
-The scans run on the backend of `like`: pass the scan's `phantom.mask` to calibrate where the scan
-runs (on the GPU, say); the default is the CPU.
+The scans run on the device of `phantom`, the scan's own (as for [`create_workspace`](@ref)): a
+phantom on the GPU calibrates on the GPU, one on the CPU on the CPU. They scan air, never the
+phantom itself; the calibration's arrays are on the host, in Float64.
 """
 function calibrate_flat_field(
         scanner::Scanner,
         protocol::CTProtocol,
-        recon_opts;
+        recon_opts,
+        phantom::Phantom;
         sim_opts::SimOptions = SimOptions(),
-        like::AbstractArray = zeros(UInt8, 0),
     )
     return _flat_field(
         scanner,
         _calibration_protocol(protocol),
         recon_opts,
         _calibration_options(sim_opts),
-        like,
+        phantom,
     )
 end
 
@@ -177,9 +181,9 @@ function _flat_field(
         protocol::CTProtocol,
         recon_opts,
         opts::SimOptions,
-        like::AbstractArray,
+        phantom::Phantom,
     )
-    air = _air_phantom(like)
+    air = _air_phantom(phantom)
     y = map((protocol, CTProtocol(protocol; mA = protocol.mA / 4))) do p
         ws = create_eict_workspace(scanner, p, opts, recon_opts, air)
         try
@@ -198,9 +202,9 @@ function _flat_field(
         protocol::CTProtocol,
         recon_opts,
         opts::SimOptions,
-        like::AbstractArray,
+        phantom::Phantom,
     )
-    air = _air_phantom(like)
+    air = _air_phantom(phantom)
     s = PCCTScanner(scanner; pileup = false)
     ws = create_workspace(s, protocol, opts, recon_opts, air)
     try
@@ -249,8 +253,8 @@ struct PileupCalibration
 end
 
 """
-    calibrate_pileup(scanner::PCCTScanner, protocol, recon_opts; sim_opts = SimOptions(),
-                     currents = [1/16, 1/8, 1/4, 1/2, 1, 2], like = zeros(UInt8, 0)) -> PileupCalibration
+    calibrate_pileup(scanner::PCCTScanner, protocol, recon_opts, phantom; sim_opts = SimOptions(),
+                     currents = [1/16, 1/8, 1/4, 1/2, 1, 2]) -> PileupCalibration
 
 Calibrate pile-up the way a scanner can, from simulated air scans at the protocol's tube current
 times each of `currents`: the pile-up-free counts of every pixel are the lowest current's,
@@ -261,19 +265,22 @@ protocol: each air scan is two views at its time per view, each read at one angl
 [`calibrate_flat_field`](@ref). A scan it corrects differs from one corrected with the curves of
 the protocol's full views (1200 × 5 sub-views) by at most 1.5e-5 in log counts (measured on
 notebook 04's NAEOTOM Alpha, 6.2 s on an NVIDIA L40S). Use it with [`apply_pileup!`](@ref).
-The scans run on the backend of `like`, as for [`calibrate_flat_field`](@ref).
+The scans run on the device of `phantom`, the scan's own, as for [`calibrate_flat_field`](@ref).
 """
 function calibrate_pileup(
-        scanner::PCCTScanner, protocol::CTProtocol, recon_opts;
-        sim_opts::SimOptions = SimOptions(), currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2],
-        like::AbstractArray = zeros(UInt8, 0),
+        scanner::PCCTScanner,
+        protocol::CTProtocol,
+        recon_opts,
+        phantom::Phantom;
+        sim_opts::SimOptions = SimOptions(),
+        currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2],
     )
     return _pileup(
         scanner,
         _calibration_protocol(protocol),
         recon_opts,
         _calibration_options(sim_opts),
-        like,
+        phantom,
         currents,
     )
 end
@@ -284,10 +291,10 @@ function _pileup(
         protocol::CTProtocol,
         recon_opts,
         opts::SimOptions,
-        like::AbstractArray,
+        phantom::Phantom,
         currents,
     )
-    air = _air_phantom(like)
+    air = _air_phantom(phantom)
     levels = sort(Float64.(collect(currents)))
     counts = map(levels) do x
         p = CTProtocol(protocol; mA = protocol.mA * x)
