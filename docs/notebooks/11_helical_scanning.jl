@@ -383,7 +383,7 @@ from this scan's measured CTDIvol and its 20 mm collimation.
 # (s) — written as constants: the browser runs the calculator compiled to WebAssembly, which bakes
 # constants in but would have to compile any computation behind them (here, the whole simulation).
 # The cell below checks them against the scan, so they cannot go stale.
-const HELICAL_INPUTS = (12.94, 20.0, 0.5);
+const HELICAL_INPUTS = (10.31, 20.0, 0.5);
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000006
 let measured = (Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),

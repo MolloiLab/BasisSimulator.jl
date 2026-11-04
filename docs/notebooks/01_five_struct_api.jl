@@ -742,7 +742,7 @@ end
 # written as constants: the browser runs the calculator compiled to WebAssembly, which bakes constants
 # in but would have to compile any computation behind them (here, the whole simulation). The cell
 # below checks them against the scan, so they cannot go stale.
-const DOSE_INPUTS = (200.0, 13.72, 54.4);
+const DOSE_INPUTS = (200.0, 13.72, 46.5);
 
 # ╔═╡ 12000003-0000-4000-8000-000000000007
 let measured = (Float64(protocol_standard.mA), Float64(sim_std.dose.ctdi_vol_mGy), Float64(noise.fbp_std.σ))
