@@ -152,6 +152,9 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   because GPUSelect finds the GPU backend by reading a file named exactly `Manifest.toml`; without it
   every notebook silently renders on the CPU ("Backend detected: Array"). Remove the symlink once
   GPUSelect looks the manifest up the way Julia does.
+- **Render with Julia 1.12** (`julia +1.12`, or `JULIAUP_CHANNEL=1.12 docs/render_notebooks.sh …`): under 1.13 the
+  island compiler (WasmTarget) compiles nothing for some sliders (notebooks 01 `tube_mA`, 11 `pitch_x100`), so they
+  fall back to static and the verifier refuses the export. Checked 2026-11-04.
 - **Data:** notebook 05 reads the XCAT male chest export from `BASISSIM_XCAT_DIR`
   (the lab's copy: `/share/crsp/lab/symolloi/share/XCAT Anatomies/vmale_50/vmale_50_chest_with_plaque`);
   without it the notebook renders its no-data notice. `DATA_PROVENANCE.sha256` holds the checksum
