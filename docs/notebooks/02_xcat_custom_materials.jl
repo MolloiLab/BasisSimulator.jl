@@ -308,35 +308,41 @@ md"""
 md"""
 ### 1. Scanner, protocol, sim & recon options
 
-The GE Revolution Apex Elite of notebook 01. The protocol is a body CTA: 120 kVp / 250 mA,
+The GE Revolution Apex Elite of notebook 01, `REVOLUTION_APEX`. The protocol is a body CTA: 120 kVp / 250 mA,
 5 mm collimation, 500 views in 1 s, each view integrated over the arc the gantry turns through
 while the detector reads it (`view_samples = 5`). Reconstruction: 512 × 512 over 35 cm, eight
 0.625 mm slices.
 """
 
 # ╔═╡ 07000002-0000-4000-8000-000000000001
-scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6,
-    source_to_detector = 1100.0,
-    detector_rows = 256,
-    detector_cols = 834,
-    detector_row_size = 0.625,
-    detector_col_size = 0.6,
-    focal_spot_width = 1.0,
-    focal_spot_length = 1.0,
-    target_angle = 10.0,
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex,
-    detector_depth = 3.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-    # Electronic noise, in electrons, enters the counts before the log, as a real DAS does,
-    # so it passes through the reconstruction and iterative reconstruction can act on it.
-    electronic_noise = 3500.0,   # e⁻ rms
-    detection_gain = 10.0,
-);
+# The documented GE Revolution Apex Elite, its clinical DAS included: electronic noise enters the
+# counts before the log, as a real DAS does, so iterative reconstruction can act on it.
+scanner = BS.REVOLUTION_APEX
+
+# ╔═╡ 0f01cfb1-2f77-583c-a21d-8168bca60aec
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 07000003-0000-4000-8000-000000000001
 protocol = BS.CTProtocol(
@@ -354,7 +360,11 @@ protocol = BS.CTProtocol(
 # the volume and can alias in strongly beam-hardened regions. The Hybrid-IR cell reads
 # `sim_opts.projector`, so its system matrix always matches the operator that made the data.
 # `view_samples = 5`: the detector integrates each view while the gantry turns (notebook 01).
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
+sim_opts = BS.SimOptions(
+    seed = 1234,
+    projector = :dd_fast,
+    view_samples = 5,
+);
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
@@ -651,6 +661,7 @@ Three ideas on top of the five-struct API of notebook 01:
 # ╟─07000000-0000-4000-8000-000000000000
 # ╟─07000001-0000-4000-8000-000000000001
 # ╠═07000002-0000-4000-8000-000000000001
+# ╟─0f01cfb1-2f77-583c-a21d-8168bca60aec
 # ╠═07000003-0000-4000-8000-000000000001
 # ╠═07000004-0000-4000-8000-000000000001
 # ╠═07000005-0000-4000-8000-000000000001

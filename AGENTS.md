@@ -29,12 +29,17 @@ src/object/             materials, attenuation tables, Phantom
 src/phantoms/           the XCAT artifact loaders
 src/projection/         :dd_fast (default), dd, dd transpose, Siddon, polychromatic kernels
 src/detector/           EICT physics chain, photon-counting (pcct/: MC response, pile-up), scatter
+                        (scatter_kernels.jl reads the Geant4 scatter library, one artifact per scanner;
+                        scatter.jl superposes it on each acquisition's rays and corrects it)
 src/correction/         water BHC (sinogram and image domain), pile-up correction, radial cupping
 src/reconstruction/     core (filtering, backprojection), fbp (FDK, WFBP), hybrid_ir, ir, vmi, workspace
 src/denoising/          SpectralHYPR (hypr.jl), ACNR, T-LBF, sinogram SVD / SF-JSD, median-z, RSKR
 src/spectrum/, src/bowtie/   data tables read at run time
 test/                   runtests.jl includes one file per area; test/docs.jl checks the API docs
 docs/                   the documentation site (below)
+lib/BasisMonteCarlo/    BasisMonteCarlo.jl, the Geant4 detector and scatter Monte Carlo: its own
+                        package (src/, test/, tables/) and notebooks (docs/notebooks/);
+                        scripts/split_scatter_library.jl makes the per-scanner scatter artifacts
 ```
 
 ## Working on the code
@@ -46,6 +51,9 @@ docs/                   the documentation site (below)
   Tests that need a GPU skip without one ("Skipping … no GPU backend"); run the ones your change
   touches on a GPU and say so in the pull request. `test/nchannel_nb04_reference.jl` is a frozen
   oracle (the published estimator); never edit it.
+- **Scatter in tests** runs on a small synthetic library in the real on-disk format
+  (`test/scatter_library.jl`, loaded with `scatter_kernels(entry; path)`); the tests never download
+  the real kernels. Scanners in tests that simulate scatter name its entries.
 - **Every exported name has a docstring**, and every source file that defines one is mapped to a
   section of the API page in `docs/src/api_sections.jl`; `test/docs.jl` enforces both. A new file
   or export therefore needs a docstring and, for a new file, a line in that map.
@@ -58,6 +66,38 @@ docs/                   the documentation site (below)
 - **Backend-agnostic always:** kernels are `AK.foreachindex` / broadcasts over `AbstractArray`; no
   CUDA- or Metal-only code, no scalar indexing of device arrays, no `Array(...)` round trips in
   hot paths.
+
+## API design rules
+
+The API is a few structs (`Phantom`, `EICTScanner` / `PCCTScanner`, `CTProtocol`, `SimOptions`,
+`ReconOptions`) and the functions that take them. Keep it that small.
+
+- **One struct per concept, no presets.** A real scanner is a documented `const` instance of its
+  struct (`SOMATOM_FORCE`, `NAEOTOM_ALPHA`, `src/geometry/clinical_scanners.jl`), every value
+  sourced in its docstring. A variant is the copy constructor: `PCCTScanner(NAEOTOM_ALPHA;
+  detector_rows = 96)`, `CTProtocol(p; mA = 200)`. Never a preset function, a preset or mode
+  keyword, or a registry of presets.
+- **Fields are single-source and specific.** Each field is one physical quantity in its own units
+  (a dexel pitch, a binning factor, a threshold dispersion in keV), set in one place and read where
+  it applies. Never a generic switch that implies other values, such as `mode = :standard` /
+  `:uhr`: a mode is a combination of specific field values, and if it is common it is its own
+  `const` (`NAEOTOM_ALPHA_UHR = PCCTScanner(NAEOTOM_ALPHA; …)`). A field nothing reads is removed.
+- **No bloat.** New physics goes into the existing structs' fields, not parallel types, helper
+  layers or option bags; an addition replaces something or is essential. Fields may be added and
+  dropped across a breaking release when that makes the structs simpler.
+- **Several acquisitions are several ordinary acquisitions.** Dual source (`SOMATOM_FORCE` +
+  `SOMATOM_FORCE_B`, `SOMATOM_DEFINITION_FLASH` + `_B`) is one (scanner, protocol) pair per tube;
+  rapid kVp switching is two protocols on one scanner, each with its share of the view period.
+  `simulate!` runs once per acquisition. No dual-energy type or switch.
+- **Defects and their corrections come in pairs.** A modelled detector imperfection is a field of
+  the scanner (its per-dexel maps drawn reproducibly from a seed); its correction is a
+  `calibrate_x(...)` → `apply_x(...)` pair (like `calibrate_bhc` → `apply_bhc!`) that sees only
+  simulated calibration acquisitions a real scanner could make (air scans, water, flux sweeps),
+  never the true defect. So corrections are realistic, not perfect, and each has a test of its
+  residual against the ideal detector. The ideal detector is a copy with the defect set to zero.
+- **BasisSimulator never depends on BasisMonteCarlo.** `lib/BasisMonteCarlo` (Geant4) produces
+  tables and kernels; BasisSimulator reads only their plain data (arrays, numbers, strings), copied
+  into its own `src/` or fetched as an artifact. No dependency, weak dependency or extension.
 
 ## The documentation site
 
@@ -84,7 +124,37 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   (not its `version` line), both docs lockfiles, `docs/extract_all.jl` and
   `docs/notebooks/DATA_PROVENANCE.sha256`. Any code change makes every export stale; that is by
   design: the docs deploy refuses stale exports, so re-render after a code change (in that pull
-  request or a follow-up). The site deploys from `main`; no release is needed.
+  request or a follow-up). The site deploys from `main`; no release is needed. (The
+  BasisMonteCarlo notebooks have their own fingerprint: next item.)
+- **BasisMonteCarlo notebooks** (`lib/BasisMonteCarlo/docs/notebooks/<stem>.jl`) are the
+  Examples' "Detector physics (BasisMonteCarlo.jl)" category, slug `mc-<stem>`
+  (`/examples/mc-04_siemens_force/`). They run on the CPU in their own environment,
+  `lib/BasisMonteCarlo/docs/` (each starts 8 Distributed workers), and `docs/extract_montecarlo.jl`
+  renders them into the same `docs/notebooks-static/`, saving each one's first figure as its card,
+  `docs/assets/mc-<stem>.webp`. Render them by slug: `docs/render_notebooks.sh mc-04_siemens_force`
+  (5–15 min each; `mc-10_scatter_library` about 3.6 h). With no arguments the script renders every
+  stale notebook of both kinds, these on a CPU lane beside the GPU lanes (`BASISSIM_MC_LANES=2` for
+  two); `BASISSIM_SKIP_NOTEBOOKS=mc-10_scatter_library` leaves that one out. A render reruns the
+  simulations, so it rewrites what the notebook saves (`lib/BasisMonteCarlo/tables/`). Their
+  fingerprint hashes the notebook, `lib/BasisMonteCarlo/src/`, `lib/BasisMonteCarlo/Project.toml`
+  (not its `version` line), `lib/BasisMonteCarlo/docs/Project.toml` and its committed
+  `Manifest-v*.toml` lockfiles, `lib/BasisMonteCarlo/docs/reference_data/`, and the exporter
+  (`docs/build_env/Manifest.toml`, `docs/extract_all.jl`, `docs/extract_montecarlo.jl`); not
+  `docs/Manifest-v*.toml` or the root `src/`, so a BasisSimulator change does not re-render them.
+  Because `docs/extract_all.jl` is in every BasisSimulator export's fingerprint, a change that only
+  concerns these notebooks goes in `docs/extract_montecarlo.jl`. The kV sliders of 04–08 are forced
+  fallbacks (`MC_FORCE_FALLBACK_BONDS`, mirrored in the verifier). A notebook not rendered yet has
+  no page and an unlinked card, and the verifier (so `docs/build.sh` and the deploy) fails until it
+  is rendered; `BASISSIM_SKIP_NOTEBOOKS='mc-*' docs/build.sh` builds without them (a trailing `*`
+  matches a prefix, in the verifier and the site).
+- **Docs lockfiles:** `docs/Manifest-v1.12.toml` and `docs/Manifest-v1.13.toml`, one per Julia minor version
+  (Julia reads the one for its version). `docs/Manifest.toml` is a committed symlink to the 1.12 file, only
+  because GPUSelect finds the GPU backend by reading a file named exactly `Manifest.toml`; without it
+  every notebook silently renders on the CPU ("Backend detected: Array"). Remove the symlink once
+  GPUSelect looks the manifest up the way Julia does.
+- **Render with Julia 1.12** (`julia +1.12`, or `JULIAUP_CHANNEL=1.12 docs/render_notebooks.sh …`): under 1.13 the
+  island compiler (WasmTarget) compiles nothing for some sliders (notebooks 01 `tube_mA`, 11 `pitch_x100`), so they
+  fall back to static and the verifier refuses the export. Checked 2026-11-04.
 - **Data:** notebook 05 reads the XCAT male chest export from `BASISSIM_XCAT_DIR`
   (the lab's copy: `/share/crsp/lab/symolloi/share/XCAT Anatomies/vmale_50/vmale_50_chest_with_plaque`);
   without it the notebook renders its no-data notice. `DATA_PROVENANCE.sha256` holds the checksum
@@ -119,12 +189,14 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 
 ## CI and deployment (`.github/workflows/`)
 
-- `CI.yml`: the `version` check, and the test suite on Linux, Windows and macOS (Julia 1.12).
+- `CI.yml`: the `version` check, the test suite on Linux, Windows and macOS (Julia 1.12), and
+  `lib/BasisMonteCarlo`'s test suite on Linux (`basismontecarlo`; Geant4.jl, plus `g++` for its
+  cross-section shim).
 - `TagBot.yml`: tags `v<version>` and writes the GitHub Release after the General registry merges a
   registration.
 - `docs.yml` (GitHub Pages) and `snapshot.yml` (Snapshot, managed by Snapshot with a marked local
-  edit) build `main` on every push that changes `docs/`, `src/` or `Project.toml`, or any commit by
-  hand from the Actions tab.
+  edit) build `main` on every push that changes `docs/`, `src/`, `Project.toml` or
+  `lib/BasisMonteCarlo/`, or any commit by hand from the Actions tab.
 
 ## Around this repository
 

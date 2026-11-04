@@ -75,6 +75,30 @@ export dd_forward_project!, dd_forward_project,
 # expected to be deleted and these become the sole projector.
 
 # -----------------------------------------------------------------------------
+# Every multiply-add of the walk is an explicit `fma`: a GPU compiler fuses `a * b + c` on its own
+# and the CPU's does not, and the two roundings would differ by ulps. One rounding everywhere keeps
+# the CPU and the device bit for bit alike (the scatter's impact amplifies path lengths' ulps).
+#
+# The iso-plane position of voxel boundary `b` (0-based) along an axis starting at `vmin` in steps
+# of `vstep`, seen from the source at `s0` with magnification `mag_fac` (`_dd_bounds` inverts it).
+# -----------------------------------------------------------------------------
+@inline _dd_edge(s0::T, vmin::T, b::T, vstep::T, mag_fac::T) where {T} =
+    fma(fma(b, vstep, vmin) - s0, mag_fac, s0)
+
+# `(sin(γ), cos(γ))` of a fan angle by one Taylor polynomial in `fma`s, for the same reason: the
+# CPU's `sin` and the device's differ by ulps. Its terms reach Float64's rounding for |γ| ≤ π/4,
+# wider than any CT fan.
+const _SIN_TERMS = ntuple(k -> (-1)^(k - 1) / factorial(2k - 1), 9)
+const _COS_TERMS = ntuple(k -> (-1)^(k - 1) / factorial(2k - 2), 9)
+
+@inline function _dd_sincos(γ::T) where {T}
+    γ2 = γ * γ
+    s = foldr((a, acc) -> fma(acc, γ2, T(a)), _SIN_TERMS[1:(end - 1)]; init = T(_SIN_TERMS[end]))
+    c = foldr((a, acc) -> fma(acc, γ2, T(a)), _COS_TERMS[1:(end - 1)]; init = T(_COS_TERMS[end]))
+    return (γ * s, c)
+end
+
+# -----------------------------------------------------------------------------
 # Overlap length of two 1-D intervals [a_lo, a_hi] ∩ [b_lo, b_hi].
 # -----------------------------------------------------------------------------
 @inline function _dd_overlap(a_lo::T, a_hi::T, b_lo::T, b_hi::T) where {T}
@@ -93,8 +117,8 @@ end
 @inline function _dd_bounds(
         lo::T, hi::T, s0::T, vmin::T, vstep::T, inv_mf::T, n::Int32,
     ) where {T}
-    c_lo = ((lo - s0) * inv_mf - (vmin - s0)) / vstep
-    c_hi = ((hi - s0) * inv_mf - (vmin - s0)) / vstep
+    c_lo = fma(lo - s0, inv_mf, s0 - vmin) / vstep
+    c_hi = fma(hi - s0, inv_mf, s0 - vmin) / vstep
     c_lo = clamp(c_lo, zero(T), T(n) + one(T))
     c_hi = clamp(c_hi, zero(T), T(n) + one(T))
     i_start = max(Int32(1), unsafe_trunc(Int32, floor(c_lo)))
@@ -122,20 +146,24 @@ end
     # :arc → boundaries at fan angles γ ± Δγ/2 on the source-centred cylinder;
     # :flat → linear offsets along detector_u.
     bxL, byL, bxU, byU = if arc_det
-        γL = (T(col) - half - col_center) * dγ
-        γU = (T(col) + half - col_center) * dγ
+        sL, cL = _dd_sincos((T(col) - half - col_center) * dγ)
+        sU, cU = _dd_sincos((T(col) + half - col_center) * dγ)
         cin_x = dcx - sx
         cin_y = dcy - sy
-        Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
-        (sx + cos(γL) * cin_x + sin(γL) * Lsd * ux,
-         sy + cos(γL) * cin_y + sin(γL) * Lsd * uy,
-         sx + cos(γU) * cin_x + sin(γU) * Lsd * ux,
-         sy + cos(γU) * cin_y + sin(γU) * Lsd * uy)
+        Lsd = sqrt(fma(cin_x, cin_x, cin_y * cin_y))
+        (
+            fma(sL * Lsd, ux, fma(cL, cin_x, sx)),
+            fma(sL * Lsd, uy, fma(cL, cin_y, sy)),
+            fma(sU * Lsd, ux, fma(cU, cin_x, sx)),
+            fma(sU * Lsd, uy, fma(cU, cin_y, sy)),
+        )
     else
         uL = (T(col) - half - col_center) * ps * mag
         uU = (T(col) + half - col_center) * ps * mag
-        (dcx + uL * ux, dcy + uL * uy,
-         dcx + uU * ux, dcy + uU * uy)
+        (
+            fma(uL, ux, dcx), fma(uL, uy, dcy),
+            fma(uU, ux, dcx), fma(uU, uy, dcy),
+        )
     end
 
     # integration axis = dominant source component
@@ -155,16 +183,18 @@ end
     # project the two column boundaries onto the iso-plane (long = 0)
     scaleL = s_long / (s_long - dlL)
     scaleU = s_long / (s_long - dlU)
-    dXa = s_tran + (dtL - s_tran) * scaleL
-    dXb = s_tran + (dtU - s_tran) * scaleU
+    dXa = fma(dtL - s_tran, scaleL, s_tran)
+    dXb = fma(dtU - s_tran, scaleU, s_tran)
     dXlo = min(dXa, dXb);  dXhi = max(dXa, dXb)
     detXstep = dXhi - dXlo
-    deltaT = half * (dXa + dXb) - s_tran
+    deltaT = fma(half, dXa + dXb, -s_tran)
     scale_col = half * (scaleL + scaleU)
 
-    return (detXstep > T(1.0e-12), vertical, s_long, s_tran,
+    return (
+        detXstep > T(1.0e-12), vertical, s_long, s_tran,
         dXlo, dXhi, detXstep, deltaT, scale_col,
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long)
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+    )
 end
 
 @inline function _dd_row_setup(
@@ -175,16 +205,16 @@ end
     half = T(0.5)
     wL = (T(row) - half - row_center) * prs * mag
     wU = (T(row) + half - row_center) * prs * mag
-    zdL = dcz + wL * vvz
-    zdU = dcz + wU * vvz
-    dZa = sz + scale_col * (zdL - sz)
-    dZb = sz + scale_col * (zdU - sz)
+    zdL = fma(wL, vvz, dcz)
+    zdU = fma(wU, vvz, dcz)
+    dZa = fma(scale_col, zdL - sz, sz)
+    dZb = fma(scale_col, zdU - sz, sz)
     dZlo = min(dZa, dZb);  dZhi = max(dZa, dZb)
     detZstep = dZhi - dZlo
-    deltaZ = half * (dZa + dZb) - sz
+    deltaZ = fma(half, dZa + dZb, -sz)
 
     valid = detXstep > T(1.0e-12) && detZstep > T(1.0e-12)
-    invCos = sqrt(s_long * s_long + deltaT * deltaT + deltaZ * deltaZ) /
+    invCos = sqrt(fma(deltaZ, deltaZ, fma(deltaT, deltaT, s_long * s_long))) /
         abs(s_long) * v_long
     norm = valid ? invCos / (detXstep * detZstep) : zero(T)
 
@@ -200,18 +230,24 @@ end
         vmin_x::T, vmin_y::T, vx::T, vy::T,
         arc_det::Bool, dγ::T,
     ) where {T}
-    (valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
+    (
+        valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
         deltaT, scale_col, n_t, v_t, vmin_t, n_long, v_long,
-        vmin_long) = _dd_col_setup(
+        vmin_long,
+    ) = _dd_col_setup(
         col, sx, sy, sz, dcx, dcy, ux, uy, mag, ps, col_center,
-        nx, ny, vmin_x, vmin_y, vx, vy, arc_det, dγ)
+        nx, ny, vmin_x, vmin_y, vx, vy, arc_det, dγ
+    )
     (valid_z, dZlo, dZhi, norm) = _dd_row_setup(
         row, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep)
+        s_long, deltaT, v_long, detXstep
+    )
     valid = valid_x && valid_z
-    return (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi,
+    return (
+        valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi,
         valid ? norm : zero(T),
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long)
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+    )
 end
 
 # -----------------------------------------------------------------------------
@@ -228,18 +264,21 @@ end
         arc_det::Bool, dγ::T,
     ) where {T}
 
-    (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
+    (
+        valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+    ) = _dd_cell_setup(
         col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
         mag, ps, prs, col_center, row_center, nx, ny, vmin_x, vmin_y, vx, vy,
-        arc_det, dγ)
+        arc_det, dγ
+    )
 
     valid || return zero(T)
 
     accum = zero(T)
     il = Int32(1)
     while il <= n_long
-        lp = vmin_long + (T(il) - T(0.5)) * v_long
+        lp = fma(T(il) - T(0.5), v_long, vmin_long)
         mag_fac = s_long / (s_long - lp)
         inv_mf = one(T) / mag_fac
 
@@ -248,19 +287,19 @@ end
 
         it = it_s
         while it <= it_e
-            t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-            t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+            t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
+            t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
             ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
             if ox > zero(T)
                 ixv = vertical ? it : il
                 iyv = vertical ? il : it
                 ip = ip_s
                 while ip <= ip_e
-                    z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
-                    z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                    z0 = _dd_edge(sz, vmin_z, T(ip - Int32(1)), vz, mag_fac)
+                    z1 = _dd_edge(sz, vmin_z, T(ip), vz, mag_fac)
                     oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
                     if oz > zero(T)
-                        accum += ox * oz * volume[ixv, iyv, ip]
+                        accum = fma(ox * oz, volume[ixv, iyv, ip], accum)
                     end
                     ip += Int32(1)
                 end
@@ -283,34 +322,41 @@ end
         nx::Int32, ny::Int32, nz::Int32,
         vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T, dγ::T,
     ) where {T}
-    (valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
+    (
+        valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
         deltaT, scale_col, n_t, v_t, vmin_t, n_long, v_long,
-        vmin_long) = _dd_col_setup(
+        vmin_long,
+    ) = _dd_col_setup(
         col, sx, sy, sz, dcx, dcy, ux, uy, mag, ps, col_center,
-        nx, ny, vmin_x, vmin_y, vx, vy, true, dγ)
+        nx, ny, vmin_x, vmin_y, vx, vy, true, dγ
+    )
 
     row2 = row1 + Int32(1); row3 = row1 + Int32(2); row4 = row1 + Int32(3)
     use1 = row1 <= n_rows; use2 = row2 <= n_rows
     use3 = row3 <= n_rows; use4 = row4 <= n_rows
     valid1, dZlo1, dZhi1, norm1 = _dd_row_setup(
         row1, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep)
+        s_long, deltaT, v_long, detXstep
+    )
     valid2, dZlo2, dZhi2, norm2 = _dd_row_setup(
         row2, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep)
+        s_long, deltaT, v_long, detXstep
+    )
     valid3, dZlo3, dZhi3, norm3 = _dd_row_setup(
         row3, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep)
+        s_long, deltaT, v_long, detXstep
+    )
     valid4, dZlo4, dZhi4, norm4 = _dd_row_setup(
         row4, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep)
+        s_long, deltaT, v_long, detXstep
+    )
     valid1 = valid_x && valid1 && use1; valid2 = valid_x && valid2 && use2
     valid3 = valid_x && valid3 && use3; valid4 = valid_x && valid4 && use4
 
     acc1 = zero(T); acc2 = zero(T); acc3 = zero(T); acc4 = zero(T)
     il = Int32(1)
     while il <= n_long
-        lp = vmin_long + (T(il) - T(0.5)) * v_long
+        lp = fma(T(il) - T(0.5), v_long, vmin_long)
         mag_fac = s_long / (s_long - lp)
         inv_mf = one(T) / mag_fac
         it_s, it_e = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
@@ -321,8 +367,8 @@ end
 
         it = it_s
         while it <= it_e
-            t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-            t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+            t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
+            t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
             ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
             if ox > zero(T)
                 ixv = vertical ? it : il
@@ -330,40 +376,40 @@ end
                 if valid1
                     ip = ip_s1
                     while ip <= ip_e1
-                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
-                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        z0 = _dd_edge(sz, vmin_z, T(ip - Int32(1)), vz, mag_fac)
+                        z1 = _dd_edge(sz, vmin_z, T(ip), vz, mag_fac)
                         oz = _dd_overlap(dZlo1, dZhi1, min(z0, z1), max(z0, z1))
-                        oz > zero(T) && (acc1 += ox * oz * volume[ixv, iyv, ip])
+                        oz > zero(T) && (acc1 = fma(ox * oz, volume[ixv, iyv, ip], acc1))
                         ip += Int32(1)
                     end
                 end
                 if valid2
                     ip = ip_s2
                     while ip <= ip_e2
-                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
-                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        z0 = _dd_edge(sz, vmin_z, T(ip - Int32(1)), vz, mag_fac)
+                        z1 = _dd_edge(sz, vmin_z, T(ip), vz, mag_fac)
                         oz = _dd_overlap(dZlo2, dZhi2, min(z0, z1), max(z0, z1))
-                        oz > zero(T) && (acc2 += ox * oz * volume[ixv, iyv, ip])
+                        oz > zero(T) && (acc2 = fma(ox * oz, volume[ixv, iyv, ip], acc2))
                         ip += Int32(1)
                     end
                 end
                 if valid3
                     ip = ip_s3
                     while ip <= ip_e3
-                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
-                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        z0 = _dd_edge(sz, vmin_z, T(ip - Int32(1)), vz, mag_fac)
+                        z1 = _dd_edge(sz, vmin_z, T(ip), vz, mag_fac)
                         oz = _dd_overlap(dZlo3, dZhi3, min(z0, z1), max(z0, z1))
-                        oz > zero(T) && (acc3 += ox * oz * volume[ixv, iyv, ip])
+                        oz > zero(T) && (acc3 = fma(ox * oz, volume[ixv, iyv, ip], acc3))
                         ip += Int32(1)
                     end
                 end
                 if valid4
                     ip = ip_s4
                     while ip <= ip_e4
-                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
-                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        z0 = _dd_edge(sz, vmin_z, T(ip - Int32(1)), vz, mag_fac)
+                        z1 = _dd_edge(sz, vmin_z, T(ip), vz, mag_fac)
                         oz = _dd_overlap(dZlo4, dZhi4, min(z0, z1), max(z0, z1))
-                        oz > zero(T) && (acc4 += ox * oz * volume[ixv, iyv, ip])
+                        oz > zero(T) && (acc4 = fma(ox * oz, volume[ixv, iyv, ip], acc4))
                         ip += Int32(1)
                     end
                 end
@@ -455,7 +501,8 @@ function _dd_forward_project_arc_rowtile4!(
     ) where {T <: AbstractFloat}
     is_arc(geom) || return dd_forward_project!(
         sinogram, volume, geom; ws_source_positions, ws_detector_centers,
-        ws_detector_u, ws_detector_v, volume_extent)
+        ws_detector_u, ws_detector_v, volume_extent
+    )
 
     nx = Int32(size(volume, 1)); ny = Int32(size(volume, 2)); nz = Int32(size(volume, 3))
     nc = Int32(size(sinogram, 1)); nr = Int32(size(sinogram, 2))
@@ -492,7 +539,8 @@ function _dd_forward_project_arc_rowtile4!(
                 dc[1, angle], dc[2, angle], dc[3, angle],
                 du[1, angle], du[2, angle], dv[3, angle],
                 mag, ps, prs, cc, rc, nx, ny, nz,
-                vmx, vmy, vmz, vsx, vsy, vsz, dγ)
+                vmx, vmy, vmz, vsx, vsy, vsz, dγ
+            )
             sino[col, row1, angle] = a1
             row2 <= nr && (sino[col, row2, angle] = a2)
             row3 <= nr && (sino[col, row3, angle] = a3)
@@ -594,32 +642,35 @@ function dd_fused_poly_project!(
             dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
             ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
 
-            (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
+            (
+                valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
+                n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+            ) = _dd_cell_setup(
                 col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
+                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ
+            )
 
             accums = ntuple(_ -> zero(T), Val(N_E))
             if valid
                 il = Int32(1)
                 while il <= n_long
-                    lp = vmin_long + (T(il) - T(0.5)) * v_long
+                    lp = fma(T(il) - T(0.5), v_long, vmin_long)
                     mag_fac = s_long / (s_long - lp)
                     inv_mf = one(T) / mag_fac
                     (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
                     (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
                     it = it_s
                     while it <= it_e
-                        t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-                        t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+                        t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
+                        t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
                         ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
                         if ox > zero(T)
                             ixv = vertical ? it : il
                             iyv = vertical ? il : it
                             ip = ip_s
                             while ip <= ip_e
-                                z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                                z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
+                                z0 = _dd_edge(sz, vmz, T(ip - Int32(1)), vsz, mag_fac)
+                                z1 = _dd_edge(sz, vmz, T(ip), vsz, mag_fac)
                                 oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
                                 if oz > zero(T)
                                     mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
@@ -679,7 +730,7 @@ function dd_fused_spectral_project!(
 
     nx = Int32(size(mask, 1)); ny = Int32(size(mask, 2)); nz = Int32(size(mask, 3))
     n_cols = Int32(size(pilot, 1)); n_rows = Int32(size(pilot, 2)); n_angles = Int32(size(pilot, 3))
-    n_elem = n_cols * n_rows * n_angles
+    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
 
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
     vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)
@@ -721,32 +772,35 @@ function dd_fused_spectral_project!(
             dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
             ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
 
-            (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
+            (
+                valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
+                n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+            ) = _dd_cell_setup(
                 col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
+                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ
+            )
 
             accums = ntuple(_ -> zero(T), Val(K))
             if valid
                 il = Int32(1)
                 while il <= n_long
-                    lp = vmin_long + (T(il) - T(0.5)) * v_long
+                    lp = fma(T(il) - T(0.5), v_long, vmin_long)
                     mag_fac = s_long / (s_long - lp)
                     inv_mf = one(T) / mag_fac
                     (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
                     (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
                     it = it_s
                     while it <= it_e
-                        t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-                        t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+                        t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
+                        t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
                         ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
                         if ox > zero(T)
                             ixv = vertical ? it : il
                             iyv = vertical ? il : it
                             ip = ip_s
                             while ip <= ip_e
-                                z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                                z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
+                                z0 = _dd_edge(sz, vmz, T(ip - Int32(1)), vsz, mag_fac)
+                                z1 = _dd_edge(sz, vmz, T(ip), vsz, mag_fac)
                                 oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
                                 if oz > zero(T)
                                     mat = Int32(mask[ixv, iyv, ip]) + Int32(1)

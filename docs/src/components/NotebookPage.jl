@@ -22,6 +22,18 @@ function _notebook_display_title(slug::AbstractString)
         "10_titanium_implant"                  => "10 · Titanium Implant Artifacts",
         "11_helical_scanning"                  => "11 · Helical Scanning",
         "12_siemens_flash_ufc"                 => "12 · Siemens SOMATOM Definition Flash",
+        # BasisMonteCarlo.jl (lib/BasisMonteCarlo/docs/notebooks, rendered by docs/extract_montecarlo.jl)
+        "mc-01_cdte_slab_efficiency"           => "MC 01 · A CdTe Slab in Geant4",
+        "mc-02_benchmark_hajdok_swank"         => "MC 02 · Benchmark: the Swank Factor",
+        "mc-03_alpha_detector"                 => "MC 03 · The NAEOTOM Alpha Detector",
+        "mc-04_siemens_force"                  => "MC 04 · The SOMATOM Force Detector",
+        "mc-05_siemens_flash"                  => "MC 05 · The SOMATOM Definition Flash Detector",
+        "mc-06_ge_revolution_apex"             => "MC 06 · The GE Gemstone Detector",
+        "mc-07_philips_brilliance_ict"         => "MC 07 · The Philips Brilliance iCT Detector",
+        "mc-08_canon_aquilion_one"             => "MC 08 · The Canon Aquilion ONE Detector",
+        "mc-09_scatter_water_cylinders"        => "MC 09 · Scatter in Water Cylinders",
+        "mc-10_scatter_library"                => "MC 10 · A Scatter Library",
+        "mc-11_scatter_validation"             => "MC 11 · Validating the Scatter Library",
     )
     get(overrides, slug, replace(slug, "_" => " "))
 end
@@ -36,14 +48,19 @@ end
 
 const _NOTEBOOK_GITHUB_BASE =
     "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/docs/notebooks"
+const _MC_NOTEBOOK_GITHUB_BASE =
+    "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/lib/BasisMonteCarlo/docs/notebooks"
 
 function NotebookPage(slug::AbstractString)
     BASE = get(ENV, "BASISSIM_BASE", "")
     title = _notebook_display_title(slug)
-    github_src_url = "$(_NOTEBOOK_GITHUB_BASE)/$(slug).jl"
+    # A BasisMonteCarlo notebook's slug is `mc-` and the stem of its file in lib/BasisMonteCarlo.
+    github_src_url = startswith(slug, "mc-") ?
+        "$(_MC_NOTEBOOK_GITHUB_BASE)/$(chopprefix(slug, "mc-")).jl" :
+        "$(_NOTEBOOK_GITHUB_BASE)/$(slug).jl"
     fragment_path = normpath(joinpath(@__DIR__, "..", "..", "notebooks-static", "$(slug).fragment.html"))
     isfile(fragment_path) || error(
-        "Missing notebook fragment $(fragment_path). Run `julia --project=docs/build_env docs/extract_all.jl`."
+        "Missing notebook fragment $(fragment_path). Run `docs/render_notebooks.sh $(slug)`."
     )
     notebook_html = replace(
         read(fragment_path, String),

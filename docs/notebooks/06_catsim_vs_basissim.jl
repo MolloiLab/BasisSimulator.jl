@@ -223,32 +223,38 @@ wrapper that hands them to CatSim.
 md"""
 ### 1. Scanner
 
-The GE Revolution Apex Elite geometry of notebook 01, with its large-body bowtie. BasisSimulator's
+The GE Revolution Apex Elite of notebook 01 (`REVOLUTION_APEX`), with its large-body bowtie. BasisSimulator's
 `:ge_revolution_large` bowtie is read from the same `large.txt` table CatSim ships, so both
 simulators see the same bowtie. Electronic noise is zero, as noise is off everywhere here.
 """
 
 # ╔═╡ 06000002-0000-4000-8000-000000000010
-scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6,
-    source_to_detector = 1100.0,
-    detector_rows = 256,
-    detector_cols = 834,
-    detector_row_size = 0.625,
-    detector_col_size = 0.6,
-    focal_spot_width = 1.0,
-    focal_spot_length = 1.0,
-    target_angle = 10.0,
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex,
-    detector_depth = 3.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-    electronic_noise = 0,
-    detection_gain = 10.0,
-);
+scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)
+
+# ╔═╡ a8ac0e53-23ec-533d-a797-af31d0867766
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
 md"""
@@ -375,7 +381,7 @@ function catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm)
     ct.protocol.viewCount = protocol.views
     ct.protocol.stopViewId = protocol.views - 1
     ct.protocol.rotationTime = protocol.rotation_time
-    ct.protocol.spectrumFilename = "tungsten_tar$(protocol.anode_angle).0_$(Int(protocol.kVp))_filt.dat"
+    ct.protocol.spectrumFilename = "tungsten_tar$(Int(scanner.target_angle)).0_$(Int(protocol.kVp))_filt.dat"
     scanner.bowtie_filter in (:ge_revolution_large, :large_body) ||
         error("this wrapper maps only the large-body bowtie")
     ct.protocol.bowtie = "large.txt"
@@ -849,6 +855,7 @@ or a clinical-size detector, scale `n_voxels` and the scanner; the wrapper forwa
 # ╟─060000f1-0000-4000-8000-000000000001
 # ╟─06000002-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000010
+# ╟─a8ac0e53-23ec-533d-a797-af31d0867766
 # ╟─06000003-0000-4000-8000-000000000001
 # ╠═06000003-0000-4000-8000-000000000010
 # ╠═06000003-0000-4000-8000-000000000020

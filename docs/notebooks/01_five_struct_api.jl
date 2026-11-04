@@ -223,49 +223,46 @@ detector distances, detector array, focal spot, gantry, flat filter, bowtie):
 
 - `EICTScanner`: an energy-integrating scintillator detector (material, depth, fill factors,
   detection gain, electronic noise);
-- `PCCTScanner`: a photon-counting detector (sensor, energy thresholds, energy resolution,
-  charge sharing, dead time and pile-up, pixel binning).
+- `PCCTScanner`: a photon-counting detector (sensor, energy thresholds, dead time and pile-up,
+  pixel binning; its charge sharing and noise are its Geant4 response table's).
 
 Each constructor rejects the other family's keywords, so a photon-counting parameter can't end
 up on a scintillator by accident. Geometry fields read the same on both: `scanner.detector_rows`.
 
-The values below model the GE Revolution Apex Elite: 256 rows of 0.625 mm, 834 columns, a curved
-(arc) Lumex detector and GE's large-body bowtie. Distances are in mm; the detector pitch is given
-at the isocentre.
+A clinical scanner is a documented constant. `REVOLUTION_APEX` models the GE Revolution Apex
+Elite: 256 rows of 0.625 mm, 834 columns, a curved (arc) Gemstone detector, GE's large-body bowtie
+and a clinical DAS (3500 e⁻ of electronic noise at 10 e⁻/keV). Its docstring gives the source of
+every value. A different scan is a variant, `EICTScanner(REVOLUTION_APEX; detector_rows = 64)`:
+every parameter copied, the keywords given replaced.
 """
 
 # ╔═╡ 03000002-0000-4000-8000-000000000001
-scanner = BS.EICTScanner(
-    # Geometry (mm)
-    source_to_isocenter = 625.6,
-    source_to_detector = 1100.0,
+scanner = BS.REVOLUTION_APEX
 
-    # Detector array (pitch at the isocentre, mm)
-    detector_rows = 256,
-    detector_cols = 834,
-    detector_row_size = 0.625,
-    detector_col_size = 0.6,
+# ╔═╡ 006e51e3-bb52-5e9f-9cde-8d1ec973b9bd
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
 
-    # Focal spot
-    focal_spot_width = 1.0,
-    focal_spot_length = 1.0,
-    target_angle = 10.0,
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
 
-    # Filtration
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
 
-    # Scintillator
-    detector_material = :lumex,
-    detector_depth = 3.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-
-    # Data-acquisition electronics: added to the counts before the log, as a real DAS does
-    electronic_noise = 3500.0,   # e⁻ rms
-    detection_gain = 10.0,       # e⁻ / keV
-);
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 03000003-0000-4000-8000-000000000001
 Markdown.parse("""
@@ -323,9 +320,15 @@ md"""
 ### 4. `SimOptions`
 
 The **physics** of the forward model. Every effect is on by default except optical crosstalk:
-fill factor, energy-dependent detector efficiency, scatter, focal-spot blur, quantum and
-electronic noise, detector lag and the anode heel effect. The polychromatic source spectrum,
-the bowtie and beam hardening are always part of the model. Turn an effect off to measure its
+fill factor, energy-dependent detector efficiency, patient scatter, focal-spot blur, quantum and
+electronic noise, detector lag and the anode heel effect. Patient scatter is the scanner's Geant4
+scatter kernels (BasisMonteCarlo's library, `scatter_kernels`), superposed on the phantom's own
+rays; every clinical constant names its kernels (a download of about 250 MB per scanner, cached
+after the first scan; `BS.scatter_kernels(entry; path)` reads a local copy instead), and a scanner
+the library has no entry for (`scatter_kernels = ""`) throws unless `use_scatter = false`. The
+detector then subtracts the scatter it estimates from its own data, as a real one does
+(`scatter_correction = true` on both scanner families). The polychromatic source spectrum, the
+bowtie and beam hardening are always part of the model. Turn an effect off to measure its
 contribution.
 
 `projector = :dd_fast` (the default) is the anti-aliased distance-driven projector that walks the
@@ -352,7 +355,7 @@ sim_opts = BS.SimOptions(
     view_samples = 5,       # the detector integrates over the arc of each view (5 sub-views)
 
     # Switch individual effects off, e.g.:
-    # use_scatter     = false,
+    # use_scatter     = false,   # no patient scatter
     # use_heel_effect = false,
     # use_focal_spot  = false,
     # use_lag         = false,
@@ -362,9 +365,10 @@ sim_opts = BS.SimOptions(
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
 !!! info "Detector-specific physics lives on the scanner"
-    `SimOptions` carries only the effects both detector families share. Pile-up, its correction,
-    photon-counting scatter correction and the count-noise blend are fields of `PCCTScanner`;
-    detector lag applies to the scintillator only.
+    `SimOptions` carries only the effects both detector families share. The scatter kernels and
+    the scatter correction are the scanner's, under the same names on both families
+    (`scatter_kernels`, `scatter_correction`); pile-up and the count-noise blend are fields of
+    `PCCTScanner`; detector lag applies to the scintillator only.
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
@@ -738,7 +742,7 @@ end
 # written as constants: the browser runs the calculator compiled to WebAssembly, which bakes constants
 # in but would have to compile any computation behind them (here, the whole simulation). The cell
 # below checks them against the scan, so they cannot go stale.
-const DOSE_INPUTS = (200.0, 13.72, 54.4);
+const DOSE_INPUTS = (200.0, 13.72, 46.5);
 
 # ╔═╡ 12000003-0000-4000-8000-000000000007
 let measured = (Float64(protocol_standard.mA), Float64(sim_std.dose.ctdi_vol_mGy), Float64(noise.fbp_std.σ))
@@ -932,6 +936,7 @@ Every other notebook reuses this pattern: build the structs, create a workspace,
 # ╟─02000005-0000-4000-8000-000000000001
 # ╟─03000001-0000-4000-8000-000000000001
 # ╠═03000002-0000-4000-8000-000000000001
+# ╟─006e51e3-bb52-5e9f-9cde-8d1ec973b9bd
 # ╟─03000003-0000-4000-8000-000000000001
 # ╟─04000001-0000-4000-8000-000000000001
 # ╠═04000002-0000-4000-8000-000000000001

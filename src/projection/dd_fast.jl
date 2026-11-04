@@ -52,10 +52,19 @@ export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
 # Used when n_materials ≤ 64 (validated register budget); larger tables fall back to
 # the legacy per-energy kernels.
 
-# Branchless scatter of `w` into `plens[mat]` (select chain, no divergence).
-@generated function _plen_accum(plens::NTuple{M, T}, mat::Int32, w::T) where {M, T}
-    exprs = [:(ifelse(mat == Int32($m), plens[$m] + w, plens[$m])) for m in 1:M]
-    return :(tuple($(exprs...)))
+# Branchless scatter of `a · b` into `plens[mat]` (select chains, no divergence): material `mat`'s
+# sum selected, one `fma` (`_dd_edge`: a GPU compiler fuses `p + a · b` on its own, the CPU's does
+# not), and selected back. An `fma` in every lane instead costs the walk 8×.
+@generated function _plen_accum(plens::NTuple{M, T}, mat::Int32, a::T, b::T) where {M, T}
+    current = :(plens[$M])
+    for m in (M - 1):-1:1
+        current = :(ifelse(mat == Int32($m), plens[$m], $current))
+    end
+    exprs = [:(ifelse(mat == Int32($m), sum, plens[$m])) for m in 1:M]
+    return quote
+        sum = fma(a, b, $current)
+        tuple($(exprs...))
+    end
 end
 
 # L_e = Σ_m plens[m] · μ_tbl[m, e]  (chained binary + — no varargs on GPU).
@@ -77,7 +86,7 @@ function _warn_dd_fast_fallback(n_materials::Integer)
     Call compact_materials(phantom) before GPU transfer to remove inactive materials, or merge materials when physically appropriate.
     The requested :dd_fast path is NOT effective for this projection.
     """ maxlog = 1
-    nothing
+    return nothing
 end
 
 # =============================================================================
@@ -107,37 +116,40 @@ end
     dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
     ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
 
-    (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
+    (
+        valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+    ) = _dd_cell_setup(
         col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-        mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
+        mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ
+    )
 
     plens = ntuple(_ -> zero(T), Val(M))
     valid || return plens
 
     il = Int32(1)
     while il <= n_long
-        lp = vmin_long + (T(il) - T(0.5)) * v_long
+        lp = fma(T(il) - T(0.5), v_long, vmin_long)
         mag_fac = s_long / (s_long - lp)
         inv_mf = one(T) / mag_fac
         (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
         (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
         it = it_s
         while it <= it_e
-            t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-            t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+            t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
+            t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
             ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
             if ox > zero(T)
                 ixv = vertical ? it : il
                 iyv = vertical ? il : it
                 ip = ip_s
                 while ip <= ip_e
-                    z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                    z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
+                    z0 = _dd_edge(sz, vmz, T(ip - Int32(1)), vsz, mag_fac)
+                    z1 = _dd_edge(sz, vmz, T(ip), vsz, mag_fac)
                     oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
                     if oz > zero(T)
                         mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                        plens = _plen_accum(plens, mat, ox * oz * norm)
+                        plens = _plen_accum(plens, mat, ox * oz, norm)
                     end
                     ip += Int32(1)
                 end
@@ -164,6 +176,7 @@ function _dd_fused_poly_plen!(
         nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32,
         mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
         arc_det::Bool, dγ::T,
+        w2_gpu, out2, has2::Bool,
     ) where {M, T <: AbstractFloat}
 
     n_E = Int32(length(wη_gpu))
@@ -173,7 +186,7 @@ function _dd_fused_poly_plen!(
             vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
             nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
             mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center,
-            ncnr = nc_nr, hbt = has_bowtie, nE = n_E
+            ncnr = nc_nr, hbt = has_bowtie, nE = n_E, w2 = w2_gpu, o2 = out2, h2 = has2
 
         AK.foreachindex(sinogram) do idx
             idx_0 = Int32(idx - 1)
@@ -185,24 +198,44 @@ function _dd_fused_poly_plen!(
             plens = _dd_plen_walk(
                 Val(M), mask, col, row, angle, sp, dc, du, dv,
                 vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ)
+                mag, ps, prs, cc, rc, arc_det, dγ
+            )
 
-            bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
-            I_total = zero(T)
-            e = Int32(1)
-            while e <= nE
-                L = _plen_line_integral(plens, μ_tbl, e)
-                wt = @inbounds wη[e]
-                if hbt
-                    wt *= @inbounds bt[bt_base + (e - Int32(1)) * ncnr]
-                end
-                I_total += wt * exp(-L)
-                e += Int32(1)
-            end
-            sinogram[idx] = -log(max(I_total, T(1.0e-10)))
+            _plen_spectral_sums!(
+                sinogram, o2, idx, plens, μ_tbl, wη, w2, h2, bt, hbt,
+                Int32(col) + (Int32(row) - Int32(1)) * nc, ncnr, nE,
+            )
         end
     end
     return sinogram
+end
+
+# The energy loop both path-length kernels end in: S₁ = Σ w B e^{−L} into `sinogram` and,
+# when `h2`, S₂ = Σ w₂ B e^{−L} into `o2`, each stored as −log S.
+@inline function _plen_spectral_sums!(
+        sinogram::AbstractArray{T}, o2, idx, plens, μ_tbl, wη, w2, h2::Bool, bt, hbt::Bool,
+        bt_base::Int32, ncnr::Int32, nE::Int32,
+    ) where {T}
+
+    I_1 = zero(T)
+    I_2 = zero(T)
+    e = Int32(1)
+    while e <= nE
+        ex = exp(-_plen_line_integral(plens, μ_tbl, e))
+        if hbt
+            ex *= @inbounds bt[bt_base + (e - Int32(1)) * ncnr]
+        end
+        I_1 += (@inbounds wη[e]) * ex
+        if h2
+            I_2 += (@inbounds w2[e]) * ex
+        end
+        e += Int32(1)
+    end
+    @inbounds sinogram[idx] = -log(max(I_1, T(1.0e-10)))
+    if h2
+        @inbounds o2[idx] = -log(max(I_2, T(1.0e-10)))
+    end
+    return nothing
 end
 
 
@@ -218,7 +251,7 @@ function _dd_fused_spectral_plen!(
         mask, μ_table_gpu, W_gpu, _bt, has_src_spectral::Bool,
         sp, dc, du, dv,
         vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32, n_elem::Int32,
+        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32, n_elem::Int,
         mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
         arc_det::Bool, dγ::T,
     ) where {M, T <: AbstractFloat}
@@ -241,7 +274,8 @@ function _dd_fused_spectral_plen!(
             plens = _dd_plen_walk(
                 Val(M), mask, col, row, angle, sp, dc, du, dv,
                 vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ)
+                mag, ps, prs, cc, rc, arc_det, dγ
+            )
 
             bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
             b = Int32(1)
@@ -294,6 +328,8 @@ Single-pass per-material path-length variant of [`dd_fused_poly_project!`](@ref)
 accumulation reassociated by linearity so ALL `N_E` energies are produced in
 one volume walk with `n_materials` registers.  Falls back to the legacy kernel
 when `size(μ_table_gpu, 1) > 64`, with a prominent performance warning.
+`ws_w2_gpu` with `ws_out2` adds a second weighted sum in the same walk, as in
+[`dd_fast_poly_from_paths!`](@ref).
 """
 function dd_fast_fused_poly_project!(
         sinogram::AbstractArray{T, 3},
@@ -308,10 +344,26 @@ function dd_fast_fused_poly_project!(
         ws_detector_u = nothing,
         ws_detector_v = nothing,
         ws_bowtie_spectral = nothing,
+        ws_w2_gpu = nothing,
+        ws_out2 = nothing,
     ) where {T <: AbstractFloat, N_E}
 
+    (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
+        throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
     if size(μ_table_gpu, 1) > _PLEN_MAX_MATERIALS
         _warn_dd_fast_fallback(size(μ_table_gpu, 1))
+        if ws_w2_gpu !== nothing
+            # the legacy kernel has one accumulator: the second sum is a second projection
+            dd_fused_poly_project!(
+                ws_out2, mask, geom, μ_table_gpu, ws_w2_gpu, Val(N_E);
+                volume_extent,
+                ws_source_positions,
+                ws_detector_centers,
+                ws_detector_u,
+                ws_detector_v,
+                ws_bowtie_spectral,
+            )
+        end
         return dd_fused_poly_project!(
             sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E);
             volume_extent = volume_extent,
@@ -319,7 +371,8 @@ function dd_fast_fused_poly_project!(
             ws_detector_centers = ws_detector_centers,
             ws_detector_u = ws_detector_u,
             ws_detector_v = ws_detector_v,
-            ws_bowtie_spectral = ws_bowtie_spectral)
+            ws_bowtie_spectral = ws_bowtie_spectral
+        )
     end
 
     g = _dd_walk_setup(
@@ -335,7 +388,9 @@ function dd_fast_fused_poly_project!(
         g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
         g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
         g.mag, g.ps, g.prs, g.col_center, g.row_center, g.nc_nr,
-        g.arc_det, g.dγ)
+        g.arc_det, g.dγ,
+        something(ws_w2_gpu, wη_gpu), something(ws_out2, sinogram), ws_w2_gpu !== nothing
+    )
 end
 
 # Every distance-driven walk over this geometry needs the same scalars and the same four
@@ -410,14 +465,15 @@ function dd_fast_fused_spectral_project!(
             ws_detector_centers = ws_detector_centers,
             ws_detector_u = ws_detector_u,
             ws_detector_v = ws_detector_v,
-            ws_bowtie_spectral = ws_bowtie_spectral)
+            ws_bowtie_spectral = ws_bowtie_spectral
+        )
     end
 
     g = _dd_walk_setup(
         T, size(mask), (size(pilot, 1), size(pilot, 2)), geom, volume_extent, mask,
         ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
     )
-    n_elem = g.nc_nr * Int32(size(pilot, 3))
+    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
     has_src_spectral = ws_bowtie_spectral !== nothing
     _bt = has_src_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
@@ -429,7 +485,8 @@ function dd_fast_fused_spectral_project!(
         g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
         g.nx, g.ny, g.nz, g.n_cols, g.n_rows, n_elem,
         g.mag, g.ps, g.prs, g.col_center, g.row_center, g.nc_nr,
-        g.arc_det, g.dγ)
+        g.arc_det, g.dγ
+    )
 end
 
 # =============================================================================
@@ -481,7 +538,8 @@ function _dd_material_paths!(
             plens = _dd_plen_walk(
                 Val(M), mask, col, row, angle, sp, dc, du, dv,
                 vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ)
+                mag, ps, prs, cc, rc, arc_det, dγ
+            )
 
             m = Int32(1)
             while m <= Int32(M)
@@ -499,12 +557,14 @@ function _dd_poly_from_paths!(
         sinogram::AbstractArray{T, 3}, paths::AbstractArray{T, 4},
         μ_table_gpu, wη_gpu, _bt, has_bowtie::Bool,
         n_cols::Int32, n_rows::Int32, nc_nr::Int32,
+        w2_gpu, out2, has2::Bool,
     ) where {M, T <: AbstractFloat}
 
     n_E = Int32(length(wη_gpu))
 
     let paths = paths, μ_tbl = μ_table_gpu, wη = wη_gpu, bt = _bt,
-            nc = n_cols, nr = n_rows, ncnr = nc_nr, hbt = has_bowtie, nE = n_E
+            nc = n_cols, nr = n_rows, ncnr = nc_nr, hbt = has_bowtie, nE = n_E,
+            w2 = w2_gpu, o2 = out2, h2 = has2
 
         AK.foreachindex(sinogram) do idx
             idx_0 = Int32(idx - 1)
@@ -515,19 +575,10 @@ function _dd_poly_from_paths!(
 
             plens = ntuple(m -> @inbounds(paths[m, col, row, angle]), Val(M))
 
-            bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
-            I_total = zero(T)
-            e = Int32(1)
-            while e <= nE
-                L = _plen_line_integral(plens, μ_tbl, e)
-                wt = @inbounds wη[e]
-                if hbt
-                    wt *= @inbounds bt[bt_base + (e - Int32(1)) * ncnr]
-                end
-                I_total += wt * exp(-L)
-                e += Int32(1)
-            end
-            sinogram[idx] = -log(max(I_total, T(1.0e-10)))
+            _plen_spectral_sums!(
+                sinogram, o2, idx, plens, μ_tbl, wη, w2, h2, bt, hbt,
+                Int32(col) + (Int32(row) - Int32(1)) * nc, ncnr, nE,
+            )
         end
     end
     return sinogram
@@ -560,10 +611,12 @@ function dd_fast_material_paths!(
     ) where {T <: AbstractFloat}
 
     n_materials = size(paths, 1)
-    n_materials <= _PLEN_MAX_MATERIALS || throw(ArgumentError(
-        "dd_fast_material_paths!: $(n_materials) materials exceeds the path-length limit of " *
-            "$(_PLEN_MAX_MATERIALS); call compact_materials(phantom) first"
-    ))
+    n_materials <= _PLEN_MAX_MATERIALS || throw(
+        ArgumentError(
+            "dd_fast_material_paths!: $(n_materials) materials exceeds the path-length limit of " *
+                "$(_PLEN_MAX_MATERIALS); call compact_materials(phantom) first"
+        )
+    )
     # The detector shape has to be the geometry's: `col_center`/`row_center` come from `paths`,
     # so a smaller cache would silently trace rays through the middle of the detector.
     (size(paths, 2), size(paths, 3), size(paths, 4)) ==
@@ -584,14 +637,18 @@ function dd_fast_material_paths!(
         g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
         g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
         g.mag, g.ps, g.prs, g.col_center, g.row_center,
-        g.arc_det, g.dγ)
+        g.arc_det, g.dγ
+    )
 end
 
 """
-    dd_fast_poly_from_paths!(sinogram, paths, μ_table_gpu, wη_gpu; ws_bowtie_spectral=nothing)
+    dd_fast_poly_from_paths!(sinogram, paths, μ_table_gpu, wη_gpu; ws_bowtie_spectral=nothing,
+                             ws_w2_gpu=nothing, ws_out2=nothing)
 
 Pass 2 of the two-pass polychromatic projection: convert cached per-material path lengths
 ([`dd_fast_material_paths!`](@ref)) into one polychromatic log line-integral sinogram.
+`ws_w2_gpu` with `ws_out2` adds a second weighted sum over the same rays, `−log Σ w₂ B e^{−L}`,
+written to `ws_out2` — the energy-integrating detector's second moment.
 
 Bit-identical to the single-pass [`dd_fast_fused_poly_project!`](@ref) on the same inputs: the
 accumulation inside a cell and the energy loop are the same expressions in the same order.
@@ -602,11 +659,17 @@ function dd_fast_poly_from_paths!(
         μ_table_gpu::AbstractArray{T, 2},
         wη_gpu::AbstractArray{T, 1};
         ws_bowtie_spectral = nothing,
+        ws_w2_gpu = nothing,
+        ws_out2 = nothing,
     ) where {T <: AbstractFloat}
 
-    size(paths, 1) == size(μ_table_gpu, 1) || throw(DimensionMismatch(
-        "paths has $(size(paths, 1)) materials, the attenuation table has $(size(μ_table_gpu, 1))"
-    ))
+    (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
+        throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
+    size(paths, 1) == size(μ_table_gpu, 1) || throw(
+        DimensionMismatch(
+            "paths has $(size(paths, 1)) materials, the attenuation table has $(size(μ_table_gpu, 1))"
+        )
+    )
     (size(paths, 2), size(paths, 3), size(paths, 4)) == size(sinogram) || throw(
         DimensionMismatch("paths $(size(paths)[2:4]) does not match the sinogram $(size(sinogram))")
     )
@@ -618,7 +681,9 @@ function dd_fast_poly_from_paths!(
 
     return _dd_poly_from_paths!(
         Val(size(μ_table_gpu, 1)), sinogram, paths, μ_table_gpu, wη_gpu, _bt, has_bowtie,
-        n_cols, Int32(size(sinogram, 2)), nc_nr)
+        n_cols, Int32(size(sinogram, 2)), nc_nr,
+        something(ws_w2_gpu, wη_gpu), something(ws_out2, sinogram), ws_w2_gpu !== nothing
+    )
 end
 
 export dd_fast_material_paths!, dd_fast_poly_from_paths!

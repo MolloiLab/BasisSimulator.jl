@@ -12,7 +12,7 @@ using BasisSimulator
 
 # Five-struct simulation setup (`:dd_fast` is the default projector)
 phantom = create_gammex_472(n_voxels=128, n_slices=8, fov_cm=35.0, z_cm=0.5)
-scanner = EICTScanner(detector_rows=8, detector_cols=256)
+scanner = EICTScanner(SOMATOM_FORCE; detector_rows = 8)   # a variant of a clinical constant: its scatter kernels too
 protocol = CTProtocol(kVp=120.0, mA=200.0, views=360)
 sim_opts = SimOptions()
 recon_opts = ReconOptions(matrix_size=(256, 256, 8), fov_cm=35.0, z_cm=0.5)
@@ -82,6 +82,9 @@ include("object/phantom.jl")
 # CT scanner geometry
 include("geometry/scanner.jl")
 
+# The clinical scanners the documentation models, as documented constants
+include("geometry/clinical_scanners.jl")
+
 # Affine transforms: phantom ↔ world ↔ recon coordinate mapping
 include("geometry/affine.jl")
 
@@ -117,8 +120,9 @@ include("projection/select_projector.jl")
 # Detector (ALL detector effects + noise)
 # =============================================================================
 
-# Scatter simulation (spatial convolution)
-include("detector/scatter.jl")
+# The Geant4 scatter library: its reader, artifacts and superposition
+include("detector/scatter_kernels.jl")
+export scatter_kernels, ScatterKernels
 
 # Protocol definitions
 include("source/protocol.jl")
@@ -166,7 +170,6 @@ include("correction/radial_cupping.jl")
 include("correction/radial_capping_basis.jl")
 
 # PCCT pulse-pileup correction (inverse of the MC pile-up applied by simulate!)
-include("correction/pcct_pileup_correction.jl")
 
 # =============================================================================
 # Unified Physics Pipeline
@@ -229,9 +232,13 @@ include("detector/photon_counting.jl")
 
 # MC-based detector response matrix (replaces analytical DRM)
 include("detector/pcct/mc_response.jl")
+include("detector/pcct/native_table.jl")
 
 # MC-based pulse pileup model (replaces analytical Taguchi model)
 include("detector/pcct/mc_pileup.jl")
+
+# Patient scatter in simulate!: the library on the acquisition's own rays, and its correction
+include("detector/scatter.jl")
 
 # =============================================================================
 # API (top-level orchestration)
@@ -241,6 +248,7 @@ include("api/options.jl")
 include("api/workspace.jl")
 include("api/view_integration.jl")
 include("api/driver.jl")
+include("correction/flat_field.jl")
 
 # =============================================================================
 # Spectral VMI building blocks

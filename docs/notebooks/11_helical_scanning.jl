@@ -181,17 +181,47 @@ rotations, the table travels
 
 Everything else (`Phantom`, the scanner, `SimOptions`, `ReconOptions`, `simulate!`, the
 corrections, the reconstruction call) is the same as in an axial workflow.
+
+The scanner is the GE Revolution Apex (`REVOLUTION_APEX`), whose 256 × 0.625 mm rows are the
+volume detector this comparison needs, with the notebook's 512 one-millimetre columns in place of
+its 834 so the scans cost what they did. Both scans include the patient's scatter (on by
+default), from the Geant4 kernels the Apex names, and the DAS's scatter correction. This notebook
+used to scan a generic research scanner (source–isocentre 541 mm, source–detector 949 mm), which
+has no scatter kernels; the kernels are made for one scanner's distances, so it now runs at the
+Apex's 625.6 and 1100 mm.
 """
 
 # ╔═╡ 11000004-0000-4000-8000-000000000002
 scanner = BS.EICTScanner(
-    source_to_isocenter = 541.0,
-    source_to_detector = 949.0,
-    detector_rows = 256,             # 256 × 0.625 mm = 16 cm wide-cone volume scanner
-    detector_cols = 512,
-    detector_row_size = 0.625,
+    BS.REVOLUTION_APEX;              # 256 × 0.625 mm = 16 cm wide-cone volume scanner
+    detector_cols = 512,             # the notebook's 512 one-millimetre columns, not the Apex's 834
     detector_col_size = 1.0,
 );
+
+# ╔═╡ 31a9e8a0-c16a-511e-a0a0-c0610c198163
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 11000004-0000-4000-8000-000000000003
 begin
@@ -220,8 +250,8 @@ begin
         use_heel_effect = false)
     recon_opts = BS.ReconOptions(matrix_size = (160, 160, 150), fov_cm = 30.0, z_cm = 30.0)
     # A 16 cm *physical* detector cannot reconstruct a full 16 cm axial
-    # cylinder at 30 cm transverse FOV: cone magnification requires 356 rows.
-    # Ten centimetres requires 222 guarded rows and fits the 256-row scanner.
+    # cylinder at 30 cm transverse FOV: cone magnification requires 338 rows.
+    # Ten centimetres requires 212 guarded rows and fits the 256-row scanner.
     recon_opts_station = BS.ReconOptions(matrix_size = (160, 160, 50), fov_cm = 30.0, z_cm = 10.0)
 end;
 
@@ -353,7 +383,7 @@ from this scan's measured CTDIvol and its 20 mm collimation.
 # (s) — written as constants: the browser runs the calculator compiled to WebAssembly, which bakes
 # constants in but would have to compile any computation behind them (here, the whole simulation).
 # The cell below checks them against the scan, so they cannot go stale.
-const HELICAL_INPUTS = (12.94, 20.0, 0.5);
+const HELICAL_INPUTS = (10.31, 20.0, 0.5);
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000006
 let measured = (Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),
@@ -566,6 +596,7 @@ md"""
 # ╠═11000003-0000-4000-8000-000000000004
 # ╟─11000004-0000-4000-8000-000000000001
 # ╠═11000004-0000-4000-8000-000000000002
+# ╟─31a9e8a0-c16a-511e-a0a0-c0610c198163
 # ╠═11000004-0000-4000-8000-000000000003
 # ╟─11000005-0000-4000-8000-000000000001
 # ╠═11000005-0000-4000-8000-000000000002

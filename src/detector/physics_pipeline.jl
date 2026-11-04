@@ -6,8 +6,8 @@ Physics configuration for CT simulation effects pipeline.
 The PhysicsConfig struct holds all optional physics effect models.
 Effects are applied by simulate!() via the workspace pathway.
 
-Corrections (scatter correction, BHC) are DECOUPLED from simulate! and
-applied at the notebook level, matching the pattern used for HU calibration.
+Corrections (BHC, flat field, pile-up) are DECOUPLED from simulate! and applied by the caller;
+the scatter correction is the detector's (see `src/detector/scatter.jl`).
 """
 
 import AcceleratedKernels as AK
@@ -25,7 +25,7 @@ All fields are optional - set to `nothing` to skip that effect.
 
 # Fields
 - `fill_factor`: FillFactorModel for detector active area
-- `scatter`: ScatterModel for patient scatter (correction decoupled to notebook level)
+- `scatter`: the scanner's [`ScatterKernels`](@ref) (`nothing`: no patient scatter)
 - `optical_crosstalk`: OpticalCrosstalkModel for optical crosstalk
 - `focal_spot`: FocalSpot for geometric blur
 - `detector_efficiency`: DetectorEfficiency for scintillator response
@@ -36,7 +36,7 @@ All fields are optional - set to `nothing` to skip that effect.
 """
 struct PhysicsConfig
     fill_factor::Union{Nothing, FillFactorModel}
-    scatter::Union{Nothing, ScatterModel}
+    scatter::Union{Nothing, ScatterKernels}
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}
     focal_spot::Union{Nothing, FocalSpot}
     detector_efficiency::Union{Nothing, DetectorEfficiency}
@@ -56,7 +56,7 @@ specific effects with their models.
 """
 function default_physics_config(;
     fill_factor::Union{Nothing, FillFactorModel}=nothing,
-    scatter::Union{Nothing, ScatterModel}=nothing,
+    scatter::Union{Nothing, ScatterKernels}=nothing,
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}=nothing,
     focal_spot::Union{Nothing, FocalSpot}=nothing,
     detector_efficiency::Union{Nothing, DetectorEfficiency}=nothing,

@@ -18,13 +18,8 @@ This file provides two complementary abstractions:
 
 # Workflow
 ```julia
-# Define a scanner with physical parameters
-scanner = EICTScanner(
-    source_to_isocenter = 541.0,  # mm
-    source_to_detector = 949.0,   # mm
-    detector_rows = 64,
-    detector_cols = 900,
-)
+# A clinical scanner, or a variant of one (it keeps its scatter kernels)
+scanner = EICTScanner(SOMATOM_FORCE; detector_rows = 64)
 
 # Create computed geometry for simulation
 geom = CTGeometry(scanner; n_angles = 360, fov_cm = 35.0)
@@ -70,7 +65,8 @@ the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 # Source Parameters
 - `focal_spot_width::T`: Focal spot width (mm)
 - `focal_spot_length::T`: Focal spot length (mm)
-- `target_angle::T`: Anode target angle (degrees)
+- `target_angle::T`: Anode target angle (degrees): the heel effect's, the focal spot's and the spectrum's
+  (the bundled IPEM table at the nearest tabulated angle, 8° or 10°)
 
 # Gantry Parameters
 - `gantry_rotation_time::T`: Gantry rotation time (seconds)
@@ -85,10 +81,15 @@ the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 # Detection Parameters
 - `detector_material::Symbol`: Detector scintillator/sensor material
 - `detector_depth::T`: Detector sensor depth (mm)
-- `fill_factor_row::T`: Active area fraction (row direction, 0-1)
-- `fill_factor_col::T`: Active area fraction (column direction, 0-1)
+- `fill_factor_row::T`: Active area fraction (row direction, 0-1) — `EICTScanner` only (a photon-counting dexel's is its response table's)
+- `fill_factor_col::T`: Active area fraction (column direction, 0-1) — `EICTScanner` only
 - `detection_gain::T`: Conversion gain (electrons/keV) — `EICTScanner` only
 - `electronic_noise::T`: Electronic noise std dev (electrons) — `EICTScanner` only
+
+# Scatter and Defects (both families, the same names and defaults)
+- `scatter_kernels::String`: the scanner's entry of the Geant4 scatter library (`""` = none)
+- `scatter_correction::Bool`: subtract the scatter estimated from the measured data (`true`)
+- `gain_spread::T`, `defect_seed::Int`: the dexels' gain spread (0) and their fixed pattern (1)
 
 # Construction
 ```julia
@@ -162,7 +163,8 @@ end
 
 An energy-integrating (scintillator) CT scanner: the shared [`ScannerGeometry`](@ref)
 plus the scintillator detection model (material, depth, fill factors, detection
-gain, electronic noise).  Construct with [`EICTScanner(; kwargs...)`](@ref).
+gain, electronic noise), its scatter correction and its dexels' defects.  Construct with
+[`EICTScanner(; kwargs...)`](@ref).
 """
 struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     geometry::ScannerGeometry{T}
@@ -172,6 +174,11 @@ struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     fill_factor_col::T          # 0-1
     detection_gain::T           # electrons/keV
     electronic_noise::T         # electrons
+    scatter_correction::Bool    # subtract the scatter estimated from the measured signal
+    gain_spread::T              # relative σ of the dexels' gains (0 = ideal)
+    offset_spread_keV::T        # σ of the dexels' offsets, keV per reading (0 = ideal)
+    defect_seed::Int            # the fixed pattern of this detector's dexels
+    scatter_kernels::String     # its entry of the Geant4 scatter library ("" = none)
 end
 
 """
@@ -187,22 +194,17 @@ struct PCCTScanner{T <: AbstractFloat} <: Scanner{T}
     geometry::ScannerGeometry{T}
     detector_material::Symbol   # sensor (:CdTe, :CZT, :Si)
     detector_depth::T           # mm
-    fill_factor_row::T          # 0-1
-    fill_factor_col::T          # 0-1
-    n_energy_bins::Int
-    energy_thresholds::Vector{T}  # keV, ascending
-    energy_resolution::T        # detector FWHM keV
-    charge_sharing_fwhm::T      # charge cloud FWHM mm
-    dead_time_ns::T             # pulse dead time ns
-    pixel_mode::Symbol          # :standard, :uhr, :macro
-    native_dexel_col_mm::T      # native dexel col size at the detector face (mm)
-    native_dexel_row_mm::T      # native dexel row size at the detector face (mm)
-    binning_factor::Int         # spatial binning (1 = unbinned)
+    energy_thresholds::Vector{T}  # keV, ascending, among the response table's
+    dead_time_ns::T             # each native dexel's comparator dead time, ns
+    binning_factor::Int         # native dexels summed per pixel side (2 = standard, 1 = UHR)
     # detector model toggles (simulation-side physics of THIS detector)
-    pileup::Bool                # MC pulse pile-up degradation (needs dead_time_ns > 0)
-    pileup_correction::Bool     # model-based un-pile-up of the recorded bins
-    scatter_correction::Bool    # model-based scatter re-estimate-and-subtract on the bins
+    pileup::Bool                # pulse pile-up per native dexel (needs dead_time_ns > 0)
+    scatter_correction::Bool    # subtract the scatter estimated from the measured counts
     noise_reduction::T          # count-noise blend, 0 = exact Poisson counts … 1 = expected counts
+    gain_spread::T              # relative σ of the native dexels' gains (0 = ideal)
+    threshold_spread_keV::T     # σ of each native dexel's threshold offsets, keV (0 = ideal)
+    defect_seed::Int            # the fixed pattern of this detector's dexels
+    scatter_kernels::String     # its entry of the Geant4 scatter library ("" = none)
 end
 
 # Geometry fields are reachable directly on the scanner (`scanner.detector_rows`):
@@ -214,16 +216,20 @@ function Base.getproperty(s::Scanner, name::Symbol)
 end
 Base.propertynames(s::Scanner) = (_GEOMETRY_FIELDS..., fieldnames(typeof(s))[2:end]...)
 
-function _scanner_geometry(T;
+function _scanner_geometry(
+        T;
         source_to_isocenter, source_to_detector, detector_rows, detector_cols, detector_row_size, detector_col_size,
         detector_row_offset, detector_col_offset, focal_spot_width, focal_spot_length, target_angle,
         gantry_rotation_time, scan_diameter, gantry_aperture, flat_filter_material, flat_filter_thickness,
-        bowtie_filter, detector_shape)
+        bowtie_filter, detector_shape
+    )
     detector_shape in (:flat, :arc) || error("detector_shape must be :flat or :arc (got :$detector_shape)")
-    return ScannerGeometry{T}(T(source_to_isocenter), T(source_to_detector), detector_rows, detector_cols,
+    return ScannerGeometry{T}(
+        T(source_to_isocenter), T(source_to_detector), detector_rows, detector_cols,
         T(detector_row_size), T(detector_col_size), T(detector_row_offset), T(detector_col_offset),
         T(focal_spot_width), T(focal_spot_length), T(target_angle), T(gantry_rotation_time), T(scan_diameter),
-        T(gantry_aperture), flat_filter_material, T(flat_filter_thickness), bowtie_filter, detector_shape)
+        T(gantry_aperture), flat_filter_material, T(flat_filter_thickness), bowtie_filter, detector_shape
+    )
 end
 
 # Geometry keyword defaults shared by every constructor (CatSim-like research scanner).
@@ -243,18 +249,39 @@ _other_kwargs(kw) = (; (k => v for (k, v) in pairs(kw) if !(k in keys(_GEOMETRY_
 Energy-integrating scanner.  Geometry keywords as [`Scanner`](@ref) (distances in
 mm, detector array, focal spot, gantry, filtration, `detector_shape`) plus the
 scintillator model: `detector_material = :lumex`, `detector_depth = 3.0`,
-`fill_factor_row = 0.9`, `fill_factor_col = 0.9`, `detection_gain = 15.0`
-(electrons/keV), `electronic_noise = 5000.0` (electrons).
+`fill_factor_row = 0.9`, `fill_factor_col = 0.9` (each in (0, 1]), `detection_gain = 15.0`
+(electrons/keV), `electronic_noise = 5000.0` (electrons); the detector-model toggle
+`scatter_correction = true`; and the dexels' defects, `gain_spread = 0.0` (relative σ),
+`offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref)).
+The ideal detector is a copy with the spreads at zero.
+
+`scatter_kernels = ""` names the scanner's entry of the Geant4 scatter library
+([`scatter_kernels`](@ref), e.g. `"SOMATOM Force"`), which `SimOptions(use_scatter = true)` (the
+default) superposes on the patient; `""` has none, and then `use_scatter = true` throws: start
+from a clinical constant, which names its kernels, or set `use_scatter = false`.
+`scatter_correction` subtracts the scatter the library estimates from the measured signal alone
+(the patient taken as water), as the scanner's DAS does; `false` leaves the scatter in the data.
+Both families share the field and its default.
 """
-function EICTScanner(; detector_material::Symbol = :lumex, detector_depth::Real = 3.0,
+function EICTScanner(;
+        detector_material::Symbol = :lumex, detector_depth::Real = 3.0,
         fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9, detection_gain::Real = 15.0,
-        electronic_noise::Real = 5000.0, kwargs...)
+        electronic_noise::Real = 5000.0, scatter_correction::Bool = true,
+        gain_spread::Real = 0.0, offset_spread_keV::Real = 0.0,
+        defect_seed::Integer = 1, scatter_kernels::AbstractString = "", kwargs...
+    )
     T = Float64
+    (0 < fill_factor_row <= 1 && 0 < fill_factor_col <= 1) ||
+        throw(ArgumentError("fill factors must lie in (0, 1] (got $(fill_factor_row), $(fill_factor_col))"))
+    (gain_spread >= 0 && offset_spread_keV >= 0) || throw(ArgumentError("defect spreads are non-negative"))
     extra = _other_kwargs(kwargs)
     isempty(extra) || throw(ArgumentError("EICTScanner: unknown keyword(s) $(collect(keys(extra))) — photon-counting parameters belong to PCCTScanner"))
     geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
-    return EICTScanner{T}(geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
-        T(detection_gain), T(electronic_noise))
+    return EICTScanner{T}(
+        geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
+        T(detection_gain), T(electronic_noise), scatter_correction, T(gain_spread), T(offset_spread_keV),
+        Int(defect_seed), String(scatter_kernels),
+    )
 end
 
 """
@@ -262,40 +289,78 @@ end
 
 Photon-counting scanner.  Geometry keywords as [`Scanner`](@ref) plus the
 direct-conversion detector model: `detector_material = :CdTe`, `detector_depth = 1.6`,
-`fill_factor_row = 0.9`, `fill_factor_col = 0.9`, `energy_thresholds` (keV,
-ascending; required), `n_energy_bins = length(energy_thresholds)`,
-`energy_resolution = 0.0`, `charge_sharing_fwhm = 0.0`, `dead_time_ns = 0.0`,
-`pixel_mode = :standard`, `native_dexel_col_mm = 0` / `native_dexel_row_mm = 0`
-(0 = infer from the binned pixel and magnification), `binning_factor = 1`; and the
-detector-model toggles `pileup = true`, `pileup_correction = false`,
-`scatter_correction = false`, `noise_reduction = 0.0`.
+`energy_thresholds` (keV, ascending; required, among the response table's), `dead_time_ns = 0.0`,
+`binning_factor = 1`; the detector-model toggles `pileup = true`, `scatter_correction = true`,
+`noise_reduction = 0.0`; and the native dexels' defects, `gain_spread = 0.0` (relative σ),
+`threshold_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref);
+pile-up by [`calibrate_pileup`](@ref)). The ideal detector is a copy with the spreads at zero.
+`scatter_kernels = ""` names its entry of the Geant4 scatter library, as for
+[`EICTScanner`](@ref) (with `use_scatter = true`, the default, `""` throws); `scatter_correction`
+subtracts the scatter the library estimates from the measured counts alone, as
+[`EICTScanner`](@ref)'s does from its signal.
+
+`detector_col_size` / `detector_row_size` are the pixel's pitch at the isocentre; a native dexel's
+pitch is the pixel's over `binning_factor`. The dexel's aperture, the anti-scatter grid, the
+charge sharing and the electronic noise are the response table's (`PCCT_NATIVE_TABLE_PATH`).
 """
-function PCCTScanner(; detector_material::Symbol = :CdTe, detector_depth::Real = 1.6,
-        fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9,
-        energy_thresholds::AbstractVector{<:Real} = Float64[], n_energy_bins::Int = length(energy_thresholds),
-        energy_resolution::Real = 0.0, charge_sharing_fwhm::Real = 0.0, dead_time_ns::Real = 0.0,
-        pixel_mode::Symbol = :standard, native_dexel_col_mm::Real = 0.0, native_dexel_row_mm::Real = 0.0,
-        binning_factor::Int = 1, pileup::Bool = true, pileup_correction::Bool = false,
-        scatter_correction::Bool = false, noise_reduction::Real = 0.0, kwargs...)
+function PCCTScanner(;
+        detector_material::Symbol = :CdTe, detector_depth::Real = 1.6,
+        energy_thresholds::AbstractVector{<:Real} = Float64[], dead_time_ns::Real = 0.0,
+        binning_factor::Int = 1, pileup::Bool = true,
+        scatter_correction::Bool = true, noise_reduction::Real = 0.0,
+        gain_spread::Real = 0.0, threshold_spread_keV::Real = 0.0, defect_seed::Integer = 1,
+        scatter_kernels::AbstractString = "", kwargs...
+    )
     T = Float64
     0 <= noise_reduction <= 1 || error("noise_reduction must lie in [0, 1] (got $noise_reduction)")
+    (gain_spread >= 0 && threshold_spread_keV >= 0) || throw(ArgumentError("defect spreads are non-negative"))
     extra = _other_kwargs(kwargs)
     isempty(extra) || throw(ArgumentError("PCCTScanner: unknown keyword(s) $(collect(keys(extra))) — scintillator parameters belong to EICTScanner"))
     isempty(energy_thresholds) && error("PCCT scanner requires energy_thresholds (got empty vector)")
-    n_energy_bins == length(energy_thresholds) ||
-        error("n_energy_bins ($n_energy_bins) must equal length(energy_thresholds) ($(length(energy_thresholds)))")
     issorted(energy_thresholds) || error("energy_thresholds must be sorted ascending (got $energy_thresholds)")
-    pixel_mode in (:standard, :uhr, :macro) || error("pixel_mode must be :standard, :uhr, or :macro (got :$pixel_mode)")
     binning_factor >= 1 || error("binning_factor must be >= 1 (got $binning_factor)")
     geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
-    magnification_val = Float64(geometry.source_to_detector) / Float64(geometry.source_to_isocenter)
-    _native_col = native_dexel_col_mm > 0.0 ? native_dexel_col_mm : geometry.detector_col_size * magnification_val / binning_factor
-    _native_row = native_dexel_row_mm > 0.0 ? native_dexel_row_mm : geometry.detector_row_size * magnification_val / binning_factor
-    return PCCTScanner{T}(geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
-        n_energy_bins, T.(collect(energy_thresholds)), T(energy_resolution), T(charge_sharing_fwhm), T(dead_time_ns),
-        pixel_mode, T(_native_col), T(_native_row), binning_factor,
-        pileup, pileup_correction, scatter_correction, T(noise_reduction))
+    return PCCTScanner{T}(
+        geometry, detector_material, T(detector_depth),
+        T.(collect(energy_thresholds)), T(dead_time_ns), binning_factor,
+        pileup, scatter_correction, T(noise_reduction), T(gain_spread), T(threshold_spread_keV), Int(defect_seed),
+        String(scatter_kernels),
+    )
 end
+
+# Every parameter of a scanner as the constructor's keywords: the geometry's fields and the detector's
+# (each stored field is a keyword of its family's constructor, under the same name).
+_scanner_keywords(s::Scanner) = merge(
+    (; (f => getfield(s.geometry, f) for f in fieldnames(ScannerGeometry))...),
+    (; (f => _copied(getfield(s, f)) for f in fieldnames(typeof(s)) if f !== :geometry)...),
+)
+
+# A variant never shares a mutable parameter (the thresholds, the added filters) with its original.
+_copied(x) = x isa AbstractArray ? copy(x) : x
+
+"""
+    EICTScanner(s::EICTScanner; kwargs...)
+
+A variant of `s`: every parameter copied from it, the keywords given replaced, and the
+constructor's checks run on the result. A clinical scanner is a documented constant
+([`SOMATOM_FORCE`](@ref), [`REVOLUTION_APEX`](@ref), …); a different scan of it is a variant,
+e.g. `EICTScanner(SOMATOM_FORCE; detector_rows = 48)`.
+"""
+EICTScanner(s::EICTScanner; kwargs...) = EICTScanner(; merge(_scanner_keywords(s), values(kwargs))...)
+
+"""
+    PCCTScanner(s::PCCTScanner; kwargs...)
+
+A variant of `s`, as [`EICTScanner(s; kwargs...)`](@ref): e.g.
+`PCCTScanner(NAEOTOM_ALPHA; energy_thresholds = [20.0, 70.0])`.
+"""
+function PCCTScanner(s::PCCTScanner; kwargs...)
+    return PCCTScanner(; merge(_scanner_keywords(s), values(kwargs))...)
+end
+
+# Two scanners are equal when every parameter is (the thresholds compare by value).
+Base.:(==)(a::S, b::S) where {S <: Scanner} = all(f -> getfield(a, f) == getfield(b, f), fieldnames(S))
+Base.hash(s::Scanner, h::UInt) = foldl((acc, f) -> hash(getfield(s, f), acc), fieldnames(typeof(s)); init = hash(typeof(s), h))
 
 # =============================================================================
 # CTGeometry - Pre-computed Trajectory Positions
@@ -384,7 +449,8 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, 0.0, 0.0, :flat, 0.0)
+        fov, 0.0, 0.0, :flat, 0.0
+    )
 end
 
 # 16-field compat (helical metadata, pre-arc): defaults to a flat panel.
@@ -399,7 +465,8 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, pitch, table_feed, :flat, 0.0)
+        fov, pitch, table_feed, :flat, 0.0
+    )
 end
 
 # 17-field compat (pre-offset): a centred detector.
@@ -415,7 +482,8 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, pitch, table_feed, detector_shape, 0.0)
+        fov, pitch, table_feed, detector_shape, 0.0
+    )
 end
 
 """
@@ -442,10 +510,12 @@ function rotate_geometry(geom::CTGeometry, δ::Real)
         out[3, :] .= M[3, :] .+ shift
         out
     end
-    return CTGeometry(geom.SAD, geom.SDD, geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size,
+    return CTGeometry(
+        geom.SAD, geom.SDD, geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size,
         geom.pixel_row_size, geom.angles .+ δ, rot(geom.source_positions, dz),
         rot(geom.detector_centers, dz), rot(geom.detector_u, 0.0), copy(geom.detector_v), geom.fov,
-        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset)
+        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset
+    )
 end
 
 export is_helical, rotate_geometry
@@ -473,8 +543,11 @@ function required_axial_detector_rows(
     )
     radius_mm = Float64(fov_cm) * 5.0
     sad_mm = Float64(scanner.source_to_isocenter)
-    radius_mm < sad_mm || throw(ArgumentError(
-        "reconstruction radius $radius_mm mm must be smaller than SAD $sad_mm mm"))
+    radius_mm < sad_mm || throw(
+        ArgumentError(
+            "reconstruction radius $radius_mm mm must be smaller than SAD $sad_mm mm"
+        )
+    )
     support_mm = Float64(z_cm) * 10.0 * sad_mm / (sad_mm - radius_mm)
     return ceil(Int, support_mm / Float64(scanner.detector_row_size))
 end
@@ -565,8 +638,11 @@ function CTGeometry(
     n_rotations > 0 || throw(ArgumentError("n_rotations must be positive, got $n_rotations"))
     if pitch !== nothing
         pitch > 0 || throw(ArgumentError("pitch must be positive, got $pitch"))
-        n_rotations >= 1 || throw(ArgumentError(
-            "helical scans need n_rotations ≥ 1, got $n_rotations"))
+        n_rotations >= 1 || throw(
+            ArgumentError(
+                "helical scans need n_rotations ≥ 1, got $n_rotations"
+            )
+        )
     end
     collimation_mm === nothing || collimation_mm > 0 ||
         throw(ArgumentError("collimation_mm must be positive, got $collimation_mm"))
@@ -588,8 +664,8 @@ function CTGeometry(
                 ╔══════════════════════════════════════════════════════════════════════╗
                 ║       ⚠  EXTENDED-COLLIMATION MODE — SIMULATOR-ONLY APPROX  ⚠       ║
                 ╠══════════════════════════════════════════════════════════════════════╣
-                ║ Requested collimation $(round(collimation_mm; digits=2)) mm exceeds  ║
-                ║ scanner physical max $(round(max_collimation; digits=2)) mm          ║
+                ║ Requested collimation $(round(collimation_mm; digits = 2)) mm exceeds  ║
+                ║ scanner physical max $(round(max_collimation; digits = 2)) mm          ║
                 ║ ($(scanner.detector_rows) rows × $(scanner.detector_row_size) mm).   ║
                 ║                                                                      ║
                 ║ Treating this as a single axial rotation through an artificially     ║
@@ -604,15 +680,17 @@ function CTGeometry(
                 ║ • Do NOT use this output for NAEOTOM-Alpha-specific image-quality    ║
                 ║   or temporal-behavior claims.                                       ║
                 ╚══════════════════════════════════════════════════════════════════════╝
-                """ collimation_mm max_collimation virtual_rows=_virt_rows
+                """ collimation_mm max_collimation virtual_rows = _virt_rows
             else
-                error("""
-                collimation_mm ($collimation_mm mm) exceeds scanner physical maximum
-                ($(scanner.detector_rows) × $(scanner.detector_row_size) = $max_collimation mm).
+                error(
+                    """
+                    collimation_mm ($collimation_mm mm) exceeds scanner physical maximum
+                    ($(scanner.detector_rows) × $(scanner.detector_row_size) = $max_collimation mm).
 
-                Set `extended_collimation = true` on this CTGeometry call to bypass
-                the check with a simulator-only approximation (see docstring).
-                """)
+                    Set `extended_collimation = true` on this CTGeometry call to bypass
+                    the check with a simulator-only approximation (see docstring).
+                    """
+                )
             end
         end
         nominal_rows = round(Int, collimation_mm / scanner.detector_row_size)
@@ -625,14 +703,16 @@ function CTGeometry(
             end
             _n_rows = max(nominal_rows, required_rows)
             if _n_rows > scanner.detector_rows && !extended_collimation
-                error("""
-                Full-FOV axial support requires $(_n_rows) detector rows, but the
-                scanner has only $(scanner.detector_rows). Reduce fov_cm/z_cm or
-                use a scanner with sufficient physical row coverage.
-                """)
+                error(
+                    """
+                    Full-FOV axial support requires $(_n_rows) detector rows, but the
+                    scanner has only $(scanner.detector_rows). Reduce fov_cm/z_cm or
+                    use a scanner with sufficient physical row coverage.
+                    """
+                )
             end
             if _n_rows > nominal_rows
-                @info "axial cone guards added" nominal_rows guarded_rows=_n_rows
+                @info "axial cone guards added" nominal_rows guarded_rows = _n_rows
             end
         end
     else
@@ -755,20 +835,14 @@ function _build_pcct_detector(scanner::PCCTScanner{T}) where {T}
     # Map detector_material Symbol to DetectorMaterialPCCT enum
     material = _infer_pcct_material(scanner.detector_material)
 
-    # Use native dexel size directly (at detector face) for PCCT physics
+    # the native dexel's pitch at the detector face
+    mag = scanner.source_to_detector / scanner.source_to_isocenter
     return PhotonCountingDetector(
         material = material,
         thickness_mm = scanner.detector_depth,
-        pixel_size_mm = (scanner.native_dexel_row_mm, scanner.native_dexel_col_mm),
+        pixel_size_mm = (scanner.detector_row_size, scanner.detector_col_size) .* (mag / scanner.binning_factor),
         energy_thresholds_keV = Float64.(scanner.energy_thresholds),
-        energy_resolution_keV = scanner.energy_resolution,
-        charge_sharing_fwhm_mm = scanner.charge_sharing_fwhm,
-        enable_charge_sharing = scanner.charge_sharing_fwhm > 0.0,
         dead_time_ns = scanner.dead_time_ns,
-        enable_pile_up = scanner.dead_time_ns > 0.0,
-        enable_anti_coincidence = scanner.charge_sharing_fwhm > 0.0,
-        coincidence_window_ns = scanner.dead_time_ns,
-        electronic_noise_keV = 0.0,  # PCCT eliminates electronic noise via thresholding
         binning_factor = scanner.binning_factor
     )
 end

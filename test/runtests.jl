@@ -5,6 +5,8 @@ using Statistics: mean, std
 using LinearAlgebra
 const BS = BasisSimulator
 
+include("scatter_library.jl")
+
 @testset "BasisSimulator.jl" begin
     @testset "api/" begin
         include("api.jl")
@@ -19,8 +21,12 @@ const BS = BasisSimulator
         include("denoising.jl")
     end
     @testset "detector/" begin
+        include("scatter.jl")
         include("detector.jl")
         include("detector_offset.jl")
+        include("eict_signal.jl")
+        include("pcct_modes.jl")
+        include("defects.jl")
     end
     @testset "docs/" begin
         include("docs.jl")
@@ -62,6 +68,7 @@ const BS = BasisSimulator
     end
     @testset "scanner families/" begin
         include("scanner_split.jl")
+        include("clinical_scanners.jl")
     end
     @testset "source/" begin
         include("source.jl")

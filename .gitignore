@@ -7,8 +7,11 @@ LocalPreferences.toml
 # Pkg lockfiles: a package commits none, but the docs are applications whose exact locks are part
 # of every notebook export's fingerprint (docs/extract_all.jl).
 Manifest*.toml
+!docs/Manifest-v*.toml
+# a symlink to Manifest-v1.12.toml: GPUSelect looks only for Manifest.toml to find CUDA (Julia itself reads the versioned files)
 !docs/Manifest.toml
 !docs/build_env/Manifest.toml
+!lib/BasisMonteCarlo/docs/Manifest-v*.toml
 
 # Docs build (docs/build.sh, docs/render_notebooks.sh). docs/notebooks-static/ IS tracked: the
 # GPU-rendered notebook exports the site ships.

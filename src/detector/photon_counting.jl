@@ -78,137 +78,46 @@ end
 """
     PhotonCountingDetector{T<:AbstractFloat}
 
-Photon-counting detector specification for PCCT simulation.
+Photon-counting detector specification for PCCT simulation: the sensor, its thresholds, its dead
+time and its binning. Everything else about its response (charge sharing, K-escape, electronic
+noise, the anti-scatter grid) is the response table's (`load_mc_response`).
 
 # Fields
-
-## Detector Material Properties
-- `material::DetectorMaterialPCCT`: Semiconductor material (CdTe, CZT, Si)
-- `thickness_mm::T`: Sensor thickness in mm (typical: 1.5-3.0 mm)
-- `pixel_size_mm::Tuple{T,T}`: Native dexel size at detector face (row, col) in mm
-
-## Energy Binning
-- `energy_thresholds_keV::Vector{T}`: Energy threshold values in keV
-- `energy_resolution_keV::T`: Energy resolution FWHM at 60 keV (typical: 8-12 keV)
-
-## Charge Sharing
-- `charge_sharing_fwhm_mm::T`: Charge cloud FWHM in mm (typical: 0.05-0.15 mm)
-- `enable_charge_sharing::Bool`: Whether to simulate charge sharing
-
-## Pulse Pile-up
-- `dead_time_ns::T`: Detector dead time in nanoseconds (typical: 20-100 ns)
-- `enable_pile_up::Bool`: Whether to simulate pulse pile-up
-
-## Anti-Coincidence
-- `enable_anti_coincidence::Bool`: Whether to apply anti-coincidence logic
-- `coincidence_window_ns::T`: Time window for coincidence detection (typical: 20-50 ns)
-
-## Noise
-- `electronic_noise_keV::T`: Electronic noise RMS in keV (typical: 1-2 keV)
-
-## Control
-- `seed::Union{Nothing, Int}`: Random seed for reproducibility
-
-# Example
-
-```julia
-# NAEOTOM Alpha-like detector
-detector = PhotonCountingDetector(
-    material = CDTE_MATERIAL,
-    thickness_mm = 1.6,
-    pixel_size_mm = (0.302, 0.302),
-    energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
-    charge_sharing_fwhm_mm = 0.08,
-    dead_time_ns = 5.0
-)
-```
+- `material::DetectorMaterialPCCT`: semiconductor (CdTe, CZT, Si)
+- `thickness_mm::T`: sensor thickness, mm
+- `pixel_size_mm::Tuple{T,T}`: a native dexel's pitch at the detector face (row, col), mm
+- `energy_thresholds_keV::Vector{T}`: thresholds, keV
+- `dead_time_ns::T`: each native dexel's comparator dead time, ns
+- `binning_factor::Int`: native dexels summed per pixel side (1 = unbinned, 2 = 2 × 2)
 
 Built from a [`PCCTScanner`](@ref) by the internal `_build_pcct_detector(scanner)`.
 """
-struct PhotonCountingDetector{T<:AbstractFloat}
-    # Material properties
+struct PhotonCountingDetector{T <: AbstractFloat}
     material::DetectorMaterialPCCT
     thickness_mm::T
-    pixel_size_mm::Tuple{T,T}
-
-    # Energy binning
+    pixel_size_mm::Tuple{T, T}
     energy_thresholds_keV::Vector{T}
-    energy_resolution_keV::T
-
-    # Charge sharing
-    charge_sharing_fwhm_mm::T
-    enable_charge_sharing::Bool
-
-    # Pulse pile-up
     dead_time_ns::T
-    enable_pile_up::Bool
-
-    # Anti-coincidence
-    enable_anti_coincidence::Bool
-    coincidence_window_ns::T
-
-    # Electronic noise
-    electronic_noise_keV::T
-
-    # Spatial binning
-    binning_factor::Int         # 1=unbinned, 2=2×2 standard
-
-    # Control
-    seed::Union{Nothing, Int}
+    binning_factor::Int
 end
 
 """
-    PhotonCountingDetector(; kwargs...)
+    PhotonCountingDetector(; material = CDTE_MATERIAL, thickness_mm = 1.6,
+                           pixel_size_mm = (0.34, 0.364), energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+                           dead_time_ns = 27.0, binning_factor = 1)
 
-Construct a PhotonCountingDetector with keyword arguments.
-
-# Keyword Arguments
-- `material::DetectorMaterialPCCT=CDTE_MATERIAL`: Detector material
-- `thickness_mm::Float64=1.6`: Sensor thickness
-- `pixel_size_mm::Tuple{Float64,Float64}=(0.302, 0.302)`: Pixel size (row, col)
-- `energy_thresholds_keV::Vector{Float64}=[20.0, 35.0, 55.0, 70.0]`: Energy thresholds
-- `energy_resolution_keV::Float64=10.0`: Energy resolution FWHM at 60 keV (informational — see note)
-- `charge_sharing_fwhm_mm::Float64=0.08`: Charge cloud FWHM (informational — see note)
-- `enable_charge_sharing::Bool=true`: Enable charge sharing simulation
-- `dead_time_ns::Float64=5.0`: Detector dead time
-- `enable_pile_up::Bool=true`: Enable pile-up simulation
-- `enable_anti_coincidence::Bool=true`: Enable anti-coincidence correction
-- `coincidence_window_ns::Float64=30.0`: Coincidence time window
-- `electronic_noise_keV::Float64=1.5`: Electronic noise RMS (informational — see note)
-- `seed::Union{Nothing,Int}=nothing`: Random seed
-
-!!! note "Informational spectral-response fields"
-    `energy_resolution_keV`, `charge_sharing_fwhm_mm`, and
-    `electronic_noise_keV` describe the detector but do not drive the
-    simulated spectral response. The effective energy resolution, charge
-    sharing, K-escape, and electronic-noise smearing are all encoded in the
-    Monte-Carlo-derived detector response matrix (`cdte_response_v4.jls`,
-    see `mc_response.jl`), which is the single source of detector physics
-    on the forward path. These fields are informational only.
+Construct a [`PhotonCountingDetector`](@ref) from keywords.
 """
 function PhotonCountingDetector(;
-    material::DetectorMaterialPCCT=CDTE_MATERIAL,
-    thickness_mm::Float64=1.6,
-    pixel_size_mm::Tuple{Float64,Float64}=(0.302, 0.302),
-    energy_thresholds_keV::Vector{Float64}=[20.0, 35.0, 55.0, 70.0],
-    energy_resolution_keV::Float64=10.0,
-    charge_sharing_fwhm_mm::Float64=0.08,
-    enable_charge_sharing::Bool=true,
-    dead_time_ns::Float64=5.0,
-    enable_pile_up::Bool=true,
-    enable_anti_coincidence::Bool=true,
-    coincidence_window_ns::Float64=30.0,
-    electronic_noise_keV::Float64=1.5,
-    binning_factor::Int=1,
-    seed::Union{Nothing, Int}=nothing
-)
+        material::DetectorMaterialPCCT = CDTE_MATERIAL,
+        thickness_mm::Float64 = 1.6,
+        pixel_size_mm::Tuple{Float64, Float64} = (0.34, 0.364),
+        energy_thresholds_keV::Vector{Float64} = [20.0, 35.0, 55.0, 70.0],
+        dead_time_ns::Float64 = 27.0,
+        binning_factor::Int = 1,
+    )
     return PhotonCountingDetector{Float64}(
-        material, thickness_mm, pixel_size_mm,
-        energy_thresholds_keV, energy_resolution_keV,
-        charge_sharing_fwhm_mm, enable_charge_sharing,
-        dead_time_ns, enable_pile_up,
-        enable_anti_coincidence, coincidence_window_ns,
-        electronic_noise_keV, binning_factor, seed
+        material, thickness_mm, pixel_size_mm, energy_thresholds_keV, dead_time_ns, binning_factor,
     )
 end
 
@@ -254,7 +163,7 @@ total = sum(pcct_sino.bins)
 
 See also: [`pcct_forward_project`](@ref), [`PhotonCountingDetector`](@ref)
 """
-struct EnergyResolvedSinogram{T<:AbstractFloat, A<:AbstractArray{T,3}}
+struct EnergyResolvedSinogram{T <: AbstractFloat, A <: AbstractArray{T, 3}}
     bins::Vector{A}
     thresholds_keV::Vector{T}
     n_cols::Int
@@ -262,15 +171,15 @@ struct EnergyResolvedSinogram{T<:AbstractFloat, A<:AbstractArray{T,3}}
     n_angles::Int
 end
 
-function EnergyResolvedSinogram(bins::Vector{A}, thresholds_keV::Vector{T}) where {T<:AbstractFloat, A<:AbstractArray{T,3}}
+function EnergyResolvedSinogram(bins::Vector{A}, thresholds_keV::Vector{T}) where {T <: AbstractFloat, A <: AbstractArray{T, 3}}
     @assert length(bins) == length(thresholds_keV) "Number of bins must match number of thresholds"
     @assert length(bins) > 0 "Must have at least one bin"
     n_cols, n_rows, n_angles = size(bins[1])
-    return EnergyResolvedSinogram{T,A}(bins, thresholds_keV, n_cols, n_rows, n_angles)
+    return EnergyResolvedSinogram{T, A}(bins, thresholds_keV, n_cols, n_rows, n_angles)
 end
 
 Base.size(es::EnergyResolvedSinogram) = (es.n_cols, es.n_rows, es.n_angles)
-Base.eltype(::EnergyResolvedSinogram{T}) where T = T
+Base.eltype(::EnergyResolvedSinogram{T}) where {T} = T
 """
     n_energy_bins(sino::EnergyResolvedSinogram) -> Int
 
@@ -296,7 +205,7 @@ binning before Poisson noise is physically correct.
 - `input::AbstractArray{T,3}`: Native-res sinogram `(n_cols, n_rows, n_angles)`
 - `factor::Int`: Binning factor (2 for 2×2)
 """
-function spatial_bin!(output::AbstractArray{T,3}, input::AbstractArray{T,3}, factor::Int) where T
+function spatial_bin!(output::AbstractArray{T, 3}, input::AbstractArray{T, 3}, factor::Int) where {T}
     out_cols, out_rows, n_angles = size(output)
     f = Int32(factor)
 
@@ -336,7 +245,7 @@ does across the fan.  `I0` is the workspace's `[n_cols, n_rows, n_bins]` table; 
 workspace a flat one is built from `_compute_bin_I0` (scaled by `bf²` when the counts were
 binned from native dexels).
 """
-function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, η, thresholds, kVp, I0_phys, R, bf)
+function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, thresholds, kVp, I0_phys, R, bf)
     T = eltype(bins[1])
     n_bins = length(bins)
     nc = Int32(size(bins[1], 1)); nr = Int32(size(bins[1], 2)); ncnr = nc * nr
@@ -345,7 +254,7 @@ function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, η, thr
     else
         flat = similar(bins[1], T, Int(nc), Int(nr), n_bins)
         for b in 1:n_bins
-            fill!(view(flat, :, :, b), T(_compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0_phys); R = R) * bf * bf))
+            fill!(view(flat, :, :, b), T(_compute_bin_I0(detector, energies, weights, thresholds, b, Float64(kVp), Float64(I0_phys); R = R) * bf * bf))
         end
         flat
     end
@@ -369,10 +278,10 @@ Perform polychromatic photon-counting CT forward projection with MC DRM spectral
 This is the main PCCT forward projection API. It:
 1. Computes energy-dependent μ-volumes from mask + materials (per energy)
 2. Forward projects at each energy using Siddon ray-tracing
-3. Applies quantum efficiency η(E) weighting (material-dependent)
-4. Applies spectral response matrix R(E,b) from MC DRM for realistic energy binning
-5. Applies spatial binning if native dexel resolution is used
-6. Returns energy-resolved sinograms in line-integral domain
+3. Applies spectral response matrix R(E,b) from MC DRM (counts per incident photon, absorption
+   included) for realistic energy binning
+4. Applies spatial binning if native dexel resolution is used
+5. Returns energy-resolved sinograms in line-integral domain
 
 All detector physics (charge sharing, fluorescence escape, pileup, anti-coincidence)
 are encoded in the MC DRM R matrix. No separate analytical detector effects are applied.
@@ -394,12 +303,11 @@ are encoded in the MC DRM R matrix. No separate analytical detector effects are 
 # Physics
 
 The per-bin photon count is:
-    N_b = Σ_E R(E,b) × S(E) × η(E) × exp(-∫μ(x,E)dl)
+    N_b = Σ_E R(E,b) × S(E) × exp(-∫μ(x,E)dl)
 
 where:
-- R(E,b) = MC DRM spectral response matrix entry (probability E registers in bin b)
+- R(E,b) = MC DRM spectral response matrix entry (counts in bin b per incident photon of E)
 - S(E) = normalized tube spectrum weight
-- η(E) = quantum detection efficiency of detector crystal
 - ∫μ(x,E)dl = line integral of energy-dependent attenuation
 
 # Example
@@ -423,56 +331,55 @@ high_E_sino = pcct_sino.bins[4]  # 70+ keV
 See also: [`PhotonCountingDetector`](@ref), [`EnergyResolvedSinogram`](@ref)
 """
 function pcct_forward_project(
-    mask::AbstractArray{<:Unsigned,3},
-    geom,
-    detector::PhotonCountingDetector;
-    energies::AbstractVector,
-    weights::AbstractVector,
-    materials::Vector = get_region_materials(),
-    I0::Real = 1e6,
-    # Workspace buffers (optional — allocate internally if not provided)
-    ws_bins = nothing,
-    ws_μ_volume = nothing,
-    ws_sino_buf = nothing,
-    ws_scratch = nothing,
-    ws_thresholds_T = nothing,
-    # Pre-computed spectral data (optional — compute internally if not provided)
-    ws_η = nothing,           # quantum efficiency vector (n_energies)
-    ws_R = nothing,           # spectral response matrix (n_energies × n_bins)
-    ws_R_energies = nothing,  # energy grid for R
-    ws_I0 = nothing,           # per-ray air response [n_cols, n_rows, n_bins] (binned resolution) for normalization
-    # Pre-allocated μ lookup buffers for create_μ_volume!
-    ws_μ_lut_cpu = nothing,   # Vector{T}(n_regions) CPU
-    ws_μ_lut_gpu = nothing,   # similar(mask, T, n_regions) GPU-side
-    ws_μ_table = nothing,     # Matrix{T}(n_regions, n_energies) pre-computed μ table
-    # Pre-allocated geometry arrays for siddon_forward_project!
-    ws_source_positions = nothing,
-    ws_detector_centers = nothing,
-    ws_detector_u = nothing,
-    ws_detector_v = nothing,
-    # Override volume bounds for phantom physical extent
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    # Native-resolution forward projection (spatial binning)
-    native_geom = nothing,            # CTGeometry at native dexel resolution (nothing = no binning)
-    ws_native_bins = nothing,         # per-bin sinograms at native res
-    ws_native_sino_buf = nothing,     # Siddon scratch at native res
-    ws_native_scratch = nothing,      # scratch at native res
-    ws_native_μ_volume = nothing,     # μ volume (same as binned — phantom hasn't changed)
-    ws_native_source_positions = nothing,
-    ws_native_detector_centers = nothing,
-    ws_native_detector_u = nothing,
-    ws_native_detector_v = nothing,
-    # Tiled spectral projection buffers (optional — enables fused PCCT path)
-    ws_μ_table_gpu = nothing,         # GPU [n_regions, n_energies_padded]
-    ws_W_matrix_gpu = nothing,        # GPU [n_energies_padded, n_bins]
-    ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
-    ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
-    ws_source_spectral = nothing,    # GPU [n_cols, n_rows, n_energies_padded] heel × bowtie
-    # Ray tracer: :dd_fast (default/fastest general path) or :siddon (compatibility, aliases).
-    projector::Symbol = :dd_fast,
-    # Ignored kwargs for backward compat with callers that still pass them
-    kwargs...
-)
+        mask::AbstractArray{<:Unsigned, 3},
+        geom,
+        detector::PhotonCountingDetector;
+        energies::AbstractVector,
+        weights::AbstractVector,
+        materials::Vector = get_region_materials(),
+        I0::Real = 1.0e6,
+        # Workspace buffers (optional — allocate internally if not provided)
+        ws_bins = nothing,
+        ws_μ_volume = nothing,
+        ws_sino_buf = nothing,
+        ws_scratch = nothing,
+        ws_thresholds_T = nothing,
+        # Pre-computed spectral data (optional — compute internally if not provided)
+        ws_R = nothing,           # spectral response matrix (n_energies × n_bins)
+        ws_R_energies = nothing,  # energy grid for R
+        ws_I0 = nothing,           # per-ray air response [n_cols, n_rows, n_bins] (binned resolution) for normalization
+        # Pre-allocated μ lookup buffers for create_μ_volume!
+        ws_μ_lut_cpu = nothing,   # Vector{T}(n_regions) CPU
+        ws_μ_lut_gpu = nothing,   # similar(mask, T, n_regions) GPU-side
+        ws_μ_table = nothing,     # Matrix{T}(n_regions, n_energies) pre-computed μ table
+        # Pre-allocated geometry arrays for siddon_forward_project!
+        ws_source_positions = nothing,
+        ws_detector_centers = nothing,
+        ws_detector_u = nothing,
+        ws_detector_v = nothing,
+        # Override volume bounds for phantom physical extent
+        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+        # Native-resolution forward projection (spatial binning)
+        native_geom = nothing,            # CTGeometry at native dexel resolution (nothing = no binning)
+        ws_native_bins = nothing,         # per-bin sinograms at native res
+        ws_native_sino_buf = nothing,     # Siddon scratch at native res
+        ws_native_scratch = nothing,      # scratch at native res
+        ws_native_μ_volume = nothing,     # μ volume (same as binned — phantom hasn't changed)
+        ws_native_source_positions = nothing,
+        ws_native_detector_centers = nothing,
+        ws_native_detector_u = nothing,
+        ws_native_detector_v = nothing,
+        # Tiled spectral projection buffers (optional — enables fused PCCT path)
+        ws_μ_table_gpu = nothing,         # GPU [n_regions, n_energies_padded]
+        ws_W_matrix_gpu = nothing,        # GPU [n_energies_padded, n_bins]
+        ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
+        ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
+        ws_source_spectral = nothing,    # GPU [n_cols, n_rows, n_energies_padded] heel × bowtie
+        # Ray tracer: :dd_fast (default/fastest general path) or :siddon (compatibility, aliases).
+        projector::Symbol = :dd_fast,
+        # Ignored kwargs for backward compat with callers that still pass them
+        kwargs...
+    )
     _validate_projector(projector)
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -492,11 +399,10 @@ function pcct_forward_project(
     proj_geom = use_native ? native_geom : geom
 
     # Pre-compute quantum efficiency for all energies (CPU, scalar values)
-    η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
 
     # MC-LUT detector response matrix R(E, bin).  Either passed in via
     # `ws_R` (workspace pre-compute) or built here from `compute_mc_drm`.
-    R          = ws_R          !== nothing ? ws_R          : compute_mc_drm(detector, kVp)
+    R = ws_R !== nothing ? ws_R : compute_mc_drm(detector, kVp)
     R_energies = ws_R_energies !== nothing ? ws_R_energies : collect(range(1.0, Float64(kVp), length = size(R, 1)))
 
     # --- Allocate projection-resolution buffers (native or binned) ---
@@ -518,7 +424,7 @@ function pcct_forward_project(
     # Requires: μ_table_gpu + W_matrix_gpu + outputs_flat + spectral response
     # =========================================================================
     if ws_μ_table_gpu !== nothing && ws_W_matrix_gpu !== nothing && ws_outputs_flat !== nothing
-        @info "PCCT TILED PATH: K=16, n_energies=$n_energies, n_bins=$n_bins, mask=$(size(mask))" maxlog=1
+        @info "PCCT TILED PATH: K=16, n_energies=$n_energies, n_bins=$n_bins, mask=$(size(mask))" maxlog = 1
 
         TILE_K = 16
         n_energies_padded = size(ws_μ_table_gpu, 2)
@@ -555,14 +461,15 @@ function pcct_forward_project(
         # identical DD footprint/weights, no per-tile re-walk, no subset copies.
         # ---------------------------------------------------------------------
         if projector === :dd_fast && n_regions <= _PLEN_MAX_MATERIALS
-            @info "PCCT SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, n_bins=$n_bins" maxlog=1
+            @info "PCCT SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, n_bins=$n_bins" maxlog = 1
             dd_fast_fused_spectral_project!(
                 _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                 ws_μ_table_gpu, ws_W_matrix_gpu, Val(n_energies_padded), Int32(1);
-                volume_extent=volume_extent,
-                ws_source_positions=_ws_src, ws_detector_centers=_ws_det,
-                ws_detector_u=_ws_u, ws_detector_v=_ws_v,
-                ws_bowtie_spectral=(has_src ? ws_source_spectral : nothing))
+                volume_extent = volume_extent,
+                ws_source_positions = _ws_src, ws_detector_centers = _ws_det,
+                ws_detector_u = _ws_u, ws_detector_v = _ws_v,
+                ws_bowtie_spectral = (has_src ? ws_source_spectral : nothing)
+            )
             @goto tiles_done
         end
 
@@ -584,18 +491,20 @@ function pcct_forward_project(
                     projector,
                     _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                     μ_sub, W_sub, Val(TILE_K), Int32(1);
-                    volume_extent=volume_extent,
-                    ws_source_positions=_ws_src, ws_detector_centers=_ws_det,
-                    ws_detector_u=_ws_u, ws_detector_v=_ws_v,
-                    ws_bowtie_spectral=bt_sub)
+                    volume_extent = volume_extent,
+                    ws_source_positions = _ws_src, ws_detector_centers = _ws_det,
+                    ws_detector_u = _ws_u, ws_detector_v = _ws_v,
+                    ws_bowtie_spectral = bt_sub
+                )
             else
                 _project_fused_spectral!(
                     projector,
                     _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                     μ_sub, W_sub, Val(TILE_K), Int32(1);
-                    volume_extent=volume_extent,
-                    ws_source_positions=_ws_src, ws_detector_centers=_ws_det,
-                    ws_detector_u=_ws_u, ws_detector_v=_ws_v)
+                    volume_extent = volume_extent,
+                    ws_source_positions = _ws_src, ws_detector_centers = _ws_det,
+                    ws_detector_u = _ws_u, ws_detector_v = _ws_v
+                )
             end
         end
 
@@ -636,7 +545,7 @@ function pcct_forward_project(
 
         # Convert from photon counts to line-integral domain against each ray's own air
         # response: sino = -log(N / I₀[col, row, b])
-        _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, η, thresholds, kVp, I0, R, use_native ? bf : 1)
+        _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, thresholds, kVp, I0, R, use_native ? bf : 1)
 
         # Thresholds
         thresh_T = if ws_thresholds_T !== nothing
@@ -654,12 +563,14 @@ function pcct_forward_project(
     # SEQUENTIAL FALLBACK: per-energy ray-tracing (original path)
     # Used when tiled buffers are not provided (standalone calls without workspace)
     # =========================================================================
-    @info "PCCT SEQUENTIAL PATH: n_energies=$n_energies, n_bins=$n_bins" maxlog=1
+    @info "PCCT SEQUENTIAL PATH: n_energies=$n_energies, n_bins=$n_bins" maxlog = 1
 
     # Native-res per-bin count sinograms (for spatial binning)
     proj_bins = if use_native
         nb = ws_native_bins !== nothing ? ws_native_bins : [similar(mask, T, proj_shape) for _ in 1:n_bins]
-        for bin in nb; fill!(bin, zero(T)); end
+        for bin in nb
+            fill!(bin, zero(T))
+        end
         nb
     else
         nothing
@@ -701,30 +612,33 @@ function pcct_forward_project(
 
         # Skip negligible spectrum weights
         w = Float64(weights[e_idx])
-        if w < 1e-12
+        if w < 1.0e-12
             continue
         end
 
         # Create energy-dependent μ-volume from mask + materials
-        create_μ_volume!(μ_volume, mask, materials, E_float;
-                         ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
-                         ws_μ_table=ws_μ_table, energy_idx=e_idx)
+        create_μ_volume!(
+            μ_volume, mask, materials, E_float;
+            ws_μ_lut_cpu = ws_μ_lut_cpu, ws_μ_lut_gpu = ws_μ_lut_gpu,
+            ws_μ_table = ws_μ_table, energy_idx = e_idx
+        )
 
         # Forward project at this energy (native or binned resolution)
         fill!(sino_buf, zero(T))
-        _project_mono!(projector, sino_buf, μ_volume, proj_geom;
-            ws_source_positions=_ws_src,
-            ws_detector_centers=_ws_det,
-            ws_detector_u=_ws_u,
-            ws_detector_v=_ws_v,
-            volume_extent=volume_extent)
+        _project_mono!(
+            projector, sino_buf, μ_volume, proj_geom;
+            ws_source_positions = _ws_src,
+            ws_detector_centers = _ws_det,
+            ws_detector_u = _ws_u,
+            ws_detector_v = _ws_v,
+            volume_extent = volume_extent
+        )
 
         # Weight by spectrum and quantum efficiency
-        η_E = T(η[e_idx])
         w_T = T(w)
         I0_T = T(I0)
 
-        # Spectrum × QE × MC-LUT DRM column for each bin: wt = I0 · w(E) · η(E) · R(E, b).
+        # Spectrum × MC-LUT DRM column for each bin: wt = I0 · w(E) · R(E, b).
         # The MC DRM is the single source of detector physics (charge sharing,
         # fluorescence escape, Compton escape, Fano broadening) — ideal-bin
         # fallback is intentionally absent.
@@ -733,18 +647,18 @@ function pcct_forward_project(
 
         for b in 1:n_bins
             R_val = T(R[r_idx, b])
-            if R_val < T(1e-10)
+            if R_val < T(1.0e-10)
                 continue
             end
             if ws_source_spectral === nothing
-                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
+                let wt = I0_T * w_T * R_val, ba = accum_bins[b]
                     AK.foreachindex(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
             else
                 # the source transmission at this ray and energy (bowtie × heel), as the fused path
-                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b], bt = ws_source_spectral,
+                let wt = I0_T * w_T * R_val, ba = accum_bins[b], bt = ws_source_spectral,
                         m = Int32(size(sino_buf, 1) * size(sino_buf, 2)), off = Int32(e_idx - 1) * Int32(size(sino_buf, 1) * size(sino_buf, 2))
                     AK.foreachindex(sino_buf) do idx
                         ray = (Int32(idx - 1) % m) + Int32(1)
@@ -763,7 +677,7 @@ function pcct_forward_project(
     end
 
     # Convert from photon counts to line-integral domain against each ray's own air response
-    _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, η, thresholds, kVp, I0, R, use_native ? bf : 1)
+    _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, thresholds, kVp, I0, R, use_native ? bf : 1)
 
     # Use workspace thresholds if provided, otherwise allocate
     thresh_T = if ws_thresholds_T !== nothing
@@ -778,31 +692,31 @@ function pcct_forward_project(
 end
 
 """
-    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R) -> Float64
+    _compute_bin_I0(detector, energies, weights, thresholds, bin_idx, kVp, I0; R) -> Float64
 
 Reference photon count I₀ for one energy bin (the unattenuated count expected
 in `bin_idx` — the denominator for the `-log(N / I0)` step in
 `pcct_forward_project`).
 
 `R` is the MC-LUT detector response matrix (`compute_mc_drm`).  Mapping
-each spectrum energy onto its R-row and summing `I0 · w(E) · η(E) · R(E, bin_idx)`
+each spectrum energy onto its R-row and summing `I0 · w(E) · R(E, bin_idx)` (R per incident photon: absorption included)
 keeps this consistent with the forward-projection accumulator and guarantees
 the `-log(N / I0)` normalization produces well-defined line integrals.
 """
-function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R)
+function _compute_bin_I0(detector, energies, weights, thresholds, bin_idx, kVp, I0; R)
     n_energies = length(energies)
     n_R = size(R, 1)
     I0_bin = 0.0
     for e_idx in 1:n_energies
         E_float = Float64(energies[e_idx])
         w = Float64(weights[e_idx])
-        if w < 1e-12
+        if w < 1.0e-12
             continue
         end
         # Map spectrum energy to DRM grid index
         r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
         R_val = R[r_idx, bin_idx]
-        I0_bin += I0 * w * η[e_idx] * R_val
+        I0_bin += I0 * w * R_val
     end
     return max(I0_bin, 1.0)  # Avoid division by zero
 end
@@ -811,156 +725,58 @@ end
 # PCCT Noise Model (PCCT-NOISE-DECOMP)
 # =============================================================================
 
-"""
-    apply_pcct_noise!(sino::EnergyResolvedSinogram, I0;
-                      seed=nothing, ws_noise_staging=nothing, ws_rng=nothing,
-                      noise_reduction=0.0) -> EnergyResolvedSinogram
 
-Draw exact per-bin Poisson count realizations in-place.
-
-Incident photons are Poisson distributed and the MC-LUT detector response
-(quantum efficiency + spectral migration) acts as independent per-photon
-thinning, so the recorded counts in each bin are exactly Poisson with the
-DRM-shaped expected counts as their mean.  Charge-sharing double counting
-across bins is the one residual effect outside this model.  NO electronic
-noise — eliminated by the counting thresholds, the fundamental PCCT
-advantage.
-
-`I0_bins` must be the SAME per-bin air calibration the sinograms are
-normalized against (`ws.I0`, per ray), so a downstream `I0 · exp(-h)` recovers
-the sampled integer counts exactly.
-
-For each bin `b` and ray:
-1. expected counts `λ = I0[col, row, b] · exp(-h)`;
-2. `N ~ Poisson(λ)` — exact integer sampling at every λ (`_poisson_sample`);
-3. optional `noise_reduction` blend `λ + (1 - nr)·(N - λ)`; any nonzero value
-   leaves the strict Poisson count model (vendor-denoising surrogate only);
-4. the measured count is written verbatim to `raw_out[b]` when provided
-   (TRUE ZEROS preserved), then floored at 1 ONLY for the log-domain bins —
-   a zero count has no finite log line integral — and stored back as
-   `h = -log(max(N, 1) / I0[col, row, b])`.
-
-The simulator imposes no zero-count policy on the counts product: any
-epsilon/interpolation convention for zeros is a downstream (user) choice.
-
-# Arguments
-- `sino::EnergyResolvedSinogram`: per-bin log line integrals, mutated in place.
-- `I0`: the air response per ray and bin, `[n_cols, n_rows, n_bins]` (the workspace's `I0_cpu`).
-
-# Keyword Arguments
-- `seed::Union{Nothing,Int}`: RNG seed for reproducibility.
-- `ws_noise_staging`: optional pre-allocated sinogram-shaped CPU buffer.
-- `ws_rng`: optional pre-allocated RNG (re-seeded each call).
-- `noise_reduction::Float64`: 0.0 = exact Poisson counts (default).
-- `raw_out`: optional vector of per-bin arrays (same backend/shape as the
-  bins) that receives the measured counts BEFORE the log-domain floor.
-  With `noise_reduction = 0` these are the exact integer draws.
-- `rng_mode::Symbol`: `:serial` (default) draws every element from one
-  `MersenneTwister` in index order, which is the stream earlier versions
-  produced and the one an oracle test can reproduce.  `:threaded` splits the
-  sinogram into a fixed number of chunks with an independent stream each, and
-  is 10-15x faster on a clinical photon-counting scan (the serial draw is
-  about 78 % of such a `simulate!`: 16 s of 20 s at 1195 x 62 x 1200 x 4
-  bins).  It gives a DIFFERENT realisation of the same distribution, and the
-  same one for any thread count.
-"""
-function apply_pcct_noise!(
-    sino::EnergyResolvedSinogram{T,A},
-    I0::AbstractArray{<:Real, 3};
-    seed::Union{Nothing,Int} = nothing,
-    ws_noise_staging = nothing,
-    ws_rng = nothing,
-    noise_reduction::Float64 = 0.0,
-    raw_out = nothing,
-    rng_mode::Symbol = :serial,
-) where {T, A}
-    rng_mode in (:serial, :threaded) ||
-        throw(ArgumentError("rng_mode must be :serial or :threaded, got :$(rng_mode)"))
-    length(sino.bins) == size(I0, 3) ||
-        throw(DimensionMismatch("one I0 plane [n_cols, n_rows] is required per PCCT bin"))
-    size(I0, 1) == size(sino.bins[1], 1) && size(I0, 2) == size(sino.bins[1], 2) ||
-        throw(DimensionMismatch("I0 must be [n_cols, n_rows, n_bins] at the sinogram's resolution"))
-    n_rays = size(I0, 1) * size(I0, 2)
-    raw_out === nothing || length(raw_out) == length(sino.bins) ||
-        throw(DimensionMismatch("one raw_out array is required per PCCT bin"))
-
-    rng = if ws_rng !== nothing
-        Random.seed!(ws_rng, isnothing(seed) ? 0 : seed)
-        ws_rng
-    else
-        isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
-    end
-
-    cpu_buf = ws_noise_staging !== nothing ? ws_noise_staging : Array(sino.bins[1])
-    nr_scale = 1.0 - noise_reduction
-
-    for (b, bin) in enumerate(sino.bins)
-        I0_b = Float64.(vec(view(I0, :, :, b)))     # per ray, [n_cols·n_rows]
-
-        # Bulk GPU→CPU transfer (reuses pre-allocated buffer)
-        copyto!(cpu_buf, bin)
-
-        # Pass 1: measured counts (pre-floor; exact integers when nr = 0)
-        if rng_mode === :serial
-            @inbounds for idx in eachindex(cpu_buf)
-                λ = I0_b[(idx - 1) % n_rays + 1] * exp(-Float64(cpu_buf[idx]))
-                N = Float64(_poisson_sample(rng, λ))
-                if nr_scale != 1.0
-                    N = λ + nr_scale * (N - λ)
-                end
-                cpu_buf[idx] = T(N)
-            end
-        else
-            # One stream per chunk, seeded from (seed, bin, chunk). The chunk COUNT is fixed,
-            # not `nthreads()`, so the realisation is a property of the seed alone and two runs
-            # on differently loaded machines agree exactly.
-            n = length(cpu_buf)
-            per_chunk = cld(n, _PCCT_NOISE_CHUNKS)
-            # `nothing` means unseeded, so it has to stay unseeded here too: taking a fixed 0
-            # would make every "unseeded" threaded run produce the same counts.
-            base = isnothing(seed) ? rand(Random.default_rng(), UInt64) : UInt64(seed)
-            Threads.@threads for chunk in 1:_PCCT_NOISE_CHUNKS
-                lo = (chunk - 1) * per_chunk + 1
-                lo > n && continue
-                hi = min(chunk * per_chunk, n)
-                rng_chunk = Random.Xoshiro(hash((base, b, chunk)))
-                @inbounds for idx in lo:hi
-                    λ = I0_b[(idx - 1) % n_rays + 1] * exp(-Float64(cpu_buf[idx]))
-                    N = Float64(_poisson_sample(rng_chunk, λ))
-                    if nr_scale != 1.0
-                        N = λ + nr_scale * (N - λ)
-                    end
-                    cpu_buf[idx] = T(N)
-                end
-            end
-        end
-        raw_out === nothing || copyto!(raw_out[b], cpu_buf)
-
-        # Pass 2: floor at 1 for the log domain only, convert back in place
-        @inbounds for idx in eachindex(cpu_buf)
-            cpu_buf[idx] = T(-log(Float64(max(cpu_buf[idx], one(T))) / I0_b[(idx - 1) % n_rays + 1]))
-        end
-
-        # Bulk CPU→GPU transfer
-        copyto!(bin, cpu_buf)
-    end
-
-    return sino
-end
-
-# Chunks of the sinogram that `rng_mode = :threaded` draws independently. Fixed, so the
-# realisation does not depend on how many threads happen to be available.
-const _PCCT_NOISE_CHUNKS = 64
-
-# log(k!) for k = 0…20 exactly; Stirling–de Moivre series beyond (rel. error
-# < 1e-10 at k = 21, decreasing with k — far below rejection-test resolution).
-const _LOG_FACTORIAL_TABLE = Float64[sum(log(j) for j in 1:k; init = 0.0) for k in 0:20]
+# log(k!) for k = 0…20 exactly (a tuple, so device code reads it too); Stirling–de Moivre series
+# beyond (rel. error < 1e-10 at k = 21, decreasing with k — far below rejection-test resolution).
+const _LOG_FACTORIAL_TABLE = Tuple(Float64[sum(log(j) for j in 1:k; init = 0.0) for k in 0:20])
 
 function _log_factorial(k::Int)
     k <= 20 && return @inbounds _LOG_FACTORIAL_TABLE[k + 1]
     invk = 1.0 / k
     return (k + 0.5) * log(k) - k + 0.9189385332046728 +
         invk * (1.0 / 12.0 - invk * invk * (1.0 / 360.0 - invk * invk / 1260.0))
+end
+
+# log P(k; λ) = k log λ − λ − log k!. Past the table it is Stirling's series written in
+# t = (λ − k) / k, k (log1p(t) − t) − ½ log k − ½ log 2π − …, so the large terms cancel exactly
+# and Float32 keeps it to about |λ − k|·eps.
+@inline function _log_poisson_pmf(k::T, λ::T) where {T <: AbstractFloat}
+    k <= 20 && return k * log(λ) - λ - T(@inbounds _LOG_FACTORIAL_TABLE[unsafe_trunc(Int, k) + 1])
+    invk = inv(k)
+    t = (λ - k) * invk
+    return k * (log1p(t) - t) - log(k) / 2 - T(0.9189385332046728) -
+        invk * (T(1 / 12) - invk * invk * (T(1 / 360) - invk * invk / 1260))
+end
+
+# A counter-based stream of uniform variates for device code: its `n`-th variate is a hash of
+# `(key, n)`, so every draw is a pure function of its key and no state is shared between threads.
+struct _DrawStream
+    key::UInt64
+    n::UInt64
+end
+
+@inline function _mix64(x::UInt64)                    # splitmix64's finaliser
+    x = (x ⊻ (x >> 30)) * 0xbf58476d1ce4e5b9
+    x = (x ⊻ (x >> 27)) * 0x94d049bb133111eb
+    return x ⊻ (x >> 31)
+end
+
+# Mix `x` into the hash `h`. `x` is spread over all 64 bits first (an odd multiplier), so small
+# seeds and small classes never collide (`seed ⊻ class` would: seed 15's class x is seed 16's y).
+@inline _combine(h::UInt64, x) = _mix64(h ⊻ ((x % UInt64) * 0xd1b54a32d192ed03 + 0x9e3779b97f4a7c15))
+
+# The stream of one draw: a seed, a class, and the dexel `(c, r)` of view `v`.
+@inline _DrawStream(seed::UInt64, class, c, r, v) =
+    _DrawStream(_combine(_combine(_combine(_combine(seed, class), v), r), c), UInt64(0))
+
+@inline _uniform(rng::AbstractRNG, ::Type{T}) where {T} = (rand(rng, T), rng)
+@inline function _uniform(s::_DrawStream, ::Type{Float32})
+    x = _mix64(s.key + s.n * 0x9e3779b97f4a7c15)
+    return ((Float32(x >> 40) + 0.5f0) * 5.9604645f-8, _DrawStream(s.key, s.n + 1))   # (0, 1)
+end
+@inline function _uniform(s::_DrawStream, ::Type{Float64})
+    x = _mix64(s.key + s.n * 0x9e3779b97f4a7c15)
+    return ((Float64(x >> 11) + 0.5) * 1.1102230246251565e-16, _DrawStream(s.key, s.n + 1))
 end
 
 """
@@ -971,43 +787,41 @@ PTRS transformed rejection above (W. Hörmann, "The transformed rejection
 method for generating Poisson random variables", Insurance: Mathematics and
 Economics 12, 39–45, 1993).  No Gaussian approximation at any count level.
 """
-function _poisson_sample(rng, λ::Float64)
-    if λ < 1e-10
-        return 0
-    elseif λ < 10.0
+_poisson_sample(rng, λ::Real) = Int(first(_poisson_draw(rng, Float64(λ))))
+
+# The sampler, in λ's precision (Float32 on a device): the count, as a number of that type, and
+# the stream past the variates it used. `rng` is an `AbstractRNG` or a `_DrawStream`.
+@inline function _poisson_draw(rng, λ::T) where {T <: AbstractFloat}
+    if λ < T(1.0e-10)
+        return (zero(T), rng)
+    elseif λ < 10
         # Inversion by sequential search (Knuth): exact, O(λ).
         L = exp(-λ)
-        k = 0
-        p = 1.0
+        k = zero(T)
+        p = one(T)
         while true
-            p *= rand(rng)
-            p < L && return k
-            k += 1
-        end
-    else
-        # PTRS: O(1) exact transformed-rejection sampling for λ ≥ 10.
-        b = 0.931 + 2.53 * sqrt(λ)
-        a = -0.059 + 0.02483 * b
-        inv_alpha = 1.1239 + 1.1328 / (b - 3.4)
-        v_r = 0.9277 - 3.6224 / (b - 2.0)
-        logλ = log(λ)
-        while true
-            U = rand(rng) - 0.5
-            V = rand(rng)
-            us = 0.5 - abs(U)
-            k = floor(Int, (2.0 * a / us + b) * U + λ + 0.43)
-            if us >= 0.07 && V <= v_r
-                return k
-            end
-            if k < 0 || (us < 0.013 && V > us)
-                continue
-            end
-            if log(V) + log(inv_alpha) - log(a / (us * us) + b) <=
-                    k * logλ - λ - _log_factorial(k)
-                return k
-            end
+            u, rng = _uniform(rng, T)
+            p *= u
+            p < L && return (k, rng)
+            k += one(T)
         end
     end
+    # PTRS: O(1) exact transformed-rejection sampling for λ ≥ 10.
+    b = T(0.931) + T(2.53) * sqrt(λ)
+    a = T(-0.059) + T(0.02483) * b
+    inv_alpha = T(1.1239) + T(1.1328) / (b - T(3.4))
+    v_r = T(0.9277) - T(3.6224) / (b - 2)
+    while true
+        u, rng = _uniform(rng, T)
+        V, rng = _uniform(rng, T)
+        U = u - T(0.5)
+        us = T(0.5) - abs(U)
+        k = floor((2 * a / us + b) * U + λ + T(0.43))
+        us >= T(0.07) && V <= v_r && return (k, rng)
+        (k < 0 || (us < T(0.013) && V > us)) && continue
+        log(V) + log(inv_alpha) - log(a / (us * us) + b) <= _log_poisson_pmf(k, λ) && return (k, rng)
+    end
+    return
 end
 
 # =============================================================================
@@ -1062,14 +876,14 @@ function get_detector_material_properties(material::DetectorMaterialPCCT)
         return (
             elements = [:Cd, :Te],
             atomic_numbers = [48, 52],
-            mass_fractions = [112.411 / 240.011, 127.60 / 240.011],  # [0.4683, 0.5317]
+            mass_fractions = [112.411 / 240.011, 127.6 / 240.011],  # [0.4683, 0.5317]
             density_g_cm3 = 5.85,
 
             # K-edges and fluorescence (NIST XCOM, Koch-Mehrin 2020 Table 1)
             k_edges_keV = [26.711, 31.814],       # Cd K-edge, Te K-edge (NIST)
             k_alpha_keV = [23.2, 27.5],           # Cd K-α, Te K-α fluorescence
             k_yields = [0.84, 0.88],              # Fluorescence yields ω_K (Bambynek 1972)
-            k_fluorescence_range_mm = [0.10, 0.06], # Koch-Mehrin 2020: Cd Kα ~100μm, Te Kα ~60μm
+            k_fluorescence_range_mm = [0.1, 0.06], # Koch-Mehrin 2020: Cd Kα ~100μm, Te Kα ~60μm
 
             # Charge transport (Koch-Mehrin 2020 + Owens 2012)
             mu_e_tau_e = 3.3e-3,                  # cm²/V — μ_e=1100×τ_e=3μs (Koch-Mehrin 2020)
@@ -1082,7 +896,7 @@ function get_detector_material_properties(material::DetectorMaterialPCCT)
             charge_cloud_sigma_mm = 0.013,        # Physics-based: ~13μm from ODE (Koch-Mehrin 2020)
 
             # System-level measured resolution (includes electronics)
-            energy_resolution_fwhm_keV = 10.0     # Typical for NAEOTOM at 60 keV
+            energy_resolution_fwhm_keV = 10.0,     # Typical for NAEOTOM at 60 keV
         )
     elseif material == CZT_MATERIAL
         # Cadmium Zinc Telluride (Cd₀.₉Zn₀.₁Te)
@@ -1090,18 +904,18 @@ function get_detector_material_properties(material::DetectorMaterialPCCT)
         # Atomic weights: Cd=112.411, Zn=65.38, Te=127.60
         # CZT formula: Cd₀.₉Zn₀.₁Te → effective mass per formula unit
         # = 0.9×112.411 + 0.1×65.38 + 127.60 = 234.307
-        eff_mass = 0.9 * 112.411 + 0.1 * 65.38 + 127.60  # 234.307
+        eff_mass = 0.9 * 112.411 + 0.1 * 65.38 + 127.6  # 234.307
         return (
             elements = [:Cd, :Zn, :Te],
             atomic_numbers = [48, 30, 52],
-            mass_fractions = [0.9 * 112.411 / eff_mass, 0.1 * 65.38 / eff_mass, 127.60 / eff_mass],
+            mass_fractions = [0.9 * 112.411 / eff_mass, 0.1 * 65.38 / eff_mass, 127.6 / eff_mass],
             density_g_cm3 = 5.78,                 # Slightly lower than CdTe
 
             # K-edges and fluorescence
             k_edges_keV = [26.7, 9.66, 31.8],    # Cd, Zn, Te K-edges
             k_alpha_keV = [23.2, 8.63, 27.4],    # Cd, Zn, Te K-α lines
             k_yields = [0.84, 0.47, 0.87],       # ω_K values (Zn lower yield)
-            k_fluorescence_range_mm = [0.12, 0.50, 0.10], # Zn K-α has long range (low-E)
+            k_fluorescence_range_mm = [0.12, 0.5, 0.1], # Zn K-α has long range (low-E)
 
             # Charge transport (Pennicard et al 2014)
             mu_e_tau_e = 1.0e-2,                  # cm²/V (better than CdTe)
@@ -1113,7 +927,7 @@ function get_detector_material_properties(material::DetectorMaterialPCCT)
             fano_factor = 0.089,                  # Better than CdTe (Pennicard 2014)
             charge_cloud_sigma_mm = 0.045,        # Slightly larger cloud
 
-            energy_resolution_fwhm_keV = 8.0      # CZT typically better resolution
+            energy_resolution_fwhm_keV = 8.0,      # CZT typically better resolution
         )
     elseif material == SI_MATERIAL
         # Silicon — excellent charge transport but very low stopping power at CT energies
@@ -1140,7 +954,7 @@ function get_detector_material_properties(material::DetectorMaterialPCCT)
             fano_factor = 0.115,                  # Similar to CdTe
             charge_cloud_sigma_mm = 0.015,        # Very small cloud (light material)
 
-            energy_resolution_fwhm_keV = 2.5      # Excellent energy resolution
+            energy_resolution_fwhm_keV = 2.5,      # Excellent energy resolution
         )
     else
         error("Unknown detector material: $material")
@@ -1225,8 +1039,10 @@ Compute quantum efficiency η(E) for a vector of energies (batch operation).
 
 More efficient than calling `quantum_efficiency` in a loop for spectrum processing.
 """
-function quantum_efficiency_vector(material::DetectorMaterialPCCT, thickness_mm::Real,
-                                    energies::AbstractVector)
+function quantum_efficiency_vector(
+        material::DetectorMaterialPCCT, thickness_mm::Real,
+        energies::AbstractVector
+    )
     return [quantum_efficiency(material, thickness_mm, E) for E in energies]
 end
 
@@ -1241,4 +1057,3 @@ export pcct_forward_project
 export get_detector_material_properties, get_detector_material_attenuation
 export quantum_efficiency, quantum_efficiency_vector
 export spatial_bin!
-export apply_pcct_noise!

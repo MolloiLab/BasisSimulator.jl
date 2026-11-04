@@ -145,24 +145,53 @@ phantom_reference = BS.Phantom(       # the same geometry, rods made of water
 md"""
 ## 3. Scan and reconstruct
 
-A 120 kVp / 200 mA axial acquisition (360 views, 0.5 s) on a generic 16-row scanner with the
-default large-body bowtie, each view integrated over the arc the gantry turns through while the
+A 120 kVp / 200 mA axial acquisition (360 views, 0.5 s) on the GE Revolution Apex
+(`REVOLUTION_APEX`, its Gemstone detector, bowtie and DAS) narrowed to a compact 16-row detector
+of 512 one-millimetre columns, each view integrated over the arc the gantry turns through while the
 detector reads it (`view_samples = 5`, notebook 01), then the standard chain: `calibrate_bhc_water` → `apply_bhc_water` →
 FDK → HU. The function runs it for either phantom and also returns the largest line integral in
 the sinogram.
+
+The scan includes the patient's scatter (on by default), from the Geant4 scatter kernels the Apex
+names, and the DAS's scatter correction. This notebook used to scan a generic research scanner
+(source–isocentre 540 mm, source–detector 950 mm), which has no scatter kernels; the kernels are
+made for one scanner's distances, so the scanner is now a variant of the Apex at its own 625.6 and
+1100 mm, with the old detector's rows and columns kept so the scan costs what it did.
 """
 
 # ╔═╡ 10000005-0000-4000-8000-000000000002
 scanner = BS.EICTScanner(
-    source_to_isocenter = 540.0,
-    source_to_detector = 950.0,
+    BS.REVOLUTION_APEX;
     detector_rows = 16,
     detector_cols = 512,
     detector_row_size = 1.0,
     detector_col_size = 1.0,
-    detector_material = :lumex,
-    detector_depth = 3.0,
 );
+
+# ╔═╡ 6cdbea4a-7a0f-5155-a0da-bf4b499298f6
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 10000005-0000-4000-8000-000000000003
 protocol = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.5);
@@ -314,6 +343,7 @@ md"""
 # ╠═10000004-0000-4000-8000-000000000004
 # ╟─10000005-0000-4000-8000-000000000001
 # ╠═10000005-0000-4000-8000-000000000002
+# ╟─6cdbea4a-7a0f-5155-a0da-bf4b499298f6
 # ╠═10000005-0000-4000-8000-000000000003
 # ╠═10000005-0000-4000-8000-000000000004
 # ╠═10000005-0000-4000-8000-000000000005

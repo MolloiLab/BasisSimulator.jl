@@ -53,8 +53,16 @@ let build_env = joinpath(@__DIR__, "build_env"),
     end
 end
 
+# The BasisMonteCarlo.jl notebooks (lib/BasisMonteCarlo/docs/notebooks/<stem>.jl) join them as
+# `mc-<stem>`. They are rendered on the CPU by docs/extract_montecarlo.jl (through
+# docs/render_notebooks.sh, never by this build: one of them takes hours), and one that has no
+# export yet gets no page; the gallery shows its card as not rendered. In BASISSIM_SKIP_NOTEBOOKS a
+# trailing `*` matches a prefix: `mc-*` leaves every BasisMonteCarlo notebook out.
 const NOTEBOOK_SLUGS = let dir = joinpath(@__DIR__, "notebooks"),
-    skip = Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
+    mc_dir = joinpath(@__DIR__, "..", "lib", "BasisMonteCarlo", "docs", "notebooks"),
+    static = joinpath(@__DIR__, "notebooks-static"),
+    patterns = strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)),
+    skipped = s -> any(p -> endswith(p, "*") ? startswith(s, chop(p)) : s == p, patterns)
 
     all_slugs = isdir(dir) ?
         sort([
@@ -62,12 +70,15 @@ const NOTEBOOK_SLUGS = let dir = joinpath(@__DIR__, "notebooks"),
             if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
         ]) :
         String[]
-    kept = filter(s -> !(s in skip), all_slugs)
-    if !isempty(skip)
-        dropped = filter(s -> s in skip, all_slugs)
-        isempty(dropped) || println("[app] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
-    end
-    kept
+    mc_slugs = isdir(mc_dir) ?
+        sort(["mc-" * splitext(f)[1] for f in readdir(mc_dir) if endswith(f, ".jl")]) :
+        String[]
+    kept = filter(!skipped, vcat(all_slugs, mc_slugs))
+    dropped = filter(skipped, vcat(all_slugs, mc_slugs))
+    isempty(dropped) || println("[app] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
+    unrendered = filter(s -> startswith(s, "mc-") && !isfile(joinpath(static, "$(s).fragment.html")), kept)
+    isempty(unrendered) || println("[app] not rendered yet, no page: $(join(unrendered, ", "))")
+    filter(!in(unrendered), kept)
 end
 
 # =============================================================================

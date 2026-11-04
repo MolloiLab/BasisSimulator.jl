@@ -160,6 +160,38 @@ function spectral_basis(ws::PCCTWorkspace; I0 = ws.I0, tolerance::Real = 5.0e-5)
     return spectral_basis_from_bins(; energies, W_applied, I0, transmission = _binned_transmission(ws, nE, bf), tolerance)
 end
 
+"""
+    spectral_basis(ws::EICTWorkspace, protocol::CTProtocol; tolerance = 5e-5)
+
+The one-channel basis of an energy-integrating acquisition, straight from its workspace: each
+ray's detected spectrum in air, `w̄(E)·m₁(E)·B(E)` (source, filtration, bowtie and heel `B`,
+detector signal per photon `m₁`), normalised and scaled to the ray's noise-equivalent quanta in
+air, `I₀·ff·(Σ w̄ m₁ B)² / Σ w̄ m₂ B`. The mean model is the one the simulation applied; the
+quanta make a Poisson likelihood's variance the compound-Poisson variance of the air signal.
+Dual-kVp and dual-source pairs combine with
+`spectral_basis_from_acquisitions(acquisitions = [spectral_basis(ws_a, protocol_a), …])`.
+"""
+function spectral_basis(ws::EICTWorkspace, protocol::CTProtocol; tolerance::Real = 5.0e-5)
+    nE = length(ws.energies)
+    nc, nr = ws.geom.n_cols, ws.geom.n_rows
+    B = ws.bowtie_spectral === nothing ?
+        ones(Float64, nc, nr, nE) :
+        Float64.(Array(ws.bowtie_spectral)[:, :, 1:nE])
+    w̄ = ws.weights ./ sum(ws.weights)
+    s1 = B .* reshape(w̄ .* ws.m1, 1, 1, nE)
+    air1 = dropdims(sum(s1; dims = 3); dims = 3)
+    air2 = dropdims(sum(B .* reshape(w̄ .* ws.m2, 1, 1, nE); dims = 3); dims = 3)
+    ff = ws.config.fill_factor === nothing ? 1.0 : effective_fill_factor(ws.config.fill_factor)
+    quanta = compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * ff .* air1 .^ 2 ./ air2
+    Φ = s1 ./ air1 .* quanta
+    return spectral_basis(;
+        energies = ws.energies,
+        response = reshape(Φ, nc, nr, nE, 1),
+        I0 = reshape(quanta, nc, nr, 1),
+        tolerance,
+    )
+end
+
 # The source transmission each BINNED ray applied: the mean over its bf × bf native dexels (its
 # counts are their sum, each at the per-dexel response), exactly the binned native table when
 # there is one; `nothing` when there is no table (one response for every ray).
@@ -179,7 +211,8 @@ end
     spectral_basis_from_acquisitions(; acquisitions, tolerance = 5e-5)
 
 Basis for `K` separate acquisitions: rapid kVp switching, or two tubes. Each entry of
-`acquisitions` is a NamedTuple with
+`acquisitions` is a one-channel basis (an energy-integrating acquisition's
+[`spectral_basis`](@ref)`(ws, protocol)`) or a NamedTuple with
 
 - `energies`: that acquisition's own grid, keV;
 - `response`: `(nc, nr, nE)` relative detected spectrum per ray;
@@ -191,6 +224,7 @@ cycle and rotation time enter: they change how many photons an acquisition deliv
 shape of its spectrum.
 """
 function spectral_basis_from_acquisitions(; acquisitions, tolerance::Real = 5.0e-5)
+    acquisitions = map(_acquisition, acquisitions)
     K = length(acquisitions)
     K > 0 || throw(ArgumentError("need at least one acquisition"))
     E = sort!(unique(vcat([collect(Float64.(a.energies)) for a in acquisitions]...)))
@@ -215,6 +249,13 @@ function spectral_basis_from_acquisitions(; acquisitions, tolerance::Real = 5.0e
         I0[:, :, k] .= Float32.(air)
     end
     return spectral_basis(energies = E, response = Φ, I0 = I0, tolerance = tolerance)
+end
+
+# An acquisition as its grid, its per-ray spectrum and its air counts; a one-channel basis is one.
+function _acquisition(a)
+    hasproperty(a, :Φ) || return a
+    a.n_channels == 1 || throw(ArgumentError("an acquisition is one channel; this basis has $(a.n_channels)"))
+    return (energies = a.E, response = a.Φ[:, :, :, 1], I0_ray = a.I0[:, :, 1])
 end
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -337,8 +378,11 @@ still equals that channel's `I0`. Returns `(channels, basis, n_rows)`.
 function prepare_channels(;
         channels, basis, merge_groups = nothing, reduce_rows::Bool = false, rows = (:),
     )
-    !reduce_rows && rows !== (:) && throw(ArgumentError(
-        "rows selects the detector rows to sum, and does nothing without reduce_rows = true"))
+    !reduce_rows && rows !== (:) && throw(
+        ArgumentError(
+            "rows selects the detector rows to sum, and does nothing without reduce_rows = true"
+        )
+    )
     working_channels, working_basis = channels, basis
     if merge_groups !== nothing
         merged = merge_channels(
@@ -896,8 +940,11 @@ function reconstruct_basis_slice(
     )
     method in (:fbp, :hir) ||
         throw(ArgumentError("method must be :fbp or :hir, got :$(method)"))
-    size(sino, 2) in (1, n_rows) || throw(DimensionMismatch(
-        "the sinogram has $(size(sino, 2)) rows; the geometry has $(n_rows) — pass every row, or one"))
+    size(sino, 2) in (1, n_rows) || throw(
+        DimensionMismatch(
+            "the sinogram has $(size(sino, 2)) rows; the geometry has $(n_rows) — pass every row, or one"
+        )
+    )
     n_views = size(sino, 3)
     working = Float32.(sino)
     if antialias
@@ -921,11 +968,17 @@ function reconstruct_basis_slice(
     end
 
     single_row = size(working, 2) == 1 && geom.n_rows != 1
-    single_row && matrix_size[3] != 1 && throw(ArgumentError(
-        "a single-row sinogram reconstructs one slice; matrix_size has $(matrix_size[3])"))
+    single_row && matrix_size[3] != 1 && throw(
+        ArgumentError(
+            "a single-row sinogram reconstructs one slice; matrix_size has $(matrix_size[3])"
+        )
+    )
     recon_geom = single_row ? _single_row_geometry(geom) : geom
-    hir_weights isa AbstractArray && size(hir_weights) != size(working) && throw(DimensionMismatch(
-        "hir_weights has size $(size(hir_weights)); the sinogram is $(size(working))"))
+    hir_weights isa AbstractArray && size(hir_weights) != size(working) && throw(
+        DimensionMismatch(
+            "hir_weights has size $(size(hir_weights)); the sinogram is $(size(working))"
+        )
+    )
     s = Float32(scale)
     sino_dev = to_backend(working .* s)
     weights_dev = hir_weights isa AbstractArray ? to_backend(Float32.(hir_weights)) : hir_weights
@@ -1091,16 +1144,21 @@ function vmi_pipeline(;
     projection_hypr = denoiser === nothing ? nothing : denoiser.projection
     image_instance = denoiser === nothing ? nothing : denoiser.image
     spectral = fbp_filter isa PairFilter || image_instance !== nothing
-    hir && spectral && throw(ArgumentError(
-        "the spectral pair and the image-domain HYPR instance measure their noise from FDK of the " *
-        "half-view pair; use recon_method = :fbp, one window and SpectralHYPR(image = nothing)"))
+    hir && spectral && throw(
+        ArgumentError(
+            "the spectral pair and the image-domain HYPR instance measure their noise from FDK of the " *
+                "half-view pair; use recon_method = :fbp, one window and SpectralHYPR(image = nothing)"
+        )
+    )
 
     dispersion = nothing
     if projection_hypr !== nothing
         dispersion = projection_hypr.dispersion === :measured ?
             estimate_dispersion(channels, basis.I0) : collect(Float64, projection_hypr.dispersion)
-        channels = hypr_lr(channels, basis.I0; kernel = projection_hypr.kernel,
-            dispersion = dispersion, view_stride = projection_hypr.view_stride, to_backend = to_backend)
+        channels = hypr_lr(
+            channels, basis.I0; kernel = projection_hypr.kernel,
+            dispersion = dispersion, view_stride = projection_hypr.view_stride, to_backend = to_backend
+        )
     end
 
     prepared = prepare_channels(; channels, basis, merge_groups, reduce_rows, rows)
@@ -1148,15 +1206,19 @@ function vmi_pipeline(;
         method = recon_method, hir_strength = hir_strength, projector = recon_projector,
         hir_weights = weights, scale = scale,
     )
-    acnr_kwargs = (hp_sigma_px = acnr_hp_sigma_px, window = acnr_window,
-        passes = acnr_passes, beta_max = acnr_beta_max)
+    acnr_kwargs = (
+        hp_sigma_px = acnr_hp_sigma_px, window = acnr_window,
+        passes = acnr_passes, beta_max = acnr_beta_max,
+    )
     image_settings = nothing
     pair_settings = nothing
     acnr_settings = nothing
     water_image, iodine_image = if spectral
-        pair = spectral_pair(sino_water, sino_iodine, geom, matrix_size; filter = fbp_filter,
+        pair = spectral_pair(
+            sino_water, sino_iodine, geom, matrix_size; filter = fbp_filter,
             basis = pair_basis, composite_energy = composite_energy, antialias = antialias,
-            n_rows = recon_rows, to_backend = to_backend)
+            n_rows = recon_rows, to_backend = to_backend
+        )
         pair_settings = (Estar = pair.Estar, β = pair.β, Σ = pair.Σ, basis = pair.basis)
         if use_acnr && acnr_passes > 0
             acnr_complement!(pair; acnr_kwargs...)
@@ -1188,9 +1250,9 @@ function vmi_pipeline(;
         settings = (
             method = method, n_channels = working_basis.n_channels,
             denoiser = denoiser === nothing ? nothing : (;
-                projection = projection_hypr, dispersion = dispersion,
-                image = image_instance, image_estimates = image_settings,
-            ),
+                    projection = projection_hypr, dispersion = dispersion,
+                    image = image_instance, image_estimates = image_settings,
+                ),
             pair = pair_settings,
             merge_groups = merge_groups, reduce_rows = reduce_rows, n_rows = prepared.n_rows,
             tlbf = use_tlbf ?
@@ -1199,10 +1261,10 @@ function vmi_pipeline(;
             recon = (;
                 method = recon_method, matrix_size, antialias, recon_rows, filter = fbp_filter, pair_basis,
                 hir = hir ? (;
-                    strength = hir_strength, projector = recon_projector,
-                    reference_kev = hir_reference_kev,
-                    weights = method === :nchannel ? :fisher : :uniform,
-                ) : nothing,
+                        strength = hir_strength, projector = recon_projector,
+                        reference_kev = hir_reference_kev,
+                        weights = method === :nchannel ? :fisher : :uniform,
+                    ) : nothing,
             ),
             controls = controls,
         ),

@@ -1,0 +1,1 @@
+[{"arg_types":[],"bonds":["kvp"],"cells":[{"id":"7f435d0f-3376-5aba-9422-da95aeee9fd4","ok":false,"reasons":["configured fallback (matched @bind kvp); island inference intentionally skipped"]}],"fallback_kind":"configured","judgement":"fallback","oracle_samples":0,"oracle_skipped":null,"reasons":["configured fallback (matched @bind kvp); island inference intentionally skipped"]}]

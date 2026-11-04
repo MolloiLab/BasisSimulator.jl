@@ -93,7 +93,7 @@ function dose_source(scanner::Scanner, protocol::CTProtocol; spectrum = nothing)
     append!(filters, protocol.additional_filters)
     SAD = Float64(scanner.source_to_isocenter)
     E, phi = if spectrum === nothing
-        e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle = protocol.anode_angle)
+        e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle = ipem_anode_angle(scanner.target_angle))
         filter_spectrum(e, w; filters = filters, sdd_mm = SAD)
     else
         e, w = spectrum

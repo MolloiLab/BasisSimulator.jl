@@ -18,18 +18,18 @@ using Statistics: mean, std, quantile
 
 # ╔═╡ 09000001-0000-4000-8000-000000000010
 md"""
-# 09 · Siemens SOMATOM Force · UFC MC LUT · Dual-Source VMI
+# 09 · Siemens SOMATOM Force · UFC Geant4 Table · Dual-Source VMI
 
 The Siemens **SOMATOM Force** third-generation dual-source scanner with its
 **UFC (Ultra-Fast Ceramic, Gd₂O₂S:Pr,Ce)** scintillator, modelled through the
-package's Monte-Carlo detector-efficiency table `BS.UFC_MC_EFFICIENCY_LUT`.
+package's Geant4 detector table `BS.UFC_MC_EFFICIENCY_LUT`.
 
 One dual-source DE acquisition feeds **both** outputs, the routine-looking
 mixed image and the spectral results:
 
 ```
-UFC MC η(E) LUT  (BS.UFC_MC_EFFICIENCY_LUT, 1–140 keV)
-        │ via EICTScanner(detector_material = :ufc)
+UFC Geant4 table  (BS.UFC_MC_EFFICIENCY_LUT, 1–140 keV)
+        │ via SOMATOM_FORCE (detector_material = :ufc)
         ▼
 100 kVp (tube A) + Sn140 kVp (tube B), view_samples = 5
    each tube projected once → draws 0 (noise-free), 1 (measured), 9 (calibration)
@@ -59,16 +59,17 @@ Force reconstructs with one window rather than a fitted pair.
     acquisition and derives both readouts from it.
 
 !!! info "How the UFC table enters the simulation"
-    `src/detector/detector_efficiency.jl` ships `UFC_MC_EFFICIENCY_LUT`,
-    `get_ufc_mc_efficiency(E)` and the `detector_efficiency_ufc()`
-    factory; `build_physics_config` dispatches `detector_material = :ufc`
-    to it (as `:lumex` dispatches to the GE Gemstone table).  This notebook
-    sets `EICTScanner(detector_material = :ufc)` with the default
-    `use_detector_efficiency = true`, and the EICT forward model weights
-    every energy by `w(E) · η_UFC(E) · exp(-∫μ dl)`.  The spectral basis and
-    the BHC calibration resolve the *same* η-folded spectrum through
-    `resolve_source_spectrum_full`, so the forward and inverse spectral
-    models match exactly.
+    `UFC_MC_EFFICIENCY_LUT` is BasisMonteCarlo's Geant4 flat-field run of the
+    Force's UFC (1.4 mm, 7.31 g/cm³): per keV, the `efficiency` (energy collected
+    per photon ÷ its energy) and `dqe0` (the zero-frequency DQE of one energy:
+    absorption and the Swank spread together). `SOMATOM_FORCE` has
+    `detector_material = :ufc`, and with the default
+    `use_detector_efficiency = true` a photon of energy `E` leaves a mean signal
+    `m₁ = E·efficiency(E)` and a mean square `m₂ = m₁²/dqe0(E)`: the detector
+    reads `Σ w(E) m₁(E) e^{-∫μ dl}`, with variance `Σ w(E) m₂(E) e^{-∫μ dl}`. The
+    spectral basis (`spectral_basis(ws, protocol)`) and the BHC calibration
+    (`resolve_source_spectrum_full`) weight the spectrum by the same `m₁`, so the
+    forward and inverse spectral models match exactly.
 """
 
 # ╔═╡ 09000001-0000-4000-8000-000000000020
@@ -108,46 +109,38 @@ md"""
 
 # ╔═╡ 09000002-0000-4000-8000-000000000001
 md"""
-## 1. The UFC Monte-Carlo Efficiency LUT
+## 1. The UFC Geant4 Detector Table
 
-Per-energy absorbed fraction η(E) for the Siemens UFC Gd₂O₂S scintillator,
-from a full Monte-Carlo transport simulation of the SOMATOM Force
-StellarInfinity detector.
+The flat-field response of the Force's UFC Gd₂O₂S scintillator, 1.4 mm deep, from
+Geant4 (BasisMonteCarlo notebook `04_siemens_force.jl`, 100 000 photons per energy):
+`BS.UFC_MC_EFFICIENCY_LUT`, per keV from 1 to 140 keV, next to the GE
+`BS.GEMSTONE_MC_EFFICIENCY_LUT`. The `efficiency` is the energy collected per photon
+landing on a dexel, divided by the photon's energy, with every dexel illuminated.
 
-**Provenance**: a Monte-Carlo transport simulation of the Force detector by
-Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging Laboratory),
-`efficiency_results.csv`, 2026-06-08.  The table ships in the package as
-`BS.UFC_MC_EFFICIENCY_LUT` (`src/detector/detector_efficiency.jl`): 140 values
-on a 1-keV grid (1–140 keV), verbatim from that dataset, next to the GE
-`BS.GEMSTONE_MC_EFFICIENCY_LUT`.
+**Physics signatures** (fluorescence escape, which Beer–Lambert absorption *cannot* model):
 
-**Physics signatures** (same class of MC-only features the Gemstone LUT
-captures — Beer-Lambert *cannot* model these):
-
-1. **Gd K-edge fluorescence escape at 50.24 keV**: η drops
-   `0.969 → 0.741` between 50 and 51 keV.  Just above the K-edge,
-   photoabsorption produces Gd Kα fluorescence (~43 keV) that escapes the
-   thin crystal, so the *deposited* fraction falls even though attenuation
-   rises.  Beer-Lambert would predict the opposite jump.
-2. **Gd L-edge structure near 7–8 keV** (L₃ 7.24 / L₂ 7.93 / L₁ 8.38 keV):
-   the small dip at 8 keV.
-3. **Gradual high-energy roll-off** (0.897 at 100 keV → 0.816 at 140 keV)
-   from primary transmission + Compton escape.
+1. **Gd K-edge fluorescence escape at 50.24 keV**: the efficiency drops
+   `0.935 → 0.791` between 50 and 51 keV. Just above the K-edge, photoabsorption
+   produces Gd Kα fluorescence (~43 keV), part of which escapes the crystal, so the
+   *collected* fraction falls even though attenuation rises.
+2. **Gd L-edge structure near 7–8 keV**: the small dip at 8 keV.
+3. **High-energy roll-off** (0.857 at 100 keV → 0.612 at 140 keV) from primary
+   transmission through 1.4 mm and Compton escape.
 """
 
 # ╔═╡ 09000002-0000-4000-8000-000000000030
 let
-    Es = collect(1.0:0.25:140.0)
-    η_ufc = BS.get_ufc_mc_efficiency.(Es)
-    η_gem = BS.get_gemstone_mc_efficiency.(Es)
+    Es = BS.UFC_MC_EFFICIENCY_LUT.energies
+    η_ufc = BS.UFC_MC_EFFICIENCY_LUT.efficiency
+    η_gem = BS.GEMSTONE_MC_EFFICIENCY_LUT.efficiency
 
     fig = Mke.Figure(size = (1180, 580))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "MC Detector Efficiency",
+        title = "Geant4 Detector Efficiency",
         subtitle = "UFC (SOMATOM Force) vs Gemstone (GE Apex Elite)",
         xlabel = "Photon Energy (keV)",
-        ylabel = "Absorbed Fraction η(E)",
+        ylabel = "Collected Fraction η(E)",
         titlesize = 32, subtitlesize = 24,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
@@ -160,7 +153,7 @@ let
     Mke.vlines!(ax, [52.0, 63.31]; color = :steelblue, linestyle = :dash, linewidth = 1.5)
     Mke.text!(ax, 63.31, 0.99; text = "Tb / Lu K-edges", fontsize = 16, align = (:left, :top), offset = (4, 0))
 
-    Mke.ylims!(ax, 0.6, 1.02)
+    Mke.ylims!(ax, 0.55, 1.02)
     Mke.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
     fig
 end
@@ -220,9 +213,9 @@ the geometry was measured from an actual clinical Force by Wang et al.):
     - **Bowtie**: Siemens body bowtie shape is unpublished → CatSim
       **large-body** profile as stand-in (same convention as notebooks 04 and 08).
     - **Scintillator thickness 1.4 mm / fill factor 0.9**: proprietary;
-      thickness is inert here (η comes from the MC LUT, and the
-      Beer-Lambert fallback is not used), fill factor auto-cancels in the
-      air-scan calibration.
+      1.4 mm is the only UFC thickness Siemens quotes and the depth the
+      Geant4 table was made at. The fill factor scales the quanta a dexel
+      collects, so it sets the noise, and cancels in the air calibration.
     - **Electronic noise = 0**: Stellar's TrueSignal ASIC has no published
       absolute noise figure; its design point is "electronic noise
       negligible vs quantum noise" (Duan et al. AJR 2013).
@@ -254,31 +247,32 @@ the geometry was measured from an actual clinical Force by Wang et al.):
 
 # ╔═╡ 09000004-0000-4000-8000-000000000010
 # Tube/detector A geometry — shared by both modeled tubes (see md above).
-scanner = BS.EICTScanner(
-    source_to_isocenter = 595.0,
-    source_to_detector = 1085.6,
+scanner = BS.SOMATOM_FORCE;
 
-    detector_rows = 96,
-    detector_cols = 920,
-    detector_row_size = 0.6,
-    detector_col_size = 0.561,
+# ╔═╡ a25dda2c-bb62-534b-be16-0f1de34a44f1
+# Every keyword of `scanner`: the documented constant `SOMATOM_FORCE`, with any field this notebook changes marked
+let s = scanner, constant = BS.SOMATOM_FORCE
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
 
-    focal_spot_width = 0.8,
-    focal_spot_length = 1.2,
-    target_angle = 8.0,
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
 
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 3.0,
-    bowtie_filter = :large_body,
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `SOMATOM_FORCE`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.SOMATOM_FORCE`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.SOMATOM_FORCE; field = value)`.
 
-    detector_material = :ufc,    # free-form tag; η comes from the MC LUT below
-    detector_depth = 1.4,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-
-    electronic_noise = 0,
-    detection_gain = 10.0,
-);
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
 md"""
@@ -309,7 +303,6 @@ protocol_low = BS.CTProtocol(
     views = 1160,
     rotation_time = 0.5,
     collimation_mm = 4.8,    # nominal beam width; axial cone guards are automatic
-    anode_angle = 8,
     additional_filters = [("Ti", 0.9)],
 );
 
@@ -320,7 +313,6 @@ protocol_high = BS.CTProtocol(
     views = 1160,
     rotation_time = 0.5,
     collimation_mm = 4.8,
-    anode_angle = 8,
     additional_filters = [("Ti", 0.9), ("Sn", 0.6)],
 );
 
@@ -331,12 +323,12 @@ md"""
 `force_opts` are the physics switches the basis-spectral-denoising paper
 settled on for its dual-source scanner, applied to the Force:
 
-- **Detector efficiency.** `use_detector_efficiency = true` (the default)
-  routes through the **src UFC MC LUT**: `build_physics_config` sees
-  `EICTScanner(detector_material = :ufc)` and dispatches to
-  `detector_efficiency_ufc()`, so the EICT forward model weights every
-  energy by `w(E) · η_UFC(E)` and the detected flux (and therefore the
-  Poisson noise level) reflects the UFC absorption.
+- **Detector response.** `use_detector_efficiency = true` (the default)
+  reads the **UFC Geant4 table** for `detector_material = :ufc`: every
+  energy is weighted by its signal per photon `m₁ = E·efficiency(E)`, and
+  the noise is compound Poisson, variance `Σ w m₂ e^{-∫μ dl}` with
+  `m₂ = m₁²/dqe0`, so its variance per unit signal (the dispersion) rises
+  as the beam hardens.
 - **Heel effect off** (`use_heel_effect = false`) keeps the forward
   spectral model exactly equal to the η-folded response the spectral basis
   inverts (with 4.8 mm collimation the heel is a small row-direction
@@ -359,7 +351,11 @@ between the channels, which the decomposition would then amplify.
 # ╔═╡ 09000006-0000-4000-8000-000000000010
 begin
     VIEW_SAMPLES = 5
-    force_opts = BS.SimOptions(projector = :dd_fast, use_heel_effect = false, view_samples = VIEW_SAMPLES)
+    force_opts = BS.SimOptions(
+        projector = :dd_fast,
+        use_heel_effect = false,
+        view_samples = VIEW_SAMPLES,
+    )
     "The same physics switches with one field replaced."
     with_option(opts, field, value) = BS.SimOptions(;
         (f => getfield(opts, f) for f in fieldnames(BS.SimOptions) if f !== field)...,
@@ -397,14 +393,16 @@ recon_opts = BS.ReconOptions(
     ufc_detected_spectrum(protocol) -> (e, w_eta)
 
 Display helper: tube spectrum × flat filtration × protocol filters
-(IPEM, absolute flux) with the src UFC MC η(E) folded in — what the
-detector actually integrates (centered ray, no bowtie).
+(IPEM, absolute flux) × the UFC's signal per photon, `E·efficiency(E)` — what
+the detector actually integrates (centered ray, no bowtie).
 """
 function ufc_detected_spectrum(protocol)
     e, w = BS.resolve_source_spectrum_without_bowtie(
         force_opts, protocol; scanner = scanner,
     )
-    return e, Float64.(w) .* BS.get_ufc_mc_efficiency.(e)
+    t = BS.UFC_MC_EFFICIENCY_LUT                          # 1 keV grid: index = energy
+    eff(E) = (i = clamp(floor(Int, E), 1, 139); f = E - i; (1 - f) * t.efficiency[i] + f * t.efficiency[i + 1])
+    return e, Float64.(w) .* e .* eff.(e)
 end;
 
 # ╔═╡ 09000006-0000-4000-8000-000000000040
@@ -418,9 +416,9 @@ let
     ax = Mke.Axis(
         fig[1, 1];
         title = "UFC-Detected Spectra",
-        subtitle = "w(E) · η_UFC(E), normalized — Sn hardening on tube B",
+        subtitle = "w(E) · E · η_UFC(E), normalized — Sn hardening on tube B",
         xlabel = "Energy (keV)",
-        ylabel = "Relative Detected Fluence",
+        ylabel = "Relative Detected Signal",
         titlesize = 32, subtitlesize = 24,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
@@ -462,10 +460,10 @@ afresh.  Three draws share the projection:
 - draw **9**: the **calibration** draw, which only fixes the
   reconstruction's pair (§9); nothing is measured on it.
 
-The first draw also keeps what the spectral basis needs: the per-ray air
-counts `I0_ray` (detector air count × bowtie air profile) and the per-ray
-detected spectrum from `resolve_source_spectrum_full` (source × filtration ×
-bowtie × UFC η), the model the forward projector applied.
+The first draw also keeps what the spectral basis needs, the tube's one-channel
+basis `spectral_basis(ws, protocol)`: each ray's detected spectrum (source ×
+filtration × bowtie × UFC signal per photon `m₁`), the model the forward projector
+applied, scaled to the ray's noise-equivalent quanta in air.
 
 Tube B sees the phantom through a **−0.88 mm z-shifted origin** — the real
 detector-B z-offset (Wang et al. 2021).  For the z-invariant Gammex this
@@ -511,14 +509,7 @@ function acquire(draws)
                 projection === nothing && (projection = result.projection)
                 channels[r] = Array(ws.sinogram)
                 if model === nothing
-                    air = ws.bowtie_air_reference === nothing ?
-                        ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-                        Float32.(Array(ws.bowtie_air_reference))
-                    I0 = BS.compute_detector_I0(ws.geom, e.protocol, sum(ws.weights)) * Float64(ws.η_eff)
-                    energies, response = BS.resolve_source_spectrum_full(
-                        opts, e.protocol; scanner = scanner, geom = ws.geom)
-                    model = (geom = ws.geom, I0_ray = Float32.(I0 .* air),
-                        energies = Float64.(energies), response = Float32.(response))
+                    model = (geom = ws.geom, basis = BS.spectral_basis(ws, e.protocol))
                 end
             finally
                 BS.release_backend!(ws)
@@ -529,8 +520,7 @@ function acquire(draws)
         (; channels, seconds, model...)
     end
     GC.gc(true)
-    basis = BS.spectral_basis_from_acquisitions(acquisitions = [
-        (energies = p.energies, response = p.response, I0_ray = p.I0_ray) for p in parts])
+    basis = BS.spectral_basis_from_acquisitions(acquisitions = [p.basis for p in parts])
     Dict(r => (draw = r, channels = [p.channels[r] for p in parts], basis = basis,
                geom = first(parts).geom, seconds = [p.seconds[r] for p in parts])
          for r in draws)
@@ -616,7 +606,7 @@ lands at ≈ 0 HU in *both* per-tube recons (and therefore in any blend).
 !!! info "η-aware BHC"
     The BHC water polynomial must see the same detected spectrum the
     forward model used.  We resolve the bowtie-hardened per-column
-    spectrum with the UFC η(E) already folded in
+    spectrum weighted by the UFC's signal per photon, `m₁(E) = E·η(E)`
     (`resolve_source_spectrum_full`), and feed the low-level
     `calibrate_bhc_water(e, w_col)` — same per-column fit the
     high-level API performs, but with the UFC fold included.
@@ -849,11 +839,11 @@ md"""
 
 `acquire` built the basis with `spectral_basis_from_acquisitions`, which merges
 the two tubes' energy grids onto their union and scales each tube's per-ray
-detected spectrum by its own air counts, so the likelihood sees the absolute
-response ``\Phi_k(E)`` of every ray and channel: **source × flat filters ×
-bowtie × UFC η(E)**, the identical model the forward projector applied
-(`resolve_source_spectrum_full` builds it from the same `build_physics_config`,
-and therefore the same UFC table, that `simulate!` used).  No calibration scan
+detected spectrum by its own noise-equivalent quanta in air (`I₀·ff·S₁²/S₂`), so the
+likelihood sees the absolute response ``\Phi_k(E)`` of every ray and channel:
+**source × flat filters × bowtie × UFC signal per photon `m₁(E)`**, the identical
+model the forward projector applied (`spectral_basis(ws, protocol)` reads it from
+the workspace that `simulate!` used).  No calibration scan
 is involved, and the noise-free, measured and calibration draws all share it.
 """
 
@@ -1615,13 +1605,13 @@ md"""
 ## Summary
 
 ```
-UFC MC η(E) LUT (BS.UFC_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
-   → EICTScanner(detector_material = :ufc) → detector_efficiency_ufc()
+UFC Geant4 table (BS.UFC_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
+   → SOMATOM_FORCE (detector_material = :ufc): m₁ = E·efficiency, m₂ = m₁²/dqe0
 100 kVp + Sn140 kVp  (one SOMATOM Force dual-source DE acquisition,
                       view_samples = 5, one noise seed per tube)
    each tube projected once → draws 0 (noise-free), 1 (measured), 9 (calibration)
    ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w     (§7)
-   └─→ VMI:  spectral basis (bowtie + η_UFC per ray, shared by every draw)
+   └─→ VMI:  spectral basis (bowtie + UFC m₁ per ray, shared by every draw)
              pair_basis, composite_energy ← calibration draw
              → BS.vmi_pipeline(; denoiser = SpectralHYPR(), fbp_filter = SoftFilter(), …)
              → VMI 50/70/100/140 keV vs the noise-free reference  (§8–10)
@@ -1661,6 +1651,7 @@ UFC MC η(E) LUT (BS.UFC_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
 # ╠═09000003-0000-4000-8000-000000000020
 # ╟─09000004-0000-4000-8000-000000000001
 # ╠═09000004-0000-4000-8000-000000000010
+# ╟─a25dda2c-bb62-534b-be16-0f1de34a44f1
 # ╟─09000005-0000-4000-8000-000000000001
 # ╠═09000005-0000-4000-8000-000000000010
 # ╠═09000005-0000-4000-8000-000000000020

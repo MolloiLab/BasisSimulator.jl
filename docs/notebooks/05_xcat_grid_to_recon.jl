@@ -469,32 +469,38 @@ end
 md"""
 ### 3. Scanner, protocol and a tight reconstruction grid
 
-The GE Revolution Apex Elite of notebook 01: 256 × 0.625 mm rows, a curved Lumex detector and
-the large-body bowtie. The grid mapping has nothing to do with the detector type, so any
+The GE Revolution Apex Elite of notebook 01, `REVOLUTION_APEX`: 256 × 0.625 mm rows, a curved
+Gemstone detector and the large-body bowtie. The grid mapping has nothing to do with the detector type, so any
 scanner would do.
 """
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000010
-scanner = BS.EICTScanner(
-    source_to_isocenter = 625.6,
-    source_to_detector = 1100.0,
-    detector_rows = 256,
-    detector_cols = 834,
-    detector_row_size = 0.625,
-    detector_col_size = 0.6,
-    focal_spot_width = 1.0,
-    focal_spot_length = 1.0,
-    target_angle = 10.0,
-    flat_filter_material = :aluminum,
-    flat_filter_thickness = 2.5,
-    bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex,
-    detector_depth = 3.0,
-    fill_factor_row = 0.9,
-    fill_factor_col = 0.9,
-    electronic_noise = 3500.0,   # e⁻ rms, added to the counts before the log
-    detection_gain = 10.0,
-);
+scanner = BS.REVOLUTION_APEX
+
+# ╔═╡ 99ccd184-5dcd-5bc5-9ca2-586e5ff69f7c
+# Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
+let s = scanner, constant = BS.REVOLUTION_APEX
+    shown(x) = replace(repr(x; context = :compact => true), "|" => "\\|")
+
+    rows = map(propertynames(s)) do f
+        value, standard = getproperty(s, f), getproperty(constant, f)
+        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        "| `$(f)` | `$(shown(value))` | $(note) |"
+    end
+
+    Markdown.parse(
+        """
+        **`scanner` is `$(nameof(typeof(s)))`, from the documented constant `REVOLUTION_APEX`.** Its keywords
+        and their values (units and sources: the constant's docstring, `?BS.REVOLUTION_APEX`, and the Scanners
+        page). A variant is the same struct with keywords replaced,
+        `$(nameof(typeof(s)))(BS.REVOLUTION_APEX; field = value)`.
+
+        | Keyword | Value | |
+        |---|---|---|
+        $(join(rows, "\n"))
+        """
+    )
+end
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000020
 md"""
@@ -515,7 +521,11 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000040
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
+sim_opts = BS.SimOptions(
+    seed = 1234,
+    projector = :dd_fast,
+    view_samples = 5,
+);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
@@ -1146,6 +1156,7 @@ md"""
 # ╟─05000009-0000-4000-8000-000000000010
 # ╟─0500000a-0000-4000-8000-000000000001
 # ╠═0500000a-0000-4000-8000-000000000010
+# ╟─99ccd184-5dcd-5bc5-9ca2-586e5ff69f7c
 # ╟─0500000a-0000-4000-8000-000000000020
 # ╠═0500000a-0000-4000-8000-000000000030
 # ╠═0500000a-0000-4000-8000-000000000040
