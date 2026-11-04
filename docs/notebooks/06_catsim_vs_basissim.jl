@@ -225,11 +225,13 @@ md"""
 
 The GE Revolution Apex Elite of notebook 01 (`REVOLUTION_APEX`), with its large-body bowtie. BasisSimulator's
 `:ge_revolution_large` bowtie is read from the same `large.txt` table CatSim ships, so both
-simulators see the same bowtie. Electronic noise is zero, as noise is off everywhere here.
+simulators see the same bowtie. Electronic noise is zero, as noise is off everywhere here, and
+the scintillator's lag (`use_lag`, a switch of the energy-integrating scanner) is off, as
+CatSim's is.
 """
 
 # ╔═╡ 06000002-0000-4000-8000-000000000010
-scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0)
+scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0, use_lag = false)
 
 # ╔═╡ a8ac0e53-23ec-533d-a797-af31d0867766
 # Every keyword of `scanner`: the documented constant `REVOLUTION_APEX`, with any field this notebook changes marked
@@ -263,8 +265,9 @@ md"""
 120 kVp / 200 mA, 500 views in a 1 s rotation, 4 mm of collimation, 4.5 mm of extra aluminium.
 The physics is set to what both simulators model by default: polychromatic transport through
 the filters and bowtie, energy-dependent detector efficiency, fill factor and focal-spot blur.
-Noise, scatter, detector lag and the heel effect are switched off in BasisSimulator because the
-CatSim defaults have them off (CatSim leaves its scatter, lag and crosstalk callbacks empty). The
+Noise, scatter and the heel effect are switched off in BasisSimulator (and detector lag on the
+scanner, above) because the CatSim defaults have them off (CatSim leaves its scatter, lag and
+crosstalk callbacks empty). The
 reconstruction is 256 × 256 over 35 cm, 0.625 mm slices.
 
 !!! info "Point views on both sides"
@@ -288,7 +291,7 @@ protocol = BS.CTProtocol(
 # ╔═╡ 06000003-0000-4000-8000-000000000020
 sim_opts = BS.SimOptions(
     seed = 1234, projector = :dd_fast,
-    use_noise = false, use_scatter = false, use_lag = false, use_heel_effect = false,
+    use_noise = false, use_scatter = false, use_heel_effect = false,
 );
 
 # ╔═╡ 06000003-0000-4000-8000-000000000030

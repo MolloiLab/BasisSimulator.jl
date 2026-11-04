@@ -358,7 +358,6 @@ sim_opts = BS.SimOptions(
     # use_scatter     = false,   # no patient scatter
     # use_heel_effect = false,
     # use_focal_spot  = false,
-    # use_lag         = false,
     # use_noise       = false,   # the noiseless expected sinogram
 );
 
@@ -368,7 +367,10 @@ md"""
     `SimOptions` carries only the effects both detector families share. The scatter kernels and
     the scatter correction are the scanner's, under the same names on both families
     (`scatter_kernels`, `scatter_correction`); pile-up and the count-noise blend are fields of
-    `PCCTScanner`; detector lag applies to the scintillator only.
+    `PCCTScanner`; the scintillator's fill factor, energy response, optical crosstalk and lag
+    (`use_fill_factor`, `use_detector_efficiency`, `detector_efficiency_mode`,
+    `use_optical_crosstalk`, `use_lag`) are fields of `EICTScanner`, e.g.
+    `EICTScanner(BS.REVOLUTION_APEX; use_lag = false)`.
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001

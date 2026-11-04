@@ -63,7 +63,7 @@ Force reconstructs with one window rather than a fitted pair.
     Force's UFC (1.4 mm, 7.31 g/cm³): per keV, the `efficiency` (energy collected
     per photon ÷ its energy) and `dqe0` (the zero-frequency DQE of one energy:
     absorption and the Swank spread together). `SOMATOM_FORCE` has
-    `detector_material = :ufc`, and with the default
+    `detector_material = :ufc`, and with its default
     `use_detector_efficiency = true` a photon of energy `E` leaves a mean signal
     `m₁ = E·efficiency(E)` and a mean square `m₂ = m₁²/dqe0(E)`: the detector
     reads `Σ w(E) m₁(E) e^{-∫μ dl}`, with variance `Σ w(E) m₂(E) e^{-∫μ dl}`. The
@@ -323,8 +323,8 @@ md"""
 `force_opts` are the physics switches the basis-spectral-denoising paper
 settled on for its dual-source scanner, applied to the Force:
 
-- **Detector response.** `use_detector_efficiency = true` (the default)
-  reads the **UFC Geant4 table** for `detector_material = :ufc`: every
+- **Detector response.** The scanner's `use_detector_efficiency = true` (the
+  default) reads the **UFC Geant4 table** for `detector_material = :ufc`: every
   energy is weighted by its signal per photon `m₁ = E·efficiency(E)`, and
   the noise is compound Poisson, variance `Σ w m₂ e^{-∫μ dl}` with
   `m₂ = m₁²/dqe0`, so its variance per unit signal (the dispersion) rises

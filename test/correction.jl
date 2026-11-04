@@ -268,7 +268,7 @@ end
     )
     pcct_geom = BS.CTGeometry(pcct_scanner; n_angles = 16)
     @test_throws ArgumentError BS.compute_polychromatic_μ_water(
-        BS.SimOptions(use_focal_spot = false, use_lag = false), protocol;
+        BS.SimOptions(use_focal_spot = false), protocol;
         scanner = pcct_scanner, geom = pcct_geom, water_path_cm = 20.0,
     )
 end

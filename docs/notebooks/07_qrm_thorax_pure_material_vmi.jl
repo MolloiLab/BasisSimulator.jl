@@ -480,7 +480,8 @@ md"""
 
 The physics switches of the basis-spectral-denoising GE model: every effect of the
 energy-integrating path on except optical crosstalk, and the detector efficiency from the
-Monte Carlo table of the Lumex scintillator (`detector_efficiency_mode = :mc_lut`).
+Monte Carlo table of the Lumex scintillator (the scanner's `detector_efficiency_mode = :mc_lut`,
+its default).
 
 **View integration.** A detector integrates while the gantry turns, so each view records the
 transmitted intensity averaged over the arc it sweeps, `r · view_arc · Δθ` at radius `r`: a
@@ -499,7 +500,6 @@ begin
     VIEW_SAMPLES = 5
     ge_opts = BS.SimOptions(
         projector = :dd_fast,
-        detector_efficiency_mode = :mc_lut,
         view_samples = VIEW_SAMPLES,
     )
     "The same physics switches with one field replaced."

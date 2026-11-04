@@ -863,10 +863,10 @@ m₁(E)       = first(eid_signal_moments(config.detector_efficiency, E))     [EI
 ŵ(col,row,E)     = ŵ_raw / Σ_E ŵ_raw
 ```
 
-With `sim_opts.use_heel_effect = false` the heel factor is 1; with
+With `sim_opts.use_heel_effect = false` the heel factor is 1; with the scanner's
 `use_detector_efficiency = false` an energy integrator's `m₁(E)` is `E` (every
 photon absorbed whole), so the function automatically follows whatever the
-SimOptions config says — guaranteeing the inversion sees exactly what
+SimOptions and the scanner say — guaranteeing the inversion sees exactly what
 simulate! applied.
 
 # Arguments
@@ -913,7 +913,7 @@ function resolve_source_spectrum_full(
 
     # Step 2: identical PhysicsConfig that simulate!'s workspace ctor uses,
     # so `config.heel_effect` / `config.detector_efficiency` are populated
-    # iff the corresponding sim_opts flag is true.
+    # iff the corresponding switch (of sim_opts or the scanner) is on.
     # (scatter does not shape the spectrum, so its kernels are not loaded here)
     config = build_physics_config(
         scanner,
@@ -1001,8 +1001,12 @@ function build_physics_config(
 
     # --- Physics Pipeline effects (from Scanner fields where available) ---
 
+    # The scintillator's switches are the energy integrator's fields; a photon-counting detector's
+    # response, fill factor and crosstalk are its response table's, and it has no afterglow.
+    eict = scanner isa EICTScanner
+
     # Fill factor: use Scanner's row/col fill factors
-    if sim_opts.use_fill_factor && scanner isa EICTScanner
+    if eict && scanner.use_fill_factor
         kwargs[:fill_factor] = FillFactorModel(
             scanner.fill_factor_row,
             scanner.fill_factor_col,
@@ -1012,12 +1016,12 @@ function build_physics_config(
 
     # Detector response (EICT only): the scintillator's Geant4 table, or analytic absorption with
     # `detector_efficiency_mode = :beer_lambert`. A photon-counting detector's response is its own
-    # (the PCCT response matrix), so a PCCTScanner never reads this field.
-    if sim_opts.use_detector_efficiency && scanner isa EICTScanner
+    # (the PCCT response matrix).
+    if eict && scanner.use_detector_efficiency
         kwargs[:detector_efficiency] = DetectorEfficiency(
             scanner.detector_material,
             scanner.detector_depth,
-            sim_opts.detector_efficiency_mode == :beer_lambert ? BEER_LAMBERT : MC_LUT,
+            scanner.detector_efficiency_mode == :beer_lambert ? BEER_LAMBERT : MC_LUT,
         )
     end
 
@@ -1026,8 +1030,8 @@ function build_physics_config(
         kwargs[:scatter] = scatter_kernels(scanner)
     end
 
-    # Optical crosstalk: no Scanner field, use factory default
-    if sim_opts.use_optical_crosstalk
+    # Optical crosstalk (EICT only): the factory default's strength
+    if eict && scanner.use_optical_crosstalk
         kwargs[:optical_crosstalk] = optical_crosstalk_typical()
     end
 
@@ -1042,8 +1046,8 @@ function build_physics_config(
         end
     end
 
-    # Lag: no Scanner field, use factory default
-    if sim_opts.use_lag
+    # Lag (EICT only): the scintillator's afterglow, the factory default's
+    if eict && scanner.use_lag
         kwargs[:lag] = lag_gadox()
     end
 

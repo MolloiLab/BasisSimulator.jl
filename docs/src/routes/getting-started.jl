@@ -340,7 +340,11 @@ enhancement = after .- before"""),
             ),
             p(c("SimOptions"), " holds the physics. Everything a clinical acquisition does is on by default: the detector's ",
               "efficiency and fill factor, the patient's scatter, the focal spot, the heel effect, lag, and quantum and ",
-              "electronic noise, drawn in the counts before the log, where a real detector produces them. The scatter is the ",
+              "electronic noise, drawn in the counts before the log, where a real detector produces them. A detector's own ",
+              "switches are its scanner's: an energy integrator's ", c("use_detector_efficiency"), ", ",
+              c("detector_efficiency_mode"), ", ", c("use_fill_factor"), ", ", c("use_optical_crosstalk"), " and ",
+              c("use_lag"), " (", c("BS.EICTScanner(BS.SOMATOM_FORCE; use_lag = false)"), "), a photon counter's ",
+              c("pileup"), ". The scatter is the ",
               "scanner's Geant4 scatter kernels (", c("scatter_kernels"), ", a download of about 250 MB per scanner, cached; ",
               c("BS.scatter_kernels(entry; path)"), " reads a local copy instead) superposed on the patient's own rays, and the ",
               "detector subtracts the scatter it estimates from its own data (", c("scatter_correction = true"), " on both ",
@@ -437,9 +441,8 @@ end"""),
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
 res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 
-# pile-up, calibrated as a scanner does it: air scans at rising currents (few views suffice),
-# on the phantom's device
-pileup = BS.calibrate_pileup(scanner_pc, BS.CTProtocol(protocol; views = 40), recon; sim_opts, like = phantom.mask)
+# pile-up, calibrated as a scanner does it: air scans at rising currents, on the phantom's device
+pileup = BS.calibrate_pileup(scanner_pc, protocol, recon; sim_opts, like = phantom.mask)
 BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
 
 # then the flat field: a low-flux air scan gives every pixel's gain in every bin
@@ -793,7 +796,7 @@ SETUP
 
 THE CHAIN
 - phantom = BS.Phantom(device(labels), Dict(label => BS.XA.Materials.x, ...), (dx_cm, dy_cm, dz_cm))
-- scanner = a documented constant (BS.REVOLUTION_APEX, BS.NAEOTOM_ALPHA, BS.SOMATOM_FORCE / BS.SOMATOM_FORCE_B, BS.SOMATOM_DEFINITION_FLASH / BS.SOMATOM_DEFINITION_FLASH_B) or BS.EICTScanner(...) / BS.PCCTScanner(...; energy_thresholds). Scatter is on by default (SimOptions(use_scatter = true), each constant names its Geant4 kernels, scatter_correction = true on both families); a scanner built from scratch names none and throws unless use_scatter = false, so start from a constant. A variant copies a scanner and replaces keywords: BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48); CTProtocol(protocol; kVp = 140) likewise. NEVER write or ask for a preset function or a mode keyword; a different mode is a different constant.
+- scanner = a documented constant (BS.REVOLUTION_APEX, BS.NAEOTOM_ALPHA, BS.SOMATOM_FORCE / BS.SOMATOM_FORCE_B, BS.SOMATOM_DEFINITION_FLASH / BS.SOMATOM_DEFINITION_FLASH_B) or BS.EICTScanner(...) / BS.PCCTScanner(...; energy_thresholds). Scatter is on by default (SimOptions(use_scatter = true), each constant names its Geant4 kernels, scatter_correction = true on both families); a scanner built from scratch names none and throws unless use_scatter = false, so start from a constant. A variant copies a scanner and replaces keywords: BS.EICTScanner(BS.SOMATOM_FORCE; detector_rows = 48); CTProtocol(protocol; kVp = 140) likewise. NEVER write or ask for a preset function or a mode keyword; a different mode is a different constant. The scintillator's switches are EICTScanner fields, not SimOptions: use_fill_factor, use_detector_efficiency, detector_efficiency_mode (:mc_lut | :beer_lambert), use_optical_crosstalk, use_lag.
 - Dual source = one acquisition per tube/detector chain (SOMATOM_FORCE + SOMATOM_FORCE_B), each with its own protocol and seed; rapid kVp switching = two protocols on one scanner. Combine them with spectral_basis_from_acquisitions.
 - protocol = BS.CTProtocol(kVp = 80|100|120|140, mA, views, rotation_time, collimation_mm, additional_filters = [("Al", 4.5)], pitch)
 - sim_opts = BS.SimOptions(seed = k, view_samples = 1|5); recon = BS.ReconOptions(matrix_size, fov_cm, z_cm)
@@ -813,7 +816,7 @@ RULES
 - Every label needs a material (missing -> air silently). Phantom voxel <= recon voxel. Whole body cross-section in the volume, z margin beyond the recon slab; the volume is centred at the isocentre (origin does not move it). <= 64 materials for the fast projector (compact_materials; dithered iodine quantization; never merge across measured regions).
 - Detector must cover the body: detector_cols * detector_col_size (mm) > body width. Even views per rotation for helical. Measure inside the inscribed FOV circle.
 - Water on a Gammex centre ROI reads about +20 HU (calcium hardening); judge water on a water phantom. HU per mg/mL iodine depends on body size; calibrate on the scanned body.
-- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, CTProtocol(protocol; views = 40), recon; sim_opts, like = phantom.mask), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
+- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, protocol, recon; sim_opts, like = phantom.mask), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
 - reconstruct! returns the workspace's buffer: copy before the next call. vmi_pipeline(recon_method = :hir) cannot use PairFilter or image HYPR.
 - Pluto: simulate! mutates in place (return values from cells); restart after package updates; one heavy scan at a time (a full chest/head scan peaks at 10-11 GB).
 - Record seed, scanner, protocol, options and pkgversion(BasisSimulator) with every output. Never present a downscaled run (fewer views, coarser phantom) as the real scan.

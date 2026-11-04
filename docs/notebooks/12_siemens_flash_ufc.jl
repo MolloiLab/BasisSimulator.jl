@@ -313,8 +313,8 @@ md"""
 paper, verbatim: every effect of the EICT forward model on, the heel effect
 off as there, and **view integration**.
 
-- **Detector response.** `use_detector_efficiency = true` (the default)
-  reads the Flash's Geant4 table for `detector_material = :ufc_flash`: every
+- **Detector response.** The scanner's `use_detector_efficiency = true` (the
+  default) reads the Flash's Geant4 table for `detector_material = :ufc_flash`: every
   energy is weighted by its signal per photon `m₁ = E·efficiency(E)`, and the
   noise is compound Poisson, variance `Σ w m₂ e^{-∫μ dl}` with `m₂ = m₁²/dqe0`,
   so its variance per unit signal rises as the beam hardens.

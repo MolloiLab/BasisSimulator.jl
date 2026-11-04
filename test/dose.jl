@@ -150,9 +150,9 @@ end
 @testset "every simulate! result carries its dose" begin
     # A tiny energy-integrating acquisition, on the CPU, end to end: the headline claim is that
     # the dose comes back attached to the simulation, so test it there and not only in isolation.
-    scanner = _dose_scanner(detector_rows = 16, detector_cols = 64)
+    scanner = _dose_scanner(detector_rows = 16, detector_cols = 64, use_lag = false)
     protocol = _dose_protocol(views = 12, collimation_mm = 2.5)
-    sim_opts = BS.SimOptions(seed = 7, use_scatter = false, use_focal_spot = false, use_lag = false)
+    sim_opts = BS.SimOptions(seed = 7, use_scatter = false, use_focal_spot = false)
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0, z_cm = 0.25)
     cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 1.0)
     phantom = BS.Phantom(cpu.mask, cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)
@@ -176,9 +176,9 @@ end
 @testset "a beam with no absolute units reports no dose" begin
     # A spectrum override carries relative weights, so a dose computed from it would be wrong by
     # orders of magnitude. Such a workspace reports nothing rather than a plausible-looking number.
-    scanner = _dose_scanner(detector_rows = 16, detector_cols = 64)
+    scanner = _dose_scanner(detector_rows = 16, detector_cols = 64, use_lag = false)
     protocol = _dose_protocol(views = 12, collimation_mm = 2.5)
-    sim_opts = BS.SimOptions(seed = 7, use_scatter = false, use_focal_spot = false, use_lag = false)
+    sim_opts = BS.SimOptions(seed = 7, use_scatter = false, use_focal_spot = false)
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0, z_cm = 0.25)
     cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 1.0)
     phantom = BS.Phantom(cpu.mask, cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)

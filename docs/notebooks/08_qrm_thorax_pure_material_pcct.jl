@@ -493,12 +493,8 @@ draw_options(; seed, use_noise) = BS.SimOptions(
     seed = seed,
     use_noise = use_noise,
     projector = :dd_fast,
-    use_fill_factor = false,
-    use_detector_efficiency = false,
-    use_optical_crosstalk = false,
     use_focal_spot = true,
     use_heel_effect = false,
-    use_lag = false,
     view_samples = 5,     # sub-views per view: the arc the gantry turns while a view is read
     view_arc = 1.0,       # a photon-counting detector integrates for the whole view period
 );
@@ -548,8 +544,8 @@ acquisition = let
     model = nothing
     channels = Dict{Symbol, Vector{Array{Float32, 3}}}()
     seconds = Dict{Symbol, Float64}()
-    # pile-up, calibrated as a scanner does: air scans at rising currents (few views: a rate curve)
-    pileup = BS.calibrate_pileup(scanner, BS.CTProtocol(protocol; views = 40), recon_opts;
+    # pile-up, calibrated as a scanner does: air scans at rising currents
+    pileup = BS.calibrate_pileup(scanner, protocol, recon_opts;
         sim_opts = draw_options(; DRAWS[:reference]...), like = phantom.mask)
     # the flat field, as a scanner does it: an air scan at low flux gives each pixel's gain per bin
     flat = BS.calibrate_flat_field(scanner, protocol, recon_opts;

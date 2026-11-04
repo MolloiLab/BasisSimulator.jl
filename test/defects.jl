@@ -8,7 +8,7 @@
 _rms(x) = sqrt(sum(abs2, x) / length(x))
 _noise_free(; kw...) = BS.SimOptions(;
     use_noise = false, use_scatter = false, use_heel_effect = false, use_focal_spot = false,
-    use_optical_crosstalk = false, use_lag = false, seed = 1, kw...,
+    seed = 1, kw...,
 )
 
 _on_backend(p) = BS.Phantom(to_gpu(p.mask), p.materials, p.voxel_size, p.origin, p.extent)
@@ -77,4 +77,47 @@ end
     @test after < before / 5
     @test issorted(cal.recorded) && all(cal.ratio[1, :] .>= 0.999)   # the lowest bin only loses counts
     @info "pile-up, rms log error against the pile-up-free scan" before after
+end
+
+@testset "the calibrations' two views match the protocol's full views" begin
+    # An air scan does not change with the rotation, so the calibrations scan two views, each at
+    # one angle; the reference scans every view of the protocol at five sub-views (`_flat_field`
+    # and `_pileup` scan exactly the protocol and options they are given).
+    full = _noise_free(; use_focal_spot = true, view_samples = 5)
+    phantom = _on_backend(_eict_cylinder(; diameter_cm = 20.0))
+    like = phantom.mask
+
+    eict = BS.EICTScanner(
+        _EICT_TEST_SCANNER;
+        gain_spread = 0.02,
+        offset_spread_keV = 2.0e4,
+        defect_seed = 7,
+        use_lag = true,
+    )
+    protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 120)
+    few = BS.calibrate_flat_field(eict, protocol, _EICT_RECON; sim_opts = full, like)
+    ref = BS._flat_field(eict, protocol, _EICT_RECON, full, like)
+    @test maximum(abs.(few.gain .- ref.gain)) < 2.0e-5
+    @test maximum(abs.(few.offset .- ref.offset)) < 2.0e-5
+
+    pcct = BS.PCCTScanner(
+        BS.NAEOTOM_ALPHA;
+        detector_rows = 2,
+        detector_cols = 96,
+        detector_col_size = 3.0,
+        detector_row_size = 1.0,
+        scatter_correction = false,
+    )
+    protocol = BS.CTProtocol(; kVp = 120.0, mAs = 2.0, views = 120)
+    few = BS.calibrate_flat_field(pcct, protocol, _EICT_RECON; sim_opts = full, like)
+    ref = BS._flat_field(pcct, protocol, _EICT_RECON, full, like)
+    @test maximum(abs.(few.gain .- ref.gain)) < 2.0e-5
+
+    # pile-up: the corrections the two calibrations make to one scan
+    piled = _scan(pcct, phantom, protocol, full)
+    currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2]
+    corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
+    a = corrected(BS.calibrate_pileup(pcct, protocol, _EICT_RECON; sim_opts = full, like))
+    b = corrected(BS._pileup(pcct, protocol, _EICT_RECON, full, like, currents))
+    @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 2.0e-5
 end
