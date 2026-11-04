@@ -1,7 +1,8 @@
 # The NAEOTOM Alpha's two modes against BasisMonteCarlo's tables: standard (2 × 2 digitally binned)
 # and UHR (native dexels). Air scans: the counts, their Fano factors and the correlation of
 # neighbours, on the backend `to_gpu` picks (api.jl). The binned table (lib/BasisMonteCarlo/tables) is reference data for the
-# test; BasisSimulator itself reads only its native table.
+# test; BasisSimulator itself reads only its native table. Then the noisy counts' mean against the
+# noise-free counts, bin by bin, behind the bowtie and behind water.
 
 using Serialization: deserialize
 using Statistics: var
@@ -56,4 +57,95 @@ _quiet(s; kw...) = BS.PCCTScanner(
     mean_ = sum(wt[k] * sum(t["mean"][ty, k, 1] for ty in types) for k in eachindex(wt))
     @test fano > 1.05
     @test fano ≈ second / mean_ rtol = 0.03
+end
+
+# The noisy counts of every bin against the noise-free counts over the rays whose line integral is
+# at least `behind`: per view and draw (each an independent sample) `Σ(N − λ) / Σλ`, then per bin its
+# mean and the mean's standard error.
+function _noisy_mean_bias(scanner, phantom; behind = 0.0, draws = 2)
+    protocol = BS.CTProtocol(; kVp = 120.0, mAs = 100.0, views = 12)
+    recon = BS.ReconOptions(; matrix_size = (64, 64, 1), fov_cm = 10.0, z_cm = 0.2)
+    opts(seed; noise = true) = BS.SimOptions(;
+        use_scatter = false,
+        use_heel_effect = false,
+        use_focal_spot = false,
+        use_noise = noise,
+        seed,
+    )
+
+    # the noise-free counts and the rays of the set
+    ws = BS.create_workspace(scanner, protocol, opts(1), recon, phantom)
+    free = BS.simulate!(
+        ws, phantom, protocol, opts(1; noise = false);
+        report_dose = false,
+        keep_projection = true,
+    )
+    λ = [Array(x) for x in free.raw_counts]
+    rays = sum(Array(x) for x in free.pcct_sino.bins) ./ length(λ) .>= behind
+
+    # the noisy draws of the same projection
+    nv = size(rays, 3)
+    rel = zeros(draws * nv, length(λ))
+    for d in 1:draws
+        noisy = BS.simulate!(
+            ws, phantom, protocol, opts(1 + d);
+            report_dose = false,
+            projection = free.projection,
+        )
+        for (b, N) in pairs(noisy.raw_counts)
+            counts = Array(N)
+            for v in 1:nv
+                on = view(rays, :, :, v)
+                expected = view(λ[b], :, :, v)[on]
+                rel[(d - 1) * nv + v, b] = sum(view(counts, :, :, v)[on] .- expected) / sum(expected)
+            end
+        end
+    end
+    return [(mean(x), std(x) / sqrt(length(x))) for x in eachcol(rel)]
+end
+
+_ideal(s; kw...) = BS.PCCTScanner(
+    s;
+    pileup = false,
+    scatter_correction = false,
+    gain_spread = 0.0,
+    threshold_spread_keV = 0.0,
+    kw...,
+)
+
+@testset "NAEOTOM Alpha: the noisy mean is the noise-free counts, bin by bin" begin
+    # an ideal Alpha (no pile-up, no spreads) behind its bowtie, the fan's full width in wide pixels
+    standard = _ideal(
+        BS.NAEOTOM_ALPHA;
+        detector_cols = 172,
+        detector_col_size = 8 * BS.NAEOTOM_ALPHA.detector_col_size,
+        detector_rows = 12,
+    )
+    uhr = _ideal(
+        BS.NAEOTOM_ALPHA_UHR;
+        detector_cols = 344,
+        detector_col_size = 8 * BS.NAEOTOM_ALPHA_UHR.detector_col_size,
+        detector_rows = 24,
+    )
+
+    # air, and a 30 cm water cylinder
+    materials = Dict{Int, Any}(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water)
+    air = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 2)), materials, (0.1, 0.1, 0.1))
+    water = let n = 64, c = (n + 1) / 2
+        mask = [hypot(i - c, j - c) * 0.5 <= 15.0 ? 0x01 : 0x00 for i in 1:n, j in 1:n, k in 1:2]
+        BS.Phantom(to_gpu(mask), materials, (0.5, 0.5, 0.5))
+    end
+
+    # every ray in air, and the rays whose line integral exceeds 3.5 (about 20–30 cm of water): the
+    # mean within 3σ, σ under 0.1 %
+    for scanner in (standard, uhr)
+        bias = [
+            _noisy_mean_bias(scanner, air);
+            _noisy_mean_bias(scanner, water; behind = 3.5)
+        ]
+        for (μ, σ) in bias
+            @test σ < 1.0e-3
+            @test abs(μ) <= 3σ
+        end
+    end
 end

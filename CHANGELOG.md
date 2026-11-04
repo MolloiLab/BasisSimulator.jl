@@ -258,6 +258,14 @@ onward they are written by hand, and releases are cut by hand — see
   are bit for bit alike on the CPU and the device. The scatter's impact, inverted from each ray's water length,
   amplified their ulps into a scatter field 2 × 10⁻⁵ apart; it now agrees to the CPU's within 10⁻⁵. Projections
   move by at most 10⁻⁵ relative on either side (the new roundings lie between the old CPU's and the old GPU's).
+- **The photon-counting noise moved counts between bins** (`pcct_count!`): a dexel's unshared counts were a fixed
+  share of its counts and a shared photon's rate the mean of its two dexels' estimates, both from the unfiltered air
+  beam's classes, so behind the bowtie or the patient (and beside a neighbour the grid shadows differently) the noisy
+  mean left the expected counts. The unshared counts are now the rest of the expected counts (a shared rate at most
+  either dexel's share), so each dexel's mean is its expected counts. Ideal NAEOTOM Alpha, 30 cm of water, 140 kV:
+  noisy / noise-free mean per bin +2.6 / +2.6 / −0.9 / −2.3 % → within 2 × 10⁻⁵ (≤ 2.2σ), a UHR dexel's ±0.2 % by
+  its place in the grid cell → 0, 40 keV water −14.8 HU (noise-free −1.1) → +0.6 HU; Fano factors and neighbour
+  correlations unchanged.
 
 ### Documented
 - **The notebooks and the scanners page follow v0.16:** every documentation notebook uses the scanner constants

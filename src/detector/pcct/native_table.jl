@@ -142,11 +142,13 @@ noise, from the table's pair moments averaged over a grid cell and weighted by t
 - `pairs`: one class per neighbour offset `(dx, dy)` (across the fan, along z: the four forward
   ones, `(1, 0)`, `(0, 1)`, `(1, 1)`, `(1, −1)`) and pair of bins `(b, b′)`, with `c1` and `c2`, the
   shared counts per count of the first dexel in bin `b` and of the second in bin `b′`;
-- `single`: per bin, the share of a dexel's counts no neighbour shares.
+- `single`: per bin, the share of a dexel's counts no neighbour shares, in a flat field of this
+  spectrum.
 
 A photon of a class counts once in each dexel it is shared by, so each dexel's counts stay
 Poisson while two neighbours covary by the class's rate, and a 2 × 2 digital sum counts a shared
-photon twice: its variance exceeds its mean.
+photon twice: its variance exceeds its mean. The shares are this spectrum's; [`pcct_count!`](@ref)
+keeps every dexel's mean whatever its own spectrum.
 """
 function pcct_event_classes(thresholds::AbstractVector, energies::AbstractVector, weights::AbstractVector)
     t = pcct_native_table()
@@ -194,9 +196,11 @@ sum them digitally, `binning × binning` dexels per pixel, into `counts[b]`; the
 on any backend, and one kernel does it all there.
 
 - The noise, photon class by photon class (`classes` from [`pcct_event_classes`](@ref);
-  `nothing` counts the expected counts): each dexel's unshared counts, and for every pair of
-  neighbours and class one Poisson count added to both. A neighbour beyond the detector's edge
-  takes no share: the edge dexel keeps its own.
+  `nothing` counts the expected counts): for every pair of neighbours and class one Poisson count
+  added to both, at the mean of the two dexels' estimates of its rate (at most either dexel's
+  share), and each dexel's unshared counts, the rest of its expected counts. Each dexel's mean is
+  its expected counts in every bin, whatever the bowtie or the patient has made of its spectrum.
+  A neighbour beyond the detector's edge takes no share: the edge dexel keeps its own.
 - The pile-up of each dexel at its own rate, before the sum (`pileup`, or `nothing`):
   `(; S, rates, rate_air, counts_air)`, the migration matrices `S[:, :, k]`
   ([`compute_mc_pileup_matrix`](@ref)) at the count rates `rates` (linear from 0); a dexel's rate
@@ -232,7 +236,9 @@ function pcct_count!(
             b2 = device(Int32[p.b2 for p in classes.pairs]),
             c1 = device(T[p.c1 for p in classes.pairs]),
             c2 = device(T[p.c2 for p in classes.pairs]),
-            single = ntuple(b -> T(classes.single[b]), nb),
+            # a class's share of each dexel's shared counts in its bin: the rate's cap
+            k1 = device(T[p.c1 / (1 - classes.single[p.b]) for p in classes.pairs]),
+            k2 = device(T[p.c2 / (1 - classes.single[p.b2]) for p in classes.pairs]),
         )
     end
     pile = if pileup === nothing
@@ -271,33 +277,46 @@ end
 
 @inline _add_at(n::NTuple{NB}, b, x) where {NB} = ntuple(i -> i == b ? n[i] + x : n[i], Val(NB))
 
-# One dexel's counts in every bin: its unshared counts, then each class it shares with a forward
-# neighbour (`+ (dx, dy)`, counted in bin `b`) and with a backward one (`− (dx, dy)`, in `b2`). A
-# shared photon is the draw of the pair's first dexel, so both dexels draw it alike.
+# One dexel's counts in every bin: each class it shares with a forward neighbour (`+ (dx, dy)`,
+# counted in bin `b`) and with a backward one (`− (dx, dy)`, in `b2`), then its unshared counts, the
+# rest of its expected counts, so that its mean is its expected counts in every bin whatever its
+# spectrum and its neighbours'. A shared photon is the draw of the pair's first dexel, so both
+# dexels draw it alike; a dexel at the detector's edge keeps its missing neighbour's share.
 @inline function _dexel_counts(λ::NTuple{NB}, pairs, base, c, r, v, nc, nr) where {NB}
     own = ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB))
-    n = ntuple(b -> first(_poisson_draw(_DrawStream(base, b, c, r, v), own[b] * pairs.single[b])), Val(NB))
-    np = Int32(length(pairs.dx))
-    for p in Int32(1):np
+    n = ntuple(_ -> zero(eltype(own)), Val(NB))
+    shared = n
+    for p in Int32(1):Int32(length(pairs.dx))
         dx, dy, b, b2 = @inbounds pairs.dx[p], pairs.dy[p], pairs.b[p], pairs.b2[p]
-        c1, c2 = @inbounds pairs.c1[p], pairs.c2[p]
         cn, rn = c + dx, r + dy
-        rate = if 1 <= cn <= nc && 1 <= rn <= nr
-            fma(own[b], c1, @inbounds(λ[b2][cn, rn, v]) * c2) / 2
-        else
-            own[b] * c1
+        if 1 <= cn <= nc && 1 <= rn <= nr
+            rate = _shared_rate(own[b], @inbounds(λ[b2][cn, rn, v]), pairs, p)
+            n = _add_at(n, b, first(_poisson_draw(_DrawStream(base, NB + p, c, r, v), rate)))
+            shared = _add_at(shared, b, rate)
         end
-        n = _add_at(n, b, first(_poisson_draw(_DrawStream(base, NB + p, c, r, v), rate)))
         cp, rp = c - dx, r - dy
-        x = if 1 <= cp <= nc && 1 <= rp <= nr
-            first(_poisson_draw(_DrawStream(base, NB + p, cp, rp, v), fma(@inbounds(λ[b][cp, rp, v]), c1, own[b2] * c2) / 2))
-        else
-            first(_poisson_draw(_DrawStream(base, NB + np + p, c, r, v), own[b2] * c2))
+        if 1 <= cp <= nc && 1 <= rp <= nr
+            rate = _shared_rate(@inbounds(λ[b][cp, rp, v]), own[b2], pairs, p)
+            n = _add_at(n, b2, first(_poisson_draw(_DrawStream(base, NB + p, cp, rp, v), rate)))
+            shared = _add_at(shared, b2, rate)
         end
-        n = _add_at(n, b2, x)
     end
-    return n
+    return _add_unshared(n, shared, own, base, c, r, v)
 end
+
+# A dexel's counts `n` from the photons it shares, plus its unshared counts in every bin: the rest
+# of its expected counts `own`, the classes' rates `shared` taken off.
+@inline _add_unshared(n::NTuple{NB}, shared, own, base, c, r, v) where {NB} = ntuple(
+    b -> n[b] + first(_poisson_draw(_DrawStream(base, b, c, r, v), max(own[b] - shared[b], zero(own[b])))),
+    Val(NB),
+)
+
+# The rate of class `p`'s photons shared by a dexel counting `λ1` in the class's first bin and its
+# neighbour counting `λ2` in the second: the mean of the two dexels' estimates, `λ1 c1` and `λ2 c2`
+# (equal in a flat field of the classes' spectrum), capped at each dexel's `λ k`, the class's share of
+# its shared counts, so that no dexel's shared counts exceed its counts.
+@inline _shared_rate(λ1, λ2, pairs, p) =
+    @inbounds min(fma(λ1, pairs.c1[p], λ2 * pairs.c2[p]) / 2, λ1 * pairs.k1[p], λ2 * pairs.k2[p])
 
 # A dexel's counts piled up at its own rate: `S` linear in rate between the grid's matrices.
 @inline function _pile_up(n::NTuple{NB, T}, pile) where {NB, T}

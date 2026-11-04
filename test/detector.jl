@@ -466,6 +466,22 @@ end
     @test sum(abs2, d32) / length(d32) / λ ≈ 1 atol = 0.02
     @test sum(d32[1:(end - 1), :, :] .* d32[2:end, :, :]) / sum(abs2, d32[1:(end - 1), :, :]) ≈ shared_x atol = 0.01
     @test_throws ArgumentError BS.pcct_event_classes([22.0], e, w)    # not among the table's
+
+    # every dexel's mean is its expected counts, bin by bin, whatever its spectrum and its
+    # neighbours': four bins whose shares change from dexel to dexel (bright beside dark, hard beside
+    # soft), each dexel's counts summed over 200 views against their own Poisson spread
+    classes4 = BS.pcct_event_classes([20.0, 35.0, 55.0, 70.0], e, w)
+    pattern(c, r, b) = 0.3 + mod(c * (b + 2) + 3r, 7) / 3
+    expected4 = [
+        repeat([λ * s * pattern(c, r, b) for c in 1:32, r in 1:32], 1, 1, 200)
+            for (b, s) in enumerate((1.0, 0.8, 0.5, 0.35))
+    ]
+    counts4 = BS.pcct_count!([zeros(32, 32, 200) for _ in 1:4], expected4, classes4; seed = 3)
+    for (n, x) in zip(counts4, expected4)
+        z = (sum(n; dims = 3) .- sum(x; dims = 3)) ./ sqrt.(sum(x; dims = 3))
+        @test abs(sum(z) / length(z)) < 3 / sqrt(length(z))
+        @test sum(abs2, z) / length(z) ≈ 1 atol = 0.15
+    end
 end
 
 @testset "compute_mc_pileup_matrix: retriggering comparators on shaped pulses" begin
