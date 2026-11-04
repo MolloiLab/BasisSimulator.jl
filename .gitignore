@@ -8,6 +8,8 @@ LocalPreferences.toml
 # of every notebook export's fingerprint (docs/extract_all.jl).
 Manifest*.toml
 !docs/Manifest-v*.toml
+# a symlink to Manifest-v1.12.toml: GPUSelect looks only for Manifest.toml to find CUDA (Julia itself reads the versioned files)
+!docs/Manifest.toml
 !docs/build_env/Manifest.toml
 !lib/BasisMonteCarlo/docs/Manifest-v*.toml
 

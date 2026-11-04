@@ -147,6 +147,11 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   no page and an unlinked card, and the verifier (so `docs/build.sh` and the deploy) fails until it
   is rendered; `BASISSIM_SKIP_NOTEBOOKS='mc-*' docs/build.sh` builds without them (a trailing `*`
   matches a prefix, in the verifier and the site).
+- **Docs lockfiles:** `docs/Manifest-v1.12.toml` and `docs/Manifest-v1.13.toml`, one per Julia minor version
+  (Julia reads the one for its version). `docs/Manifest.toml` is a committed symlink to the 1.12 file, only
+  because GPUSelect finds the GPU backend by reading a file named exactly `Manifest.toml`; without it
+  every notebook silently renders on the CPU ("Backend detected: Array"). Remove the symlink once
+  GPUSelect looks the manifest up the way Julia does.
 - **Data:** notebook 05 reads the XCAT male chest export from `BASISSIM_XCAT_DIR`
   (the lab's copy: `/share/crsp/lab/symolloi/share/XCAT Anatomies/vmale_50/vmale_50_chest_with_plaque`);
   without it the notebook renders its no-data notice. `DATA_PROVENANCE.sha256` holds the checksum
