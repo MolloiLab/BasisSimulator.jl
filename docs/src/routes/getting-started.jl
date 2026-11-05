@@ -445,7 +445,8 @@ res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 pileup = BS.calibrate_pileup(scanner_pc, protocol, recon, phantom; sim_opts)
 BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
 
-# then the flat field: a low-flux air scan gives every pixel's gain in every bin
+# then the flat field: low-flux scans of air and water slabs give every pixel's gain in every bin,
+# as the patient hardens the beam
 flat = BS.calibrate_flat_field(scanner_pc, protocol, recon, phantom; sim_opts)
 BS.apply_flat_field!(res_pc.pcct_sino.bins, flat)"""),
             p("The pile-up model simulates shaped pulses on the CPU at the count rates this scan will see; it takes ",

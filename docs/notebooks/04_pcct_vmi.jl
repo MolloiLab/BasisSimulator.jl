@@ -282,7 +282,9 @@ patient taken as water). The pile-up is corrected after it
 with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated scans of air and
 two water cylinders at rising tube currents (never from the model's own matrices: each ray's
 recorded counts in every bin, its rate and its spectrum give its pile-up-free counts), then the dexels' gains with
-`apply_flat_field!`, from a low-flux air scan `calibrate_flat_field`. It returns
+`apply_flat_field!`, from `calibrate_flat_field`: low-flux scans of air and of water slabs 5–50 cm
+thick, each pixel's against the nominal detector's (its gain in every bin as the patient hardens the
+beam). It returns
 
 - `pcct_sino.bins`: four corrected sinograms ``h_k = -\log(y_k / I_{0,k})``, `[col, row, view]`;
 - `I0_bins`: the air count of every ray in every bin, `[col, row, bin]`;
@@ -305,7 +307,8 @@ acquisition = let
     # pile-up, calibrated as a scanner does: air and water scans at rising currents
     pileup = BS.calibrate_pileup(scanner, protocol, recon_opts, phantom;
         sim_opts = draw_options(; DRAWS[:reference]...))
-    # the flat field, as a scanner does it: an air scan at low flux gives each pixel's gain per bin
+    # the flat field, as a scanner does it: low-flux scans of air and water slabs give each pixel's
+    # gain per bin, and how it changes as the patient hardens the beam
     flat = BS.calibrate_flat_field(scanner, protocol, recon_opts, phantom;
         sim_opts = draw_options(; DRAWS[:reference]...))
     for name in (:reference, :calibration, :measured)     # the noise-free draw first: it projects

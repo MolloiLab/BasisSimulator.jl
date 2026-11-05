@@ -461,7 +461,7 @@ function create_workspace(
         # ─── The dexels' defect factors, on the backend (the detection applies them there) ───
         _defects = let g = bf > 1 ? _native_geom : geom, d = _pcct_dexel_defects(scanner, g.n_cols, g.n_rows, energies, weights_vec)
             on_backend(x) = copyto!(allocate_backend(size(x)...), T.(x))
-            d === nothing ? nothing : (air = on_backend(d.air), hard = on_backend(d.hard), p_hard = d.p_hard)
+            d === nothing ? nothing : (factors = on_backend(d.factors), p = on_backend(d.p))
         end
 
         return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
