@@ -50,8 +50,10 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     # Every OS runs the suite with coverage, which slows it several-fold: the 60-minute limit cancelled
-    # every Ubuntu and Windows run once the v0.16 suite grew (macOS finished in 55 min).
-    timeout-minutes: 180
+    # every Ubuntu and Windows run once the v0.16 suite grew (macOS finished in 55 min), and by v0.16.2
+    # Ubuntu and Windows take 2 h 15 min and a macOS runner can pass 3 h (v0.16.1's merge was cancelled
+    # at 180 min).
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
