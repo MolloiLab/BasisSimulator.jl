@@ -12,6 +12,42 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.0...v0.16.1) (2026-11-04)
+
+### Breaking
+- **The energy-integrating detector's switches are `EICTScanner` fields, no longer `SimOptions`'**:
+  `use_fill_factor`, `use_detector_efficiency`, `detector_efficiency_mode`, `use_optical_crosstalk` and `use_lag`,
+  with the same defaults (`true`, `true`, `:mc_lut`, `false`, `true`), as the photon-counting detector's `pileup`
+  and `scatter_correction` are `PCCTScanner`'s. Only the energy integrator ever read them; a photon counter has
+  none of them. `SimOptions` keeps `use_scatter`, `use_focal_spot`, `use_noise`, `use_heel_effect`, `seed`,
+  `projector`, `view_samples` and `view_arc`; passing a moved keyword to it throws a `MethodError` (a clean break, no
+  deprecation). Migrate with the scanner's copy constructor:
+  `SimOptions(use_lag = false)` → `EICTScanner(REVOLUTION_APEX; use_lag = false)` with `SimOptions()`.
+  The numbers do not change: each switch on the scanner gives v0.16.0's result bit for bit (`test/eict_signal.jl`
+  pins them).
+- **The calibrations take the scan's phantom and run on its device (`like` is gone):** `calibrate_flat_field(scanner,
+  protocol, recon_opts, phantom; sim_opts)` (both families) and `calibrate_pileup(scanner, protocol, recon_opts,
+  phantom; sim_opts, currents)`, the phantom positional after `recon_opts` as in `create_workspace`. A phantom on
+  the GPU calibrates on the GPU, one on the CPU on the CPU (v0.16.0 defaulted to the CPU); the scans are of air,
+  never the phantom. Migrate: `calibrate_pileup(scanner, protocol, recon; sim_opts, like = phantom.mask)` →
+  `calibrate_pileup(scanner, protocol, recon, phantom; sim_opts)`.
+
+### Changed
+- **The calibrations scan two views:** an air scan does not change as the gantry turns, so `calibrate_flat_field`
+  (both families) and `calibrate_pileup` scan two views at the protocol's time per view, each at one angle
+  (`view_samples = 1`), instead of every view of the protocol at its sub-views. Their results move by at most
+  2e-5, measured against 1200 views × 5 sub-views on notebook 04's NAEOTOM Alpha: 1.9e-5 in its flat-field gains,
+  1.5e-5 (rms 1.5e-6) in the log counts of a scan its pile-up curves correct; 6e-6 and 1.5e-6 in the gains and
+  offsets of a SOMATOM Force with dexel defects. Four and eight views do no better (two is the fewest a geometry
+  takes). `calibrate_pileup` takes the scan's own protocol: v0.16.0's `CTProtocol(protocol; views = 40)` is no
+  longer needed (notebooks 04 and 08 and the getting-started page pass `protocol`; on notebook 04's detector the
+  corrected scan moves by 4e-7 against v0.16.0's 40-view calibration).
+
+### Performance
+- **The calibrations are faster** (NVIDIA L40S, notebook 04's Alpha protocol, 1200 views × 5 sub-views):
+  `calibrate_flat_field` takes 1.0 s (was 2.6 s), `calibrate_pileup` 6.2 s (was 7.4 s with the notebooks'
+  40 views, 15.4 s with the protocol's own).
+
 ## [0.16.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.1...v0.16.0) (2026-11-03)
 
 ### Breaking

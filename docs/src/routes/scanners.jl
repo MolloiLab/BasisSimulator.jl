@@ -90,6 +90,9 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             ((:detector_material, :detector_depth), "scintillator and depth, mm: its Geant4 table's"),
             ((:fill_factor_row, :fill_factor_col), "active-area fraction, in (0, 1]"),
             ((:detection_gain, :electronic_noise), "electrons per keV; DAS noise σ, electrons"),
+            ((:use_fill_factor, :use_detector_efficiency), "the fill factor; the scintillator's energy response (off: every photon absorbed whole)"),
+            ((:detector_efficiency_mode,), "that response: `:mc_lut` (the Geant4 table) or `:beer_lambert` (analytic, any depth)"),
+            ((:use_optical_crosstalk, :use_lag), "light spread to the neighbouring dexels; the scintillator's afterglow from view to view"),
             ((:gain_spread, :offset_spread_keV, :defect_seed), "dexel defects; corrected by `calibrate_flat_field`"),
             ((:scatter_kernels, :scatter_correction), "scatter library entry (`\"\"` = none); subtract the estimate"),
         ]
@@ -332,7 +335,7 @@ scanner = BS.EICTScanner(BS.SOMATOM_FORCE; scatter_correction = false) # scatter
                     ],
                 ),
                 ps("""
-                   Each table is made at one depth; `SimOptions(detector_efficiency_mode = :beer_lambert)` models any \
+                   Each table is made at one depth; `EICTScanner(s; detector_efficiency_mode = :beer_lambert)` models any \
                    depth analytically. Photon counters (`:CdTe`, `:CZT`, `:Si`) read the Alpha's Geant4 CdTe response \
                    at the native dexels. Bowties: `:large_body`, `:medium_body`, `:small_body` (CatSim/XCIST; also \
                    `:ge_revolution_large`, …), `:head`, `:none`. Per-scan filters go on the protocol, \

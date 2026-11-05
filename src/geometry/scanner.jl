@@ -85,6 +85,8 @@ the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 - `fill_factor_col::T`: Active area fraction (column direction, 0-1) — `EICTScanner` only
 - `detection_gain::T`: Conversion gain (electrons/keV) — `EICTScanner` only
 - `electronic_noise::T`: Electronic noise std dev (electrons) — `EICTScanner` only
+- `use_fill_factor`, `use_detector_efficiency`, `use_optical_crosstalk`, `use_lag::Bool` and
+  `detector_efficiency_mode::Symbol`: the scintillator's physics switches — `EICTScanner` only
 
 # Scatter and Defects (both families, the same names and defaults)
 - `scatter_kernels::String`: the scanner's entry of the Geant4 scatter library (`""` = none)
@@ -163,7 +165,8 @@ end
 
 An energy-integrating (scintillator) CT scanner: the shared [`ScannerGeometry`](@ref)
 plus the scintillator detection model (material, depth, fill factors, detection
-gain, electronic noise), its scatter correction and its dexels' defects.  Construct with
+gain, electronic noise), its physics switches (fill factor, energy response, optical crosstalk,
+lag), its scatter correction and its dexels' defects.  Construct with
 [`EICTScanner(; kwargs...)`](@ref).
 """
 struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
@@ -174,6 +177,12 @@ struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     fill_factor_col::T          # 0-1
     detection_gain::T           # electrons/keV
     electronic_noise::T         # electrons
+    # detector model toggles (simulation-side physics of THIS detector)
+    use_fill_factor::Bool       # a dexel collects fill_factor_row × fill_factor_col of the quanta
+    use_detector_efficiency::Bool   # the scintillator's response m₁(E), m₂(E) (false: every photon absorbed whole)
+    detector_efficiency_mode::Symbol    # that response: :mc_lut (its Geant4 table) or :beer_lambert
+    use_optical_crosstalk::Bool # light spread to the neighbouring dexels
+    use_lag::Bool               # scintillator afterglow (lag) from view to view
     scatter_correction::Bool    # subtract the scatter estimated from the measured signal
     gain_spread::T              # relative σ of the dexels' gains (0 = ideal)
     offset_spread_keV::T        # σ of the dexels' offsets, keV per reading (0 = ideal)
@@ -250,10 +259,17 @@ Energy-integrating scanner.  Geometry keywords as [`Scanner`](@ref) (distances i
 mm, detector array, focal spot, gantry, filtration, `detector_shape`) plus the
 scintillator model: `detector_material = :lumex`, `detector_depth = 3.0`,
 `fill_factor_row = 0.9`, `fill_factor_col = 0.9` (each in (0, 1]), `detection_gain = 15.0`
-(electrons/keV), `electronic_noise = 5000.0` (electrons); the detector-model toggle
-`scatter_correction = true`; and the dexels' defects, `gain_spread = 0.0` (relative σ),
-`offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref)).
-The ideal detector is a copy with the spreads at zero.
+(electrons/keV), `electronic_noise = 5000.0` (electrons); the detector-model toggles
+`use_fill_factor = true` (a dexel collects `fill_factor_row × fill_factor_col` of the quanta),
+`use_detector_efficiency = true` (the scintillator's energy response; `false` absorbs every photon
+whole), `detector_efficiency_mode = :mc_lut` (that response: `:mc_lut`, the material's Geant4
+table, or `:beer_lambert`, analytic absorption at `detector_depth`), `use_optical_crosstalk = false`
+(light spread to the neighbouring dexels), `use_lag = true` (the scintillator's afterglow from
+view to view) and `scatter_correction = true`; and the dexels' defects, `gain_spread = 0.0`
+(relative σ), `offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by
+[`calibrate_flat_field`](@ref)). The ideal detector is a copy with the spreads at zero.
+A photon-counting detector has none of the scintillator toggles: its response, fill factor and
+crosstalk are its response table's, and it has no afterglow.
 
 `scatter_kernels = ""` names the scanner's entry of the Geant4 scatter library
 ([`scatter_kernels`](@ref), e.g. `"SOMATOM Force"`), which `SimOptions(use_scatter = true)` (the
@@ -266,21 +282,27 @@ Both families share the field and its default.
 function EICTScanner(;
         detector_material::Symbol = :lumex, detector_depth::Real = 3.0,
         fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9, detection_gain::Real = 15.0,
-        electronic_noise::Real = 5000.0, scatter_correction::Bool = true,
+        electronic_noise::Real = 5000.0, use_fill_factor::Bool = true,
+        use_detector_efficiency::Bool = true, detector_efficiency_mode::Symbol = :mc_lut,
+        use_optical_crosstalk::Bool = false, use_lag::Bool = true, scatter_correction::Bool = true,
         gain_spread::Real = 0.0, offset_spread_keV::Real = 0.0,
         defect_seed::Integer = 1, scatter_kernels::AbstractString = "", kwargs...
     )
     T = Float64
     (0 < fill_factor_row <= 1 && 0 < fill_factor_col <= 1) ||
         throw(ArgumentError("fill factors must lie in (0, 1] (got $(fill_factor_row), $(fill_factor_col))"))
+    detector_efficiency_mode in (:mc_lut, :beer_lambert) || throw(
+        ArgumentError("detector_efficiency_mode must be :mc_lut or :beer_lambert, got :$(detector_efficiency_mode)")
+    )
     (gain_spread >= 0 && offset_spread_keV >= 0) || throw(ArgumentError("defect spreads are non-negative"))
     extra = _other_kwargs(kwargs)
     isempty(extra) || throw(ArgumentError("EICTScanner: unknown keyword(s) $(collect(keys(extra))) — photon-counting parameters belong to PCCTScanner"))
     geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
     return EICTScanner{T}(
         geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
-        T(detection_gain), T(electronic_noise), scatter_correction, T(gain_spread), T(offset_spread_keV),
-        Int(defect_seed), String(scatter_kernels),
+        T(detection_gain), T(electronic_noise), use_fill_factor, use_detector_efficiency,
+        detector_efficiency_mode, use_optical_crosstalk, use_lag, scatter_correction, T(gain_spread),
+        T(offset_spread_keV), Int(defect_seed), String(scatter_kernels),
     )
 end
 

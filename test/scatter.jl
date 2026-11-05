@@ -29,7 +29,6 @@ _scatter_opts(; kw...) = BS.SimOptions(;
     use_scatter = true,
     use_heel_effect = false,
     use_focal_spot = false,
-    use_lag = false,
     seed = 1,
     kw...,
 )
@@ -42,6 +41,7 @@ const _SCATTER_EICT = BS.EICTScanner(
     detector_row_size = 2.0,
     detector_col_offset = 0.0,
     electronic_noise = 0.0,
+    use_lag = false,
     scatter_kernels = _SCATTER_TEST_ENTRY,
 )
 const _SCATTER_RECON = BS.ReconOptions(; matrix_size = (128, 128, 1), fov_cm = 36.0, z_cm = 0.5)

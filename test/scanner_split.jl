@@ -29,9 +29,11 @@
     g = CTGeometry(e; n_angles = 4, fov_cm = 20.0, z_cm = 1.0)
     @test g.n_cols == 256 && g.n_angles == 4
     @test CTGeometry(p; n_angles = 4, fov_cm = 20.0, z_cm = 1.0).n_cols == 64
-    # SimOptions carries only the common physics toggles
+    # SimOptions carries only the common physics toggles; the scintillator's are EICTScanner's
     o = SimOptions()
-    @test o.use_noise && o.use_scatter && o.use_focal_spot && o.use_lag && !o.use_optical_crosstalk && o.seed == 42
+    @test o.use_noise && o.use_scatter && o.use_focal_spot && o.use_heel_effect && o.seed == 42
+    @test e.use_lag && !e.use_optical_crosstalk && e.use_fill_factor && e.use_detector_efficiency
+    @test !hasproperty(o, :use_lag) && !hasproperty(p, :use_lag)
     @test !hasproperty(o, :use_pcct_pileup) && !hasproperty(o, :pcct_noise_reduction)
     @test_throws MethodError SimOptions(fidelity = :pcct)
 end

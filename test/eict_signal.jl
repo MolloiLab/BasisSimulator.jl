@@ -23,8 +23,6 @@ _eict_opts(seed; noise = true, kwargs...) = BS.SimOptions(;
     use_scatter = false,
     use_heel_effect = false,
     use_focal_spot = false,
-    use_optical_crosstalk = false,
-    use_lag = false,
     seed,
     kwargs...,
 )
@@ -36,6 +34,7 @@ const _EICT_TEST_SCANNER = BS.EICTScanner(
     detector_cols = 256,
     detector_col_size = 1.5,
     electronic_noise = 0.0,
+    use_lag = false,
 )
 const _EICT_RECON = BS.ReconOptions(; matrix_size = (128, 128, 1), fov_cm = 36.0, z_cm = 0.5)
 
@@ -207,4 +206,37 @@ end
     c = (size(truth, 1) ÷ 2 - 20):(size(truth, 1) ÷ 2 + 20)
     @test maximum(abs.(out.sino_water[c, :, :] .- truth[c, :, :])) < 0.02 * maximum(truth)
     @test maximum(abs.(out.sino_iodine[c, :, :])) < 1.0e-3
+end
+
+@testset "the scintillator's switches on EICTScanner have their v0.16.0 effect" begin
+    # v0.16.0 set them on SimOptions; v0.16.1 moved them onto the scanner. A noisy CPU scan per
+    # switch, pinned to what v0.16.0 returned with the same switch on SimOptions (v0.16.1 measured
+    # bit-identical).
+    base = BS.EICTScanner(
+        BS.SOMATOM_FORCE;
+        detector_rows = 2,
+        detector_cols = 256,
+        detector_col_size = 1.5,
+    )
+    protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 24)
+    recon = BS.ReconOptions(; matrix_size = (64, 64, 1), fov_cm = 36.0, z_cm = 0.5)
+    opts = BS.SimOptions(; use_scatter = false, seed = 3)
+    phantom = _eict_cylinder(; diameter_cm = 20.0, n = 96)
+    v0160 = [
+        (NamedTuple(), 20156.499474268134, 3.9915876f0, 0.0015148066f0),
+        ((use_lag = false,), 20156.652922001464, 3.9915876f0, 0.0015065091f0),
+        ((use_optical_crosstalk = true,), 20154.322786129305, 3.991612f0, 0.0014678875f0),
+        ((use_fill_factor = false,), 20156.494888265355, 3.9917183f0, 0.0014770802f0),
+        ((use_detector_efficiency = false,), 20075.22057167095, 3.9753575f0, 0.0014953463f0),
+        ((detector_efficiency_mode = :beer_lambert,), 20126.74811192186, 3.9856682f0, 0.001500659f0),
+    ]
+    for (switch, total, centre, edge) in v0160
+        scanner = BS.EICTScanner(base; switch...)
+        ws = BS.create_eict_workspace(scanner, protocol, opts, recon, phantom)
+        BS.simulate!(ws, phantom, protocol, opts; report_dose = false)
+        s = Array(ws.sinogram)
+        @test sum(Float64, s) ≈ total rtol = 1.0e-7
+        @test s[128, 1, 1] ≈ centre rtol = 1.0e-5
+        @test s[40, 2, 13] ≈ edge rtol = 1.0e-4
+    end
 end

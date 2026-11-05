@@ -91,25 +91,39 @@ _ts("entering SimOptions testset")
 @testset "SimOptions" begin
     @testset "defaults" begin
         opts = BS.SimOptions()
-        @test opts.use_fill_factor === true
-        @test opts.use_detector_efficiency === true
         @test opts.use_scatter === true              # scatter is on, as on a real scanner
-        # optical_crosstalk defaults to false because no stable post-hoc
-        # correction exists yet (see src/api/options.jl).
-        @test opts.use_optical_crosstalk === false
         @test opts.use_focal_spot === true
         @test opts.use_noise === true
-        @test opts.use_lag === true
         @test opts.use_heel_effect === true
         @test opts.seed == 42
-        @test opts.detector_efficiency_mode == :mc_lut
+    end
+
+    @testset "the scintillator's switches are EICTScanner's, with the old defaults" begin
+        moved = (:use_fill_factor, :use_detector_efficiency, :use_optical_crosstalk, :use_lag, :detector_efficiency_mode)
+        @test !any(f -> f in fieldnames(BS.SimOptions), moved)
+        @test all(f -> f in fieldnames(BS.EICTScanner), moved)
+        @test !any(f -> f in fieldnames(BS.PCCTScanner), moved)
+        s = BS.EICTScanner()
+        @test s.use_fill_factor === true
+        @test s.use_detector_efficiency === true
+        # optical_crosstalk defaults to false because no stable post-hoc correction exists yet
+        @test s.use_optical_crosstalk === false
+        @test s.use_lag === true
+        @test s.detector_efficiency_mode == :mc_lut
+        for c in (BS.SOMATOM_FORCE, BS.SOMATOM_DEFINITION_FLASH, BS.REVOLUTION_APEX)
+            @test (c.use_fill_factor, c.use_detector_efficiency, c.use_optical_crosstalk, c.use_lag, c.detector_efficiency_mode) ==
+                (true, true, false, true, :mc_lut)
+        end
+        @test BS.EICTScanner(BS.REVOLUTION_APEX; use_lag = false).use_lag === false
+        @test_throws MethodError BS.SimOptions(; use_lag = false)              # a clean break
+        @test_throws ArgumentError BS.PCCTScanner(BS.NAEOTOM_ALPHA; use_lag = false)   # not a photon counter's
     end
 
     @testset "per-effect kwargs" begin
         opts = BS.SimOptions(use_scatter = false, use_noise = false)
         @test opts.use_scatter === false
         @test opts.use_noise === false
-        @test opts.use_fill_factor === true
+        @test opts.use_focal_spot === true
     end
 
     @testset "detector-specific physics is not a SimOptions concern" begin
@@ -132,14 +146,14 @@ _ts("entering SimOptions testset")
 
     @testset "detector_efficiency_mode passes through unchanged" begin
         for m in (:mc_lut, :beer_lambert)
-            @test BS.SimOptions(detector_efficiency_mode = m).detector_efficiency_mode == m
+            @test BS.EICTScanner(detector_efficiency_mode = m).detector_efficiency_mode == m
         end
-        @test_throws ArgumentError BS.SimOptions(detector_efficiency_mode = :auto)
+        @test_throws ArgumentError BS.EICTScanner(detector_efficiency_mode = :auto)
     end
 
     @testset "projector defaults to :dd_fast, accepts :siddon, validates" begin
         @test BS.SimOptions().projector == :dd_fast
-        @test BS.SimOptions(use_focal_spot = false, use_lag = false).projector == :dd_fast
+        @test BS.SimOptions(use_focal_spot = false).projector == :dd_fast
         @test BS.SimOptions(projector = :siddon).projector == :siddon
         @test_throws ArgumentError BS.SimOptions(projector = :bogus)
         # the removed per-energy option fails loudly and names the valid projectors
@@ -309,8 +323,8 @@ function _toy_pcct_setup(; pileup = true, kwargs...)
     # samples a realistic number of photon arrivals (~1e7 per trial), not 1e11.
     protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
-        use_noise = false, use_scatter = false, use_lag = false,
-        use_focal_spot = false, use_optical_crosstalk = false,
+        use_noise = false, use_scatter = false,
+        use_focal_spot = false,
         kwargs...
     )
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
@@ -584,11 +598,13 @@ function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
         detector_depth = 3.0,
         electronic_noise = 5.0,
         detection_gain = 10.0,
+        use_lag = false,
+        use_optical_crosstalk = false,
     )
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
         use_noise = use_noise, use_scatter = use_scatter,
-        use_lag = false, use_focal_spot = false, use_optical_crosstalk = false,
+        use_focal_spot = false,
         kwargs...
     )
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
@@ -943,11 +959,13 @@ _ts("entering build_physics_config testset")
     weights = ones(length(energies))         # uniform — mean ≈ midpoint
 
     @testset "all toggles off → all-nothing PhysicsConfig" begin
-        sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(;
+        sc = BS.EICTScanner(
+            _scanner_with_full_hardware();
             use_fill_factor = false, use_detector_efficiency = false,
-            use_scatter = false, use_optical_crosstalk = false,
-            use_focal_spot = false, use_noise = false, use_lag = false,
+            use_optical_crosstalk = false, use_lag = false,
+        )
+        opts = BS.SimOptions(;
+            use_scatter = false, use_focal_spot = false, use_noise = false,
             use_heel_effect = false
         )
         cfg = BS.build_physics_config(sc, opts, energies, weights)
@@ -961,12 +979,12 @@ _ts("entering build_physics_config testset")
     end
 
     @testset "each toggle on → corresponding field non-nothing + correct type" begin
-        sc = _scanner_with_full_hardware()
-        # optical_crosstalk defaults to false in :eict preset, opt in explicitly
+        # optical_crosstalk defaults to false on the scanner, opt in explicitly
         # to exercise the type wiring for that field.
+        sc = BS.EICTScanner(_scanner_with_full_hardware(); use_optical_crosstalk = true)
         # The scanner names no scatter kernels, so scatter (on by default) is off here; its
         # wiring is the "scatter: the scanner's kernels" testset's.
-        opts = BS.SimOptions(; use_optical_crosstalk = true, use_scatter = false)
+        opts = BS.SimOptions(; use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
@@ -1003,8 +1021,8 @@ _ts("entering build_physics_config testset")
     end
 
     @testset "detector_efficiency: lumex → gemstone branch" begin
-        sc = _scanner_with_full_hardware()    # :lumex, depth 3.0
-        opts = BS.SimOptions(; detector_efficiency_mode = :mc_lut, use_scatter = false)
+        sc = BS.EICTScanner(_scanner_with_full_hardware(); detector_efficiency_mode = :mc_lut)    # :lumex, depth 3.0
+        opts = BS.SimOptions(; use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         # gemstone factory tags the material distinctly from a generic
         # `DetectorEfficiency(name, depth, 1.0)` direct ctor.  At minimum the
@@ -1025,9 +1043,10 @@ _ts("entering build_physics_config testset")
             detector_depth = 1.6,
             energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         )
-        opts = BS.SimOptions(; use_focal_spot = false, use_lag = false, use_scatter = false)
+        opts = BS.SimOptions(; use_focal_spot = false, use_scatter = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.detector_efficiency === nothing   # skipped for PCCT
+        @test cfg.fill_factor === nothing && cfg.optical_crosstalk === nothing && cfg.lag === nothing
     end
 
     @testset "focal_spot: scanner fields used when both >0" begin
@@ -1756,21 +1775,15 @@ end
 # PCCT focal-spot blur wiring (SoftwareX revision, R1.7)
 # -----------------------------------------------------------------------------
 _ts("entering PCCT focal-spot preset defaults testset")
-@testset ":pcct preset — focal_spot and lag default OFF" begin
+@testset "focal spot is SimOptions', lag the energy integrator's" begin
     # Pure-CPU option resolution — no GPU gating needed.
-    # Tube-side focal-spot blur is wired into the PCCT path but ships
-    # disabled by default; lag is a scintillator (Gd2O2S) afterglow model
-    # that direct-conversion PCCT detectors do not exhibit.
-    opts = BS.SimOptions(use_focal_spot = false, use_lag = false)
-    @test opts.use_focal_spot === false
-    @test opts.use_lag === false
-    # Opt-in must survive preset resolution.
-    opts_on = BS.SimOptions(use_lag = false, use_focal_spot = true)
-    @test opts_on.use_focal_spot === true
-    # EICT preset unchanged.
-    eict = BS.SimOptions()
-    @test eict.use_focal_spot === true
-    @test eict.use_lag === true
+    # Tube-side focal-spot blur is wired into both paths; lag is a scintillator (Gd2O2S)
+    # afterglow model that direct-conversion PCCT detectors do not exhibit, so it is a field of
+    # EICTScanner only.
+    @test BS.SimOptions(use_focal_spot = false).use_focal_spot === false
+    @test BS.SimOptions().use_focal_spot === true
+    @test BS.SOMATOM_FORCE.use_lag === true
+    @test !(:use_lag in propertynames(BS.NAEOTOM_ALPHA))
 end
 
 _ts("entering simulate!(PCCTWorkspace) — focal-spot blur on/off testset")
@@ -1830,12 +1843,13 @@ _ts("entering EICT quantum noise dose-sweep testset")
                 detector_depth = 3.0,
                 electronic_noise = 0.0,
                 detection_gain = 10.0,
+                use_lag = false,
+                use_optical_crosstalk = false,
             )
             protocol = BS.CTProtocol(mA = mA, kVp = 120.0, views = 16, rotation_time = 0.5)
             sim_opts = BS.SimOptions(;
                 use_noise = true, use_scatter = false,
-                use_lag = false, use_focal_spot = false,
-                use_optical_crosstalk = false,
+                use_focal_spot = false,
                 seed = 7,
             )
             recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
@@ -1849,8 +1863,7 @@ _ts("entering EICT quantum noise dose-sweep testset")
             )
             clean_opts = BS.SimOptions(;
                 use_noise = false, use_scatter = false,
-                use_lag = false, use_focal_spot = false,
-                use_optical_crosstalk = false,
+                use_focal_spot = false,
             )
             ws_noisy = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
             ws_clean = BS.create_eict_workspace(scanner, protocol, clean_opts, recon_opts, phantom)

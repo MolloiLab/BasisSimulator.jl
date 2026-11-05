@@ -14,23 +14,17 @@ Resolved boolean toggles for one simulation run.  Each
 is set by the keyword constructor.
 
 # Fields
-- `use_fill_factor::Bool`: Enable detector fill factor.
-- `use_detector_efficiency::Bool`: Enable energy-dependent detector efficiency.
 - `use_scatter::Bool`: Superpose the scanner's Geant4 scatter kernels on the patient
   ([`scatter_kernels`](@ref); the scanner's `scatter_kernels` field names them). On by default,
   as on a real scanner: the clinical constants name their kernels (a download of about 250 MB
   per scanner, cached), and a scanner that names none throws unless this is `false`. The
   scanner's `scatter_correction` decides whether its detector subtracts what it estimates.
-- `use_optical_crosstalk::Bool`: Enable optical crosstalk.
 - `use_focal_spot::Bool`: Enable focal spot blur.
 - `use_noise::Bool`: Enable noise.  PCCT: exact per-bin integer Poisson count
   realizations of the MC-detector expected counts (no electronic noise — counting
   thresholds eliminate it).  EICT: Gaussian quantum + electronic noise on counts.
-- `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
-- `detector_efficiency_mode::Symbol`: an energy integrator's response, `:mc_lut` (default, its Geant4
-  table) or `:beer_lambert` (analytic absorption).
 - `projector::Symbol`: Forward-projection ray tracer.  `:dd_fast` (default) = distance-driven,
   anti-aliased footprint integration with single-pass per-material path-length fused kernels —
   the full spectrum runs in ONE volume walk (measured 47x faster than the per-energy tiled
@@ -45,18 +39,13 @@ is set by the keyword constructor.
 """
 struct SimOptions
     # --- Physics pipeline ---
-    use_fill_factor::Bool
-    use_detector_efficiency::Bool
     use_scatter::Bool
-    use_optical_crosstalk::Bool
     use_focal_spot::Bool
     use_noise::Bool
-    use_lag::Bool
     # --- Signal chain ---
     use_heel_effect::Bool
     # --- General ---
     seed::Union{Int, Nothing}
-    detector_efficiency_mode::Symbol   # :mc_lut, :beer_lambert
     projector::Symbol                  # :dd_fast (default), :siddon (comparison)
     # --- Acquisition ---
     view_samples::Int                  # angular samples per view across its integration arc (1 = instantaneous)
@@ -66,18 +55,17 @@ end
 """
     SimOptions(; kwargs...)
 
-Physics toggles common to every detector family (all `true` except `use_optical_crosstalk`),
-the noise `seed`, the detector-efficiency mode and the projector.  Detector-specific physics lives
-on the scanner: its scatter kernels and scatter correction are fields of both
-[`EICTScanner`](@ref) and [`PCCTScanner`](@ref), pile-up and the count-noise blend of
-[`PCCTScanner`](@ref); the scintillator lag model applies to [`EICTScanner`](@ref) only.
-A variant is the copy constructor, `SimOptions(o; use_noise = false)`.
+Physics toggles common to every detector family (all `true`), the noise `seed`, the projector
+and the views' rotation sampling.  Detector-specific physics lives on the scanner: its scatter
+kernels and scatter correction are fields of both [`EICTScanner`](@ref) and
+[`PCCTScanner`](@ref); the scintillator's fill factor, energy response
+(`detector_efficiency_mode`), optical crosstalk and lag of [`EICTScanner`](@ref); pile-up and the
+count-noise blend of [`PCCTScanner`](@ref). A variant is the copy constructor,
+`SimOptions(o; use_noise = false)`.
 
-- `use_fill_factor`, `use_detector_efficiency`, `use_scatter`, `use_optical_crosstalk`,
-  `use_focal_spot`, `use_noise`, `use_lag`, `use_heel_effect::Bool`
+- `use_scatter`, `use_focal_spot`, `use_noise`, `use_heel_effect::Bool`
 - `seed::Union{Int, Nothing} = 42` — noise RNG seed. `nothing` leaves the energy-integrating
   path unseeded; the photon-counting path draws a fresh seed (`pcct_count!`).
-- `detector_efficiency_mode::Symbol = :mc_lut` — `:mc_lut`, `:beer_lambert`
 - `projector::Symbol = :dd_fast` — `:dd_fast` or `:siddon`; anything else throws an `ArgumentError`
 - `view_samples::Int = 1` — gantry rotation during a view: the detector integrates while the gantry
   turns through the view's arc, so a view records the transmitted intensity averaged over that arc,
@@ -90,29 +78,20 @@ A variant is the copy constructor, `SimOptions(o; use_noise = false)`.
   energy for rapid kVp switching.
 """
 function SimOptions(;
-        use_fill_factor::Bool = true,
-        use_detector_efficiency::Bool = true,
         use_scatter::Bool = true,
-        use_optical_crosstalk::Bool = false,
         use_focal_spot::Bool = true,
         use_noise::Bool = true,
-        use_lag::Bool = true,
         use_heel_effect::Bool = true,
         seed::Union{Int, Nothing} = 42,
-        detector_efficiency_mode::Symbol = :mc_lut,
         projector::Symbol = :dd_fast,
         view_samples::Integer = 1,
         view_arc::Real = 1.0,
     )
     _validate_projector(projector)
-    detector_efficiency_mode in (:mc_lut, :beer_lambert) || throw(
-        ArgumentError("detector_efficiency_mode must be :mc_lut or :beer_lambert, got :$(detector_efficiency_mode)")
-    )
     view_samples >= 1 || throw(ArgumentError("view_samples must be at least 1, got $(view_samples)"))
     0 < view_arc <= 1 || throw(ArgumentError("view_arc must be in (0, 1], got $(view_arc)"))
     return SimOptions(
-        use_fill_factor, use_detector_efficiency, use_scatter, use_optical_crosstalk,
-        use_focal_spot, use_noise, use_lag, use_heel_effect, seed, detector_efficiency_mode, projector,
+        use_scatter, use_focal_spot, use_noise, use_heel_effect, seed, projector,
         Int(view_samples), Float64(view_arc)
     )
 end

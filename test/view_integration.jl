@@ -46,7 +46,7 @@ function _vi_setup(kind; views, kwargs...)
             source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
             detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.0,
             detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0,
-            scatter_kernels = _SCATTER_TEST_ENTRY,
+            use_lag = false, scatter_kernels = _SCATTER_TEST_ENTRY,
         ) :
         BS.PCCTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
@@ -59,8 +59,8 @@ function _vi_setup(kind; views, kwargs...)
     sim_opts = BS.SimOptions(;
         merge(
             (
-                use_noise = false, use_scatter = false, use_lag = false,
-                use_focal_spot = false, use_optical_crosstalk = false,
+                use_noise = false, use_scatter = false,
+                use_focal_spot = false,
             ), kwargs
         )...
     )

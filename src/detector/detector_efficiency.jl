@@ -103,7 +103,7 @@ end
 Analytic scintillator absorption: a photon interacts with probability `q = 1 − exp(−μ(E)·d)`,
 `μ(E)` from [`get_scintillator_mu`](@ref) and `d` the crystal depth, and leaves all its energy:
 `m₁ = E·q`, `m₂ = E²·q`. It has no fluorescence escape and no Swank spread. Select it with
-`SimOptions(detector_efficiency_mode = :beer_lambert)`, e.g. to compare against the table.
+`EICTScanner(scanner; detector_efficiency_mode = :beer_lambert)`, e.g. to compare against the table.
 """ BEER_LAMBERT
 
 @doc """
@@ -149,7 +149,7 @@ struct DetectorEfficiency
         (mode == BEER_LAMBERT || thickness_mm ≈ table_mm) || throw(
             ArgumentError(
                 "the :$(material) table was made at $(table_mm) mm, the detector is $(thickness_mm) mm " *
-                    "deep; use detector_efficiency_mode = :beer_lambert or a table made at that depth"
+                    "deep; use EICTScanner(scanner; detector_efficiency_mode = :beer_lambert) or a table made at that depth"
             )
         )
         return new(material, Float64(thickness_mm), mode)
@@ -178,7 +178,7 @@ function eid_signal_moments(model::DetectorEfficiency, energies::AbstractVector)
     return E .* q, E .^ 2 .* q
 end
 
-# No detector model (`use_detector_efficiency = false`): every photon leaves all its energy.
+# No detector model (the scanner's `use_detector_efficiency = false`): every photon leaves all its energy.
 eid_signal_moments(::Nothing, energies::AbstractVector) = (Float64.(energies), Float64.(energies) .^ 2)
 
 """

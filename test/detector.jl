@@ -103,9 +103,9 @@ end
         @test model.thickness_mm == s.detector_depth
         @test model.mode == BS.MC_LUT
     end
-    bl = BS.SimOptions(detector_efficiency_mode = :beer_lambert, use_scatter = false)
-    @test BS.build_physics_config(BS.SOMATOM_FORCE, bl, e, w).detector_efficiency.mode == BS.BEER_LAMBERT
-    off = BS.build_physics_config(BS.SOMATOM_FORCE, BS.SimOptions(use_detector_efficiency = false, use_scatter = false), e, w)
+    bl = BS.EICTScanner(BS.SOMATOM_FORCE; detector_efficiency_mode = :beer_lambert)
+    @test BS.build_physics_config(bl, BS.SimOptions(use_scatter = false), e, w).detector_efficiency.mode == BS.BEER_LAMBERT
+    off = BS.build_physics_config(BS.EICTScanner(BS.SOMATOM_FORCE; use_detector_efficiency = false), BS.SimOptions(use_scatter = false), e, w)
     @test off.detector_efficiency === nothing
     # a depth the table was not made at, and a material with no model, are refused
     @test_throws ArgumentError BS.build_physics_config(
