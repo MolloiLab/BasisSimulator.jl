@@ -35,7 +35,7 @@ end
     @test cal.gain ≈ 1 .+ 0.02 .* BS._dexel_pattern(7, 2, size(cal.gain)...)[:, :, 1] rtol = 1.0e-4
 end
 
-@testset "photon counter: gain and threshold offsets, an air flat field, a spectral residual" begin
+@testset "photon counter: gain and threshold offsets, a flat field through air and water slabs" begin
     opts = _noise_free()
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 50.0, views = 60)
     phantom = _on_backend(_eict_cylinder(; diameter_cm = 20.0))
@@ -51,11 +51,20 @@ end
     corrected = BS.apply_flat_field!([copy(b) for b in raw], cal)
     before = _rms(reduce(vcat, vec.(raw .- truth)))
     after = _rms(reduce(vcat, vec.(corrected .- truth)))
+    # the air gains alone leave the hardened part: the offsets weigh a hardened beam differently
+    air_only = BS.apply_flat_field!([copy(b) for b in raw], BS.FlatFieldCalibration(cal.gain, nothing))
+    residual_air = _rms(reduce(vcat, vec.(air_only .- truth)))
     @test before > 5.0e-3
-    @test after < before / 3                                  # the air flat field removes most of it
-    @test after > 0                                           # not all: the offsets weigh a hardened beam differently
-    @info "photon-counting flat field, rms log error against the ideal detector" before after
+    # the slabs take the gains through the hardening; what is left is at the cylinder's edges, where
+    # this toy detector's 3 mm pixels hold dexels of very different line integrals (the NAEOTOM
+    # Alpha's 0.37 mm pixels leave under 0.6 HU in a Gammex image)
+    @test after < residual_air / 5
+    @test after < 2.0e-3
+    @info "photon-counting flat field, rms log error against the ideal detector" before residual_air after
     @test all(isfinite, cal.gain) && size(cal.gain, 3) == 4
+    @test size(cal.hardening.r) == (size(cal.gain)..., length(BS._FLAT_FIELD_SLABS_CM))
+    # the ideal detector has no hardening to calibrate
+    @test BS.calibrate_flat_field(base, protocol, _EICT_RECON, phantom; sim_opts = opts).hardening === nothing
 end
 
 @testset "pile-up: calibrated from air and water scans at rising currents" begin

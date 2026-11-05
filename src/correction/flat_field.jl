@@ -9,9 +9,11 @@
 # correction, calibrated from simulated calibration scans, never from the truth:
 #
 # - `calibrate_flat_field` → `apply_flat_field!`: air scans (two currents for an energy
-#   integrator, so its offset separates from its gain);
-# - `calibrate_pileup` → `apply_pileup!`: air scans at rising tube currents, the pile-up-free
-#   counts extrapolated linearly from the lowest.
+#   integrator, so its offset separates from its gain); for a photon counter also water slabs,
+#   each pixel's scan of them against the nominal detector's, since its threshold offsets weigh a
+#   hardened beam differently;
+# - `calibrate_pileup` → `apply_pileup!`: scans of air and water cylinders at rising tube
+#   currents, the pile-up-free counts extrapolated to zero current.
 # =============================================================================
 
 # A detector's fixed pattern: `n` independent standard-normal maps of `nc × nr` dexels, the same
@@ -59,38 +61,47 @@ function _pcct_defect_factors(s::PCCTScanner, nc, nr, energies, weights)
     return out
 end
 
-# The photon-counting defects at the projection's resolution: the factors in air and behind
-# 20 cm of water, and that water's line integral; a ray's factors are interpolated between them
-# by its own line integral (a dexel's threshold offsets weigh a hardened spectrum differently).
+# The water thicknesses (cm) at which a photon-counting dexel's defects are evaluated: a dexel's
+# threshold offsets weigh a hardened spectrum differently, so its factors change with the ray's
+# hardening, smoothly up to the thickest (held beyond it).
+const _PCCT_DEFECT_WATER_CM = (0.0, 10.0, 20.0, 30.0, 40.0, 50.0)
+
+# The photon-counting defects at the projection's resolution: each dexel's factors in every bin for
+# the beam through each of `_PCCT_DEFECT_WATER_CM` of water (`factors[col, row, bin, m]`), and each
+# beam's line integral (`p[m]`); a ray takes the factors linear in its own line integral between them.
 function _pcct_dexel_defects(s::PCCTScanner, nc, nr, energies, weights)
     _has_defects(s) || return nothing
     μ = [compute_μ_at_energy(XA.Materials.water, Float64(E)) for E in energies]
-    hard = Float64.(weights) .* exp.(-20 .* μ)
-    p_hard = -log(sum(hard) / sum(weights))
+    w = Float64.(weights)
+    spectra = [w .* exp.(-t .* μ) for t in _PCCT_DEFECT_WATER_CM]
     return (
-        air = _pcct_defect_factors(s, nc, nr, energies, weights),
-        hard = _pcct_defect_factors(s, nc, nr, energies, hard),
-        p_hard = p_hard,
+        factors = cat((_pcct_defect_factors(s, nc, nr, energies, x) for x in spectra)...; dims = 4),
+        p = [-log(sum(x) / sum(w)) for x in spectra],
     )
 end
 
 # Apply them to expected counts `[b][c, r, v]` against the air counts `I0[c, r, b]`, in one kernel
-# on the arrays' backend (the factors `d.air`, `d.hard` live there too).
+# on the arrays' backend (the factors live there too).
 function _apply_pcct_defects!(expected::AbstractVector, I0, d)
-    _apply_pcct_defects!(Tuple(expected), I0, d.air, d.hard, eltype(expected[1])(d.p_hard))
+    _apply_pcct_defects!(Tuple(expected), I0, d.factors, d.p, Int32(length(d.p)))
     return expected
 end
 
-function _apply_pcct_defects!(λ::NTuple{NB}, I0, air, hard, p_hard) where {NB}
+function _apply_pcct_defects!(λ::NTuple{NB}, I0, F, pn, M) where {NB}
     dexels = CartesianIndices(size(λ[1]))
     AK.foreachindex(λ[1]) do idx
         c, r, v = Tuple(dexels[idx])
         e = ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB))
         a = sum(ntuple(b -> @inbounds(I0[c, r, b]), Val(NB)))
-        tiny = oftype(p_hard, 1.0e-30)
-        x = clamp(-log(max(sum(e), tiny) / max(a, tiny)) / p_hard, zero(p_hard), oftype(p_hard, 2))
+        tiny = oftype(@inbounds(pn[1]), 1.0e-30)
+        p = -log(max(sum(e), tiny) / max(a, tiny))
+        m = Int32(1)
+        while m < M - Int32(1) && p >= @inbounds(pn[m + 1])
+            m += Int32(1)
+        end
+        g = @inbounds clamp((p - pn[m]) / (pn[m + 1] - pn[m]), zero(p), one(p))
         for b in 1:NB
-            @inbounds λ[b][c, r, v] = e[b] * (air[c, r, b] + x * (hard[c, r, b] - air[c, r, b]))
+            @inbounds λ[b][c, r, v] = e[b] * ((1 - g) * F[c, r, b, m] + g * F[c, r, b, m + 1])
         end
     end
     return λ
@@ -129,14 +140,22 @@ _calibration_options(o::SimOptions) = SimOptions(
 """
     FlatFieldCalibration
 
-A detector's flat field, from simulated air scans: `gain` (`[cols, rows]` for an energy
-integrator, `[cols, rows, bins]` for a photon counter) and `offset` (an energy integrator's,
-relative to its air signal at the calibration's own protocol; `nothing` for a photon counter).
+A detector's flat field, from simulated calibration scans: `gain` (`[cols, rows]` for an energy
+integrator, `[cols, rows, bins]` for a photon counter: each dexel's gain in air) and `offset` (an
+energy integrator's, relative to its air signal at the calibration's own protocol; `nothing` for a
+photon counter). A photon counter's `hardening` is how each pixel's gain in every bin changes as
+the patient hardens its beam (a threshold offset weighs a hardened spectrum differently): at line
+integrals `p[col, row, k]` (the calibration's water slabs; `Inf` where a pixel has none), its gain relative to air
+`r[col, row, bin, k]`, linear in the line integral between them (1 at zero, held beyond the last),
+and `w[col, row, bin]`, each bin's share of the pixel's air counts, which gives a ray's line
+integral from its bins. An energy integrator's gain does not depend on the spectrum (`nothing`).
 """
-struct FlatFieldCalibration{G <: AbstractArray, O}
+struct FlatFieldCalibration{G <: AbstractArray, O, H}
     gain::G
     offset::O
+    hardening::H
 end
+FlatFieldCalibration(gain, offset) = FlatFieldCalibration(gain, offset, nothing)
 
 """
     calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts = SimOptions())
@@ -145,9 +164,18 @@ end
 Calibrate the flat field of `scanner` the way a scanner does it, from simulated air scans
 through the protocol's beam (noise-free: a calibration averages far more views than a scan).
 An energy integrator is scanned at the protocol's current and at a quarter of it, which separates
-each dexel's gain from its offset; a photon counter is scanned once, without pile-up (a
-low-flux calibration), and each bin's air counts give its gain. Use it with
-[`apply_flat_field!`](@ref) on scans of the same scanner and protocol.
+each dexel's gain from its offset (both energy-blind). A photon counter is scanned without pile-up
+(a low-flux calibration): in air, where each bin's counts give its gain, and through water slabs
+every 5 cm from 5 to 50 cm thick. Its dexels' threshold offsets weigh a hardened beam differently, so
+a pixel's gain in a bin changes with the patient's hardening; each pixel's scan of a slab is divided
+by the nominal detector's scan of it (the scanner's design response to its own calibration
+phantom, as a scanner's per-pixel spectral calibration does), which gives its gain at that line
+integral with no smoothing across pixels. Use it with [`apply_flat_field!`](@ref) on scans of the
+same scanner and protocol. A detector without defects needs no slabs (`hardening` is `nothing`).
+
+On notebook 04's NAEOTOM Alpha (Gammex 472, noise-free, pile-up corrected), the corrected images of
+every bin are within 0.6 HU of the ideal detector's in their rings (ring RMS 0.09 HU); with the air
+gains alone they ring by up to 170 HU.
 
 An air scan does not change as the gantry turns, so each scan is two views at the protocol's time
 per view, each read at one angle (`view_samples = 1`, whatever `sim_opts` says). The gains and
@@ -157,8 +185,8 @@ offsets of a SOMATOM Force with gain and offset spreads), and the calibration ta
 NVIDIA L40S for notebook 04's Alpha protocol (2.6 s with its 1200 × 5 views).
 
 The scans run on the device of `phantom`, the scan's own (as for [`create_workspace`](@ref)): a
-phantom on the GPU calibrates on the GPU, one on the CPU on the CPU. They scan air, never the
-phantom itself; the calibration's arrays are on the host, in Float64.
+phantom on the GPU calibrates on the GPU, one on the CPU on the CPU. They scan air and water,
+never the phantom itself; the calibration's arrays are on the host, in Float64.
 """
 function calibrate_flat_field(
         scanner::Scanner,
@@ -198,6 +226,25 @@ function _flat_field(
     return FlatFieldCalibration((4 .* y[1] .- y[2]) ./ 3, (y[2] .- y[1]) ./ 3)
 end
 
+# The water slabs a photon counter's flat field is calibrated through, besides air (thicknesses in
+# cm): every pixel sees its gain at ten hardenings, every 5 cm from 5 to 50 cm of water (a little
+# more at the fan's edge, which crosses a slab obliquely). Each pixel's scan of a slab is divided by the nominal
+# detector's scan of it, the scanner's design response to its own calibration phantom: what is left is
+# that pixel's own gain at that hardening, with no smoothing across pixels and nothing to leak.
+const _FLAT_FIELD_SLABS_CM = (5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0)
+
+# A water slab `t_cm` thick, 70 cm wide and 10 cm long, centred, its faces square to the calibration's
+# two views (at 0 and 180 degrees, whose rays run along y), on the device of `phantom`: one voxel
+# through its thickness, so every ray crosses the same flat faces.
+function _water_slab(phantom::Phantom, t_cm::Real)
+    mask = ones(UInt8, 14, 1, 2)
+    return Phantom(
+        copyto!(similar(phantom.mask, UInt8, size(mask)), mask),
+        Dict{Int, Any}(0 => XA.Materials.air, 1 => XA.Materials.water),
+        (5.0, Float64(t_cm), 5.0),
+    )
+end
+
 function _flat_field(
         scanner::PCCTScanner,
         protocol::CTProtocol,
@@ -205,16 +252,41 @@ function _flat_field(
         opts::SimOptions,
         phantom::Phantom,
     )
-    air = _air_phantom(phantom)
-    s = PCCTScanner(scanner; pileup = false)
-    ws = create_workspace(s, protocol, opts, recon_opts, air)
-    try
-        bins = simulate!(ws, air, protocol, opts; report_dose = false, capture_raw_counts = false).pcct_sino.bins
-        gain = cat((_view_mean(exp.(.-b)) for b in bins)...; dims = 3)
-        return FlatFieldCalibration(gain, nothing)
-    finally
-        release_backend!(ws)
+    unit = PCCTScanner(scanner; pileup = false)
+    nominal = PCCTScanner(unit; gain_spread = 0.0, threshold_spread_keV = 0.0)
+    # each bin's counts over its air counts, view-averaged, and the air counts of every pixel
+    function transmission(s, obj)
+        ws = create_workspace(s, protocol, opts, recon_opts, obj)
+        try
+            bins = simulate!(ws, obj, protocol, opts; report_dose = false, capture_raw_counts = false).pcct_sino.bins
+            return [_view_mean(exp.(.-b)) for b in bins], copy(ws.I0_cpu)
+        finally
+            release_backend!(ws)
+        end
     end
+    air, I0 = transmission(unit, _air_phantom(phantom))
+    gain = cat(air...; dims = 3)
+    nc, nr, nb = size(gain)
+    w = I0 ./ max.(sum(I0; dims = 3), 1.0e-300)
+    _has_defects(unit) || return FlatFieldCalibration(gain, nothing, nothing)
+    K = length(_FLAT_FIELD_SLABS_CM)
+    P = fill(Inf, nc, nr, K)
+    R = ones(nc, nr, nb, K)
+    lit = dropdims(sum(I0; dims = 3); dims = 3) .> 0           # the pixels the beam reaches
+    for (k, d) in pairs(_FLAT_FIELD_SLABS_CM)
+        slab = _water_slab(phantom, d)
+        t, _ = transmission(unit, slab)
+        t0, _ = transmission(nominal, slab)
+        p = -log.(max.(sum(w[:, :, b] .* t0[b] for b in 1:nb), 1.0e-300))  # the slab's line integral
+        for r in 1:nr, c in 1:nc
+            lit[c, r] || continue
+            P[c, r, k] = p[c, r]
+            for b in 1:nb
+                R[c, r, b, k] = t0[b][c, r] > 0 ? t[b][c, r] / gain[c, r, b] / t0[b][c, r] : 1.0
+            end
+        end
+    end
+    return FlatFieldCalibration(gain, nothing, (p = P, r = R, w = w))
 end
 
 """
@@ -223,7 +295,8 @@ end
 
 Correct a scan with the flat field [`calibrate_flat_field`](@ref) measured: an energy
 integrator's air-normalised signal `y = e^{−p}` becomes `(y − offset) / gain`; a photon counter's
-counts in each bin are divided by the bin's gain.
+counts in each bin are divided by the bin's gain in air, then by its gain at the ray's own line
+integral (from its bins), linear between the calibration's water slabs. On the device of the bins.
 """
 function apply_flat_field!(sinogram::AbstractArray{T, 3}, cal::FlatFieldCalibration{<:AbstractMatrix}) where {T}
     g = copyto!(similar(sinogram, T, size(cal.gain)), T.(cal.gain))
@@ -238,7 +311,43 @@ function apply_flat_field!(bins::AbstractVector, cal::FlatFieldCalibration{<:Abs
         T = eltype(bin)
         bin .+= copyto!(similar(bin, T, size(cal.gain)[1:2]), T.(log.(cal.gain[:, :, b])))
     end
+    cal.hardening === nothing && return bins
+    T = eltype(bins[1])
+    device(x) = copyto!(similar(bins[1], T, size(x)), T.(x))
+    h = cal.hardening
+    _apply_hardening!(Tuple(bins), device(h.p), device(h.r), device(h.w), Int32(size(h.p, 3)))
     return bins
+end
+
+# Each ray's gain in every bin at its own line integral (from its air-flat-fielded bins), linear
+# between its pixel's calibrated hardenings: the bins are divided by it.
+function _apply_hardening!(h::NTuple{NB}, P, R, w, K) where {NB}
+    rays = CartesianIndices(size(h[1]))
+    AK.foreachindex(h[1]) do idx
+        c, r, v = Tuple(rays[idx])
+        y = ntuple(b -> @inbounds(w[c, r, b] * exp(-h[b][c, r, v])), Val(NB))
+        tiny = oftype(@inbounds(P[c, r, 1]), 1.0e-30)
+        p = -log(max(sum(y), tiny))
+        for b in 1:NB
+            g = _hardening_gain(P, R, c, r, b, K, p)
+            @inbounds h[b][c, r, v] += log(max(g, tiny))
+        end
+    end
+    return h
+end
+
+# A pixel's gain in bin `b` at line integral `p`: 1 at zero, linear between its hardenings, held
+# beyond the last it has.
+@inline function _hardening_gain(P, R, c, r, b, K, p)
+    p0, r0 = zero(p), one(p)
+    for k in Int32(1):K
+        pk = @inbounds P[c, r, k]
+        isfinite(pk) || return r0
+        rk = @inbounds R[c, r, b, k]
+        p <= pk && return r0 + (rk - r0) * (p - p0) / (pk - p0)
+        p0, r0 = pk, rk
+    end
+    return r0
 end
 
 """
@@ -324,8 +433,8 @@ function _pileup(
         opts::SimOptions,
         phantom::Phantom,
         currents;
-        n_rates::Integer = 33,
-        n_hardness::Integer = 6,
+        n_rates::Integer = 65,
+        n_hardness::Integer = 12,
     )
     levels = sort(Float64.(collect(currents)))
     length(levels) >= 3 || throw(ArgumentError("calibrate_pileup needs at least three currents"))

@@ -12,6 +12,34 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.3](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.2...v0.16.3) (2026-11-05)
+
+Removes the ring artifacts of the realistic photon-counting detector. On notebook 04's NAEOTOM Alpha
+(gain and threshold spreads, pile-up on; Gammex 472, noise-free), the corrected images rang by up to
+40, 36, 146 and 168 HU in bins 1–4 against the ideal detector; now by at most 0.6 HU (ring RMS
+≤ 0.09 HU). Every result of a photon counter with defects (`NAEOTOM_ALPHA` and its copies) changes;
+the ideal detector's do not.
+
+### Fixed
+- **The photon-counting flat field follows the patient's hardening.** A dexel's threshold offsets
+  weigh a hardened beam differently, so its gain in each bin changes with the patient; the air flat
+  field corrected only its gain in air, and the rest stayed as a fixed per-pixel pattern: rings.
+  `calibrate_flat_field` now also scans water slabs every 5 cm from 5 to 50 cm and divides each
+  pixel's scan of a slab by the nominal detector's scan of it, as a scanner's per-pixel spectral
+  calibration does; `apply_flat_field!` divides each ray's bins by its pixel's gain at the ray's own
+  line integral, linear between the slabs, on the device. `FlatFieldCalibration` has a third field,
+  `hardening` (`nothing` for an energy integrator and for a detector without defects).
+- **The photon-counting defects change smoothly with hardening.** They were the factors in air and
+  behind 20 cm of water, extrapolated linearly in the line integral and clamped at 40 cm, an
+  unphysical kink; now they are the factors behind 0, 10, 20, 30, 40 and 50 cm of water, linear in
+  the line integral between them.
+- **The pile-up correction's table is finer** (65 rates × 12 hardnesses, was 33 × 6): it left a band
+  of about 1 HU at a phantom's high-rate rim on the realistic detector.
+
+### Performance
+- `calibrate_flat_field` scans 21 times for a photon counter with defects (was once): 26 s on an
+  NVIDIA L40S for notebook 04's Alpha (was 1 s).
+
 ## [0.16.2](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.1...v0.16.2) (2026-11-05)
 
 Fixes the ring artifact of the photon-counting detector's pile-up correction. On notebook 04's
