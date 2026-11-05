@@ -93,6 +93,13 @@ function _comparator_migration(thr, p_height, edges, rate_ns, dead_ns, τ, n, rn
         while j < n && t[j + 1] - t[j] < reach
             j += 1
         end
+        if j == i                                           # an isolated pulse peaks at its height, τ after it
+            push!(peaks_t, t[i] + τ)
+            push!(peaks_s, h[i])
+            push!(peaks_bin, bin_of(h[i]))
+            i += 1
+            continue
+        end
         lo = i
         s_prev2, s_prev, peak_dom = -Inf, -Inf, 0
         for x in t[i]:dt:(t[j] + reach)
@@ -136,7 +143,85 @@ function _comparator_migration(thr, p_height, edges, rate_ns, dead_ns, τ, n, rn
     return S
 end
 
+"""
+    counted_per_photon(thresholds_keV, spectrum_weights, energies) -> Float64
+
+The pulses a dexel counts (above its lowest threshold) per photon of the spectrum at zero rate,
+from the pile-up model's pulse heights: the factor between a dexel's counted rate and the photon
+rate [`compute_mc_pileup_matrix`](@ref) takes.
+"""
+function counted_per_photon(thresholds_keV, spectrum_weights, energies)
+    pu = pcct_native_table().pileup
+    w = _table_weights(pu.energies, energies, spectrum_weights)
+    H = vec(sum(w .* pu.heights; dims = 1)) ./ sum(w)
+    centres = (pu.edges[1:(end - 1)] .+ pu.edges[2:end]) ./ 2
+    return sum(H[centres .>= minimum(thresholds_keV)])
+end
+
+# The mean bin (1 … nb) of a dexel's counts: the hardness index of its spectrum.
+@inline function _mean_bin(n::NTuple{NB, T}) where {NB, T}
+    tot = sum(n)
+    return tot > 0 ? sum(ntuple(b -> T(b) * n[b], Val(NB))) / tot : one(T)
+end
+
+# The family's spectra: the source spectrum through 0, 1, 2, 4, 8, 16 and 32 cm of water. A
+# dexel's spectrum (the bowtie's and the patient's hardening) is placed in it by its mean bin.
+const PILEUP_HARDENING_CM = (0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+
+# The family's counted-rate step in units of rate × dead time (2e6 counts per second at the
+# NAEOTOM Alpha's 27 ns): the same absolute rates in every workspace of a detector, so a calibration
+# at another tube current sees the same pile-up. A family needing more than 64 rates (a toy protocol
+# far beyond a scanner's rates) spreads 64 over its range instead.
+const PILEUP_RATE_STEP_TAU = 0.054
+const PILEUP_MAX_RATES = 64
+
+"""
+    pileup_family(thresholds_keV, spectrum_weights, energies, rate_max, dead_time_ns)
+        -> (; S, rates, hardness)
+
+The pile-up of one dexel as a function of its counted rate and its spectrum: the migration
+matrices of [`compute_mc_pileup_matrix`](@ref), `S[:, :, k, m]`, at counted rates `rates[k]` (counts per
+second per dexel above the lowest threshold, evenly spaced from 0 to `rate_max` by 0.054 / τ —
+2e6 at the NAEOTOM Alpha's 27 ns — the same absolute rates in every workspace of a detector) and at the spectrum hardened through `PILEUP_HARDENING_CM[m]` of water,
+whose mean bin is `hardness[m]`. Every matrix draws the same pulse train (one seed, common random
+numbers), so the family is smooth in both. A dexel takes the matrix bilinear in its counted rate and
+its mean bin. With one threshold the spectrum cannot be told apart, and the family has the source
+spectrum only (twice, so that it still has two hardness nodes).
+"""
+function pileup_family(thresholds_keV, spectrum_weights, energies, rate_max::Real, dead_time_ns::Real)
+    thr = Float64.(thresholds_keV)
+    nb = length(thr)
+    e = Float64.(energies)
+    w0 = Float64.(spectrum_weights) ./ sum(spectrum_weights)
+    μ = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(XA.Materials.water, x * u"keV")) for x in e]
+    cms = nb > 1 ? collect(PILEUP_HARDENING_CM) : [0.0, 0.0]
+    spectra = map(cms) do t
+        w = w0 .* exp.(.-μ .* t)
+        w ./ sum(w)
+    end
+    step = max(PILEUP_RATE_STEP_TAU / (Float64(dead_time_ns) * 1.0e-9), Float64(rate_max) / (PILEUP_MAX_RATES - 1))
+    K = max(2, ceil(Int, Float64(rate_max) / step) + 1)
+    rates = collect(0:(K - 1)) .* step
+    # the mean bin of each spectrum at zero rate, from the pulse heights the matrices count
+    pu = pcct_native_table().pileup
+    centres = (pu.edges[1:(end - 1)] .+ pu.edges[2:end]) ./ 2
+    hardness = map(spectra) do w
+        H = vec(sum(_table_weights(pu.energies, e, w) .* pu.heights; dims = 1))
+        counts = [sum(H[(centres .>= thr[b]) .& (b < nb ? centres .< thr[b + 1] : trues(length(centres)))]) for b in 1:nb]
+        sum((1:nb) .* counts) / sum(counts)
+    end
+    nb == 1 && (hardness = [1.0, 2.0])
+    per_photon = [counted_per_photon(thr, w, e) for w in spectra]
+    S = zeros(nb, nb, K, length(spectra))
+    jobs = [(k, m) for k in 1:K for m in eachindex(spectra)]
+    Threads.@threads for (k, m) in jobs
+        S[:, :, k, m] = k == 1 ? Matrix{Float64}(I, nb, nb) :
+            compute_mc_pileup_matrix(thr, spectra[m], e, rates[k] / per_photon[m], dead_time_ns; seed = 42)
+    end
+    return (; S, rates, hardness)
+end
+
 "Forget every memoised pile-up migration matrix (see [`compute_mc_pileup_matrix`](@ref))."
 empty_pileup_cache!() = lock(() -> (empty!(_PILEUP_MATRIX_CACHE); nothing), _PILEUP_MATRIX_LOCK)
 
-export compute_mc_pileup_matrix, empty_pileup_cache!
+export compute_mc_pileup_matrix, empty_pileup_cache!, pileup_family, counted_per_photon

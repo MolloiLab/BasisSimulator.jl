@@ -86,24 +86,22 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
     native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
 
-    # ─── Pulse pileup (MC-LUT spectral migration, per ray by count rate) ───
-    # Pile-up is a count-rate effect, so the migration matrix is a function of the rate: a ray
-    # through the patient at 1/1000 of the air flux piles up ~1/1000 as much, and with a bowtie
-    # the air rate itself falls across the fan.  `pileup_S[:, :, k]` is `compute_mc_pileup_matrix`
-    # at count rate `pileup_rates[k]` (linear in rate from 0, where S = I, to the central air
-    # up to it): S[i, j] = fraction of true-bin-j counts recorded in bin i, column sums ≤ 1, the
-    # deficit being the count loss.  `simulate!` picks each ray's matrix from its own truth count
-    # rate (linear in rate, as the loss is) and the correction inverts that same per-ray matrix, so the bins
-    # stay `-log(recorded / I0[col, row, b])` and `I0 · exp(-bin) = recorded count` holds per ray.
+    # ─── Pulse pile-up (the Monte Carlo migration, per dexel by counted rate and spectrum) ───
+    # `pileup_S[:, :, k, m]` is `pileup_family`'s matrix at counted rate `pileup_rates[k]` (counts
+    # per second per dexel, the same absolute rates in every workspace) and mean bin
+    # `pileup_hardness[m]` (the source spectrum through 0 … 32 cm of water): each dexel takes the
+    # matrix bilinear in its own counted rate and the mean bin of its own counts, so the bowtie's and
+    # the patient's hardening change its pile-up as they change its spectrum.
     pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
     defects::Union{Nothing, NamedTuple}                # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`), on the backend
     scatter_correction::Bool                           # PCCTScanner.scatter_correction
     scatter::Union{Nothing, ScatterPlan}               # the scatter library on this acquisition's rays (nothing: use_scatter off)
     noise_reduction::Float64                           # PCCTScanner.noise_reduction
     noise_classes::NamedTuple                          # the photons neighbouring native dexels share (`pcct_event_classes`)
-    pileup_S::Union{Nothing, Array{Float64, 3}}        # (n_bins × n_bins × n_rates), nothing when pileup off
-    pileup_rates::Vector{Float64}                      # the count rates (photons / s / dexel) of pileup_S
-    pileup_rate_air::Float64                           # the brightest ray's incident count rate per dexel (the grid's top)
+    pileup_S::Union{Nothing, Array{Float64, 4}}        # (n_bins × n_bins × n_rates × n_hardness), nothing when pileup off
+    pileup_rates::Vector{Float64}                      # the counted rates (counts / s / dexel) of pileup_S
+    pileup_hardness::Vector{Float64}                   # the mean bins of pileup_S's spectra
+    pileup_rate_air::Float64                           # the brightest dexel's counted rate in air (the family's top)
 
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
@@ -394,53 +392,23 @@ function create_workspace(
             nothing
         end
 
-        # ─── Pre-compute MC-LUT pulse-pileup migration matrix S ───
-        # S[i,j] = P(true-bin-j count is recorded in bin-i).  Column sums ≤ 1, the
-        # deficit being the count loss, so a single S×counts multiply applies
-        # spectral migration AND count loss in one shot — no analytical Taguchi /
-        # semi-non-paralyzable fallback.
-        #
-        # Pileup is per native dexel (not per binned pixel).
-        # I0 from compute_detector_I0 is per binned pixel per view.
-        # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
+        # ─── The pile-up family (`pileup_family`) ───
+        # S[i, j] = the counts recorded in bin i per count of bin j: column sums ≤ 1, the deficit
+        # being the count loss, so one S × counts applies the migration and the loss together. Each
+        # native dexel piles up on its own, before the 2 × 2 sum. The family reaches the brightest dexel's counted rate in air (its counts per view
+        # over the time per view; no ray of this protocol counts faster), on the absolute rate grid
+        # every workspace shares, so a calibration at another tube current sees the same detector.
         _use_pileup = scanner.pileup &&
             pcct_detector.dead_time_ns > 0
-        # The central air count rate per dexel is the top of the rate grid. Pile-up loss is linear
-        # in rate·τ (measured: 0.092 at 0.10, 0.052 at 0.054, 0.0025 at 0.0025), so the grid is
-        # LINEAR in rate — S(0) = I exactly, four Monte-Carlo points at ¼, ½, ¾ and 1 of the air rate —
-        # and a ray's matrix is the linear blend in rate. The Monte Carlo's cost scales with the rate
-        # (71 s at the air rate, 0.3 s at a hundredth), so this costs ~2.5× the single matrix it
-        # replaces; each matrix is memoised.
-        _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
         _time_per_view_pileup = protocol.rotation_time / protocol.views
-        # The incident rate per dexel of an unfiltered central ray, scaled to the ray with the
-        # highest air response (the brightest ray: the fan centre with a bowtie, a cathode-side row
-        # with the heel effect): that ray's incident rate is the top of the grid, and every ray's
-        # rate is the top scaled by its counts relative to that ray's. Spectrum-weighted source
-        # transmission of the brightest ray, from the same table the kernel applies.
-        _bright = argmax(dropdims(sum(I0_cpu; dims = 3); dims = 3))
-        _trans_bright = if _bt_binned === nothing
-            1.0
-        else
-            sum(Float64.(weights_vec) .* Float64.(_bt_binned[2][_bright, :])) / sum(Float64.(weights_vec))
-        end
-        _count_rate_air = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup * _trans_bright
-        _pileup_rates = _use_pileup ? _count_rate_air .* [0.0, 0.25, 0.5, 0.75, 1.0] : Float64[]
-        _pileup_S = if _use_pileup
-            _τ_ns = Float64(pcct_detector.dead_time_ns)
-            w_norm = Float64.(weights_vec) ./ sum(Float64.(weights_vec))
-            S = zeros(Float64, n_bins, n_bins, length(_pileup_rates))
-            S[:, :, 1] = Matrix{Float64}(I, n_bins, n_bins)
-            for k in 2:length(_pileup_rates)
-                S[:, :, k] = compute_mc_pileup_matrix(
-                    pcct_detector.energy_thresholds_keV, w_norm, Float64.(energies), _pileup_rates[k], _τ_ns;
-                    seed = 42 + k,
-                )
-            end
-            S
-        else
-            nothing
-        end
+        _count_rate_air = maximum(sum(I0_cpu; dims = 3)) / Float64(bf * bf) / _time_per_view_pileup
+        _family = _use_pileup ? pileup_family(
+                pcct_detector.energy_thresholds_keV, Float64.(weights_vec), Float64.(energies),
+                _count_rate_air, Float64(pcct_detector.dead_time_ns),
+            ) : nothing
+        _pileup_S = _family === nothing ? nothing : _family.S
+        _pileup_rates = _family === nothing ? Float64[] : _family.rates
+        _pileup_hardness = _family === nothing ? Float64[] : _family.hardness
 
         # ─── The scatter library on this acquisition's rays ───
         # A scattered photon of energy E is split over the bins as the response table splits a
@@ -509,7 +477,7 @@ function create_workspace(
             _defects,
             scanner.scatter_correction, _scatter, Float64(scanner.noise_reduction),
             pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec), _pileup_S,
-            _pileup_rates, _count_rate_air,
+            _pileup_rates, _pileup_hardness, _count_rate_air,
             geom, energies, weights_vec, config, pcct_detector, mats,
             kVp, dose_source(scanner, protocol)
         )

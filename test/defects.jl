@@ -58,7 +58,7 @@ end
     @test all(isfinite, cal.gain) && size(cal.gain, 3) == 4
 end
 
-@testset "pile-up: calibrated from air scans at rising currents" begin
+@testset "pile-up: calibrated from air and water scans at rising currents" begin
     opts = _noise_free()
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 2.0, views = 30)
     phantom = _on_backend(_eict_cylinder(; diameter_cm = 20.0))
@@ -75,7 +75,8 @@ end
     after = _rms(reduce(vcat, vec.(corrected .- free)))
     @test 0.01 < before < 0.3                                 # the loss is visible, the regime clinical
     @test after < before / 5
-    @test issorted(cal.recorded) && all(cal.ratio[1, :] .>= 0.999)   # the lowest bin only loses counts
+    @test issorted(cal.rates) && issorted(cal.hardness)
+    @test all(cal.C[:, :, 1, m] ≈ Matrix(1.0I, 4, 4) for m in eachindex(cal.hardness))   # no counts, no pile-up
     @info "pile-up, rms log error against the pile-up-free scan" before after
 end
 
@@ -114,11 +115,13 @@ end
 
     # pile-up: the corrections the two calibrations make to one scan
     piled = _scan(pcct, phantom, protocol, full)
-    currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2]
+    currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1 / sqrt(2), 1, sqrt(2)]   # calibrate_pileup's own
     corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
     a = corrected(BS.calibrate_pileup(pcct, protocol, _EICT_RECON, phantom; sim_opts = full))
     b = corrected(BS._pileup(pcct, protocol, _EICT_RECON, full, phantom, currents))
-    @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 2.0e-5
+    # the calibration's water cylinders are voxelised, so two angles see them a little differently
+    # from 120 × 5 sub-views: 2e-5, a twentieth of what the correction leaves against the truth
+    @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 3.0e-5
 end
 
 @testset "the calibrations run on the scan phantom's device" begin
@@ -159,6 +162,7 @@ end
         piled = _scan(pcct, cpu, p_pcct, opts)
         corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, p_pcct)
         a, b = corrected(on_gpu.pileup), corrected(on_cpu.pileup)
-        @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 2.0e-5
+        # the fit takes the scans' Float32 rounding on the GPU through a least-squares solve
+        @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 3.0e-5
     end
 end

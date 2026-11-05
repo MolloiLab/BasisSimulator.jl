@@ -85,7 +85,7 @@ end
 # defects, then one kernel for the counting noise, the pile-up at each dexel's own rate and the
 # digital sum to pixels (`pcct_count!`). Writes the bins as `-log(max(N, 1) / I0)` and, when
 # given, the summed counts before that floor into `raw`.
-function _pcct_detect!(ws::PCCTWorkspace{T}, bins, use_noise::Bool, seed, raw) where {T}
+function _pcct_detect!(ws::PCCTWorkspace{T}, bins, use_noise::Bool, seed, raw, time_per_view) where {T}
     nb = length(bins)
     bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
     I0 = ws.I0
@@ -100,7 +100,7 @@ function _pcct_detect!(ws::PCCTWorkspace{T}, bins, use_noise::Bool, seed, raw) w
     end
     ws.defects === nothing || _apply_pcct_defects!(expected, I0_dexel, ws.defects)
     pileup = if ws.pileup && ws.pileup_S !== nothing
-        (S = ws.pileup_S, rates = ws.pileup_rates, rate_air = ws.pileup_rate_air, counts_air = maximum(sum(I0_dexel; dims = 3)))
+        (S = ws.pileup_S, rates = ws.pileup_rates, hardness = ws.pileup_hardness, time_per_view = time_per_view)
     else
         nothing
     end
@@ -312,7 +312,7 @@ function simulate!(
     # counting (digital binning), so a binned pixel's variance exceeds its mean. `raw_counts` are
     # the summed counts before the log-domain floor at one and before any correction.
     raw_counts = capture_raw_counts ? [similar(b) for b in pcct_sino.bins] : nothing
-    _pcct_detect!(ws, pcct_sino.bins, sim_opts.use_noise, sim_opts.seed, raw_counts)
+    _pcct_detect!(ws, pcct_sino.bins, sim_opts.use_noise, sim_opts.seed, raw_counts, protocol.rotation_time / protocol.views)
 
     # ─── Scatter correction (`scatter_correction`): the scatter estimated from the recorded
     # counts alone, the patient taken as water, subtracted from each bin (src/detector/scatter.jl) ───

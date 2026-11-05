@@ -120,10 +120,11 @@ end
         rate_air = BS.create_workspace(pileup_scanner(1.0), protocol, opts, recon, _air()).pileup_rate_air
         scanner = pileup_scanner(0.1 / rate_air * 1.0e9)
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
-        @test size(ws.pileup_S, 3) == length(ws.pileup_rates) == 5
-        @test ws.pileup_S[:, :, 1] == [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]      # no counts, no pile-up
+        @test size(ws.pileup_S, 3) == length(ws.pileup_rates) >= 2
+        @test size(ws.pileup_S, 4) == length(ws.pileup_hardness) == 7 && issorted(ws.pileup_hardness)
+        @test all(ws.pileup_S[:, :, 1, m] == [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1] for m in 1:7)   # no counts, no pile-up
         # loss grows with rate: column sums of S fall monotonically up the rate grid
-        loss(k) = 1 - sum(ws.pileup_S[:, 1, k])
+        loss(k) = 1 - sum(ws.pileup_S[:, 1, k, 1])
         @test loss(length(ws.pileup_rates)) > loss(1)
         res = BS.simulate!(ws, _air(), protocol, opts)
         n_cols = ws.geom.n_cols

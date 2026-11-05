@@ -201,10 +201,11 @@ on any backend, and one kernel does it all there.
   share), and each dexel's unshared counts, the rest of its expected counts. Each dexel's mean is
   its expected counts in every bin, whatever the bowtie or the patient has made of its spectrum.
   A neighbour beyond the detector's edge takes no share: the edge dexel keeps its own.
-- The pile-up of each dexel at its own rate, before the sum (`pileup`, or `nothing`):
-  `(; S, rates, rate_air, counts_air)`, the migration matrices `S[:, :, k]`
-  ([`compute_mc_pileup_matrix`](@ref)) at the count rates `rates` (linear from 0); a dexel's rate
-  is `rate_air` times its counts over `counts_air`, the brightest dexel's air counts.
+- The pile-up of each dexel at its own rate and spectrum, before the sum (`pileup`, or
+  `nothing`): `(; S, rates, hardness, time_per_view)`, the family of [`pileup_family`](@ref),
+  `S[:, :, k, m]` at counted rates `rates[k]` (evenly spaced from 0) and mean bins `hardness[m]`.
+  A dexel's counted rate is its counts over `time_per_view`, its hardness the mean bin of its
+  counts; its matrix is bilinear in the two (held at the family's ends).
 
 Every draw has its own counter-based stream, keyed by `(seed, class, dexel, view)`: a seed fixes
 the realisation on a backend whatever the thread count or launch order (`seed = nothing` draws a
@@ -244,15 +245,19 @@ function pcct_count!(
     pile = if pileup === nothing
         nothing
     else
+        size(pileup.S, 3) == length(pileup.rates) && size(pileup.S, 4) == length(pileup.hardness) ||
+            throw(DimensionMismatch("pcct_count!: one matrix per rate and hardness"))
+        length(pileup.rates) >= 2 && length(pileup.hardness) >= 2 && issorted(pileup.hardness) ||
+            throw(ArgumentError("pcct_count!: at least two rates and two increasing hardness nodes"))
         (
             S = device(T.(pileup.S)),
-            r0 = T(pileup.rates[1]),
             dr = T(pileup.rates[2] - pileup.rates[1]),
             K = Int32(length(pileup.rates)),
-            scale = T(pileup.rate_air / pileup.counts_air),
+            q = device(T.(pileup.hardness)),
+            M = Int32(length(pileup.hardness)),
+            scale = T(1 / pileup.time_per_view),
         )
     end
-    pile === nothing || pile.K >= 2 || throw(ArgumentError("pcct_count!: at least two count rates"))
     _pcct_count!(Tuple(counts), Tuple(expected), pairs, pile, base, Int32(binning))
     return counts
 end
@@ -318,16 +323,38 @@ end
 @inline _shared_rate(λ1, λ2, pairs, p) =
     @inbounds min(fma(λ1, pairs.c1[p], λ2 * pairs.c2[p]) / 2, λ1 * pairs.k1[p], λ2 * pairs.k2[p])
 
-# A dexel's counts piled up at its own rate: `S` linear in rate between the grid's matrices.
+# A dexel's counts piled up at its own counted rate and spectrum: `S` bilinear in the rate and the
+# mean bin between the family's matrices.
 @inline function _pile_up(n::NTuple{NB, T}, pile) where {NB, T}
-    x = clamp((pile.scale * sum(n) - pile.r0) / pile.dr, zero(T), T(pile.K - 1))
+    tot = sum(n)
+    tot > 0 || return n
+    x = clamp(pile.scale * tot / pile.dr, zero(T), T(pile.K - 1))
     k = min(unsafe_trunc(Int32, x), pile.K - Int32(2))
     f = x - k
-    S = pile.S
-    return ntuple(
-        i -> sum(ntuple(j -> @inbounds(((1 - f) * S[i, j, k + 1] + f * S[i, j, k + 2]) * n[j]), Val(NB))),
+    q = _mean_bin(n)
+    m = Int32(1)
+    while m < pile.M - Int32(1) && q >= @inbounds(pile.q[m + 1])
+        m += Int32(1)
+    end
+    g = @inbounds clamp((q - pile.q[m]) / (pile.q[m + 1] - pile.q[m]), zero(T), one(T))
+    return _migrate(pile.S, n, k, m, f, g)
+end
+
+# `S` bilinear between rate nodes `k + 1, k + 2` (fraction `f`) and hardness nodes `m, m + 1`
+# (fraction `g`), times the counts `n` (no reassigned variable is captured, so it infers on the GPU).
+@inline function _migrate(S, n::NTuple{NB, T}, k, m, f, g) where {NB, T}
+    return ntuple(i -> _migrate_row(S, n, i, k, m, f, g), Val(NB))
+end
+@inline _migrate_row(S, n::NTuple{NB, T}, i, k, m, f, g) where {NB, T} = sum(
+    ntuple(
+        j -> @inbounds(
+            (
+                (1 - g) * ((1 - f) * S[i, j, k + 1, m] + f * S[i, j, k + 2, m]) +
+                    g * ((1 - f) * S[i, j, k + 1, m + 1] + f * S[i, j, k + 2, m + 1])
+            ) * n[j]
+        ),
         Val(NB),
     )
-end
+)
 
 # Internal: the simulator's plumbing, reached as `BasisSimulator.pcct_count!` etc. (not exported).

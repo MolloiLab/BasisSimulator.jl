@@ -500,8 +500,10 @@ end
     # the loss grows with the rate × dead time
     S2 = BS.compute_mc_pileup_matrix(thresholds, w, e, 1.0e7, 27.0; seed = 3)
     @test sum(S2) < sum(S)
-    # pcct_count!'s pile-up: an air dexel at the grid's top rate takes the top matrix, before the sum
-    pileup = (S = cat(Matrix(1.0I, 4, 4), S; dims = 3), rates = [0.0, 5.0e6], rate_air = 5.0e6, counts_air = 4000.0)
+    # pcct_count!'s pile-up: a dexel at the family's top rate takes the top matrix, before the sum
+    # (4000 counts per view in 8e-4 s: 5e6 counts per second)
+    family = cat(Matrix(1.0I, 4, 4), S; dims = 3)
+    pileup = (S = cat(family, family; dims = 4), rates = [0.0, 5.0e6], hardness = [1.0, 4.0], time_per_view = 8.0e-4)
     counts = BS.pcct_count!([zeros(1, 1, 1) for _ in 1:4], [fill(1000.0, 2, 2, 1) for _ in 1:4], nothing; binning = 2, pileup)
     @test [counts[i][1, 1, 1] for i in 1:4] ≈ 4 .* (S * fill(1000.0, 4))
 end
