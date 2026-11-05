@@ -12,6 +12,41 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.2](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.1...v0.16.2) (2026-11-05)
+
+Fixes the ring artifact of the photon-counting detector's pile-up correction. On notebook 04's
+NAEOTOM Alpha (ideal detector, Gammex 472, noise-free) the corrected bin-1 image had concentric
+rings up to 16 HU inside the phantom and −46 to +23 HU at its edge; now its error is under 1 HU
+everywhere (ring RMS 1.78 → 0.05 HU). Every photon-counting result with pile-up changes.
+
+### Fixed
+- **The pile-up model depends on each dexel's own spectrum, and on one rate scale.** The migration
+  matrices were computed once from the source spectrum, so a ray hardened by the bowtie or the
+  patient piled up like an air ray at the same rate, and they sat on a rate grid scaled to each
+  protocol's own air rate, each from its own Monte Carlo seed, so the pile-up at a given rate
+  differed between tube currents. Now `pileup_family` computes them at absolute counted rates
+  (0.054 / τ apart, 2e6 counts per second at the Alpha's 27 ns, the same in every workspace) and
+  for the source spectrum through 0–32 cm of water, all from one pulse train (common random
+  numbers, so smooth in both); each native dexel takes the matrix bilinear in its own counted rate
+  and the mean bin of its own counts. `PCCTWorkspace.pileup_S` is 4-D (`[bin, bin, rate, hardness]`),
+  with `pileup_hardness`.
+- **`calibrate_pileup` corrects every ray from its own counts.** It pooled every pixel into one
+  ratio-against-rate curve per bin, and took the lowest-current scan as pile-up free (at 1/16 of the
+  protocol's current the Alpha still loses 16 % of its lowest bin in air); both left rings. It now
+  scans air and two water cylinders (20 and 35 cm) at 1/16 … √2 of the protocol's current, takes the
+  pile-up-free counts from each pixel's counts extrapolated to zero current, and fits the matrices
+  that take a ray's recorded counts to its pile-up-free counts, as a function of its recorded rate
+  and the mean bin of its counts (`PileupCalibration` holds `rates`, `hardness`, `C` and `binning`).
+  `apply_pileup!` applies them ray by ray, on the device. The call signatures are unchanged.
+  Against the pile-up-free scan, the corrected sinogram is within 2e-3 everywhere (the
+  uncorrected bin 1 is off by 0.5 at the Alpha's protocol current); in `test/defects.jl` the rms log
+  error falls from 0.061 to 0.0005 (v0.16.1: 0.007).
+
+### Performance
+- A photon-counting workspace with pile-up builds its matrix family once per spectrum and detector
+  (about 6 s, threaded; memoised for later workspaces). `calibrate_pileup` scans 21 times instead of
+  6: 16 s on an NVIDIA L40S for notebook 04's Alpha (was 6 s).
+
 ## [0.16.1](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.0...v0.16.1) (2026-11-04)
 
 ### Breaking

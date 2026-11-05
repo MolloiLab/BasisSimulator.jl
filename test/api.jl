@@ -445,8 +445,8 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         # Workspace state reflects the toggle.
         @test on.ws.pileup === true
         @test off.ws.pileup === false
-        @test on.ws.pileup_S isa Array{Float64, 3}
-        @test size(on.ws.pileup_S)[1:2] == (4, 4) # one 4 × 4 matrix per count rate
+        @test on.ws.pileup_S isa Array{Float64, 4}
+        @test size(on.ws.pileup_S)[1:2] == (4, 4) # one 4 × 4 matrix per count rate and hardness
         @test off.ws.pileup_S === nothing
 
         _ts("  simulate! ON")
@@ -1542,8 +1542,8 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 
         # Pile-up wiring (PCCTScanner.pileup default = true).
         @test ws.pileup === true
-        @test ws.pileup_S isa Array{Float64, 3}
-        @test size(ws.pileup_S)[1:2] == (length(s.scanner.energy_thresholds), length(s.scanner.energy_thresholds)) # per count rate
+        @test ws.pileup_S isa Array{Float64, 4}
+        @test size(ws.pileup_S)[1:2] == (length(s.scanner.energy_thresholds), length(s.scanner.energy_thresholds)) # per count rate and hardness
 
         # Native-res buffers are nothing when binning_factor == 1 (toy default).
         @test s.scanner.binning_factor == 1   # toy uses default

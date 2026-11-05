@@ -441,7 +441,7 @@ end"""),
 ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
 res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
 
-# pile-up, calibrated as a scanner does it: air scans at rising currents, on the phantom's device
+# pile-up, calibrated as a scanner does it: air and water scans at rising currents, on the phantom's device
 pileup = BS.calibrate_pileup(scanner_pc, protocol, recon, phantom; sim_opts)
 BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
 

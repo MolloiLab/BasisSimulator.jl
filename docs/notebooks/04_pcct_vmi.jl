@@ -279,8 +279,9 @@ projection of every sub-view through the Monte Carlo detector response, the pati
 the counts of every native dexel (Poisson, neighbours covarying through the photons they share),
 its pile-up, the digital 2 × 2 sum, then the scatter correction (estimated from the counts, the
 patient taken as water). The pile-up is corrected after it
-with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated air scans at
-rising tube currents (never from the model's own matrices), then the dexels' gains with
+with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated scans of air and
+two water cylinders at rising tube currents (never from the model's own matrices: each ray's
+recorded counts in every bin, its rate and its spectrum give its pile-up-free counts), then the dexels' gains with
 `apply_flat_field!`, from a low-flux air scan `calibrate_flat_field`. It returns
 
 - `pcct_sino.bins`: four corrected sinograms ``h_k = -\log(y_k / I_{0,k})``, `[col, row, view]`;
@@ -301,7 +302,7 @@ acquisition = let
     model = nothing
     channels = Dict{Symbol, Vector{Array{Float32, 3}}}()
     seconds = Dict{Symbol, Float64}()
-    # pile-up, calibrated as a scanner does: air scans at rising currents
+    # pile-up, calibrated as a scanner does: air and water scans at rising currents
     pileup = BS.calibrate_pileup(scanner, protocol, recon_opts, phantom;
         sim_opts = draw_options(; DRAWS[:reference]...))
     # the flat field, as a scanner does it: an air scan at low flux gives each pixel's gain per bin
