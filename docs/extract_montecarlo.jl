@@ -5,17 +5,15 @@
 # apart from the BasisSimulator notebooks), and its first figure becomes its gallery card,
 # docs/assets/mc-<stem>.webp.
 #
-# The exporter is docs/extract_all.jl's: that file is included below for its helpers and is NOT
-# edited for the Monte Carlo notebooks, because its own bytes are part of every BasisSimulator
-# export's fingerprint. What differs here:
+# The exporter is docs/extract_all.jl's: that file is included below for its helpers. What differs
+# here:
 #   • Environment: each notebook activates lib/BasisMonteCarlo/docs itself (BasisMonteCarlo and
 #     BasisSimulator by path) and starts its own Distributed workers. They run on the CPU.
-#   • Fingerprint: the notebook; lib/BasisMonteCarlo/src/**; lib/BasisMonteCarlo/Project.toml (not
-#     its `version` line); lib/BasisMonteCarlo/docs/Project.toml and its Manifest-v*.toml lockfiles; the committed
-#     reference data in lib/BasisMonteCarlo/docs/reference_data/; and the exporter (Snapshot's
-#     locked tree, docs/build_env/Manifest.toml, docs/extract_all.jl, this file and
-#     MC_EXPORT_CONTRACT). Not docs/Manifest-v*.toml, which these notebooks never load, and not the
-#     root src/ (see AGENTS.md, "The documentation site"). Mirrored in
+#   • Fingerprint: the notebook; lib/BasisMonteCarlo/docs/Project.toml and its Manifest-v*.toml
+#     lockfiles (without this repository's own version lines); the committed reference data in
+#     lib/BasisMonteCarlo/docs/reference_data/; Snapshot's locked tree, docs/build_env/Manifest.toml
+#     and MC_EXPORT_CONTRACT. Not lib/BasisMonteCarlo/src/ or its Project.toml: a package change
+#     re-renders the notebooks it affects when asked, by slug. Mirrored in
 #     docs/verify_notebook_exports.py.
 #   • Names: Snapshot names an export after its notebook, so each one is exported into a scratch
 #     directory and moved into docs/notebooks-static/ under its `mc-` slug.
@@ -71,43 +69,34 @@ const _MC_INPUT_HASH = Ref{Union{Nothing, String}}(nothing)
 function mc_input_hash()
     _MC_INPUT_HASH[] === nothing || return _MC_INPUT_HASH[]::String
     root = dirname(@__DIR__)
-    # every lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
-    files = vcat(
-        [joinpath(MC_DOCS, "Project.toml")],
-        sort([joinpath(MC_DOCS, name) for name in readdir(MC_DOCS) if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)]),
-    )
-    for dir in (joinpath(MC_ROOT, "src"), joinpath(MC_DOCS, "reference_data"))
-        isdir(dir) || continue
+    # the docs environment (its lockfiles without this repository's own version lines, one per
+    # Julia minor version) and the committed reference data
+    locks = sort([joinpath(MC_DOCS, name) for name in readdir(MC_DOCS) if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)])
+    entries = [string(relpath(path, root), ":", lock_input_hash(path)) for path in locks]
+    files = [joinpath(MC_DOCS, "Project.toml")]
+    dir = joinpath(MC_DOCS, "reference_data")
+    if isdir(dir)
         for (base, _, names) in walkdir(dir), name in names
             path = joinpath(base, name)
             isfile(path) && push!(files, path)
         end
     end
-    entries = [
-        string(relpath(path, root), ":", bytes2hex(sha256(read(path))))
-            for path in files
-    ]
-    project = joinpath(MC_ROOT, "Project.toml")
-    push!(entries, string(relpath(project, root), ":", project_input_hash(project)))
+    append!(entries, [string(relpath(path, root), ":", bytes2hex(sha256(read(path)))) for path in files])
     sort!(entries)
     _MC_INPUT_HASH[] = bytes2hex(sha256(join(entries, '\0')))
     return _MC_INPUT_HASH[]::String
 end
 
-"Fingerprint the notebook, the BasisMonteCarlo inputs and the exporter."
+"Fingerprint the notebook, its docs environment and data, and the export contract."
 function mc_export_fingerprint(slug::AbstractString)
     snapshot_tree = string(Pkg.dependencies()[SNAPSHOT_UUID].tree_hash)
     build_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "build_env", "Manifest.toml"))))
-    exporter = bytes2hex(sha256(read(joinpath(@__DIR__, "extract_all.jl"))))
-    driver = bytes2hex(sha256(read(@__FILE__)))
     payload = join(
         (
             mc_source_hash(slug),
             mc_input_hash(),
             snapshot_tree,
             build_lock,
-            exporter,
-            driver,
             MC_EXPORT_CONTRACT,
         ),
         '\0',

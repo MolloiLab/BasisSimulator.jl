@@ -70,10 +70,14 @@ deploys from `main` on its own (see the end of this file).
 any commit. A docs-only
 change is live a few minutes after it merges.
 
-The build refuses notebook pages whose fingerprint is stale. The fingerprint covers the notebook,
-all of `src/`, `Project.toml` (not its `version` line) and the docs lockfiles, so after a code
-change the deploy fails until the notebooks are re-rendered on a GPU machine
-(`docs/render_notebooks.sh`, then `python3 docs/verify_notebook_exports.py`) and the new
-`docs/notebooks-static/` is merged. Re-render in the pull request that changes the code, or in a
-follow-up one. The BasisMonteCarlo notebooks (`mc-*`) go stale with `lib/BasisMonteCarlo/` instead
-and render on the CPU (`docs/render_notebooks.sh mc-<stem>`; AGENTS.md, "The documentation site").
+The build refuses notebook pages whose fingerprint is stale. The fingerprint covers what decides
+a page: the notebook, its data declarations, the docs environment (the build and docs lockfiles,
+without this repository's own `version` lines) and the export contract. It does not cover the
+package's `src/` or `Project.toml`, so a code change or a version bump never blocks the deploy and
+never forces every notebook to re-render. When a change alters what notebooks show (a release that
+moves results), re-render the notebooks it affects on a GPU machine, by name
+(`docs/render_notebooks.sh 04_pcct_vmi 08_qrm_thorax_pure_material_pcct`), or all of them with
+`BASISSIM_FORCE_NB_REBUILD=1 docs/render_notebooks.sh`, and merge the new `docs/notebooks-static/`.
+Editing a notebook makes its own page stale until it is re-rendered. The BasisMonteCarlo notebooks
+(`mc-*`) work the same way and render on the CPU (`docs/render_notebooks.sh mc-<stem>`; AGENTS.md,
+"The documentation site").

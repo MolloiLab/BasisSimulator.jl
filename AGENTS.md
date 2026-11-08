@@ -120,12 +120,16 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   per GPU (NVIDIA: one lane per `nvidia-smi` GPU, or `BASISSIM_GPUS="0 1"`; Mac/CPU: one lane),
   then runs `docs/verify_notebook_exports.py` (`BASISSIM_LANES_PER_GPU=3` runs three per GPU on the lab's 96 GB cards; a lane that dies is retried once). `docs/render_notebooks.sh 04_pcct_vmi` renders the
   named ones. Logs: `docs/render-logs/`. On the lab's two-GPU node all 12 take about 17 minutes (about 15 per GPU).
-- **Why an export goes stale:** its fingerprint hashes the notebook, all of `src/`, `Project.toml`
-  (not its `version` line), both docs lockfiles, `docs/extract_all.jl` and
-  `docs/notebooks/DATA_PROVENANCE.sha256`. Any code change makes every export stale; that is by
-  design: the docs deploy refuses stale exports, so re-render after a code change (in that pull
-  request or a follow-up). The site deploys from `main`; no release is needed. (The
-  BasisMonteCarlo notebooks have their own fingerprint: next item.)
+- **Why an export goes stale:** its fingerprint hashes what decides the page: the notebook,
+  `docs/notebooks/DATA_PROVENANCE.sha256`, Snapshot's locked tree, `docs/build_env/Manifest.toml`,
+  both docs lockfiles (without the `version` lines of BasisSimulator and BasisMonteCarlo) and
+  `EXPORT_CONTRACT` in `docs/extract_all.jl`. Not `src/`, `Project.toml` or the exporter scripts'
+  bytes: a code change or a version bump does not make pages stale (the user, 2026-11-08: the docs
+  must not rebuild on every change). Editing a notebook makes its page stale. When a change moves
+  what notebooks show, re-render the affected ones by name, or all with
+  `BASISSIM_FORCE_NB_REBUILD=1`; a change to how pages are rendered bumps `EXPORT_CONTRACT`. The
+  site deploys from `main`; no release is needed. (The BasisMonteCarlo notebooks have their own
+  fingerprint: next item.)
 - **BasisMonteCarlo notebooks** (`lib/BasisMonteCarlo/docs/notebooks/<stem>.jl`) are the
   Examples' "Detector physics (BasisMonteCarlo.jl)" category, slug `mc-<stem>`
   (`/examples/mc-04_siemens_force/`). They run on the CPU in their own environment,
@@ -136,13 +140,11 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   stale notebook of both kinds, these on a CPU lane beside the GPU lanes (`BASISSIM_MC_LANES=2` for
   two); `BASISSIM_SKIP_NOTEBOOKS=mc-10_scatter_library` leaves that one out. A render reruns the
   simulations, so it rewrites what the notebook saves (`lib/BasisMonteCarlo/tables/`). Their
-  fingerprint hashes the notebook, `lib/BasisMonteCarlo/src/`, `lib/BasisMonteCarlo/Project.toml`
-  (not its `version` line), `lib/BasisMonteCarlo/docs/Project.toml` and its committed
-  `Manifest-v*.toml` lockfiles, `lib/BasisMonteCarlo/docs/reference_data/`, and the exporter
-  (`docs/build_env/Manifest.toml`, `docs/extract_all.jl`, `docs/extract_montecarlo.jl`); not
-  `docs/Manifest-v*.toml` or the root `src/`, so a BasisSimulator change does not re-render them.
-  Because `docs/extract_all.jl` is in every BasisSimulator export's fingerprint, a change that only
-  concerns these notebooks goes in `docs/extract_montecarlo.jl`. The kV sliders of 04–08 are forced
+  fingerprint hashes the notebook, `lib/BasisMonteCarlo/docs/Project.toml` and its committed
+  `Manifest-v*.toml` lockfiles (without this repository's own `version` lines),
+  `lib/BasisMonteCarlo/docs/reference_data/`, Snapshot's locked tree, `docs/build_env/Manifest.toml`
+  and `MC_EXPORT_CONTRACT`; not `lib/BasisMonteCarlo/src/`, its `Project.toml` or the root `src/`, so
+  neither package's code changes re-render them. The kV sliders of 04–08 are forced
   fallbacks (`MC_FORCE_FALLBACK_BONDS`, mirrored in the verifier). A notebook not rendered yet has
   no page and an unlinked card, and the verifier (so `docs/build.sh` and the deploy) fails until it
   is rendered; `BASISSIM_SKIP_NOTEBOOKS='mc-*' docs/build.sh` builds without them (a trailing `*`
