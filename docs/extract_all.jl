@@ -7,10 +7,11 @@
 # (17–42 MB each, 141 MB total); the lean pages are ~100× smaller, which is
 # what lets the site fit through Snapshot's publish pipeline.
 #
-# Cache is keyed on a SHA-256 fingerprint of the source notebook, Snapshot's
-# locked source tree, and the export contract (NOT mtime, so `git checkout`
-# doesn't trigger spurious rebuilds). The fingerprint is embedded in both
-# exported forms; renderer/theme upgrades therefore invalidate cleanly.
+# Cache is keyed on a SHA-256 fingerprint of the source notebook, its data declarations, the docs
+# environment (Snapshot's locked tree, the build and docs lockfiles) and the export contract (NOT
+# mtime, so `git checkout` doesn't trigger spurious rebuilds), embedded in both exported forms.
+# The package's src/ is not in it: a code change does not make every page stale. Re-render the
+# notebooks a change affects by name, or all with BASISSIM_FORCE_NB_REBUILD=1.
 #
 # Workflow (RELEASING.md, step 6):
 #   1. Render on a GPU machine: `docs/render_notebooks.sh` runs one of these processes per GPU,
@@ -42,10 +43,10 @@ using SHA: bytes2hex, sha256
 using UUIDs: UUID
 
 const NOTEBOOKS_DIR = joinpath(@__DIR__, "notebooks")
-const STATIC_OUT    = joinpath(@__DIR__, "notebooks-static")
-const DATA_DIR      = joinpath(NOTEBOOKS_DIR, "data")
+const STATIC_OUT = joinpath(@__DIR__, "notebooks-static")
+const DATA_DIR = joinpath(NOTEBOOKS_DIR, "data")
 const DATA_PROVENANCE = joinpath(NOTEBOOKS_DIR, "DATA_PROVENANCE.sha256")
-const HASH_META     = "basissim-export-fingerprint"
+const HASH_META = "basissim-export-fingerprint"
 const SNAPSHOT_UUID = UUID("1e64ef43-5f79-4f6b-8e97-159df4e27032")
 const FORCE_FALLBACK_BONDS = Dict(
     "01_five_struct_api" => (:z_slice,),
@@ -57,10 +58,10 @@ const EXPORT_CONTRACT = "basissim-lean-v4|therapy=true|fragment=true|islands=tru
 """Discover every Pluto notebook under `docs/notebooks/`."""
 function notebook_slugs()
     isdir(NOTEBOOKS_DIR) || return String[]
-    [
+    return [
         splitext(f)[1]
-        for f in sort(readdir(NOTEBOOKS_DIR))
-        if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
+            for f in sort(readdir(NOTEBOOKS_DIR))
+            if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
     ]
 end
 
@@ -68,39 +69,27 @@ end
 source_hash(slug::AbstractString) =
     bytes2hex(sha256(read(joinpath(NOTEBOOKS_DIR, "$(slug).jl"))))
 
-"Hash Project.toml while ignoring the package's release-only version field."
-function project_input_hash(path::AbstractString)
-    content = read(path, String)
-    normalized = replace(
-        content,
-        r"(?m)^version\s*=\s*\"[^\"]*\"\s*$" => "version = \"<release-version>\"",
-    )
-    bytes2hex(sha256(normalized))
+# The repository's own packages, whose `version` lines a lockfile records (BasisSimulator and
+# BasisMonteCarlo by path): a release bumps them without changing what a notebook renders.
+const OWN_PACKAGES = ("[[deps.BasisSimulator]]", "[[deps.BasisMonteCarlo]]")
+
+"A lockfile's hash, ignoring the `version` lines of this repository's own packages."
+function lock_input_hash(path::AbstractString)
+    kept = String[]
+    own = false
+    for line in split(read(path, String), '\n')
+        if startswith(line, "[[")
+            own = strip(line) in OWN_PACKAGES
+        elseif own && occursin(r"^\s*version\s*=", line)
+            continue
+        end
+        push!(kept, line)
+    end
+    return bytes2hex(sha256(join(kept, '\n')))
 end
 
-"Digest committed simulator code and the committed declarations for optional data."
-const _SIMULATOR_INPUT_HASH = Ref{Union{Nothing,String}}(nothing)
-function simulator_input_hash()
-    _SIMULATOR_INPUT_HASH[] === nothing || return _SIMULATOR_INPUT_HASH[]::String
-    root = dirname(@__DIR__)
-    project = joinpath(root, "Project.toml")
-    files = [DATA_PROVENANCE]
-    for dir in (joinpath(root, "src"),)
-        isdir(dir) || continue
-        for (base, _, names) in walkdir(dir), name in names
-            path = joinpath(base, name)
-            isfile(path) && push!(files, path)
-        end
-    end
-    entries = [
-        string(relpath(path, root), ":", bytes2hex(sha256(read(path))))
-        for path in sort!(files)
-    ]
-    push!(entries, string("Project.toml:", project_input_hash(project)))
-    sort!(entries)
-    _SIMULATOR_INPUT_HASH[] = bytes2hex(sha256(join(entries, '\0')))
-    _SIMULATOR_INPUT_HASH[]::String
-end
+"The committed declarations of the notebooks' optional data."
+data_input_hash() = bytes2hex(sha256(read(DATA_PROVENANCE)))
 
 """Verify any locally available, ignored datasets against the committed
 provenance declaration. Missing files are allowed: CI consumes the committed
@@ -127,23 +116,35 @@ function verify_local_data!()
         actual = bytes2hex(sha256(read(path)))
         actual == expected || error("dataset checksum mismatch: $(relative)")
     end
-    nothing
+    return nothing
 end
 
-"Fingerprint both notebook input and the immutable exporter implementation."
+"""Fingerprint what decides a notebook's export: the notebook, its data declarations, the docs
+environment (Snapshot's locked tree, docs/build_env/Manifest.toml, the docs lockfiles without this
+repository's own version lines) and `EXPORT_CONTRACT`. Not the package's `src/`, `Project.toml` or
+the exporter scripts' own bytes: a code change re-renders the notebooks it affects when asked
+(`docs/render_notebooks.sh <slug>` or `BASISSIM_FORCE_NB_REBUILD=1`), not every page on every
+commit; a change to how pages render bumps `EXPORT_CONTRACT`."""
 function export_fingerprint(slug::AbstractString)
     snapshot_tree = string(Pkg.dependencies()[SNAPSHOT_UUID].tree_hash)
     build_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "build_env", "Manifest.toml"))))
     # every docs lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
     docs_locks = sort([name for name in readdir(@__DIR__) if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)])
-    docs_lock = bytes2hex(sha256(join(
-        ["$(name):$(bytes2hex(sha256(read(joinpath(@__DIR__, name)))))" for name in docs_locks],
-        '\0',
-    )))
-    driver = bytes2hex(sha256(read(@__FILE__)))
-    payload = join((source_hash(slug), simulator_input_hash(), snapshot_tree,
-        build_lock, docs_lock, driver, EXPORT_CONTRACT), '\0')
-    bytes2hex(sha256(payload))
+    docs_lock = bytes2hex(
+        sha256(
+            join(
+                ["$(name):$(lock_input_hash(joinpath(@__DIR__, name)))" for name in docs_locks],
+                '\0',
+            )
+        )
+    )
+    payload = join(
+        (
+            source_hash(slug), data_input_hash(), snapshot_tree,
+            build_lock, docs_lock, EXPORT_CONTRACT,
+        ), '\0'
+    )
+    return bytes2hex(sha256(payload))
 end
 
 """Fingerprint recorded inside the cached HTML, or `nothing` if the cache is
@@ -152,9 +153,11 @@ function cached_hash(slug::AbstractString)::Union{String, Nothing}
     out = joinpath(STATIC_OUT, "$(slug).html")
     isfile(out) || return nothing
     html = read(out, String)
-    m = match(Regex("<meta\\s+name=\"$(HASH_META)\"\\s+content=\"([0-9a-f]+)\""),
-              html)
-    m === nothing ? nothing : m.captures[1]
+    m = match(
+        Regex("<meta\\s+name=\"$(HASH_META)\"\\s+content=\"([0-9a-f]+)\""),
+        html
+    )
+    return m === nothing ? nothing : m.captures[1]
 end
 
 needs_rebuild(slug::AbstractString)::Bool = cached_hash(slug) != export_fingerprint(slug)
@@ -174,11 +177,14 @@ the source. The hash is recomputed AFTER the run (the session disables
 notebook writes, but belt-and-suspenders: whatever lands on disk is what
 we key the cache on).
 """
-function render_notebook!(session::Pluto.ServerSession,
-                          src_path::AbstractString,
-                          dst_path::AbstractString)
+function render_notebook!(
+        session::Pluto.ServerSession,
+        src_path::AbstractString,
+        dst_path::AbstractString
+    )
     slug = splitext(basename(src_path))[1]
-    html_path = export_notebook(src_path;
+    html_path = export_notebook(
+        src_path;
         output_dir = dirname(dst_path),
         therapy = true,           # lean page: SSR cells + islands, NO statefile
         fragment = true,          # native inline component for Therapy docs (no iframe)
@@ -192,14 +198,15 @@ function render_notebook!(session::Pluto.ServerSession,
         # disabled control instead of spending unbounded time in inference.
         force_fallback_bonds = get(FORCE_FALLBACK_BONDS, slug, ()),
         env_dir = @__DIR__,       # notebook imports resolve from docs/Project.toml
-        session = session)
+        session = session
+    )
     post_hash = source_hash(slug)
     fingerprint = export_fingerprint(slug)
     # Embed the source+exporter fingerprint for the rebuild cache.
     meta = """<meta name="$(HASH_META)" content="$(fingerprint)">"""
     html = read(html_path, String)
     html = occursin("<head>", html) ? replace(html, "<head>" => "<head>" * meta; count = 1) :
-                                      html * "\n" * meta * "\n"
+        html * "\n" * meta * "\n"
     write(html_path, html)
     # export_notebook names the file after the notebook stem == our slug, so
     # html_path and dst_path coincide; assert so a future rename can't desync.
@@ -220,7 +227,7 @@ list).  Comma-separated env var.  Example:
     BASISSIM_SKIP_NOTEBOOKS=06_catsim_vs_basissim julia --project=docs docs/app.jl build
 """
 function skipped_slugs()
-    Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
+    return Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
 end
 
 """Walk every notebook (or `only`), rendering only those whose export fingerprint doesn't
@@ -245,7 +252,7 @@ function export_notebooks(only = nothing)
 
     isdir(STATIC_OUT) || mkpath(STATIC_OUT)
 
-    force     = haskey(ENV, "BASISSIM_FORCE_NB_REBUILD")
+    force = haskey(ENV, "BASISSIM_FORCE_NB_REBUILD")
     to_render = force ? slugs : filter(needs_rebuild, slugs)
 
     if isempty(to_render)
@@ -253,8 +260,10 @@ function export_notebooks(only = nothing)
         return slugs
     end
 
-    println("[notebooks] rendering $(length(to_render))/$(length(slugs)) " *
-            (force ? "(forced)" : "(source changed)") * "…")
+    println(
+        "[notebooks] rendering $(length(to_render))/$(length(slugs)) " *
+            (force ? "(forced)" : "(source changed)") * "…"
+    )
 
     session = render_session()
     foreach(slug -> render_slug!(session, slug), to_render)
@@ -266,11 +275,12 @@ end
 # loop (Pluto normalizes the source bytes between hash-pre-render and
 # hash-post-render).  See render_notebook! for the second safeguard.
 render_session() = Pluto.ServerSession(;
-    options = Pluto.Configuration.from_flat_kwargs(disable_writing_notebook_files = true))
+    options = Pluto.Configuration.from_flat_kwargs(disable_writing_notebook_files = true)
+)
 
 function render_slug!(session, slug)
-    src  = joinpath(NOTEBOOKS_DIR, "$(slug).jl")
-    dst  = joinpath(STATIC_OUT,    "$(slug).html")
+    src = joinpath(NOTEBOOKS_DIR, "$(slug).jl")
+    dst = joinpath(STATIC_OUT, "$(slug).html")
     pre_hash = source_hash(slug)
     println("  ▸ $(slug)  (hash $(first(pre_hash, 12))…)")
     t0 = time()
@@ -280,7 +290,7 @@ function render_slug!(session, slug)
     end
     kb = round(filesize(dst) / 1024; digits = 1)
     println("    ✓ $(round(time() - t0; digits = 1))s  →  $(kb) KB")
-    flush(stdout)
+    return flush(stdout)
 end
 
 """Render `<queue>/<slug>.todo` entries one at a time until none is left. A process claims an
@@ -296,6 +306,7 @@ function render_queue(queue::AbstractString)
         render_slug!(session, slug)
         rm(joinpath(queue, "$(slug).claimed.$(getpid())"))
     end
+    return
 end
 
 function claim_next(queue::AbstractString)
@@ -319,25 +330,25 @@ PNG, ~0.3 MB as WebP). Runs python3+Pillow — fine, this script only ever runs
 on the local render machine. Idempotent: already-webp URIs are untouched."""
 function compress_page_images!(html_path::AbstractString)
     py = raw"""
-import re, base64, io, sys
-from PIL import Image
-p = sys.argv[1]
-h = open(p, encoding='utf-8', errors='surrogateescape').read()
-saved = [0, 0]
-def sub(m):
-    raw = base64.b64decode(m.group(1))
-    if len(raw) < 200_000: return m.group(0)
-    im = Image.open(io.BytesIO(raw)).convert('RGB')
-    out = io.BytesIO(); im.save(out, 'WEBP', quality=90, method=6)
-    if out.tell() >= len(raw): return m.group(0)
-    saved[0] += len(raw); saved[1] += out.tell()
-    return 'data:image/webp;base64,' + base64.b64encode(out.getvalue()).decode()
-h2 = re.sub(r'data:image/png;base64,\s*([A-Za-z0-9+/=]{1000,})', sub, h)
-if h2 != h:
-    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(h2)
-print(f"png->webp: {saved[0]/1e6:.1f} MB -> {saved[1]/1e6:.1f} MB")
-"""
-    run(`python3 -c $py $html_path`)
+    import re, base64, io, sys
+    from PIL import Image
+    p = sys.argv[1]
+    h = open(p, encoding='utf-8', errors='surrogateescape').read()
+    saved = [0, 0]
+    def sub(m):
+        raw = base64.b64decode(m.group(1))
+        if len(raw) < 200_000: return m.group(0)
+        im = Image.open(io.BytesIO(raw)).convert('RGB')
+        out = io.BytesIO(); im.save(out, 'WEBP', quality=90, method=6)
+        if out.tell() >= len(raw): return m.group(0)
+        saved[0] += len(raw); saved[1] += out.tell()
+        return 'data:image/webp;base64,' + base64.b64encode(out.getvalue()).decode()
+    h2 = re.sub(r'data:image/png;base64,\s*([A-Za-z0-9+/=]{1000,})', sub, h)
+    if h2 != h:
+        open(p, 'w', encoding='utf-8', errors='surrogateescape').write(h2)
+    print(f"png->webp: {saved[0]/1e6:.1f} MB -> {saved[1]/1e6:.1f} MB")
+    """
+    return run(`python3 -c $py $html_path`)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

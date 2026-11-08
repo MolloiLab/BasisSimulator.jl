@@ -70,48 +70,40 @@ def source_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def project_input_hash(path: Path) -> str:
-    """Hash package inputs while ignoring the release-only version field."""
-    content = path.read_text(encoding="utf-8")
-    normalized = re.sub(
-        r'^version\s*=\s*"[^"]*"\s*$',
-        'version = "<release-version>"',
-        content,
-        flags=re.M,
-    )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+OWN_PACKAGES = ("[[deps.BasisSimulator]]", "[[deps.BasisMonteCarlo]]")
 
 
-@lru_cache(maxsize=1)
-def simulator_input_hash() -> str:
-    root = DOCS.parent
-    files = [DATA_PROVENANCE]
-    for directory in (root / "src",):
-        if directory.is_dir():
-            files.extend(path for path in directory.rglob("*") if path.is_file())
-    entries = [
-        f"{path.relative_to(root)}:{source_hash(path)}"
-        for path in sorted(files)
-    ]
-    entries.append(f"Project.toml:{project_input_hash(root / 'Project.toml')}")
-    entries.sort()
-    return hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
+def lock_input_hash(path: Path) -> str:
+    """lock_input_hash in docs/extract_all.jl: a lockfile, without the version lines of this
+    repository's own packages."""
+    kept, own = [], False
+    for line in path.read_text(encoding="utf-8").split("\n"):
+        if line.startswith("[["):
+            own = line.strip() in OWN_PACKAGES
+        elif own and re.match(r"^\s*version\s*=", line):
+            continue
+        kept.append(line)
+    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest()
+
+
+def data_input_hash() -> str:
+    """data_input_hash in docs/extract_all.jl."""
+    return source_hash(DATA_PROVENANCE)
 
 
 @lru_cache(maxsize=1)
 def mc_input_hash() -> str:
     """mc_input_hash in docs/extract_montecarlo.jl."""
     root = DOCS.parent
-    # every lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
-    files = [MC_DOCS / "Project.toml"] + sorted(
+    locks = sorted(
         path for path in MC_DOCS.iterdir() if re.fullmatch(r"Manifest(-v[0-9.]+)?\.toml", path.name)
     )
-    for directory in (MC_ROOT / "src", MC_DOCS / "reference_data"):
-        if directory.is_dir():
-            files.extend(path for path in directory.rglob("*") if path.is_file())
-    entries = [f"{path.relative_to(root).as_posix()}:{source_hash(path)}" for path in files]
-    project = MC_ROOT / "Project.toml"
-    entries.append(f"{project.relative_to(root).as_posix()}:{project_input_hash(project)}")
+    entries = [f"{path.relative_to(root).as_posix()}:{lock_input_hash(path)}" for path in locks]
+    files = [MC_DOCS / "Project.toml"]
+    reference = MC_DOCS / "reference_data"
+    if reference.is_dir():
+        files.extend(path for path in reference.rglob("*") if path.is_file())
+    entries.extend(f"{path.relative_to(root).as_posix()}:{source_hash(path)}" for path in files)
     entries.sort()
     return hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
 
@@ -131,18 +123,17 @@ def snapshot_tree_hash() -> str:
 
 
 def export_fingerprint(path: Path, snapshot_tree: str) -> str:
+    """export_fingerprint in docs/extract_all.jl."""
     build_lock = source_hash(DOCS / "build_env" / "Manifest.toml")
     # every docs lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
     docs_locks = sorted(
         path for path in DOCS.iterdir() if re.fullmatch(r"Manifest(-v[0-9.]+)?\.toml", path.name)
     )
     docs_lock = hashlib.sha256(
-        "\0".join(f"{path.name}:{source_hash(path)}" for path in docs_locks).encode("utf-8")
+        "\0".join(f"{path.name}:{lock_input_hash(path)}" for path in docs_locks).encode("utf-8")
     ).hexdigest()
-    driver = source_hash(DOCS / "extract_all.jl")
     payload = "\0".join(
-        (source_hash(path), simulator_input_hash(), snapshot_tree, build_lock,
-         docs_lock, driver, EXPORT_CONTRACT)
+        (source_hash(path), data_input_hash(), snapshot_tree, build_lock, docs_lock, EXPORT_CONTRACT)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -150,11 +141,8 @@ def export_fingerprint(path: Path, snapshot_tree: str) -> str:
 def mc_export_fingerprint(path: Path, snapshot_tree: str) -> str:
     """mc_export_fingerprint in docs/extract_montecarlo.jl."""
     build_lock = source_hash(DOCS / "build_env" / "Manifest.toml")
-    exporter = source_hash(DOCS / "extract_all.jl")
-    driver = source_hash(DOCS / "extract_montecarlo.jl")
     payload = "\0".join(
-        (source_hash(path), mc_input_hash(), snapshot_tree, build_lock, exporter,
-         driver, MC_EXPORT_CONTRACT)
+        (source_hash(path), mc_input_hash(), snapshot_tree, build_lock, MC_EXPORT_CONTRACT)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
