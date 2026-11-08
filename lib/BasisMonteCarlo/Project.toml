@@ -1,6 +1,6 @@
 name = "BasisMonteCarlo"
 uuid = "0b891c0b-e8e1-4e40-a495-80b72b146dae"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Dale Black <djblack@uci.edu>"]
 
 [deps]
@@ -18,7 +18,7 @@ XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 
 [compat]
 Distributed = "1"
-Geant4 = "0.3"
+Geant4 = "0.2.4, 0.3"
 Libdl = "1"
 Random = "1"
 Scratch = "1"

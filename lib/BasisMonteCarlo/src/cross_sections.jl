@@ -32,14 +32,24 @@ function em_calculator_symbol()
             values of `linear_attenuation` instead."""
         )
         rpath = Sys.islinux() ? ["-Wl,-rpath,$(prefix)/lib", "-Wl,--no-as-needed"] :
-            ["-Wl,-rpath,$(prefix)/lib"]
+            Sys.iswindows() ? String[] : ["-Wl,-rpath,$(prefix)/lib"]
+        # Geant4 11.4 splits the processes library (G4processes_core, G4processes_hadronic); 11.3,
+        # which Geant4.jl 0.2.4 ships, has one G4processes
+        shipped = vcat((readdir(d) for d in (joinpath(prefix, "lib"), joinpath(prefix, "bin")) if isdir(d))...)
+        processes = any(f -> occursin("G4processes_core", f), shipped) ? "-lG4processes_core" : "-lG4processes"
         libs = [
-            "-lG4processes_core", "-lG4particles", "-lG4materials", "-lG4global", "-lG4clhep",
+            processes, "-lG4particles", "-lG4materials", "-lG4global", "-lG4clhep",
             "-lG4run", "-lG4track", "-lG4intercoms",
         ]
-        cmd = `$compiler -O2 -shared -fPIC -std=c++17 -I$(prefix)/include/Geant4 $rpath
-               -L$(prefix)/lib $libs -o $library $source`
-        run(cmd)
+        # the source before the libraries, so a linker that resolves in order (MinGW's) finds them
+        cmd = `$compiler -O2 -shared -fPIC -std=c++17 -I$(prefix)/include/Geant4 $source -o $library
+               $rpath -L$(prefix)/lib $libs`
+        try
+            run(cmd)
+        catch
+            rm(library; force = true)      # never reuse a half-written library
+            rethrow()
+        end
     end
     EM_CALCULATOR[] = Libdl.dlsym(Libdl.dlopen(library), :basismc_cross_section_per_volume)
     return EM_CALCULATOR[]
