@@ -521,8 +521,7 @@ function _forward_project_poly!(
         # kernel accumulates per-material (or attenuation-basis) path lengths,
         # energy-independent registers, so all n_energies — and both weighted sums —
         # convert once per cell: ONE volume walk instead of n_tiles.
-        # :siddon (and :dd_fast on a table no basis reproduces) keep the tiled path
-        # below (those kernels hold per-energy registers → K=16 required).
+        # :siddon keeps the tiled path below (it holds per-energy registers → K=16).
         # ---------------------------------------------------------------------
         if paths !== nothing
             @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1
@@ -533,7 +532,7 @@ function _forward_project_poly!(
             return sinogram
         end
 
-        if projector === :dd_fast && _dd_fast_fits(ws_μ_table_gpu, _poly_weight(ws_w1_gpu, ws_w2_gpu))
+        if projector === :dd_fast
             @info "SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
             dd_fast_fused_poly_project!(
                 sinogram, mask, geom,
@@ -550,7 +549,6 @@ function _forward_project_poly!(
             return sinogram
         end
 
-        projector === :dd_fast && _warn_dd_fast_fallback(size(ws_μ_table_gpu, 1))
         @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
 
         # Tile parameters — fused poly projector (Val(16), `projector`-selected)

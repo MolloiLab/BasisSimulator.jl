@@ -40,7 +40,7 @@ the bit.
   1e-6 of itself. The same XCAT window with N random mixtures of 8 tissues (1 sub-view, scatter
   off, 120 views):
 
-  | materials | basis rank | v0.16.4 | the legacy tiled kernels | relative difference (RMS, max) |
+  | materials | basis rank | v0.16.4 | the per-energy tiled kernels (removed) | relative difference (RMS, max) |
   |---|---|---|---|---|
   | 16 | (one lane each) | 0.70 s | — | — |
   | 64 | 9 | 0.72 s | — | — |
@@ -48,18 +48,27 @@ the bit.
   | 1024 | 9 | 0.86 s | 60 s | 5e-7, 5e-5 |
 
   One lane per material, as earlier versions walk, took 210 s at 64 materials even with this
-  release's faster lanes; more than 64 fell back to the legacy kernels.
-- **The scatter features walk a few lanes too**: water-equivalent length, the outline and the
-  non-water indicator exactly, the per-band and per-energy features on a basis of the rest. Scatter
-  takes any number of materials (was at most 64).
+  release's faster lanes; more than 64 fell back to the per-energy tiled kernels.
+- **Scatter takes any number of materials** (was at most 64), with v0.16.3's arithmetic: with no
+  more materials than the scatter's features, the walk carries one lane per material, as before;
+  with more, one lane per feature (each material's water-equivalent length, outline, non-water
+  indicator, per-band attenuation and per-energy scattering against water's, times its path
+  length), whatever the number of materials. No basis is fitted for the scatter: in Float32 a
+  basis's map back moved it by up to a percent.
 - `dd_fast_material_paths!` (the `paths=` cache) takes any number of materials, and
   `dd_fast_poly_from_paths!` reduces them onto the basis.
 
 ### Changed
 - CPU and GPU projections are compared to a tolerance (rtol 1e-5), not bit for bit; each device still
   repeats its own result exactly.
-- Only a μ table no basis of at most 64 energies reproduces (none made of real elements) warns and
-  takes the legacy tiled kernels.
+- A μ table of more than 64 materials that no basis of at most 64 energies reproduces (none made of
+  real elements) is an `ArgumentError`; it used to warn and take the per-energy tiled kernels.
+
+### Removed
+- `dd_fused_poly_project!` and `dd_fused_spectral_project!`, the per-energy tiled distance-driven
+  kernels, and `:dd_fast`'s fallback to them: the single-pass kernels take every table. The tests
+  check the single pass against per-energy mono distance-driven projections (`dd_forward_project`)
+  instead. `:siddon` keeps its own tiled kernels.
 
 ## [0.16.3](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.2...v0.16.3) (2026-11-05)
 

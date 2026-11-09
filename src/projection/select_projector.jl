@@ -9,13 +9,12 @@
 #
 #   :dd_fast — DEFAULT.  Distance-driven (DD3), anti-aliased footprint integration.
 #              Single-pass per-material path-length fused kernels: the full spectrum
-#              is produced in ONE volume walk instead of the K=16 tiled per-energy
-#              re-walks of the dd.jl kernels (same footprint/overlap weights; results
-#              agree to float ordering).  Measured 47x faster on the 234-bin
+#              is produced in ONE volume walk (it replaced per-energy DD kernels that
+#              re-walked the volume per 16 energies; same footprint/overlap weights,
+#              results agree to float ordering).  Measured 47x faster on the 234-bin
 #              polychromatic forward path (M4 Metal).  Mono projection and the
 #              transpose use the dd.jl kernels directly.  Any number of materials
-#              (an attenuation basis above 16); warns and falls back to the dd.jl
-#              tiled kernels only for a table no basis reproduces.
+#              (an attenuation basis above 16).
 #   :siddon  — Siddon exact ray tracing retained for comparison and
 #              compatibility. It point-samples one voxel per step, can ALIAS
 #              in severe beam-hardened regions, and is slower than :dd_fast
@@ -73,8 +72,7 @@ end
     proj === :siddon ? backproject!(volume, sinogram, geom; weighted = false, kw...) :
                        dd_backproject!(volume, sinogram, geom; kw...)
 
-# Fused polychromatic (energy-integrating EI).  dd_fast_fused_* fall back to the
-# dd.jl tiled kernels only for a table no attenuation basis reproduces.
+# Fused polychromatic (energy-integrating EI).
 @inline _project_fused_poly!(proj::Symbol, args...; kw...) =
     proj === :siddon ? siddon_fused_poly_project!(args...; kw...) :
                        dd_fast_fused_poly_project!(args...; kw...)

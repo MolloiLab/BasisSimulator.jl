@@ -23,13 +23,13 @@
 #
 # Drop-in contract
 # ----------------
-# The four public entry points mirror the Siddon signatures and semantics
-# EXACTLY, so every downstream consumer (BHC, IR, polychromatic EI,
-# photon-counting PCCT, FDK) works unchanged:
+# The mono entry points mirror the Siddon signatures and semantics EXACTLY, so
+# every downstream consumer (BHC, IR, FDK) works unchanged:
 #
 #   dd_forward_project! / dd_forward_project   ←→ siddon_forward_project! / …
-#   dd_fused_poly_project!                     ←→ siddon_fused_poly_project!
-#   dd_fused_spectral_project!                 ←→ siddon_fused_spectral_project!
+#
+# The polychromatic and spectral projections are dd_fast.jl's single-pass
+# kernels (the same footprint and overlap weights, any number of materials).
 #
 # Output-stationary (gather) reformulation
 # ----------------------------------------
@@ -47,11 +47,6 @@
 # contributing voxel range is bounded by inverse projection so per-cell work is
 # O(n_rows × footprint), comparable to a Siddon ray walk.
 #
-# The fused poly/spectral kernels reuse Siddon's `@generated` NTuple helpers
-# (`_fused_accum_energies`, `_fused_beer_lambert[_bt]`, `_tiled_*`) verbatim —
-# only the per-voxel weight changes from Siddon's chord `path_length` to DD's
-# overlap `ox·oz·norm`.
-#
 # Assumptions (match the DD3_mm variant)
 # --------------------------------------
 # - Flat detector, detector_v = ẑ (BasisSimulator's CTGeometry construction).
@@ -64,8 +59,7 @@
 
 import AcceleratedKernels as AK
 
-export dd_forward_project!, dd_forward_project,
-    dd_fused_poly_project!, dd_fused_spectral_project!
+export dd_forward_project!, dd_forward_project
 
 # NOTE (dd-raytracing branch): distance-driven is THE projector here.  The
 # internal pipeline (`_forward_project_poly!`, `pcct_forward_project`, BHC, IR,
@@ -573,260 +567,4 @@ end
                DD3 obliquity scaling assumes vox_x ≈ vox_y — results may be biased." maxlog = 1
     end
     return nothing
-end
-
-"""
-    dd_fused_poly_project!(sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E); kwargs...)
-
-Distance-driven analog of [`siddon_fused_poly_project!`](@ref): one gather pass
-per detector cell through the material `mask`, accumulating line integrals for
-all `N_E` energy bins, then Beer-Lambert `-log(Σ_e wη[e]·exp(-L_e))`.  Same
-arguments, output, and bowtie-spectral handling as the Siddon version.
-
-See [`dd_fast_fused_poly_project!`](@ref) for the single-pass per-material
-path-length variant (identical DD model, no per-energy register pressure).
-"""
-function dd_fused_poly_project!(
-        sinogram::AbstractArray{T, 3},
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        μ_table_gpu::AbstractArray{T, 2},
-        wη_gpu::AbstractArray{T, 1},
-        ::Val{N_E};
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        ws_bowtie_spectral = nothing,
-    ) where {T <: AbstractFloat, N_E}
-
-    nx = Int32(size(mask, 1)); ny = Int32(size(mask, 2)); nz = Int32(size(mask, 3))
-    n_cols = Int32(size(sinogram, 1)); n_rows = Int32(size(sinogram, 2))
-
-    vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
-    vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)
-    vx = T(vol_bounds[1]) / T(nx); vy = T(vol_bounds[2]) / T(ny); vz = T(vol_bounds[3]) / T(nz)
-    _dd_check_isotropy(vx, vy)
-
-    mag = T(geom.SDD / geom.SAD)
-    arc_det = is_arc(geom)
-    dγ = T(geom.pixel_size / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    col_center = column_center(T, geom)
-    row_center = (T(n_rows) + one(T)) / T(2)
-
-    sp = _dd_geom_array(ws_source_positions, sinogram, geom.source_positions, T)
-    dc = _dd_geom_array(ws_detector_centers, sinogram, geom.detector_centers, T)
-    du = _dd_geom_array(ws_detector_u, sinogram, geom.detector_u, T)
-    dv = _dd_geom_array(ws_detector_v, sinogram, geom.detector_v, T)
-
-    nc_nr = n_cols * n_rows
-    has_bowtie = ws_bowtie_spectral !== nothing
-    _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
-
-    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu, arc_det = arc_det, dγ = dγ,
-            sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
-            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
-            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center,
-            ncnr = nc_nr, hbt = has_bowtie
-
-        AK.foreachindex(sinogram) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % nc) + Int32(1)
-            idx_0 = idx_0 ÷ nc
-            row = (idx_0 % nr) + Int32(1)
-            angle = (idx_0 ÷ nr) + Int32(1)
-
-            sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
-
-            (
-                valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long,
-            ) = _dd_cell_setup(
-                col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ
-            )
-
-            accums = ntuple(_ -> zero(T), Val(N_E))
-            if valid
-                il = Int32(1)
-                while il <= n_long
-                    lp = fma(T(il) - T(0.5), v_long, vmin_long)
-                    mag_fac = s_long / (s_long - lp)
-                    inv_mf = one(T) / mag_fac
-                    (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
-                    (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
-                    it = it_s
-                    while it <= it_e
-                        t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
-                        t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
-                        ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
-                        if ox > zero(T)
-                            ixv = vertical ? it : il
-                            iyv = vertical ? il : it
-                            ip = ip_s
-                            while ip <= ip_e
-                                z0 = _dd_edge(sz, vmz, T(ip - Int32(1)), vsz, mag_fac)
-                                z1 = _dd_edge(sz, vmz, T(ip), vsz, mag_fac)
-                                oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
-                                if oz > zero(T)
-                                    mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                                    accums = _fused_accum_energies(accums, μ_tbl, mat, ox * oz * norm)
-                                end
-                                ip += Int32(1)
-                            end
-                        end
-                        it += Int32(1)
-                    end
-                    il += Int32(1)
-                end
-            end
-
-            I_total = if hbt
-                bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
-                _fused_beer_lambert_bt(accums, wη, bt, bt_base, ncnr)
-            else
-                _fused_beer_lambert(accums, wη)
-            end
-            sinogram[idx] = -log(max(I_total, T(1.0e-10)))
-        end
-    end
-    return sinogram
-end
-
-"""
-    dd_fused_spectral_project!(pilot, outputs_flat, n_bins, mask, geom,
-        μ_table_gpu, W_gpu, Val(K), tile_start; kwargs...)
-
-Distance-driven analog of [`siddon_fused_spectral_project!`](@ref): one gather
-pass per detector cell accumulating `K` energy bins (tile starting at
-`tile_start`), then ADDS per-bin partial Beer-Lambert sums to `outputs_flat`.
-Same tiled-accumulation contract as the Siddon version (zero-init before the
-first tile; tiles accumulate).
-
-See [`dd_fast_fused_spectral_project!`](@ref) for the single-pass per-material
-path-length variant (identical DD model; `K` can be the full energy count).
-"""
-function dd_fused_spectral_project!(
-        pilot::AbstractArray{T, 3},
-        outputs_flat::AbstractArray{T, 1},
-        n_bins::Int32,
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        μ_table_gpu::AbstractArray{T, 2},
-        W_gpu::AbstractArray{T, 2},
-        ::Val{K},
-        tile_start::Int32;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        ws_bowtie_spectral = nothing,
-    ) where {T <: AbstractFloat, K}
-
-    nx = Int32(size(mask, 1)); ny = Int32(size(mask, 2)); nz = Int32(size(mask, 3))
-    n_cols = Int32(size(pilot, 1)); n_rows = Int32(size(pilot, 2)); n_angles = Int32(size(pilot, 3))
-    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
-
-    vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
-    vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)
-    vx = T(vol_bounds[1]) / T(nx); vy = T(vol_bounds[2]) / T(ny); vz = T(vol_bounds[3]) / T(nz)
-    _dd_check_isotropy(vx, vy)
-
-    mag = T(geom.SDD / geom.SAD)
-    arc_det = is_arc(geom)
-    dγ = T(geom.pixel_size / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    col_center = column_center(T, geom)
-    row_center = (T(n_rows) + one(T)) / T(2)
-
-    sp = _dd_geom_array(ws_source_positions, mask, geom.source_positions, T)
-    dc = _dd_geom_array(ws_detector_centers, mask, geom.detector_centers, T)
-    du = _dd_geom_array(ws_detector_u, mask, geom.detector_u, T)
-    dv = _dd_geom_array(ws_detector_v, mask, geom.detector_v, T)
-
-    nc_nr = n_cols * n_rows
-    has_src_spectral = ws_bowtie_spectral !== nothing
-    _bt = has_src_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
-
-    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = tile_start, arc_det = arc_det, dγ = dγ,
-            sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
-            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
-            ne = n_elem, nb = n_bins, oflat = outputs_flat,
-            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center,
-            ncnr = nc_nr, hbt = has_src_spectral
-
-        AK.foreachindex(pilot) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % nc) + Int32(1)
-            idx_0 = idx_0 ÷ nc
-            row = (idx_0 % nr) + Int32(1)
-            angle = (idx_0 ÷ nr) + Int32(1)
-
-            sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
-
-            (
-                valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long,
-            ) = _dd_cell_setup(
-                col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ
-            )
-
-            accums = ntuple(_ -> zero(T), Val(K))
-            if valid
-                il = Int32(1)
-                while il <= n_long
-                    lp = fma(T(il) - T(0.5), v_long, vmin_long)
-                    mag_fac = s_long / (s_long - lp)
-                    inv_mf = one(T) / mag_fac
-                    (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
-                    (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
-                    it = it_s
-                    while it <= it_e
-                        t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mag_fac)
-                        t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mag_fac)
-                        ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
-                        if ox > zero(T)
-                            ixv = vertical ? it : il
-                            iyv = vertical ? il : it
-                            ip = ip_s
-                            while ip <= ip_e
-                                z0 = _dd_edge(sz, vmz, T(ip - Int32(1)), vsz, mag_fac)
-                                z1 = _dd_edge(sz, vmz, T(ip), vsz, mag_fac)
-                                oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
-                                if oz > zero(T)
-                                    mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                                    accums = _tiled_accum_energies(accums, μ_tbl, mat, ox * oz * norm, ts)
-                                end
-                                ip += Int32(1)
-                            end
-                        end
-                        it += Int32(1)
-                    end
-                    il += Int32(1)
-                end
-            end
-
-            if hbt
-                bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
-                for b in Int32(1):nb
-                    oflat[idx + (b - Int32(1)) * ne] += _tiled_beer_lambert_col_bt(accums, W, b, ts, bt, bt_base, ncnr)
-                end
-            else
-                for b in Int32(1):nb
-                    oflat[idx + (b - Int32(1)) * ne] += _tiled_beer_lambert_col(accums, W, b, ts)
-                end
-            end
-        end
-    end
-    return outputs_flat
 end

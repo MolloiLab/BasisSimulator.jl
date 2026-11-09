@@ -424,7 +424,7 @@ function _scatter_plan(
         air = device_real(air_coarse),
         kind = _device_copy(ref, kind),
         lanes_Ct = device_real(lanes.Ct),
-        lanes_G = device_real(lanes.G),
+        lanes_Gt = lanes.G === nothing ? nothing : device_real(permutedims(lanes.G)),
         other = any(==(2), kind),
         ray_cols = pair(ray_maps),
         ray_col_w = device_real(last.(ray_maps)),
@@ -437,6 +437,9 @@ function _scatter_plan(
     # other than water (`_scatter_forward!`), their single scatters' weights side by side
     n_ellipses = ray_consts.other ? 2 : 1
     scratch = (;
+        # every ray's features (`[feature, column, group, view]`): the lane sums themselves with a
+        # lane per feature, else the lane sums times the features (one matrix product)
+        features = lanes.G === nothing ? nothing : similar(ref, T, size(lanes.G, 2), n_cc, n_g, n_cv),
         wet = similar(ref, T, n_cc, n_g, n_cv),
         outline = similar(ref, T, n_cc, n_g, n_cv),
         plain = similar(ref, Bool, n_ray),
@@ -495,11 +498,16 @@ end
 The walk's lanes for the scatter's rays. The features, per material (gases zero): its water-equivalent
 length per mm (1), its outline (2), whether it is other than water (3), its attenuation against
 water's in each band (`dmu`, 3 + b) and its Compton and wide/forward Rayleigh scattering against
-water's at each spectral energy (`ratio`, 3 + nbands + (process − 1)·nE + e). The lanes are features
-1–3 and the fewest others (column-pivoted QR) whose sums reproduce every feature to 1e-9 of its
-largest coefficient: `Ct` (R × materials) is what each voxel adds, `G` (R × features) gives every
-feature from the lane sums. With no such basis of at most `_PLEN_MAX_MATERIALS` lanes, the lanes are
-the materials themselves (at most `_PLEN_MAX_MATERIALS` of them).
+water's at each spectral energy (`ratio`, 3 + nbands + (process − 1)·nE + e). Every ray's feature is
+the sum of its materials' path lengths times their features, computed exactly either way:
+
+- no more materials than features: one lane per material (`Ct = I`), and each feature the sum of
+  the lanes times `G`, the features (`materials × features`) — v0.16.3's arithmetic;
+- more materials than features: one lane per feature (`Ct` the features, transposed), and
+  `G = nothing`: the lane sums are the features.
+
+No basis is fitted: a basis's map back from a few lanes mixes them with large coefficients of both
+signs, and in Float32 that cancellation moved the scatter by up to a percent.
 """
 function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
     n_m = length(kind)
@@ -508,59 +516,43 @@ function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
         wet_per_mm .* solid, Float64.(solid), Float64.(kind .== 2), dmu .* solid,
         reshape(ratio, n_m, :) .* solid,
     )
-    Q = size(F, 2)
-    scale = [max(maximum(abs, c), floatmin(Float64)) for c in eachcol(F)]
-    Fn = F ./ scale'
-    rest = 4:Q
-    order = vcat(1:3, rest[qr(Fn[:, rest], ColumnNorm()).p])
-    for R in 3:min(Q, _PLEN_MAX_MATERIALS)
-        J = order[1:R]
-        G = pinv(Fn[:, J]) * Fn                        # a forced lane may be all zero (no "other")
-        if all(abs.(Fn[:, J] * G .- Fn) .<= 1.0e-9)
-            return (Ct = permutedims(F[:, J]), G = G .* scale' ./ scale[J])
-        end
-    end
-    n_m <= _PLEN_MAX_MATERIALS || throw(
-        ArgumentError(
-            "scatter: no basis of at most $(_PLEN_MAX_MATERIALS) lanes reproduces these $(n_m) materials' scattering"
-        )
-    )
-    return (Ct = Matrix{Float64}(I, n_m, n_m), G = F)
+    return n_m <= size(F, 2) ? (Ct = Matrix{Float64}(I, n_m, n_m), G = F) : (Ct = permutedims(F), G = nothing)
 end
 
-# From the walk's lane sums (`[lane, column, group, view]`, `_scatter_feature_lanes`): each ray's
-# water-equivalent length and outline (mm), whether it crosses nothing but water-like materials (the
-# exact lanes 1–3), and if not its materials' attenuation against water's (`dmu[band, ray]`).
-function _scatter_phantom_rays!(p::ScatterPlan)
-    s, r = p.scratch, p.rays
-    R = size(p.paths, 1)
+# Every ray's features (`_scatter_feature_lanes`) from the walk's lane sums: the sums themselves
+# (a lane per feature), or one matrix product (a lane per material).
+function _scatter_features!(p::ScatterPlan)
+    F = p.scratch.features
+    F === nothing && return p.paths
+    Gt = p.rays.lanes_Gt
+    mul!(reshape(F, size(Gt, 1), :), Gt, reshape(p.paths, size(Gt, 2), :))
+    return F
+end
+
+# From the rays' features (`[feature, column, group, view]`): each ray's water-equivalent length and
+# outline (mm), whether it crosses nothing but water-like materials, and if not its materials'
+# attenuation against water's (`dmu[band, ray]`).
+function _scatter_phantom_rays!(p::ScatterPlan, F)
+    s = p.scratch
+    Q = size(F, 1)
     nb = size(s.dmu, 1)
-    let wet = s.wet, outline = s.outline, plain = s.plain, dmu = s.dmu, sums = p.paths, G = r.lanes_G, R = R, nb = nb
+    let wet = s.wet, outline = s.outline, plain = s.plain, dmu = s.dmu, F = F, Q = Q, nb = nb
         AK.foreachindex(wet) do ray
             T = eltype(wet)
-            base = R * (ray - 1)
-            w = 10 * sums[1 + base]
+            base = Q * (ray - 1)
+            w = 10 * F[1 + base]
             wet[ray] = w
-            outline[ray] = 10 * sums[2 + base]
-            water = !(sums[3 + base] > 0)
+            outline[ray] = 10 * F[2 + base]
+            water = !(F[3 + base] > 0)
             plain[ray] = water
             if !water && w > 0
                 for b in 1:nb
-                    dmu[b, ray] = 10 * _scatter_feature(sums, G, R, base, 3 + b) / w
+                    dmu[b, ray] = 10 * F[3 + b + base] / w
                 end
             end
         end
     end
     return p
-end
-
-# Feature `q` of a ray from its lane sums: Σ_k sums[k] · G[k, q].
-@inline function _scatter_feature(sums, G, R, base, q)
-    f = zero(eltype(sums))
-    for k in 1:R
-        f += @inbounds(sums[k + base]) * @inbounds(G[k + R * (q - 1)])
-    end
-    return f
 end
 
 # `weights[energy, process, ch, ray]` for the first `n_used` channels of the `n_rays` rays from
@@ -571,12 +563,13 @@ function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
     s, r = p.scratch, p.rays
     nE_lib, n_ch = size(s.weights, 1), size(s.weights, 3)
     n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
-    R = size(p.paths, 1)
+    F = s.features === nothing ? p.paths : s.features
+    Q = size(F, 1)
     nE = size(r.photons, 1)
     nb = size(s.dmu, 1)
-    let weights = s.weights, wet = s.wet, plain = s.plain, sums = p.paths, G = r.lanes_G, water = r.water_photons,
+    let weights = s.weights, wet = s.wet, plain = s.plain, F = F, water = r.water_photons,
             photons = r.photons, lib_share = r.lib_share, lib_range = r.lib_range,
-            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, R = R, nE = nE, nb = nb, n_used = n_used, ray0 = ray0
+            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, Q = Q, nE = nE, nb = nb, n_used = n_used, ray0 = ray0
         _foreachindex(1:(nE_lib * 3 * n_ch * n_rays), AK.get_backend(weights)) do idx
             T = eltype(weights)
             q = idx - 1
@@ -597,7 +590,7 @@ function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
                     for e in lib_range[1, gl]:lib_range[2, gl]
                         share = lib_share[e, gl]
                         share == 0 && continue
-                        f = 10 * _scatter_feature(sums, G, R, R * (ray - 1), 3 + nb + (pr - 1) * nE + e) / w
+                        f = 10 * F[3 + nb + (pr - 1) * nE + e + Q * (ray - 1)] / w
                         val += photons[e, ch, i, g] * share * f
                     end
                 end
@@ -744,7 +737,7 @@ function _scatter_forward!(p::ScatterPlan, phantom)
     extent = hasproperty(phantom, :extent) && phantom.extent !== nothing ? Tuple(Float64.(phantom.extent)) : nothing
     s = p.scratch
     dd_fast_lane_sums!(p.paths, phantom.mask, p.geom, p.rays.lanes_Ct; volume_extent = extent)
-    _scatter_phantom_rays!(p)
+    _scatter_phantom_rays!(p, _scatter_features!(p))
     fill!(s.clamped, Int32(0))
     # the geometric mean with the outline's ellipse, which is another only through a material other
     # than water (a gas is in neither)

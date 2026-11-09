@@ -6,29 +6,25 @@
 # footprint, `_dd_bounds` voxel ranges, and `_dd_overlap` weights — with the
 # fused-kernel ACCUMULATION reassociated by linearity:
 #
-#     L_e = Σ_v w_v · μ[m_v, e]          (legacy: NTuple{N_E} per-energy sums,
-#                                         N_E FMAs + table reads per voxel,
-#                                         N_E live registers → spills for
-#                                         clinical spectra, hence the hosts'
-#                                         K=16 energy tiling that re-walks the
-#                                         volume n_tiles times)
+#     L_e = Σ_v w_v · μ[m_v, e]
 #         = Σ_m μ[m, e] · P_m,   P_m = Σ_{v : m_v = m} w_v
 #
 # so ONE volume walk accumulates per-MATERIAL path lengths P (energy-independent
-# registers; above 16 materials, the line integrals at a few pivot energies instead) and every energy converts once per detector
-# cell.  Results agree with the per-energy `dd.jl` kernels to floating-point ordering.
-#
-# Measured (M4 Metal, 234-bin polychromatic forward, 512²×64 vol,
-# 736×16×720 sino): 113.8 s (dd.jl tiled hosts) → 2.4 s (:dd_fast single-pass),
-# agreement mean_rel ≈ 5e-7 — and 4.4x faster than Siddon's tiled 234-bin
-# path.  UHR slab (1024²×32): 109.3 s → 5.3 s.
+# registers; above 16 materials, the line integrals at a few pivot energies
+# instead) and every energy converts once per detector cell. It replaced the
+# per-energy DD kernels (an NTuple{N_E} of sums: N_E registers per thread,
+# spilling for clinical spectra, so the hosts tiled the energies by 16 and
+# re-walked the volume per tile), agreeing with them to floating-point ordering:
+# M4 Metal, 234-bin polychromatic forward, 512²×64 volume, 736×16×720 sinogram,
+# 113.8 s → 2.4 s, mean_rel ≈ 5e-7, and 4.4x faster than Siddon's tiled path;
+# UHR slab (1024²×32): 109.3 s → 5.3 s.
 #
 # Selected via `projector = :dd_fast` (SimOptions / create_hir_recon_workspace
 # / the `_project_fused_*` shims).  Mono projection has no energy loop, so
 # `:dd_fast` mono IS `dd_forward_project!` — see `select_projector.jl`.
 # Any number of materials: up to 16 one lane each, above that the few lanes of an attenuation
-# basis (a physical table's rank is at most its number of elements). Only a table no basis of at
-# most `_PLEN_MAX_MATERIALS` energies reproduces warns and falls back to the legacy tiled kernels.
+# basis (a physical table's rank is at most its number of elements). A table of more than
+# `_PLEN_MAX_MATERIALS` materials that no basis of as many energies reproduces is an error.
 # =============================================================================
 
 export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
@@ -38,11 +34,10 @@ export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
 # =============================================================================
 #
 # The fused kernels need, per detector cell, L_e = Σ_v w_v·μ[m_v, e] for every
-# energy e.  The legacy formulation accumulates an NTuple{N_E} of per-energy
-# sums: N_E FMAs + N_E μ-table reads per overlapped voxel and N_E live
-# registers per thread — which spills for clinical spectra (N_E ≈ 234) and
-# forced the host-side K=16 energy tiling that re-walks the volume n_tiles
-# times.  By linearity of the line integral,
+# energy e.  Accumulating an NTuple{N_E} of per-energy sums costs N_E FMAs +
+# N_E μ-table reads per overlapped voxel and N_E live registers per thread —
+# which spills for clinical spectra (N_E ≈ 234).  By linearity of the line
+# integral,
 #
 #     L_e = Σ_m μ[m, e] · P_m,    P_m = Σ_{v : m_v = m} w_v,
 #
@@ -178,7 +173,7 @@ end
 # The walk's lanes for a μ table and the projection's weight of each energy: `(lanes, table,
 # n)` with `lanes` `nothing` (one per material) or
 # the basis coefficients, `table` what `_plen_line_integral` reads, `n` the lane count; `nothing`
-# when neither fits in registers (the legacy tiled kernels).
+# when neither fits in registers (`_plen_lanes!` makes that an error).
 function _plen_lanes(μ_table::AbstractMatrix, weight::AbstractVector{<:Real})
     M = size(μ_table, 1)
     M <= _DIRECT_MAX_MATERIALS[] && return (lanes = nothing, table = μ_table, n = M)
@@ -205,24 +200,18 @@ function _spectral_weight(μ_table_gpu, W_gpu, tile_start::Integer, K::Integer)
     return weight
 end
 
-"""
-    _dd_fast_fits(μ_table, weight) -> Bool
-
-Whether the `:dd_fast` single-pass kernels project this table: always up to `_PLEN_MAX_MATERIALS`
-materials, and for any number of materials whose attenuation a basis of at most
-`_PLEN_MAX_MATERIALS` energies reproduces (every physical table: its rank is at most the number of
-elements). Callers ask before choosing the single pass over their own tiled fallback.
-"""
-_dd_fast_fits(μ_table::AbstractMatrix, weight::AbstractVector{<:Real}) = _plen_lanes(μ_table, weight) !== nothing
-
-function _warn_dd_fast_fallback(n_materials::Integer)
-    @warn """
-    DD_FAST SINGLE-PASS DISABLED: the material table has $n_materials entries, and no attenuation basis of at most $(_PLEN_MAX_MATERIALS) energies reproduces it.
-    Falling back to the legacy tiled distance-driven projector, which can be tens of times slower.
-    Call compact_materials(phantom) before GPU transfer to remove inactive materials, or merge materials when physically appropriate.
-    The requested :dd_fast path is NOT effective for this projection.
-    """ maxlog = 1
-    return nothing
+# The lanes, or an error for a table no lanes hold: more than 64 materials whose attenuation no 64
+# energies reproduce, which a mixture of real elements never is.
+function _plen_lanes!(μ_table::AbstractMatrix, weight::AbstractVector{<:Real})
+    lanes = _plen_lanes(μ_table, weight)
+    lanes === nothing && throw(
+        ArgumentError(
+            "the material table has $(size(μ_table, 1)) materials, and no attenuation basis of at most " *
+                "$(_PLEN_MAX_MATERIALS) energies reproduces it: the attenuation of real materials has at most " *
+                "as many shapes as elements. Check the table, or compact_materials(phantom) to drop unused materials."
+        )
+    )
+    return lanes
 end
 
 # =============================================================================
@@ -427,7 +416,7 @@ function _dd_fused_spectral_plen!(
                 L = _plen_line_integral(plens, μ_tbl, e)
                 trans = exp(-L)
                 if hbt
-                    # match legacy clamp: W · bt · min(exp(-L), 1e30)
+                    # W · bt · min(exp(-L), 1e30), as the Siddon tracer
                     trans = min(trans, T(1.0e30)) * @inbounds bt[bt_base + (e - Int32(1)) * ncnr]
                 end
                 acc = _bin_sums(acc, W, e, trans)
@@ -446,28 +435,22 @@ end
 # :dd_fast — single-pass per-material path-length DD (same DD model)
 # =============================================================================
 #
-# Public wrappers for the `_dd_fused_*_plen!` kernels above.  Same signatures
-# and semantics as `dd_fused_poly_project!` / `dd_fused_spectral_project!`
-# (drop-in via the `:dd_fast` projector symbol), same DD3 footprint, bounds,
-# and overlap weights — only the accumulation is reassociated (per-material
-# path lengths instead of per-energy sums), so results agree with the dd.jl kernels
-# to floating-point ordering.  The payoff: no per-energy registers, so the
-# FULL spectrum runs in ONE volume walk (the hosts skip the K=16 energy tiling
-# that re-walks the volume n_tiles times).  Measured on M4 Metal, 234-bin
-# polychromatic forward (512²×64 vol, 736×16×720 sino): 113.8 s (dd.jl tiled)
-# → 2.4 s (:dd_fast single-pass), agreement mean_rel ≈ 5e-7.
-#
-# Any number of materials (`_plen_lanes`); a table no basis reproduces warns and falls back to
-# the legacy `dd_*` kernels (the hosts ask `_dd_fast_fits` first and keep their tiled loop).
+# Public wrappers for the `_dd_fused_*_plen!` kernels above: the polychromatic and spectral
+# projections of the `:dd_fast` projector (the Siddon tracer's `siddon_fused_*` signatures and
+# semantics), with dd.jl's DD3 footprint, bounds and overlap weights. The accumulation is
+# per-material path lengths (or attenuation-basis line integrals), not per-energy sums, so the
+# FULL spectrum runs in ONE volume walk: no per-energy registers, no energy tiling. They replaced
+# the per-energy tiled DD kernels (M4 Metal, 234-bin polychromatic forward, 512²×64 volume,
+# 736×16×720 sinogram: 113.8 s → 2.4 s, agreement mean_rel ≈ 5e-7). Any number of materials
+# (`_plen_lanes`).
 
 """
     dd_fast_fused_poly_project!(sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E); kwargs...)
 
-Single-pass per-material path-length variant of [`dd_fused_poly_project!`](@ref)
-(the `:dd_fast` projector).  Identical distance-driven footprint and weights;
-accumulation reassociated by linearity so ALL `N_E` energies are produced in
-one volume walk with `n_materials` registers.  Falls back to the legacy kernel
-when `size(μ_table_gpu, 1) > 64`, with a prominent performance warning.
+The `:dd_fast` polychromatic projection, `-log(Σ_e wη[e]·exp(-L_e))` for every detector cell
+(the arguments, output and bowtie handling of [`siddon_fused_poly_project!`](@ref)), with
+distance-driven footprints: ALL `N_E` energies from one volume walk, for any number of
+materials (one lane per material up to 16, the lanes of an attenuation basis above).
 `ws_w2_gpu` with `ws_out2` adds a second weighted sum in the same walk, as in
 [`dd_fast_poly_from_paths!`](@ref).
 """
@@ -490,31 +473,7 @@ function dd_fast_fused_poly_project!(
 
     (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
         throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
-    lanes = _plen_lanes(μ_table_gpu, _poly_weight(wη_gpu, ws_w2_gpu))
-    if lanes === nothing
-        _warn_dd_fast_fallback(size(μ_table_gpu, 1))
-        if ws_w2_gpu !== nothing
-            # the legacy kernel has one accumulator: the second sum is a second projection
-            dd_fused_poly_project!(
-                ws_out2, mask, geom, μ_table_gpu, ws_w2_gpu, Val(N_E);
-                volume_extent,
-                ws_source_positions,
-                ws_detector_centers,
-                ws_detector_u,
-                ws_detector_v,
-                ws_bowtie_spectral,
-            )
-        end
-        return dd_fused_poly_project!(
-            sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E);
-            volume_extent = volume_extent,
-            ws_source_positions = ws_source_positions,
-            ws_detector_centers = ws_detector_centers,
-            ws_detector_u = ws_detector_u,
-            ws_detector_v = ws_detector_v,
-            ws_bowtie_spectral = ws_bowtie_spectral
-        )
-    end
+    lanes = _plen_lanes!(μ_table_gpu, _poly_weight(wη_gpu, ws_w2_gpu))
 
     g = _dd_walk_setup(
         T, size(mask), (size(sinogram, 1), size(sinogram, 2)), geom, volume_extent, sinogram,
@@ -571,12 +530,10 @@ end
     dd_fast_fused_spectral_project!(pilot, outputs_flat, n_bins, mask, geom,
         μ_table_gpu, W_gpu, Val(K), tile_start; kwargs...)
 
-Single-pass per-material path-length variant of
-[`dd_fused_spectral_project!`](@ref) (the `:dd_fast` projector).  Identical
-distance-driven footprint and weights; `K` may be the FULL padded energy count
-in a single call (no per-energy registers, no per-tile volume re-walk).  Falls
-back to the legacy kernel when `size(μ_table_gpu, 1) > 64`, with a prominent
-performance warning.
+The `:dd_fast` spectral projection (the tiled-accumulation contract of
+[`siddon_fused_spectral_project!`](@ref): ADDS each bin's `Σ_e W[e, b]·exp(-L_e)` over the
+energies `tile_start … tile_start + K − 1` to `outputs_flat`), with distance-driven footprints.
+`K` may be the FULL padded energy count: one volume walk, any number of materials.
 """
 function dd_fast_fused_spectral_project!(
         pilot::AbstractArray{T, 3},
@@ -597,20 +554,7 @@ function dd_fast_fused_spectral_project!(
     ) where {T <: AbstractFloat, K}
 
     # the tile's energies that any bin weights
-    lanes = _plen_lanes(μ_table_gpu, _spectral_weight(μ_table_gpu, W_gpu, tile_start, K))
-    if lanes === nothing
-        _warn_dd_fast_fallback(size(μ_table_gpu, 1))
-        return dd_fused_spectral_project!(
-            pilot, outputs_flat, n_bins, mask, geom, μ_table_gpu, W_gpu,
-            Val(K), tile_start;
-            volume_extent = volume_extent,
-            ws_source_positions = ws_source_positions,
-            ws_detector_centers = ws_detector_centers,
-            ws_detector_u = ws_detector_u,
-            ws_detector_v = ws_detector_v,
-            ws_bowtie_spectral = ws_bowtie_spectral
-        )
-    end
+    lanes = _plen_lanes!(μ_table_gpu, _spectral_weight(μ_table_gpu, W_gpu, tile_start, K))
 
     g = _dd_walk_setup(
         T, size(mask), (size(pilot, 1), size(pilot, 2)), geom, volume_extent, mask,
@@ -815,7 +759,7 @@ end
 Walk every detector element's footprint through `mask` as [`dd_fast_material_paths!`](@ref) does,
 but accumulate `R = size(Ct, 1)` weighted sums `sums[k, col, row, view] = Σ_m Ct[k, m] · L_m` of
 the per-material path lengths `L_m` (cm) instead of the lengths themselves: R products per voxel
-whatever the number of materials. `R ≤ $(_PLEN_MAX_MATERIALS)`.
+whatever the number of materials. Any `R`, in walks of at most $(_PLEN_MAX_MATERIALS) lanes.
 """
 function dd_fast_lane_sums!(
         sums::AbstractArray{T, 4},
@@ -825,22 +769,26 @@ function dd_fast_lane_sums!(
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
     ) where {T <: AbstractFloat}
     R = size(Ct, 1)
-    R == size(sums, 1) <= _PLEN_MAX_MATERIALS ||
-        throw(DimensionMismatch("one sum per lane, at most $(_PLEN_MAX_MATERIALS)"))
+    R == size(sums, 1) || throw(DimensionMismatch("one sum per lane: $(size(sums, 1)) sums, $(R) lanes"))
     (size(sums, 2), size(sums, 3), size(sums, 4)) == (geom.n_cols, geom.n_rows, geom.n_angles) ||
         throw(DimensionMismatch("sums is $(size(sums)[2:4]); the geometry is $((geom.n_cols, geom.n_rows, geom.n_angles))"))
     g = _dd_walk_setup(
         T, size(mask), (size(sums, 2), size(sums, 3)), geom, volume_extent, sums,
         nothing, nothing, nothing, nothing,
     )
-    return _dd_material_paths!(
-        Val(R), Ct, Int32(0), sums, mask,
-        g.sp, g.dc, g.du, g.dv,
-        g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-        g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
-        g.mag, g.ps, g.prs, g.col_center, g.row_center,
-        g.arc_det, g.dγ
-    )
+    for k0 in 0:_PLEN_MAX_MATERIALS:(R - 1)
+        n = min(_PLEN_MAX_MATERIALS, R - k0)
+        lanes = n == R ? Ct : Ct[(k0 + 1):(k0 + n), :]
+        _dd_material_paths!(
+            Val(n), lanes, Int32(k0), sums, mask,
+            g.sp, g.dc, g.du, g.dv,
+            g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
+            g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
+            g.mag, g.ps, g.prs, g.col_center, g.row_center,
+            g.arc_det, g.dγ
+        )
+    end
+    return sums
 end
 
 """

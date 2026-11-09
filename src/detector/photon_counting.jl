@@ -460,10 +460,7 @@ function pcct_forward_project(
         # DD kernel handles the FULL padded energy range in one volume walk —
         # identical DD footprint/weights, no per-tile re-walk, no subset copies.
         # ---------------------------------------------------------------------
-        if projector === :dd_fast && _dd_fast_fits(
-                ws_μ_table_gpu,
-                _spectral_weight(ws_μ_table_gpu, ws_W_matrix_gpu, 1, n_energies_padded),
-            )
+        if projector === :dd_fast
             @info "PCCT SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, n_bins=$n_bins" maxlog = 1
             dd_fast_fused_spectral_project!(
                 _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
@@ -476,7 +473,7 @@ function pcct_forward_project(
             @goto tiles_done
         end
 
-        projector === :dd_fast && _warn_dd_fast_fallback(n_regions)
+        # :siddon holds one register per energy: K = 16 energies per volume walk
         μ_sub = similar(mask, T, n_regions, TILE_K)
         W_sub = similar(mask, T, TILE_K, n_bins)
         bt_sub = has_src ? similar(mask, T, size(_pilot, 1), size(_pilot, 2), TILE_K) : nothing

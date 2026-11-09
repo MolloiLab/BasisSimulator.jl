@@ -319,6 +319,37 @@ end
     @test after < before / 4
 end
 
+@testset "any number of materials: copies of a material scatter as the material" begin
+    # water and lung, each split across many labels of the same material: the walk carries one lane
+    # per material (fewer materials than features) or one per feature (more), and either way the
+    # scatter is the two-material phantom's
+    small = _scatter_phantom(; a_cm = 30.0, lungs = true)
+    m = Array(small.mask)
+    function copies(n)
+        mask = zeros(UInt16, size(m))
+        for k in eachindex(m)
+            m[k] == 0 && continue
+            mask[k] = UInt16(m[k] == 1 ? 1 + 2 * (k % (n ÷ 2)) : 2 + 2 * (k % (n ÷ 2)))
+        end
+        materials = Dict{Int, Any}(0 => BS.XA.Materials.air)
+        for l in 1:n
+            materials[l] = isodd(l) ? BS.XA.Materials.water : BS.XA.Materials.lung
+        end
+        return BS.Phantom(mask, materials, small.voxel_size)
+    end
+    ref = _eict_scatter_scan(_SCATTER_EICT, small)
+    n_features = size(ref.ws.scatter.rays.lanes_Gt, 1)
+    for n in (2 * (n_features ÷ 4), 2 * n_features + 2)        # fewer materials than features, more
+        big = _eict_scatter_scan(_SCATTER_EICT, copies(n))
+        lanes = big.ws.scatter.rays
+        @test (lanes.lanes_Gt === nothing) == (n + 1 > n_features)   # air is a material too
+        # to rounding, but for the few rays whose rounding tips a discrete choice (a kernel's
+        # nearest grid node): 3e-4 there, inside the library's own Monte Carlo precision
+        @test isapprox(Array(big.ws.scatter.field), Array(ref.ws.scatter.field); rtol = 1.0e-3)
+        @test isapprox(big.sinogram, ref.sinogram; rtol = 1.0e-5)
+    end
+end
+
 @testset "an empty field gets no scatter" begin
     air = _scatter_phantom(; a_cm = 0.0, n = 8)
     on = _eict_scatter_scan(_SCATTER_EICT, air)
