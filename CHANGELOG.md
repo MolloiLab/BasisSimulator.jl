@@ -49,12 +49,22 @@ the bit.
 
   One lane per material, as earlier versions walk, took 210 s at 64 materials even with this
   release's faster lanes; more than 64 fell back to the per-energy tiled kernels.
-- **Scatter takes any number of materials** (was at most 64), with v0.16.3's arithmetic: with no
-  more materials than the scatter's features, the walk carries one lane per material, as before;
-  with more, one lane per feature (each material's water-equivalent length, outline, non-water
-  indicator, per-band attenuation and per-energy scattering against water's, times its path
-  length), whatever the number of materials. No basis is fitted for the scatter: in Float32 a
-  basis's map back moved it by up to a percent.
+- **Scatter is fast, and takes any number of materials** (was at most 64). On the Alpha (1 sub-view,
+  120 views, the XCAT window) scatter adds 0.35 s for 16 materials (v0.16.3: 13 s), 0.45 s for
+  256 and 0.7 s for 1024; its cost no longer grows with the materials:
+  - the coarse rays' walk is split along each ray into up to 64 segments, one GPU thread each
+    (the scatter's ~8,000 coarse rays, each a long walk over a wide footprint, left the GPU idle):
+    16× faster, and 50× more accurate — a whole coarse walk summed in Float32 was off by up to
+    4.5e-3 of a Float64 walk, the segments by 9e-5;
+  - every ray's scatter features are formed once, one matrix product, instead of from every
+    material's path length for every weight of the superposition;
+  - above 16 materials the walk carries the water-equivalent length, the outline and the
+    non-water indicator exactly, and the per-band attenuation and per-energy scattering on an
+    orthonormal basis (the singular vectors of the scaled feature matrix, to 1e-8 of the largest
+    singular value, checked entrywise to 1e-7): 1024 mixtures in 33 lanes, one walk. Its features
+    agree with one lane per material to 3.6e-5 of each feature's scale, the walk's own Float32
+    precision. A basis of the features' own columns, mapped back with large coefficients of both
+    signs, would move the scatter by up to a percent; the orthonormal one cannot.
 - `dd_fast_material_paths!` (the `paths=` cache) takes any number of materials, and
   `dd_fast_poly_from_paths!` reduces them onto the basis.
 
