@@ -13,8 +13,9 @@
 #              re-walks of the dd.jl kernels (same footprint/overlap weights; results
 #              agree to float ordering).  Measured 47x faster on the 234-bin
 #              polychromatic forward path (M4 Metal).  Mono projection and the
-#              transpose use the dd.jl kernels directly.  Supports ≤ 64 materials;
-#              warns and falls back to the dd.jl tiled kernels above that.
+#              transpose use the dd.jl kernels directly.  Any number of materials
+#              (an attenuation basis above 16); warns and falls back to the dd.jl
+#              tiled kernels only for a table no basis reproduces.
 #   :siddon  — Siddon exact ray tracing retained for comparison and
 #              compatibility. It point-samples one voxel per step, can ALIAS
 #              in severe beam-hardened regions, and is slower than :dd_fast
@@ -73,7 +74,7 @@ end
                        dd_backproject!(volume, sinogram, geom; kw...)
 
 # Fused polychromatic (energy-integrating EI).  dd_fast_fused_* fall back to the
-# dd.jl tiled kernels above 64 materials.
+# dd.jl tiled kernels only for a table no attenuation basis reproduces.
 @inline _project_fused_poly!(proj::Symbol, args...; kw...) =
     proj === :siddon ? siddon_fused_poly_project!(args...; kw...) :
                        dd_fast_fused_poly_project!(args...; kw...)

@@ -547,8 +547,8 @@ only materials that are actually present in `phantom.mask`. Geometry and attenua
 are unchanged; labels are remapped densely from zero. The input phantom is not
 modified, so semantic-label workflows can retain the original object.
 
-Compacting sparse or shared material tables is especially important for `:dd_fast`:
-its single-pass spectral kernel supports up to 64 active materials. Device masks are
+Compacting keeps the material table, the `paths=` cache and the scatter features no larger
+than they need to be (`:dd_fast` itself takes any number of materials). Device masks are
 copied to the host once to discover/remap labels, then copied back to the same backend.
 Prefer calling this before transferring a CPU phantom to the GPU.
 """

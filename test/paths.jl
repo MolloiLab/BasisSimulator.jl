@@ -123,11 +123,13 @@ end
             zeros(Float32, wrong...), f.mask, f.geom; volume_extent = f.extent,
         )
     end
-    # more materials than the path-length kernel can hold in registers
-    @test_throws ArgumentError BS.dd_fast_material_paths!(
-        zeros(Float32, 65, f.geom.n_cols, f.geom.n_rows, f.geom.n_angles), f.mask, f.geom;
-        volume_extent = f.extent,
-    )
+    # any number of materials: a 65-row cache holds the fixture's materials in its first rows,
+    # and nothing in the rows no voxel has
+    big = zeros(Float32, 65, f.geom.n_cols, f.geom.n_rows, f.geom.n_angles)
+    BS.dd_fast_material_paths!(big, f.mask, f.geom; volume_extent = f.extent)
+    BS.dd_fast_material_paths!(good, f.mask, f.geom; volume_extent = f.extent)
+    @test isapprox(big[1:f.n_materials, :, :, :], good; rtol = 1.0e-5)
+    @test all(iszero, big[(f.n_materials + 1):end, :, :, :])
     # a cache and an attenuation table that disagree about how many materials there are
     @test_throws DimensionMismatch BS.dd_fast_poly_from_paths!(
         sinogram, good, f.μ_table[1:2, :], f.wη

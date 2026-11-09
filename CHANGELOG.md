@@ -12,6 +12,55 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.4](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.3...v0.16.4) (2026-11-09)
+
+Brings the photon-counting projection back to v0.15 speed and past it, and lets `:dd_fast` take any
+number of materials. On an NVIDIA RTX PRO 6000 Blackwell, demmd-bayesian's `NAEOTOM_ALPHA` scan of
+a 4 cm XCAT window (1600 × 1400 × 200 voxels, 16 materials, 140 kVp, 120 views):
+
+| | v0.15.0 | v0.16.3 | v0.16.4 |
+|---|---|---|---|
+| 1 sub-view, scatter off | 3.2 s | 23.7 s | **0.70 s** |
+| 5 sub-views, scatter on | 8.2 s (no scatter) | 121 s | **5.6 s** |
+
+Results agree with v0.16.3 to Float32 rounding; up to 16 materials the GPU projection is the same to
+the bit.
+
+### Performance
+- **The path-length walk adds the product once, then selects per material lane** (no fused
+  multiply-add in every lane). v0.16.0's select–`fma`–select accumulator made the spectral kernel
+  about 30 times slower on the GPU.
+- **The spectral kernel loops over energies once** and adds each energy's transmission to every bin
+  (it looped over the energies once per bin).
+- **Any number of materials in one pass.** A material's attenuation is a mixture of its elements',
+  so the μ table has a low rank. Above 16 materials the walk accumulates the line integrals at a few
+  pivot energies, chosen by a pivoted QR among the energies that carry at least 1 % of the
+  spectrum's peak weight, and every energy's line integral follows from them. The basis is fitted to
+  the workspace's exact Float64 table and reproduces every material at every weighted energy to
+  1e-6 of itself. The same XCAT window with N random mixtures of 8 tissues (1 sub-view, scatter
+  off, 120 views):
+
+  | materials | basis rank | v0.16.4 | the legacy tiled kernels | relative difference (RMS, max) |
+  |---|---|---|---|---|
+  | 16 | (one lane each) | 0.70 s | — | — |
+  | 64 | 9 | 0.72 s | — | — |
+  | 256 | 9 | 0.73 s | 58 s | 5e-7, 4e-5 |
+  | 1024 | 9 | 0.86 s | 60 s | 5e-7, 5e-5 |
+
+  One lane per material, as earlier versions walk, took 210 s at 64 materials even with this
+  release's faster lanes; more than 64 fell back to the legacy kernels.
+- **The scatter features walk a few lanes too**: water-equivalent length, the outline and the
+  non-water indicator exactly, the per-band and per-energy features on a basis of the rest. Scatter
+  takes any number of materials (was at most 64).
+- `dd_fast_material_paths!` (the `paths=` cache) takes any number of materials, and
+  `dd_fast_poly_from_paths!` reduces them onto the basis.
+
+### Changed
+- CPU and GPU projections are compared to a tolerance (rtol 1e-5), not bit for bit; each device still
+  repeats its own result exactly.
+- Only a μ table no basis of at most 64 energies reproduces (none made of real elements) warns and
+  takes the legacy tiled kernels.
+
 ## [0.16.3](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.2...v0.16.3) (2026-11-05)
 
 Removes the ring artifacts of the realistic photon-counting detector. On notebook 04's NAEOTOM Alpha

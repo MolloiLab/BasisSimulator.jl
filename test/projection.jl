@@ -367,17 +367,61 @@ end
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 
-    @testset "M > 64 materials warns and falls back to the legacy dd kernel" begin
+    @testset "a table no basis reproduces keeps the legacy kernel" begin
+        rng = MersenneTwister(70)
+        μ_rand = rand(rng, Float32, 70, 80) .+ 0.1f0           # full rank: no 64-energy basis
+        @test BS._plen_lanes(μ_rand, ones(80)) === nothing
+        @test BS._plen_lanes(μ_rand[1:10, :], ones(80)).lanes === nothing   # few materials: their own lanes
+        @test !BS._dd_fast_fits(μ_rand, ones(80))              # the hosts keep their tiled loop
+        @test BS._dd_fast_fits(μ_rand[1:64, :], ones(80))      # up to 64: always one pass
+    end
+
+    @testset "40 random materials: one pass, as the legacy kernel" begin
+        rng = MersenneTwister(40)
+        μ40 = 0.3f0 .* rand(rng, Float32, 40, N_E)
+        μ40[1, :] .= 0
+        mask40 = UInt16.(rand(rng, 0:39, size(mask)))
+        sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        sino_f = similar(sino_d)
+        BS.dd_fused_poly_project!(sino_d, mask40, geom, μ40, wη, Val(N_E))
+        @test_logs BS.dd_fast_fused_poly_project!(sino_f, mask40, geom, μ40, wη, Val(N_E))
+        @test isapprox(sino_f, sino_d; rtol = 1.0e-5)
+        n_bins = 2
+        W = Float32[(e + b) / (2N_E) for e in 1:N_E, b in 1:n_bins]
+        ne = geom.n_cols * geom.n_rows * geom.n_angles
+        out_d = zeros(Float32, n_bins * ne)
+        out_f = zeros(Float32, n_bins * ne)
+        pilot_d = reshape(view(out_d, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
+        pilot_f = reshape(view(out_f, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fused_spectral_project!(pilot_d, out_d, Int32(n_bins), mask40, geom, μ40, W, Val(N_E), Int32(1))
+        @test_logs BS.dd_fast_fused_spectral_project!(pilot_f, out_f, Int32(n_bins), mask40, geom, μ40, W, Val(N_E), Int32(1))
+        @test isapprox(out_f, out_d; rtol = 1.0e-5)
+    end
+
+    @testset "material paths for any number of materials" begin
+        rng = MersenneTwister(100)
+        mask100 = rand(rng, UInt8(0):UInt8(99), size(mask))
+        paths100 = zeros(Float32, 100, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fast_material_paths!(paths100, mask100, geom)
+        mask3 = UInt8.(mask100 .% 3)
+        paths3 = zeros(Float32, 3, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fast_material_paths!(paths3, mask3, geom)
+        grouped = cat((sum(paths100[(k + 1):3:end, :, :, :]; dims = 1) for k in 0:2)...; dims = 1)
+        @test count(>(0), paths3) > 0
+        @test isapprox(grouped, paths3; rtol = 1.0e-5)
+    end
+
+    @testset "M > 64 materials: one pass on an attenuation basis, as the legacy kernel" begin
         μ_big = zeros(Float32, 65, N_E)
         μ_big[2, :] .= μ_table[2, :]
         μ_big[3, :] .= μ_table[3, :]
         sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_fused_poly_project!(sino_d, mask, geom, μ_big, wη, Val(N_E))
-        @test_logs (:warn, r"DD_FAST SINGLE-PASS DISABLED.*65"s) BS.dd_fast_fused_poly_project!(
-            sino_f, mask, geom, μ_big, wη, Val(N_E)
-        )
-        @test sino_f == sino_d                                # same code path, bit-identical
+        @test_logs BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_big, wη, Val(N_E))   # no fallback
+        b = BS._attenuation_basis(μ_big, abs.(Float64.(wη)))
+        @test b !== nothing && length(b.J) == 2                # two distinct materials: rank 2
+        @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 end
 

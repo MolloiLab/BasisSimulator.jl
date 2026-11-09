@@ -476,12 +476,6 @@ function _forward_project_poly!(
                 "paths= needs the workspace's attenuation table and spectral weights"
             )
         )
-        size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS || throw(
-            ArgumentError(
-                "paths= needs at most $(_PLEN_MAX_MATERIALS) materials, the table has " *
-                    "$(size(ws_μ_table_gpu, 1)); call compact_materials(phantom) first"
-            )
-        )
         fused && throw(ArgumentError("paths= and fused=true are two different projections"))
     end
 
@@ -523,12 +517,12 @@ function _forward_project_poly!(
     # =========================================================================
     if ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing
         # ---------------------------------------------------------------------
-        # SINGLE-PASS PATH (:dd_fast, ≤64 materials): the path-length DD kernel
-        # accumulates per-MATERIAL path lengths (energy-independent registers),
-        # so all n_energies — and both weighted sums — convert once per cell:
-        # ONE volume walk instead of n_tiles.
-        # :siddon (and :dd_fast above 64 materials) keep the tiled path below
-        # (those kernels hold per-energy registers → K=16 required).
+        # SINGLE-PASS PATH (:dd_fast, any number of materials): the path-length DD
+        # kernel accumulates per-material (or attenuation-basis) path lengths,
+        # energy-independent registers, so all n_energies — and both weighted sums —
+        # convert once per cell: ONE volume walk instead of n_tiles.
+        # :siddon (and :dd_fast on a table no basis reproduces) keep the tiled path
+        # below (those kernels hold per-energy registers → K=16 required).
         # ---------------------------------------------------------------------
         if paths !== nothing
             @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1
@@ -539,7 +533,7 @@ function _forward_project_poly!(
             return sinogram
         end
 
-        if projector === :dd_fast && size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS
+        if projector === :dd_fast && _dd_fast_fits(ws_μ_table_gpu, _poly_weight(ws_w1_gpu, ws_w2_gpu))
             @info "SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
             dd_fast_fused_poly_project!(
                 sinogram, mask, geom,

@@ -216,12 +216,8 @@ function create_workspace(
         n_regions = length(mats)
         μ_lut_cpu = Vector{T}(undef, n_regions)
         μ_lut_gpu = allocate_backend(n_regions)
-        μ_table = zeros(T, n_regions, n_energies)
-        for (e_idx, E) in enumerate(energies)
-            for r in 1:n_regions
-                μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
-            end
-        end
+        μ_exact = [compute_μ_at_energy(mats[r], Float64(E)) for r in 1:n_regions, E in energies]
+        μ_table = T.(μ_exact)
 
         # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
         geom_source_positions = allocate_backend(size(geom.source_positions)...)
@@ -292,6 +288,7 @@ function create_workspace(
         _μ_table_gpu = allocate_backend(n_regions, n_energies_padded)
         fill!(_μ_table_gpu, zero(T))
         copyto!(view(_μ_table_gpu, :, 1:n_energies), μ_table)
+        _register_exact_attenuation!(_μ_table_gpu, μ_exact)
 
         # Build W matrix: W[e, b] = I0 * w[e] * R[e, b] (R per incident photon, absorption included)
         # SAME physical anchor as I0_bins_norm_vec above (coupled invariant).
@@ -702,12 +699,8 @@ function create_eict_workspace(
     # μ lookup table
     μ_lut_cpu = Vector{T}(undef, n_regions)
     μ_lut_gpu = similar(ref, T, n_regions)
-    μ_table = zeros(T, n_regions, n_energies)
-    for (e_idx, E) in enumerate(energies)
-        for r in 1:n_regions
-            μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
-        end
-    end
+    μ_exact = [compute_μ_at_energy(mats[r], Float64(E)) for r in 1:n_regions, E in energies]
+    μ_table = T.(μ_exact)
 
     # Upload μ_table to GPU, padded to multiple of 16 for tiled projection (SPEED-BUILD-V2-002)
     # Extra columns are zero-filled — zero weights ensure they contribute nothing.
@@ -715,6 +708,7 @@ function create_eict_workspace(
     μ_table_gpu = similar(ref, T, n_regions, n_energies_padded)
     fill!(μ_table_gpu, zero(T))
     copyto!(view(μ_table_gpu, :, 1:n_energies), μ_table)
+    _register_exact_attenuation!(μ_table_gpu, μ_exact)
 
     # The detector's signal per incident photon, m₁ (keV) and m₂ (keV²). Signals are carried in
     # units of E_ref, the mean signal of one photon of the unfiltered beam, so that an air ray

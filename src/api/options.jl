@@ -29,9 +29,9 @@ is set by the keyword constructor.
   anti-aliased footprint integration with single-pass per-material path-length fused kernels —
   the full spectrum runs in ONE volume walk (measured 47x faster than the per-energy tiled
   distance-driven kernels on a 234-bin polychromatic forward on M4 Metal, agreeing with them
-  to floating-point ordering); supports ≤ 64 materials (emits a prominent warning and falls
-  back to the per-energy tiled kernels above that); call `compact_materials` to remove
-  inactive table entries.  `:siddon` = exact point-sampled ray tracing retained for
+  to floating-point ordering); any number of materials (above 16 the walk carries the few
+  lanes of an attenuation basis, whose rank is at most the number of elements; a table no basis
+  of at most 64 energies reproduces warns and falls back to the per-energy tiled kernels).  `:siddon` = exact point-sampled ray tracing retained for
   comparison and compatibility; it is slower than `:dd_fast` for full polychromatic/spectral
   simulations and can ALIAS in severe beam-hardened regions.  NOTE: to keep
   the iterative-recon system matrix consistent with the data, pass the SAME projector to
