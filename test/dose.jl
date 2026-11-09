@@ -156,13 +156,14 @@ end
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0, z_cm = 0.25)
     cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 1.0)
     phantom = BS.Phantom(cpu.mask, cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)
-    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
 
     @test ws.dose_source isa BS.DoseSource
     @test ws.dose_source.nominal_collimation_mm == 2.5
 
     result = BS.simulate!(ws, phantom, protocol, sim_opts)
-    @test propertynames(result) == (:dose,)
+    @test propertynames(result) == (:sinogram, :dose)
+    @test result.sinogram === ws.sinogram                    # the measurement, as a photon counter's
     @test result.dose isa BS.DoseReport
     @test result.dose.kVp == 120 && result.dose.nominal_collimation_mm == 2.5
     @test result.dose.ctdi_vol_mGy > 0 && result.dose.dlp_mGy_cm > 0
@@ -182,7 +183,7 @@ end
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0, z_cm = 0.25)
     cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 1.0)
     phantom = BS.Phantom(cpu.mask, cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)
-    mono = BS.create_eict_workspace(
+    mono = BS.create_workspace(
         scanner, protocol, sim_opts, recon_opts, phantom;
         spectrum_override = ([70.0], [1.0]),
     )

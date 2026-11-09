@@ -341,7 +341,8 @@ end
     for n in (8, 300)                                          # one lane per material; the orthonormal lanes
         big = _eict_scatter_scan(_SCATTER_EICT, copies(n))
         lanes = big.ws.scatter.rays
-        @test size(lanes.lanes_Ct, 1) == (n < 16 ? n + 1 : 3 + 2)   # water and lung: rank 2 beyond the exact three
+        # one lane per material up to 16 (air is one), else water and lung: rank 2 beyond the exact three
+        @test n < 16 ? lanes.lanes_Ct === nothing : size(lanes.lanes_Ct, 1) == 3 + 2
         # to rounding, but for the few rays whose rounding tips a discrete choice (a kernel's
         # nearest grid node): 3e-4 there, inside the library's own Monte Carlo precision
         @test isapprox(Array(big.ws.scatter.field), Array(ref.ws.scatter.field); rtol = 1.0e-3)
@@ -356,7 +357,7 @@ end
     function check(kind, wet, dmu, ratio)
         l = BS._scatter_feature_lanes(kind, wet, dmu, ratio)
         F = features(kind, wet, dmu, ratio)
-        rebuilt = l.G === nothing ? permutedims(l.Ct) : permutedims(l.Ct) * l.G
+        rebuilt = l.G === nothing ? permutedims(l.Ct) : l.Ct === nothing ? l.G : permutedims(l.Ct) * l.G
         scale = [max(maximum(abs, c), 1.0e-300) for c in eachcol(F)]
         @test maximum(abs.(rebuilt .- F) ./ scale') <= 1.0e-7
         @test rebuilt[:, 3] == F[:, 3]                         # the water test's lane is exact
@@ -369,7 +370,7 @@ end
         w = rand(rng, n, 4)
         w ./= sum(w; dims = 2)
         l = check(kinds(n), w * base[1], w * base[2], reshape(w * reshape(base[3], 4, :), n, nE, 3))
-        @test size(l.Ct, 1) == (n <= 16 ? n : 3 + 4)
+        @test n <= 16 ? l.Ct === nothing && size(l.G, 1) == n : size(l.Ct, 1) == 3 + 4
     end
     # features of a rank no 64 lanes hold: a lane per material (no more materials than features)
     # or per feature

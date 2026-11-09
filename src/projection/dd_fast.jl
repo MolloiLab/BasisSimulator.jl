@@ -810,15 +810,18 @@ Walk every detector element's footprint through `mask` as [`dd_fast_material_pat
 but accumulate `R = size(Ct, 1)` weighted sums `sums[k, col, row, view] = Σ_m Ct[k, m] · L_m` of
 the per-material path lengths `L_m` (cm) instead of the lengths themselves: R products per voxel
 whatever the number of materials. Any `R`, in walks of at most $(_PLEN_MAX_MATERIALS) lanes.
+`Ct = nothing` is one lane per material, each voxel's length selected into its own (faster than
+the products of an identity `Ct`; at most $(_PLEN_MAX_MATERIALS)).
 """
 function dd_fast_lane_sums!(
         sums::AbstractArray{T, 4},
         mask::AbstractArray{<:Unsigned, 3},
         geom::CTGeometry,
-        Ct::AbstractMatrix;
+        Ct::Union{Nothing, AbstractMatrix};
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
     ) where {T <: AbstractFloat}
-    R = size(Ct, 1)
+    R = Ct === nothing ? size(sums, 1) : size(Ct, 1)
+    Ct === nothing && R > _PLEN_MAX_MATERIALS && throw(DimensionMismatch("at most $(_PLEN_MAX_MATERIALS) selected lanes"))
     R == size(sums, 1) || throw(DimensionMismatch("one sum per lane: $(size(sums, 1)) sums, $(R) lanes"))
     (size(sums, 2), size(sums, 3), size(sums, 4)) == (geom.n_cols, geom.n_rows, geom.n_angles) ||
         throw(DimensionMismatch("sums is $(size(sums)[2:4]); the geometry is $((geom.n_cols, geom.n_rows, geom.n_angles))"))
@@ -832,7 +835,7 @@ function dd_fast_lane_sums!(
     n_seg = clamp(cld(_LANE_SUM_THREADS, n_rays), 1, _LANE_SUM_MAX_SEGMENTS)
     for k0 in 0:_PLEN_MAX_MATERIALS:(R - 1)
         n = min(_PLEN_MAX_MATERIALS, R - k0)
-        lanes = n == R ? Ct : Ct[(k0 + 1):(k0 + n), :]
+        lanes = Ct === nothing || n == R ? Ct : Ct[(k0 + 1):(k0 + n), :]
         if n_seg == 1
             _dd_material_paths!(
                 Val(n), lanes, Int32(k0), sums, mask,

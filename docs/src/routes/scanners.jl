@@ -93,15 +93,15 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             ((:use_fill_factor, :use_detector_efficiency), "the fill factor; the scintillator's energy response (off: every photon absorbed whole)"),
             ((:detector_efficiency_mode,), "that response: `:mc_lut` (the Geant4 table) or `:beer_lambert` (analytic, any depth)"),
             ((:use_optical_crosstalk, :use_lag), "light spread to the neighbouring dexels; the scintillator's afterglow from view to view"),
-            ((:gain_spread, :offset_spread_keV, :defect_seed), "dexel defects; corrected by `calibrate_flat_field`"),
+            ((:gain_spread, :offset_spread_keV, :defect_seed), "dexel defects; corrected by `calibrate`'s flat field"),
             ((:scatter_kernels, :scatter_correction), "scatter library entry (`\"\"` = none); subtract the estimate"),
         ]
         pcct_rows = [
             ((:energy_thresholds,), "keV, ascending, among the response table's 16"),
             ((:detector_material, :detector_depth), "`:CdTe`, `:CZT` or `:Si`; mm"),
-            ((:dead_time_ns, :pileup), "per native dexel; corrected by `calibrate_pileup`"),
+            ((:dead_time_ns, :pileup), "per native dexel; corrected by `calibrate`'s pile-up correction"),
             ((:binning_factor,), "native dexels summed per pixel side (2 standard, 1 UHR)"),
-            ((:gain_spread, :threshold_spread_keV, :defect_seed), "native-dexel defects; corrected by `calibrate_flat_field`"),
+            ((:gain_spread, :threshold_spread_keV, :defect_seed), "native-dexel defects; corrected by `calibrate`'s flat field"),
             ((:scatter_kernels, :scatter_correction), "as for `EICTScanner`"),
             ((:noise_reduction,), "0 = Poisson counts … 1 = expected counts; leave at 0"),
         ]
@@ -188,8 +188,8 @@ scanner = BS.EICTScanner(BS.REVOLUTION_APEX; electronic_noise = 0.0) # VMI noteb
                     2 × 2 after counting. Geometry: Li 2025, Hennemann 2026, FDA K243523; thresholds: Sartoretti \
                     2023; the CdTe response and 27 ns dead time: Geant4, BasisMonteCarlo notebook 03. It is \
                     realistic: its dexels' gains spread by 2 % and thresholds by 0.35 keV (an assumption), corrected \
-                    as the scanner does with `calibrate_pileup` → `apply_pileup!` and `calibrate_flat_field` → \
-                    `apply_flat_field!` (""",
+                    as the scanner does: `calibrate`, passed to `create_workspace`, with which `simulate!` \
+                    corrects pile-up, flat field, then scatter (""",
                     link("$(BASE)/getting-started/#spectral", "Getting Started"),
                     ").",
                 ),

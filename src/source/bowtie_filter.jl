@@ -385,8 +385,9 @@ function compute_bowtie_attenuation_spectral(
         thickness[col] = interpolate_thickness(filter, fan_angle)
     end
 
-    thickness_corrected = zeros(Float64, n_materials)
-    for row in 1:n_rows
+    # rows in parallel: each writes its own slice, with the same operations in the same order
+    Threads.@threads for row in 1:n_rows
+        thickness_corrected = zeros(Float64, n_materials)
         v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cone_angle = atan(v_offset / geom.SDD)
         cos_alpha = cos(cone_angle)

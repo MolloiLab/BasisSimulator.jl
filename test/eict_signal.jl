@@ -41,7 +41,7 @@ const _EICT_RECON = BS.ReconOptions(; matrix_size = (128, 128, 1), fov_cm = 36.0
 # Noise-free and two noisy draws of one acquisition; the variance of a dexel is half that of the
 # difference of the draws, which cancels every deterministic pattern.
 function _eict_draws(scanner, phantom; protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 90))
-    ws = BS.create_eict_workspace(scanner, protocol, _eict_opts(1), _EICT_RECON, phantom)
+    ws = BS.create_workspace(scanner, protocol, _eict_opts(1), _EICT_RECON, phantom)
     BS.simulate!(ws, phantom, protocol, _eict_opts(1; noise = false); report_dose = false)
     clean = Array(ws.sinogram)
     dispersion = Array(ws.dispersion)
@@ -162,7 +162,7 @@ end
         roi(hu, m) = sum(hu[:, :, 1][m]) / count(m)
         hu = map((:mono, :poly)) do beam
             spectrum_override = beam === :mono ? ([70.0], [1.0e6]) : nothing
-            ws = BS.create_eict_workspace(
+            ws = BS.create_workspace(
                 _EICT_TEST_SCANNER, protocol, opts, _EICT_RECON, phantom;
                 spectrum_override
             )
@@ -187,7 +187,7 @@ end
     phantom = _eict_cylinder(; diameter_cm = 20.0)
     acquisitions = map((80.0, 140.0)) do kVp
         protocol = BS.CTProtocol(; kVp, mAs = 200.0, views = 12)
-        ws = BS.create_eict_workspace(_EICT_TEST_SCANNER, protocol, opts, _EICT_RECON, phantom)
+        ws = BS.create_workspace(_EICT_TEST_SCANNER, protocol, opts, _EICT_RECON, phantom)
         BS.simulate!(ws, phantom, protocol, opts; report_dose = false)
         (sinogram = Array(ws.sinogram), basis = BS.spectral_basis(ws, protocol))
     end
@@ -196,7 +196,7 @@ end
     out = BS.decompose_nchannel(; channels = [a.sinogram for a in acquisitions], basis)
     # the truth: the water's own path, from a monoenergetic projection at 70 keV
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 12)
-    ws70 = BS.create_eict_workspace(
+    ws70 = BS.create_workspace(
         _EICT_TEST_SCANNER, protocol, opts, _EICT_RECON, phantom;
         spectrum_override = ([70.0], [1.0e6])
     )
@@ -232,7 +232,7 @@ end
     ]
     for (switch, total, centre, edge) in v0160
         scanner = BS.EICTScanner(base; switch...)
-        ws = BS.create_eict_workspace(scanner, protocol, opts, recon, phantom)
+        ws = BS.create_workspace(scanner, protocol, opts, recon, phantom)
         BS.simulate!(ws, phantom, protocol, opts; report_dose = false)
         s = Array(ws.sinogram)
         @test sum(Float64, s) ≈ total rtol = 1.0e-7

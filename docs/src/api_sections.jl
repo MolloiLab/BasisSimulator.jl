@@ -111,7 +111,7 @@ Exported names whose source file isn't mapped to a section yet. Map them in
 """Names shown first in their section, in this order (the rest follow by source file and line)."""
 const API_LEADS = [
     "Phantom", "Scanner", "EICTScanner", "PCCTScanner", "ScannerGeometry", "CTProtocol", "SimOptions", "ReconOptions",
-    "create_eict_workspace", "create_workspace", "simulate!",
+    "create_workspace", "calibrate", "Calibration", "simulate!",
     "reconstruct!", "create_fdk_recon_workspace", "create_hir_recon_workspace",
     "vmi_pipeline", "spectral_basis", "SpectralHYPR",
     "compute_dose", "DoseReport",
@@ -142,6 +142,9 @@ const API_NAME_SECTION = Dict{String, String}(
     "resolve_source_spectrum_with_bowtie"    => "spectrum",
     "resolve_source_spectrum_without_bowtie" => "spectrum",
     "calibrate_pcct_poly_bhc"                => "corrections",
+    # A scanner's calibration is part of building its workspace.
+    "calibrate"   => "forward",
+    "Calibration" => "forward",
     # Re-exported dependency.
     "XA" => "phantom",
 )

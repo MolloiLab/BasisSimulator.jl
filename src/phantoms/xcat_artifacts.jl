@@ -353,7 +353,7 @@ Download (if needed) and load XCAT phantom `name`, returning the labeled pieces:
 the CPU `mask` (`UInt8`, one label per voxel, `0` = air), the `materials` map
 (`label → XA.Material`), the `label_names` (`label → XCIST name`), and the voxel
 size (cm).  You build the `Phantom` yourself in one line — placing the mask on
-your device first when you want a GPU simulation (`create_eict_workspace` picks
+your device first when you want a GPU simulation (`create_workspace` picks
 the compute backend from the mask's array type):
 
 ```julia

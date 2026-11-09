@@ -150,20 +150,31 @@ detector model **always** applies the MC-LUT detector response matrix
 (`compute_mc_drm`); `pcct_forward_project` builds it when no precomputed matrix
 is passed, and there is no ideal-binning path.
 
-Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`; it is corrected
-like a scanner corrects it, outside: [`calibrate_pileup`](@ref) → [`apply_pileup!`](@ref), as the
-dexels' defects are by [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref). With
+Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`. With
 `SimOptions(use_scatter = true)` (the default) the scanner's Geant4 scatter kernels
-([`scatter_kernels`](@ref)) add the patient's scatter to every bin before the noise; the scatter
-correction (`PCCTScanner(; scatter_correction = true)`, the default, as for an energy integrator)
-subtracts the scatter estimated from the recorded counts alone (the patient taken as water),
-inside `simulate!`. Bin combination,
+([`scatter_kernels`](@ref)) add the patient's scatter to every bin before the noise.
+
+The recorded counts are corrected in a scanner's order, with the workspace's calibration
+([`calibrate`](@ref), passed to [`create_workspace`](@ref)): the pile-up, the dexels' flat field,
+then the scatter (`PCCTScanner(; scatter_correction = true)`, the default), estimated from the
+corrected counts alone, the patient taken as water. The estimate is a nominal dexel's; subtracted
+before the other two corrections, it would leave each dexel S·(1 − 1/g) of its scatter: rings of up
+to 8 HU on the NAEOTOM Alpha's Gammex 472.
+
+```julia
+calibration = calibrate(NAEOTOM_ALPHA, protocol, recon_opts, phantom)   # once per scanner and protocol
+ws = create_workspace(NAEOTOM_ALPHA, protocol, sim_opts, recon_opts, phantom; calibration)
+result = simulate!(ws, phantom, protocol, sim_opts)
+```
+
+Bin combination,
 water BHC and reconstruction are the caller's: the returned per-bin sinograms are
 log-transmissions against the per-ray air response `I0_bins` (`[n_cols, n_rows, n_bins]`), which
 is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
 
 # Returns
-- `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
+- `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals, corrected with the
+  calibrations passed and for scatter).
 - `I0_bins`   — the air response of every ray and bin, `[n_cols, n_rows, n_bins]` (per ray, not
   a per-bin scalar); `I0_bins[:, :, b] .* exp.(-bin_b)` recovers the recorded counts.
 - `dose`      — the acquisition's [`DoseReport`](@ref), or `nothing` with `report_dose = false`
@@ -195,6 +206,8 @@ function simulate!(
         projection = nothing,
         keep_projection::Bool = false,
     ) where {T}
+    corrects_scatter = ws.scatter !== nothing && ws.scatter_correction
+    calibration = ws.calibration
     geom = ws.geom
     energies = ws.energies
     weights = ws.weights
@@ -314,9 +327,17 @@ function simulate!(
     raw_counts = capture_raw_counts ? [similar(b) for b in pcct_sino.bins] : nothing
     _pcct_detect!(ws, pcct_sino.bins, sim_opts.use_noise, sim_opts.seed, raw_counts, protocol.rotation_time / protocol.views)
 
-    # ─── Scatter correction (`scatter_correction`): the scatter estimated from the recorded
+    # ─── The scanner's corrections, in its order: pile-up, the flat field, then the scatter ───
+    # The scatter estimate is a smooth field on a nominal dexel's scale; subtracted from counts
+    # that still carry each dexel's gain (or its pile-up), it leaves that dexel S·(1 − 1/g): rings.
+    if calibration !== nothing
+        calibration.pileup === nothing || _correct_pileup!(pcct_sino.bins, I0, calibration.pileup, protocol)
+        calibration.flat_field === nothing || _correct_flat_field!(pcct_sino.bins, calibration.flat_field)
+    end
+
+    # ─── Scatter correction (`scatter_correction`): the scatter estimated from the corrected
     # counts alone, the patient taken as water, subtracted from each bin (src/detector/scatter.jl) ───
-    if ws.scatter !== nothing && ws.scatter_correction
+    if corrects_scatter
         plan = ws.scatter
         for b in eachindex(pcct_sino.bins)
             _reduce_footprints!(plan.measured, plan, pcct_sino.bins[b]; i0 = I0, plane = b, accumulate = b > 1)
@@ -330,9 +351,8 @@ function simulate!(
     # take the per-bin sinograms and the per-ray I0 returned here).
     #
     # Returned fields:
-    # - `pcct_sino`  : per-bin log-line-integral sinograms.  When pile-up is
-    #                  on these are `-log(recorded / I0_truth)`; `apply_pileup!` with a
-    #                  `calibrate_pileup` calibration recovers pile-up-free bins.
+    # - `pcct_sino`  : per-bin log-line-integral sinograms, `-log(recorded / I0_truth)`,
+    #                  corrected with the calibrations passed (pile-up, flat field) and for scatter.
     # - `I0_bins`    : truth per-bin air baseline (DRM-weighted, pre-pileup).
     #                  `I0_b · exp(-bin) = recorded count` round-trip identity.
     # - `dose`       : `DoseReport` of this acquisition (CTDIvol, DLP, …) from the simulated
@@ -362,9 +382,10 @@ end
 
 Run EICT single-kVp simulation using pre-allocated workspace buffers.
 
-Mutates `ws.sinogram` in place (the final log line-integral sinogram); read it (and `ws.geom`)
-off the workspace. Returns `(; dose)`, the [`DoseReport`](@ref) of this acquisition (CTDIvol, DLP,
-…) computed from the simulated beam, or `(; dose = nothing)` with `report_dose = false`.
+Returns `(; sinogram, dose)`: `sinogram` is the final log line-integral sinogram
+(`[col, row, view]`, the workspace's own `ws.sinogram`, overwritten by the next call), `dose` the
+[`DoseReport`](@ref) of this acquisition (CTDIvol, DLP, …) computed from the simulated beam, or
+`nothing` with `report_dose = false`.
 
 `report_dose` attaches this acquisition's [`DoseReport`](@ref); it costs a cached Monte Carlo
 (about a second) the first time a beam is seen and nothing afterwards, so set it to `false` in a
@@ -383,7 +404,7 @@ geometry and the material map alone, so one cache serves every spectrum measured
 geometry, and a several-kVp study of one phantom stops paying for it repeatedly (four tube
 voltages of a 1024² × 60 phantom: 4.81 s of forward projection down to 2.16 s, bit-identical).
 
-Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`;
+Create the workspace with [`create_workspace`](@ref)`(scanner, protocol, sim_opts, recon_opts, phantom)`;
 the detector's response (`m1`, `m2`) and electronic noise (`σ_electronic`) are baked into `ws` at
 that point, so `simulate!` no longer needs `scanner`. The signal model is in
 [`EICTWorkspace`](@ref).
@@ -392,6 +413,9 @@ With `SimOptions(use_scatter = true)` (the default) the scanner's Geant4 scatter
 ([`scatter_kernels`](@ref)) add the patient's scatter to `S₁` and `S₂` before the noise, and with
 `EICTScanner(; scatter_correction = true)` (the default) the DAS subtracts the scatter it estimates
 from the measured signal alone (the patient taken as water), as the photon-counting path does.
+The workspace's calibration ([`calibrate`](@ref)) corrects each dexel's gain and offset in a DAS's
+order: on the air-normalised signal, before the scatter correction, whose estimate is a nominal
+dexel's (without the scatter correction, on the final sinogram).
 
 Reconstruction is NOT included — handled by the caller via `reconstruct!`.
 """
@@ -406,6 +430,7 @@ function simulate!(
         projection = nothing,
         keep_projection::Bool = false,
     ) where {T}
+    flat_field = ws.calibration === nothing ? nothing : ws.calibration.flat_field
     geom = ws.geom
     energies = ws.energies
     mats = ws.mats
@@ -538,6 +563,19 @@ function simulate!(
             sino[idx] = linear ? λ / I0v : -log(max(λ, one(T)) / I0v)
         end
     end
+    # the flat field before the scatter correction, on the air-normalised signal (a DAS's order:
+    # the estimate is a nominal dexel's, so it is subtracted from gain- and offset-corrected signals)
+    if corrects_scatter && flat_field !== nothing
+        let sino = ws.sinogram, air = ws.air_reference, ncnr = length(ws.air_reference),
+                g = copyto!(similar(ws.air_reference), T.(flat_field.gain)),
+                o = copyto!(similar(ws.air_reference), T.(flat_field.offset)), ε = T(1.0e-10)
+            AK.foreachindex(sino) do idx
+                ray = (idx - 1) % ncnr + 1
+                a = max(air[ray], ε)
+                sino[idx] = (sino[idx] / a - o[ray]) / g[ray] * a
+            end
+        end
+    end
     if corrects_scatter
         _reduce_footprints!(ws.scatter.measured, ws.scatter, ws.sinogram)
         _scatter_estimate!(ws.scatter)
@@ -562,10 +600,13 @@ function simulate!(
         end
     end
 
+    # without the scatter correction, the flat field on the final sinogram
+    !corrects_scatter && flat_field !== nothing && _correct_flat_field!(ws.sinogram, flat_field)
+
     # BHC is decoupled — applied at notebook level
     ws.scatter === nothing || _warn_clamped(ws.scatter)      # here, where reading the device waits for nothing
     dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing
-    return keep_projection ? (; dose, projection = kept) : (; dose)
+    return keep_projection ? (; sinogram = ws.sinogram, dose, projection = kept) : (; sinogram = ws.sinogram, dose)
 end
 
 # =============================================================================
@@ -983,7 +1024,7 @@ Noise is not part of PhysicsConfig — it is applied externally via
 
 # Returns
 A `PhysicsConfig` consumed by `simulate!` via the workspace pathway
-(`create_workspace` / `create_eict_workspace` cache it on the workspace at
+(`create_workspace` caches it on the workspace at
 construction time).  Original BasisSim glue — not a CatSim port.  CatSim's
 equivalent is the per-effect callback registry on `cfg.physics.*Callback`.
 """

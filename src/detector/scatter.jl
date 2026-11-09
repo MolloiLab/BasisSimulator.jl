@@ -423,7 +423,7 @@ function _scatter_plan(
         water_mu_per_mm = device_real([compute_μ_at_energy(water, Ek) / 10 for Ek in E]),
         air = device_real(air_coarse),
         kind = _device_copy(ref, kind),
-        lanes_Ct = device_real(lanes.Ct),
+        lanes_Ct = lanes.Ct === nothing ? nothing : device_real(lanes.Ct),
         lanes_Gt = lanes.G === nothing ? nothing : device_real(permutedims(lanes.G)),
         other = any(==(2), kind),
         ray_cols = pair(ray_maps),
@@ -466,7 +466,7 @@ function _scatter_plan(
         angle_deg,
         z_mm,
         Float64.(channels),
-        similar(ref, T, size(lanes.Ct, 1), n_cc, n_g, n_cv),
+        similar(ref, T, lanes.Ct === nothing ? size(lanes.G, 1) : size(lanes.Ct, 1), n_cc, n_g, n_cv),
         correction ? similar(ref, T, n_cc, n_g, n_cv) : similar(ref, T, 0, 0, 0),
         fill!(similar(ref, T, nlc, nlr, n_ch, n_cv), zero(T)),
         fill!(similar(ref, T, (correction ? (nlc, nlr, measured_channels, n_cv) : (0, 0, 0, 0))...), zero(T)),
@@ -503,7 +503,8 @@ sum of its materials' path lengths times their features; the walk accumulates `C
 materials) and `G` (lanes × features) gives every feature from those sums, or `G = nothing` when
 the sums are the features:
 
-- up to 16 materials: one lane per material (`Ct = I`, `G` the features) — v0.16.3's arithmetic;
+- up to 16 materials: one lane per material, each voxel's length selected into its own (`Ct =
+  nothing`, `G` the features) — v0.16.3's arithmetic, and the fastest walk;
 - more: features 1–3 as lanes of their own (exact: the water test reads feature 3's zero), and the
   others on an orthonormal basis: the singular vectors of the feature matrix, each feature scaled
   to its largest entry, down to 1e-8 of the largest singular value (below Float32's precision;
@@ -521,7 +522,7 @@ function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
         reshape(ratio, n_m, :) .* solid,
     )
     Q = size(F, 2)
-    n_m <= _DIRECT_MAX_MATERIALS[] && return (Ct = Matrix{Float64}(I, n_m, n_m), G = F)
+    n_m <= _DIRECT_MAX_MATERIALS[] && return (Ct = nothing, G = F)        # a lane per material, selected
     rest = F[:, 4:Q]
     scale = [max(maximum(abs, c), floatmin(Float64)) for c in eachcol(rest)]
     restn = rest ./ scale'

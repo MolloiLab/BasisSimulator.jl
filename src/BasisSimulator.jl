@@ -17,7 +17,7 @@ protocol = CTProtocol(kVp=120.0, mA=200.0, views=360)
 sim_opts = SimOptions()
 recon_opts = ReconOptions(matrix_size=(256, 256, 8), fov_cm=35.0, z_cm=0.5)
 
-ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+ws = create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
 simulate!(ws, phantom, protocol, sim_opts)
 
 # Analytic FDK (helical geometries dispatch to WFBP automatically)
@@ -245,10 +245,10 @@ include("detector/scatter.jl")
 # =============================================================================
 
 include("api/options.jl")
+include("correction/flat_field.jl")   # the calibrations a workspace holds
 include("api/workspace.jl")
 include("api/view_integration.jl")
 include("api/driver.jl")
-include("correction/flat_field.jl")
 
 # =============================================================================
 # Spectral VMI building blocks

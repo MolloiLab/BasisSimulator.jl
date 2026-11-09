@@ -126,7 +126,7 @@ phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 μ_120keV = compute_μ(phantom, 120.0)
 
 # Simulate via workspace API
-ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+ws = create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
 simulate!(ws, phantom, protocol, sim_opts)
 
 # GPU workflow: mask on GPU, materials stay on CPU
@@ -246,7 +246,7 @@ phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 μ_60keV = compute_μ(phantom, 60.0)
 
 # Simulate via workspace API
-ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
+ws = create_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
 simulate!(ws, phantom, protocol)
 ```
 
@@ -342,7 +342,7 @@ phantom = create_gammex_472(n_voxels=128)
 μ_120 = compute_μ(phantom, 120.0)
 
 # Simulate via the workspace API
-ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
+ws = create_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
 simulate!(ws, phantom, protocol)
 ```
 """
@@ -523,7 +523,7 @@ phantom = create_phantom_from_mask(xcat_mask, materials_dict, (0.1, 0.1, 0.1))
 μ_70 = compute_μ(phantom, 70.0)
 
 # Simulate via workspace API
-ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
+ws = create_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
 simulate!(ws, phantom, protocol)
 ```
 
