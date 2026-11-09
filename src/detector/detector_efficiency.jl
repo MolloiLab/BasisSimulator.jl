@@ -21,7 +21,6 @@ const SCINTILLATOR_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}
         [20.0, 26.7, 31.8, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
         [95.0, 180.0, 200.0, 100.0, 55.0, 33.0, 14.5, 7.8, 4.9, 2.8],
     ),
-
     # Cadmium Zinc Telluride (CZT) — PCCT alt sensor (no scanner uses it live,
     # but the CZT_MATERIAL enum + Scanner :czt vocab is public; the table is
     # kept so quantum_efficiency(CZT_MATERIAL, ...) returns the right μ).
@@ -30,7 +29,6 @@ const SCINTILLATOR_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}
         [20.0, 26.7, 31.8, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
         [90.0, 170.0, 190.0, 95.0, 52.0, 31.0, 13.5, 7.3, 4.6, 2.6],
     ),
-
     # Silicon (Si) — PCCT alt sensor (low-Z, very transparent at CT energies).
     # Kept for symmetry with CZT_MATERIAL / SI_MATERIAL enum support.
     # ρ = 2.33 g/cm³
@@ -38,45 +36,163 @@ const SCINTILLATOR_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}
         [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
         [2.8, 0.95, 0.58, 0.48, 0.46, 0.43, 0.4, 0.39, 0.37],
     ),
-
     # Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ — GE proprietary garnet scintillator
     # K-edges: Tb at 52.0 keV, Lu at 63.31 keV. μ(E) = (μ/ρ)(E) × ρ, (μ/ρ) from NIST XCOM
     # (mixture, coherent incl.), tabulated at 7.0 g/cm³ and scaled to the 6.40 g/cm³ of
     # GEMSTONE_MC_EFFICIENCY_LUT (7.0 is impossible for any (Tb,Lu)₃Al₅O₁₂).
     "Gemstone" => (
         [
-            10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0,
-            51.0, 51.99, 52.01, 53.0, 55.0, 57.0, 59.0, 60.0,
-            61.0, 63.0, 63.3, 63.32, 65.0, 67.0, 69.0,
-            71.0, 73.0, 75.0, 77.0, 80.0, 85.0,
-            91.0, 95.0, 100.0, 105.0, 110.0, 115.0, 121.0,
-            125.0, 131.0, 135.0, 141.0, 150.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            51.0,
+            51.99,
+            52.01,
+            53.0,
+            55.0,
+            57.0,
+            59.0,
+            60.0,
+            61.0,
+            63.0,
+            63.3,
+            63.32,
+            65.0,
+            67.0,
+            69.0,
+            71.0,
+            73.0,
+            75.0,
+            77.0,
+            80.0,
+            85.0,
+            91.0,
+            95.0,
+            100.0,
+            105.0,
+            110.0,
+            115.0,
+            121.0,
+            125.0,
+            131.0,
+            135.0,
+            141.0,
+            150.0,
         ],
         [
-            1098.3, 486.2, 228.3, 126.4, 78.3, 52.1, 36.8, 27.3, 20.8,
-            19.8, 18.9, 47.2, 44.9, 40.8, 37.2, 34.1, 32.7,
-            31.3, 28.8, 28.5, 51.0, 47.7, 44.2, 41.0,
-            38.1, 35.5, 33.2, 31.0, 28.1, 24.1,
-            20.3, 18.2, 16.0, 14.1, 12.3, 11.2, 9.9,
-            9.1, 8.1, 7.6, 6.8, 5.9,
-        ] .* (6.4 / 7.0),
+            1098.3,
+            486.2,
+            228.3,
+            126.4,
+            78.3,
+            52.1,
+            36.8,
+            27.3,
+            20.8,
+            19.8,
+            18.9,
+            47.2,
+            44.9,
+            40.8,
+            37.2,
+            34.1,
+            32.7,
+            31.3,
+            28.8,
+            28.5,
+            51.0,
+            47.7,
+            44.2,
+            41.0,
+            38.1,
+            35.5,
+            33.2,
+            31.0,
+            28.1,
+            24.1,
+            20.3,
+            18.2,
+            16.0,
+            14.1,
+            12.3,
+            11.2,
+            9.9,
+            9.1,
+            8.1,
+            7.6,
+            6.8,
+            5.9,
+        ] .*
+            (6.4 / 7.0),
     ),
-
     # UFC Gd₂O₂S:Pr,Ce — Siemens "Ultra-Fast Ceramic" scintillator (Force and Flash).
     # μ(E) = (μ/ρ)(E) × ρ from the module's GD2O2S compound (NIST XCOM via XrayAttenuation),
     # tabulated at 7.44 g/cm³ and scaled to the 7.31 g/cm³ of UFC_MC_EFFICIENCY_LUT. Gd K-edge
     # (50.24 keV) bracketed at 50.23 / 50.25 keV.
     "UFC" => (
         [
-            10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0,
-            50.23, 50.25, 52.0, 55.0, 60.0, 65.0, 70.0, 75.0,
-            80.0, 85.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0,
+            10.0,
+            15.0,
+            20.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            50.23,
+            50.25,
+            52.0,
+            55.0,
+            60.0,
+            65.0,
+            70.0,
+            75.0,
+            80.0,
+            85.0,
+            90.0,
+            100.0,
+            110.0,
+            120.0,
+            130.0,
+            140.0,
+            150.0,
         ],
         [
-            1700.9, 588.5, 274.3, 151.3, 93.2, 61.9, 43.6, 32.0, 24.4,
-            24.1, 115.6, 105.8, 91.5, 73.0, 59.4, 49.0, 41.0,
-            34.7, 29.7, 25.6, 19.4, 15.2, 12.2, 9.9, 8.3, 7.0,
-        ] .* (7.31 / 7.44),
+            1700.9,
+            588.5,
+            274.3,
+            151.3,
+            93.2,
+            61.9,
+            43.6,
+            32.0,
+            24.4,
+            24.1,
+            115.6,
+            105.8,
+            91.5,
+            73.0,
+            59.4,
+            49.0,
+            41.0,
+            34.7,
+            29.7,
+            25.6,
+            19.4,
+            15.2,
+            12.2,
+            9.9,
+            8.3,
+            7.0,
+        ] .*
+            (7.31 / 7.44),
     ),
 )
 
@@ -137,21 +253,24 @@ struct DetectorEfficiency
     thickness_mm::Float64
     mode::DetectorEfficiencyMode
 
-    function DetectorEfficiency(material::Symbol, thickness_mm::Real, mode::DetectorEfficiencyMode)
-        haskey(_EID_TABLES, material) || throw(
-            ArgumentError(
+    function DetectorEfficiency(
+        material::Symbol,
+        thickness_mm::Real,
+        mode::DetectorEfficiencyMode,
+    )
+        haskey(_EID_TABLES, material) ||
+            throw(ArgumentError(
                 "no energy-integrating detector model for :$(material); the scintillators are " *
-                    "$(join(":" .* string.(keys(_EID_TABLES)), ", "))"
-            )
-        )
-        thickness_mm > 0 || throw(ArgumentError("thickness_mm must be positive (got $(thickness_mm))"))
+                    "$(join(":" .* string.(keys(_EID_TABLES)), ", "))",
+            ))
+        thickness_mm > 0 ||
+            throw(ArgumentError("thickness_mm must be positive (got $(thickness_mm))"))
         table_mm = _EID_TABLES[material].thickness_mm
-        (mode == BEER_LAMBERT || thickness_mm ≈ table_mm) || throw(
-            ArgumentError(
+        (mode == BEER_LAMBERT || thickness_mm ≈ table_mm) ||
+            throw(ArgumentError(
                 "the :$(material) table was made at $(table_mm) mm, the detector is $(thickness_mm) mm " *
-                    "deep; use EICTScanner(scanner; detector_efficiency_mode = :beer_lambert) or a table made at that depth"
-            )
-        )
+                    "deep; use EICTScanner(scanner; detector_efficiency_mode = :beer_lambert) or a table made at that depth",
+            ))
         return new(material, Float64(thickness_mm), mode)
     end
 end
@@ -171,15 +290,18 @@ function eid_signal_moments(model::DetectorEfficiency, energies::AbstractVector)
     if model.mode == MC_LUT
         t = _EID_TABLES[model.material]
         m1 = E .* _interp_table.(Ref(t.energies), Ref(t.efficiency), E)
-        return m1, m1 .^ 2 ./ _interp_table.(Ref(t.energies), Ref(t.dqe0), E)
+        return m1, m1.^2 ./ _interp_table.(Ref(t.energies), Ref(t.dqe0), E)
     end
     key = _EID_MU_KEYS[model.material]
     q = [1.0 - exp(-get_scintillator_mu(key, e) * model.thickness_mm / 10) for e in E]
-    return E .* q, E .^ 2 .* q
+    return E .* q, E.^2 .* q
 end
 
 # No detector model (the scanner's `use_detector_efficiency = false`): every photon leaves all its energy.
-eid_signal_moments(::Nothing, energies::AbstractVector) = (Float64.(energies), Float64.(energies) .^ 2)
+eid_signal_moments(::Nothing, energies::AbstractVector) = (
+    Float64.(energies),
+    Float64.(energies).^2,
+)
 
 """
     get_scintillator_mu(material::String, energy_keV::Float64) -> Float64
@@ -188,12 +310,11 @@ Linear attenuation coefficient (cm⁻¹) of a scintillator or sensor at the give
 log-linear interpolation of the NIST XCOM table, K-edges bracketed by points on either side.
 """
 function get_scintillator_mu(material::String, energy_keV::Float64)
-    haskey(SCINTILLATOR_MU_DATA, material) || throw(
-        ArgumentError(
+    haskey(SCINTILLATOR_MU_DATA, material) ||
+        throw(ArgumentError(
             "no attenuation table for \"$(material)\"; the materials are " *
-                "$(join(sort(collect(keys(SCINTILLATOR_MU_DATA))), ", "))"
-        )
-    )
+                "$(join(sort(collect(keys(SCINTILLATOR_MU_DATA))), ", "))",
+        ))
     energies, mus = SCINTILLATOR_MU_DATA[material]
     E = clamp(energy_keV, energies[1], energies[end])
     i = min(searchsortedlast(energies, E), length(energies) - 1)

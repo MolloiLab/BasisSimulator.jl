@@ -4,7 +4,7 @@
 # Silicon Metal, integrated GPUs); it over-reports on discrete GPUs, whose VRAM it cannot see —
 # there, pass `mem_budget_GB = ...` where a workspace accepts it.
 
-const _OOM_MAX_RETRIES       = 4
+const _OOM_MAX_RETRIES = 4
 const _PCCT_DEVICE_SAFETY_FACTOR = 0.5
 
 """
@@ -18,12 +18,12 @@ small tables. Small spectral tables and geometry vectors are covered by a 16 MiB
 allowance.
 """
 function estimate_pcct_workspace_bytes(
-        sino_shape::NTuple{3, <:Integer},
-        volume_shape::NTuple{3, <:Integer},
-        n_bins::Integer,
-        binning_factor::Integer;
-        T::Type = Float32,
-    )
+    sino_shape::NTuple{3, <:Integer},
+    volume_shape::NTuple{3, <:Integer},
+    n_bins::Integer,
+    binning_factor::Integer;
+    T::Type = Float32,
+)
     n_bins > 0 || error("n_bins must be positive")
     binning_factor > 0 || error("binning_factor must be positive")
     bytes = sizeof(T)
@@ -63,14 +63,16 @@ function check_pcct_workspace_budget(template, estimate)
     if !ismissing(working) && !ismissing(allocated)
         available = max(Int(working) - Int(allocated), 0)
         allowed = floor(Int, _PCCT_DEVICE_SAFETY_FACTOR * available)
-        estimate.gpu_bytes <= allowed || error(
-            "PCCT workspace requires approximately " *
-            Base.format_bytes(estimate.gpu_bytes) *
-            " of GPU/unified memory, exceeding the safe allocation budget " *
-            Base.format_bytes(allowed) * ". Release the existing PCCT/FDK " *
-            "workspace (BasisSimulator.release_backend!) before creating " *
-            "another, or reduce views/detector size/binning.",
-        )
+        estimate.gpu_bytes <= allowed ||
+            error(
+                "PCCT workspace requires approximately " *
+                    Base.format_bytes(estimate.gpu_bytes) *
+                    " of GPU/unified memory, exceeding the safe allocation budget " *
+                    Base.format_bytes(allowed) *
+                    ". Release the existing PCCT/FDK " *
+                    "workspace (BasisSimulator.release_backend!) before creating " *
+                    "another, or reduce views/detector size/binning.",
+            )
     end
     (; estimate..., snapshot = snap)
 end
@@ -86,11 +88,14 @@ function backend_memory_snapshot(template = nothing)
         host_free_bytes = Int(Sys.free_memory()),
         host_total_bytes = Int(Sys.total_memory()),
     )
-    template === nothing && return merge(host, (
-        backend = :unknown,
-        device_allocated_bytes = missing,
-        device_working_set_bytes = missing,
-    ))
+    template === nothing && return merge(
+        host,
+        (
+            backend = :unknown,
+            device_allocated_bytes = missing,
+            device_working_set_bytes = missing,
+        ),
+    )
     mod = parentmodule(typeof(template))
     backend = Symbol(nameof(mod))
     if isdefined(mod, :device)
@@ -98,21 +103,25 @@ function backend_memory_snapshot(template = nothing)
         if applicable(devfun, template)
             dev = devfun(template)
             allocated = hasproperty(dev, :currentAllocatedSize) ?
-                Int(getproperty(dev, :currentAllocatedSize)) : missing
+                Int(getproperty(dev, :currentAllocatedSize)) :
+                missing
             working = hasproperty(dev, :recommendedMaxWorkingSetSize) ?
-                Int(getproperty(dev, :recommendedMaxWorkingSetSize)) : missing
-            return merge(host, (
-                backend,
-                device_allocated_bytes = allocated,
-                device_working_set_bytes = working,
-            ))
+                Int(getproperty(dev, :recommendedMaxWorkingSetSize)) :
+                missing
+            return merge(
+                host,
+                (
+                    backend,
+                    device_allocated_bytes = allocated,
+                    device_working_set_bytes = working,
+                ),
+            )
         end
     end
-    merge(host, (
-        backend,
-        device_allocated_bytes = missing,
-        device_working_set_bytes = missing,
-    ))
+    merge(
+        host,
+        (backend, device_allocated_bytes = missing, device_working_set_bytes = missing),
+    )
 end
 
 @inline function _release_backend_array!(a::AbstractArray)
@@ -168,8 +177,10 @@ end
 Iterate the tile boundaries that cover `1:n_view` with steps of `tile_size`.
 The last range is shorter when `n_view` isn't a multiple of `tile_size`.
 """
-@inline tile_ranges(n_view::Integer, tile_size::Integer) =
-    (k₁:min(k₁ + Int(tile_size) - 1, Int(n_view)) for k₁ in 1:Int(tile_size):Int(n_view))
+@inline tile_ranges(n_view::Integer, tile_size::Integer) = (
+    k₁:min(k₁ + Int(tile_size) - 1, Int(n_view))
+    for k₁ in 1:Int(tile_size):Int(n_view)
+)
 
 # ─────────────────────────────────────────────────────────────────────
 """
@@ -179,8 +190,12 @@ Call `allocate(tile_size)`.  On `OutOfMemoryError` / `OutOfGPUMemoryError`,
 halve `tile_size` and retry, up to `max_retries` times.  Loud `@warn` per
 retry, hard `error` if even `tile_size = 1` fails.
 """
-function with_oom_retry(allocate::Function, label::AbstractString,
-                         tile_size::Int; max_retries::Int = _OOM_MAX_RETRIES)
+function with_oom_retry(
+    allocate::Function,
+    label::AbstractString,
+    tile_size::Int;
+    max_retries::Int = _OOM_MAX_RETRIES,
+)
     cur = tile_size
     for attempt in 0:max_retries
         try
@@ -188,8 +203,10 @@ function with_oom_retry(allocate::Function, label::AbstractString,
         catch e
             _is_oom(e) || rethrow()
             if cur <= 1
-                error("$label: out of memory at tile_size=1 for this sinogram shape. " *
-                      "Pass `mem_budget_GB = ...` to override the probe, or downsize the input.")
+                error(
+                    "$label: out of memory at tile_size=1 for this sinogram shape. " *
+                        "Pass `mem_budget_GB = ...` to override the probe, or downsize the input.",
+                )
             end
             # Free the failed attempt's partial allocations before retrying —
             # otherwise the next allocation sees the dead arrays still pinning

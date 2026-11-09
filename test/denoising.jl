@@ -18,9 +18,13 @@
 # vertical edge.  Channel 1 is a "low energy" with stronger attenuation;
 # channel 2 a "high energy" with weaker.  Used for SF-JSD + sino_svd.
 function _two_channel_sino(;
-        n_col = 64, n_row = 4, n_view = 32,
-        p_lo_max = 1.5, p_hi_max = 0.8, seed = 2026
-    )
+    n_col = 64,
+    n_row = 4,
+    n_view = 32,
+    p_lo_max = 1.5,
+    p_hi_max = 0.8,
+    seed = 2026,
+)
     Random.seed!(seed)
     sino_lo = zeros(Float32, n_col, n_row, n_view)
     sino_hi = zeros(Float32, n_col, n_row, n_view)
@@ -55,23 +59,33 @@ end
 
     @testset "shape contract" begin
         @test_throws ErrorException BS.apply_sino_sfjsd_denoise(
-            [sino_lo], I0; σ₀ = 1.0, verbose = false,
-        )  # 1 channel
+            [sino_lo],
+            I0;
+            σ₀ = 1.0,
+            verbose = false,
+        ) # 1 channel
         @test_throws ErrorException BS.apply_sino_sfjsd_denoise(
-            [sino_lo, sino_hi, sino_lo], I0[1:2]; σ₀ = 1.0, verbose = false,
-        )  # 3 channels
+            [sino_lo, sino_hi, sino_lo],
+            I0[1:2];
+            σ₀ = 1.0,
+            verbose = false,
+        ) # 3 channels
         @test_throws ErrorException BS.apply_sino_sfjsd_denoise(
-            [sino_lo, sino_hi], [1.0e5]; σ₀ = 1.0, verbose = false,
-        )  # mismatched I0
+            [sino_lo, sino_hi],
+            [1.0e5];
+            σ₀ = 1.0,
+            verbose = false,
+        ) # mismatched I0
         @test_throws ErrorException BS.apply_sino_sfjsd_denoise(
-            [sino_lo, zeros(Float32, 8, 4, 32)], I0; σ₀ = 1.0, verbose = false,
-        )  # mismatched shapes
+            [sino_lo, zeros(Float32, 8, 4, 32)],
+            I0;
+            σ₀ = 1.0,
+            verbose = false,
+        ) # mismatched shapes
     end
 
     @testset "explicit σ₀ > 0 (SURE skipped)" begin
-        out = BS.apply_sino_sfjsd_denoise(
-            [sino_lo, sino_hi], I0; σ₀ = 1.5, verbose = false,
-        )
+        out = BS.apply_sino_sfjsd_denoise([sino_lo, sino_hi], I0; σ₀ = 1.5, verbose = false)
         @test length(out) == 2
         @test size(out[1]) == size(sino_lo)
         @test size(out[2]) == size(sino_hi)
@@ -83,9 +97,7 @@ end
     @testset "noise reduction on a flat ROI" begin
         # Pick a flat region (cols 1..n_col/2 = constant attenuator), compute
         # std before/after. After SF-JSD the local σ must drop noticeably.
-        out = BS.apply_sino_sfjsd_denoise(
-            [sino_lo, sino_hi], I0; σ₀ = 2.0, verbose = false,
-        )
+        out = BS.apply_sino_sfjsd_denoise([sino_lo, sino_hi], I0; σ₀ = 2.0, verbose = false)
         # Interior flat region — stay away from the edge transition.
         roi_in_lo = sino_lo[5:25, :, :]
         roi_out_lo = out[1][5:25, :, :]
@@ -98,9 +110,7 @@ end
     @testset "edge preservation (mean-of-flat-ROI is preserved)" begin
         # The mean across the flat attenuator region should be approximately
         # the same before and after — SF-JSD is unbiased in expectation.
-        out = BS.apply_sino_sfjsd_denoise(
-            [sino_lo, sino_hi], I0; σ₀ = 2.0, verbose = false,
-        )
+        out = BS.apply_sino_sfjsd_denoise([sino_lo, sino_hi], I0; σ₀ = 2.0, verbose = false)
         @test abs(mean(out[1][5:25, :, :]) - mean(sino_lo[5:25, :, :])) < 0.05
         @test abs(mean(out[2][5:25, :, :]) - mean(sino_hi[5:25, :, :])) < 0.05
     end
@@ -109,7 +119,10 @@ end
         # Small grid keeps SURE fast (golden-section ~10 evaluations).
         sino_lo_s, sino_hi_s = _two_channel_sino(; n_col = 32, n_row = 2, n_view = 16)
         out = BS.apply_sino_sfjsd_denoise(
-            [sino_lo_s, sino_hi_s], I0; σ₀ = 0.0, verbose = false,
+            [sino_lo_s, sino_hi_s],
+            I0;
+            σ₀ = 0.0,
+            verbose = false,
         )
         @test length(out) == 2
         @test all(isfinite, out[1])
@@ -125,7 +138,7 @@ end
         vol = _cube_volume()
         out = BS.apply_median_z(vol; adjacent_slices = 0)
         @test out == vol
-        @test out !== vol  # identity but fresh allocation
+        @test out !== vol # identity but fresh allocation
     end
 
     @testset "removes single-slice xy impulses" begin
@@ -135,10 +148,10 @@ end
         # wiped because z-neighbors (slices 3, 5) are zero.
         vol[3, 3, 4] = 100.0f0
         out = BS.apply_median_z(vol; adjacent_slices = 1)
-        @test out[3, 3, 4] == 0.0f0   # impulse removed
+        @test out[3, 3, 4] == 0.0f0 # impulse removed
         # In-plane structure preserved at non-impulse locations.
         c = size(vol, 1) ÷ 2
-        @test out[c, c, 4] ≈ 1.0f0    # cube voxel still 1.0
+        @test out[c, c, 4] ≈ 1.0f0 # cube voxel still 1.0
     end
 
     @testset "preserves z-correlated signal" begin
@@ -164,7 +177,11 @@ end
         bad_out = similar(vol, size(vol, 1) + 1, size(vol, 2), size(vol, 3))
         @test_throws ErrorException BS.apply_median_z!(bad_out, vol)
         @test_throws ErrorException BS.apply_median_z(vol; adjacent_slices = -1)
-        @test_throws ErrorException BS.apply_median_z!(similar(vol), vol; adjacent_slices = -1)
+        @test_throws ErrorException BS.apply_median_z!(
+            similar(vol),
+            vol;
+            adjacent_slices = -1,
+        )
     end
 
     @testset "in-place mutates out, leaves src unchanged" begin
@@ -174,7 +191,7 @@ end
         out = similar(vol)
         BS.apply_median_z!(out, vol; adjacent_slices = 1)
         @test vol == src_copy
-        @test out != src_copy   # something changed
+        @test out != src_copy # something changed
         @test out[3, 3, 4] == 0.0f0
     end
 end
@@ -219,7 +236,9 @@ end
         @test_throws ErrorException BS.apply_sino_svd_denoise([sino_lo, bad]; σ_px = 1.0)
         # length(out) ≠ length(channels) errors
         @test_throws ErrorException BS.apply_sino_svd_denoise!(
-            [similar(sino_lo)], [sino_lo, sino_hi]; σ_px = 1.0,
+            [similar(sino_lo)],
+            [sino_lo, sino_hi];
+            σ_px = 1.0,
         )
     end
 
@@ -237,11 +256,13 @@ end
         # range exponent.
         flat = fill(0.5f0, 16, 2, 8)
         out = BS.apply_sino_svd_denoise_bilateral(
-            [flat,2f0 .* flat,3f0 .* flat,4f0 .* flat];
-            bilat_radius=2,bilat_sigma_s=1.5,bilat_range_k=2.0,
+            [flat, 2.0f0 .* flat, 3.0f0 .* flat, 4.0f0 .* flat];
+            bilat_radius = 2,
+            bilat_sigma_s = 1.5,
+            bilat_range_k = 2.0,
         )
-        @test all(o -> all(isfinite,o),out)
-        @test all(o -> maximum(abs,o) > 0,out)
+        @test all(o -> all(isfinite, o), out)
+        @test all(o -> maximum(abs, o) > 0, out)
     end
 end
 
@@ -249,16 +270,24 @@ end
 # RSKR — smoke tests (KEPT).  Clark/Badea 2023.
 # -----------------------------------------------------------------------------
 @testset "apply_rskr (Clark/Badea 2023)" begin
-    n = 16; nz = 4
+    n = 16
+    nz = 4
     Random.seed!(2026)
-    vol_lo = Float32.(_cube_volume(; n = n, nz = nz, val = 1.0f0) .+ 0.02 .* randn(n, n, nz))
-    vol_hi = Float32.(_cube_volume(; n = n, nz = nz, val = 0.6f0) .+ 0.02 .* randn(n, n, nz))
+    vol_lo = Float32.(
+        _cube_volume(; n = n, nz = nz, val = 1.0f0) .+ 0.02 .* randn(n, n, nz),
+    )
+    vol_hi = Float32.(
+        _cube_volume(; n = n, nz = nz, val = 0.6f0) .+ 0.02 .* randn(n, n, nz),
+    )
 
     @testset "2-channel CPU smoke" begin
         out = BS.apply_rskr(
             [vol_lo, vol_hi];
-            n_iter = 1, h_param = 1.0, radius = 1,
-            gpu_arr_type = identity, verbose = false,
+            n_iter = 1,
+            h_param = 1.0,
+            radius = 1,
+            gpu_arr_type = identity,
+            verbose = false,
         )
         @test length(out) == 2
         @test size(out[1]) == size(vol_lo)
@@ -273,8 +302,11 @@ end
         vol4 = copy(vol_hi) .+ 0.01f0
         out = BS.apply_rskr(
             [vol_lo, vol_hi, vol3, vol4];
-            n_iter = 1, h_param = 1.0, radius = 1,
-            gpu_arr_type = identity, verbose = false,
+            n_iter = 1,
+            h_param = 1.0,
+            radius = 1,
+            gpu_arr_type = identity,
+            verbose = false,
         )
         @test length(out) == 4
         for o in out
@@ -286,8 +318,11 @@ end
     @testset "n_iter ≥ 2 still finite" begin
         out = BS.apply_rskr(
             [vol_lo, vol_hi];
-            n_iter = 2, h_param = 1.0, radius = 1,
-            gpu_arr_type = identity, verbose = false,
+            n_iter = 2,
+            h_param = 1.0,
+            radius = 1,
+            gpu_arr_type = identity,
+            verbose = false,
         )
         @test all(isfinite, out[1])
         @test all(isfinite, out[2])
@@ -296,11 +331,13 @@ end
     @testset "shape contract — only 2 or 4 channels allowed" begin
         @test_throws ErrorException BS.apply_rskr(
             [vol_lo, vol_hi, vol_lo];
-            gpu_arr_type = identity, verbose = false,
+            gpu_arr_type = identity,
+            verbose = false,
         )
         @test_throws ErrorException BS.apply_rskr(
             [vol_lo];
-            gpu_arr_type = identity, verbose = false,
+            gpu_arr_type = identity,
+            verbose = false,
         )
     end
 
@@ -322,9 +359,15 @@ end
     sino_b = Float32.(0.3 .+ 0.1 .* randn(MersenneTwister(1), 32, 4, 16))
 
     @testset "Gaussian smoother σ keyword path" begin
-        a_in = copy(sino_a); b_in = copy(sino_b)
+        a_in = copy(sino_a)
+        b_in = copy(sino_b)
         a_out, b_out, info = BS.apply_acnr(
-            sino_a, sino_b; c_a = 0.7, c_b = 0.3, σ = 2.0, verbose = false,
+            sino_a,
+            sino_b;
+            c_a = 0.7,
+            c_b = 0.3,
+            σ = 2.0,
+            verbose = false,
         )
         # Returns a tuple of (sino_a_corr, sino_b_corr, diagnostics).
         @test size(a_out) == size(sino_a)
@@ -341,15 +384,26 @@ end
 
     @testset "Tikhonov smoother λ keyword path" begin
         _, _, info = BS.apply_acnr(
-            sino_a, sino_b; c_a = 0.7, c_b = 0.3, λ = 4.0, verbose = false,
+            sino_a,
+            sino_b;
+            c_a = 0.7,
+            c_b = 0.3,
+            λ = 4.0,
+            verbose = false,
         )
         @test occursin("Tikhonov", info.smoother)
     end
 
     @testset "γ = 0 ⇒ identity (no correction applied)" begin
-        a_in = copy(sino_a); b_in = copy(sino_b)
+        a_in = copy(sino_a)
+        b_in = copy(sino_b)
         a_out, b_out, _ = BS.apply_acnr(
-            sino_a, sino_b; c_a = 0.7, c_b = 0.3, σ = 2.0, γ = 0.0,
+            sino_a,
+            sino_b;
+            c_a = 0.7,
+            c_b = 0.3,
+            σ = 2.0,
+            γ = 0.0,
             verbose = false,
         )
         @test maximum(abs.(a_out .- a_in)) < 1.0e-5
@@ -357,26 +411,40 @@ end
     end
 
     @testset "in-place version mutates" begin
-        a = copy(sino_a); b = copy(sino_b)
-        BS.apply_acnr!(
-            a, b; c_a = 0.7, c_b = 0.3, σ = 2.0, verbose = false,
-        )
-        @test a != sino_a   # something changed
+        a = copy(sino_a)
+        b = copy(sino_b)
+        BS.apply_acnr!(a, b; c_a = 0.7, c_b = 0.3, σ = 2.0, verbose = false)
+        @test a != sino_a # something changed
         @test b != sino_b
     end
 
     @testset "must specify exactly one of σ or λ" begin
         @test_throws ErrorException BS.apply_acnr(
-            sino_a, sino_b; c_a = 0.7, c_b = 0.3, verbose = false,
-        )  # neither
+            sino_a,
+            sino_b;
+            c_a = 0.7,
+            c_b = 0.3,
+            verbose = false,
+        ) # neither
         @test_throws ErrorException BS.apply_acnr(
-            sino_a, sino_b; c_a = 0.7, c_b = 0.3, σ = 2.0, λ = 4.0, verbose = false,
-        )  # both
+            sino_a,
+            sino_b;
+            c_a = 0.7,
+            c_b = 0.3,
+            σ = 2.0,
+            λ = 4.0,
+            verbose = false,
+        ) # both
     end
 
     @testset "(c_a, c_b) both zero errors" begin
         @test_throws ErrorException BS.apply_acnr(
-            sino_a, sino_b; c_a = 0.0, c_b = 0.0, σ = 2.0, verbose = false,
+            sino_a,
+            sino_b;
+            c_a = 0.0,
+            c_b = 0.0,
+            σ = 2.0,
+            verbose = false,
         )
     end
 end

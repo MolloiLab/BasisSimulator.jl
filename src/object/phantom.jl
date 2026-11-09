@@ -136,7 +136,7 @@ phantom_gpu = Phantom(
     phantom_cpu.materials,
     phantom_cpu.voxel_size,
     phantom_cpu.origin,
-    phantom_cpu.extent
+    phantom_cpu.extent,
 )
 ```
 
@@ -144,7 +144,7 @@ See also: [`compute_μ`](@ref)
 """
 struct Phantom{T <: Unsigned, M <: AbstractArray{T, 3}, Mat}
     mask::M
-    materials::Mat  # Vector{XA.Material}
+    materials::Mat # Vector{XA.Material}
     voxel_size::NTuple{3, Float64}
     origin::NTuple{3, Float64}
     extent::NTuple{3, Float64}
@@ -175,7 +175,7 @@ forward projection, so there's no performance penalty vs the old μ field.
 
 # Example
 ```julia
-phantom = create_gammex_472(n_voxels=128)
+phantom = create_gammex_472(n_voxels = 128)
 
 # Get μ at different energies
 μ_60 = compute_μ(phantom, 60.0)   # ~0.207 cm⁻¹ for water
@@ -186,7 +186,7 @@ function compute_μ(phantom::Phantom, energy_keV::Real)
     # Compute μ for each material at this energy (O(n_materials))
     μ_lookup = Float32[
         compute_μ_at_energy(mat, Float64(energy_keV))
-            for mat in phantom.materials
+        for mat in phantom.materials
     ]
     # Broadcast via mask indexing (mask is 0-based, vector is 1-based)
     return μ_lookup[phantom.mask .+ 1]
@@ -236,7 +236,7 @@ import XrayAttenuation as XA
 materials_dict = Dict{Int, XA.Material}(
     0 => XA.Materials.air,
     1 => XA.Materials.water,
-    2 => XA.Materials.corticalbone
+    2 => XA.Materials.corticalbone,
 )
 
 # Create phantom (1mm voxels)
@@ -253,11 +253,11 @@ simulate!(ws, phantom, protocol)
 See also: [`compute_μ`](@ref), [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
 """
 function Phantom(
-        labeled_array::AbstractArray{<:Integer, 3},
-        materials_dict::Dict{Int, M},
-        voxel_size_cm::NTuple{3, Real};
-        origin::Union{Nothing, NTuple{3, Real}} = nothing
-    ) where {M}
+    labeled_array::AbstractArray{<:Integer, 3},
+    materials_dict::Dict{Int, M},
+    voxel_size_cm::NTuple{3, Real};
+    origin::Union{Nothing, NTuple{3, Real}} = nothing,
+) where {M}
     # Get dimensions
     nx, ny, nz = size(labeled_array)
     dx, dy, dz = Float64.(voxel_size_cm)
@@ -296,7 +296,7 @@ function Phantom(
         materials_vec,
         (dx, dy, dz),
         computed_origin,
-        (ext_x, ext_y, ext_z)
+        (ext_x, ext_y, ext_z),
     )
 end
 
@@ -335,7 +335,7 @@ Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any ene
 
 # Example
 ```julia
-phantom = create_gammex_472(n_voxels=128)
+phantom = create_gammex_472(n_voxels = 128)
 
 # Get μ at any energy
 μ_60 = compute_μ(phantom, 60.0)
@@ -347,11 +347,11 @@ simulate!(ws, phantom, protocol)
 ```
 """
 function create_gammex_472(;
-        n_voxels::Int = 64,
-        n_slices::Union{Int, Nothing} = nothing,
-        fov_cm::Float64 = 35.0,
-        z_cm::Float64 = 4.0
-    )
+    n_voxels::Int = 64,
+    n_slices::Union{Int, Nothing} = nothing,
+    fov_cm::Float64 = 35.0,
+    z_cm::Float64 = 4.0,
+)
     # Grid setup - use n_slices if specified, otherwise compute from z_cm
     n_z = if n_slices !== nothing
         n_slices
@@ -370,19 +370,36 @@ function create_gammex_472(;
     mask = zeros(UInt8, n_voxels, n_voxels, n_z)
 
     # Gammex 472 dimensions (cm)
-    body_radius = 16.5    # 330mm diameter
-    rod_radius = 1.4      # 28mm diameter
-    inner_ring_radius = 5.0   # 50mm - calcium inserts
-    outer_ring_radius = 10.5  # 105mm - iodine inserts
+    body_radius = 16.5       # 330mm diameter
+    rod_radius = 1.4         # 28mm diameter
+    inner_ring_radius = 5.0  # 50mm - calcium inserts
+    outer_ring_radius = 10.5 # 105mm - iodine inserts
 
     # Region labels for inserts
-    ca_labels = [REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600]
-    i_labels = [REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0]
+    ca_labels = [
+        REGION_CA_50,
+        REGION_CA_100,
+        REGION_CA_200,
+        REGION_CA_300,
+        REGION_CA_400,
+        REGION_CA_500,
+        REGION_CA_600,
+    ]
+    i_labels = [
+        REGION_I_2_0,
+        REGION_I_2_5,
+        REGION_I_5_0,
+        REGION_I_7_5,
+        REGION_I_10_0,
+        REGION_I_15_0,
+        REGION_I_20_0,
+    ]
 
     # Insert angular positions (evenly spaced, starting at 0°)
     n_inserts = 7
     angles_ca = [2π * i / n_inserts for i in 0:(n_inserts - 1)]
-    angles_i = [2π * i / n_inserts + π / n_inserts for i in 0:(n_inserts - 1)]  # Offset by half spacing
+    # Offset by half spacing
+    angles_i = [2π * i / n_inserts + π / n_inserts for i in 0:(n_inserts - 1)]
 
     # Fill mask voxel by voxel (geometry only, no μ computation)
     for k in 1:n_z
@@ -434,7 +451,7 @@ function create_gammex_472(;
         Int(REGION_BACKGROUND) => XA.Materials.air,
         Int(REGION_AIR) => XA.Materials.air,
         Int(REGION_WATER) => XA.Materials.water,
-        Int(REGION_SOLID_WATER) => XA.Materials.water,  # Solid water approximated as water
+        Int(REGION_SOLID_WATER) => XA.Materials.water, # Solid water approximated as water
         Int(REGION_CA_50) => get_material(:Ca_50),
         Int(REGION_CA_100) => get_material(:Ca_100),
         Int(REGION_CA_200) => get_material(:Ca_200),
@@ -457,7 +474,7 @@ function create_gammex_472(;
         materials_vec,
         (dx, dy, dz),
         (-fov_cm / 2 + dx / 2, -fov_cm / 2 + dy / 2, -z_cm / 2 + dz / 2),
-        (Float64(fov_cm), Float64(fov_cm), Float64(z_cm))
+        (Float64(fov_cm), Float64(fov_cm), Float64(z_cm)),
     )
 end
 
@@ -511,7 +528,7 @@ xcat_mask = rand(UInt8(0):UInt8(3), 400, 400, 200)
 # Define materials for each label
 materials_dict = Dict{Int, XA.Material}(
     0 => XA.Materials.air,
-    1 => XA.Materials.water,  # soft tissue approximation
+    1 => XA.Materials.water, # soft tissue approximation
     2 => XA.Materials.corticalbone,
     3 => XA.Materials.lung,
 )
@@ -530,11 +547,11 @@ simulate!(ws, phantom, protocol)
 See also: [`Phantom`](@ref), [`compute_μ`](@ref), [`create_gammex_472`](@ref)
 """
 function create_phantom_from_mask(
-        labeled_array::AbstractArray{<:Integer, 3},
-        materials::Dict{Int, M},
-        voxel_size_cm::NTuple{3, Real};
-        origin::Union{Nothing, NTuple{3, Real}} = nothing
-    ) where {M}
+    labeled_array::AbstractArray{<:Integer, 3},
+    materials::Dict{Int, M},
+    voxel_size_cm::NTuple{3, Real};
+    origin::Union{Nothing, NTuple{3, Real}} = nothing,
+) where {M}
     # Delegate to the unified Phantom constructor
     return Phantom(labeled_array, materials, voxel_size_cm; origin = origin)
 end
@@ -556,8 +573,10 @@ function compact_materials(phantom::Phantom)
     mask_cpu = Array(phantom.mask)
     labels = sort!(Int.(unique(mask_cpu)))
     isempty(labels) && return phantom
-    last(labels) < length(phantom.materials) || throw(ArgumentError(
-        "mask label $(last(labels)) has no material (table length $(length(phantom.materials)))"))
+    last(labels) < length(phantom.materials) ||
+        throw(ArgumentError(
+            "mask label $(last(labels)) has no material (table length $(length(phantom.materials)))",
+        ))
 
     # Already dense and free of inactive table entries: preserve mask identity.
     labels == collect(0:(length(phantom.materials) - 1)) && return phantom
@@ -607,7 +626,19 @@ end
 
 export RegionLabel
 export REGION_BACKGROUND, REGION_AIR, REGION_WATER, REGION_SOLID_WATER
-export REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600
-export REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0
+export REGION_CA_50,
+    REGION_CA_100,
+    REGION_CA_200,
+    REGION_CA_300,
+    REGION_CA_400,
+    REGION_CA_500,
+    REGION_CA_600
+export REGION_I_2_0,
+    REGION_I_2_5,
+    REGION_I_5_0,
+    REGION_I_7_5,
+    REGION_I_10_0,
+    REGION_I_15_0,
+    REGION_I_20_0
 
 export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, compact_materials

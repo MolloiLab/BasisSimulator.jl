@@ -7,9 +7,18 @@ export dd_backproject!
 const _DD_BP_Z_TILE = Int32(4)
 
 @inline function _dd_arc_row_bounds(
-        iz::Int32, vmz::T, vsz::T, sz::T, dcz::T, sd_xy::T,
-        rho_min::T, rho_max::T, prm::T, rc::T, nr::Int32,
-    ) where {T}
+    iz::Int32,
+    vmz::T,
+    vsz::T,
+    sz::T,
+    dcz::T,
+    sd_xy::T,
+    rho_min::T,
+    rho_max::T,
+    prm::T,
+    rc::T,
+    nr::Int32,
+) where {T}
     half = T(0.5)
     zlo = vmz + T(iz - Int32(1)) * vsz - sz
     zhi = vmz + T(iz) * vsz - sz
@@ -17,7 +26,8 @@ const _DD_BP_Z_TILE = Int32(4)
     b = (sz + sd_xy * zlo / rho_max - dcz) / prm + rc
     c = (sz + sd_xy * zhi / rho_min - dcz) / prm + rc
     d = (sz + sd_xy * zhi / rho_max - dcz) / prm + rc
-    rmin = min(a, b, c, d); rmax = max(a, b, c, d)
+    rmin = min(a, b, c, d)
+    rmax = max(a, b, c, d)
     return (
         max(Int32(1), unsafe_trunc(Int32, ceil(rmin - half)) - Int32(1)),
         min(nr, unsafe_trunc(Int32, floor(rmax + half)) + Int32(1)),
@@ -25,17 +35,34 @@ const _DD_BP_Z_TILE = Int32(4)
 end
 
 @inline function _dd_project_point(
-        x::T, y::T, z::T,
-        sx::T, sy::T, sz::T,
-        dcx::T, dcy::T, dcz::T,
-        ux::T, uy::T, uz::T,
-        vx::T, vy::T, vz::T,
-        pixel_mag::T, pixel_row_mag::T,
-        col_center::T, row_center::T,
-        arc_det::Bool, dγ::T,
-    ) where {T}
-    svx = x - sx; svy = y - sy; svz = z - sz
-    sdx = dcx - sx; sdy = dcy - sy; sdz = dcz - sz
+    x::T,
+    y::T,
+    z::T,
+    sx::T,
+    sy::T,
+    sz::T,
+    dcx::T,
+    dcy::T,
+    dcz::T,
+    ux::T,
+    uy::T,
+    uz::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    pixel_mag::T,
+    pixel_row_mag::T,
+    col_center::T,
+    row_center::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
+    svx = x - sx
+    svy = y - sy
+    svz = z - sz
+    sdx = dcx - sx
+    sdy = dcy - sy
+    sdz = dcz - sz
     if arc_det
         sd_xy = sqrt(sdx * sdx + sdy * sdy)
         sv_xy = sqrt(svx * svx + svy * svy)
@@ -67,42 +94,85 @@ end
 # The fixed tile avoids dynamic local arrays (and their GPU address-space
 # lowering) on both Metal and CUDA; the final tile is simply predicated.
 function _dd_backproject_arc_tile4!(
-        volume::AbstractArray{T, 3}, sinogram::AbstractArray{T, 3},
-        geom::CTGeometry, bounds::NTuple{3, Float64}, active_z::UnitRange{Int},
-        circular_support::Bool, sp, dc, du, dv,
-    ) where {T <: AbstractFloat}
-    nx = Int32(size(volume, 1)); ny = Int32(size(volume, 2)); nz = Int32(size(volume, 3))
-    nc = Int32(size(sinogram, 1)); nr = Int32(size(sinogram, 2))
+    volume::AbstractArray{T, 3},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry,
+    bounds::NTuple{3, Float64},
+    active_z::UnitRange{Int},
+    circular_support::Bool,
+    sp,
+    dc,
+    du,
+    dv,
+) where {T <: AbstractFloat}
+    nx = Int32(size(volume, 1))
+    ny = Int32(size(volume, 2))
+    nz = Int32(size(volume, 3))
+    nc = Int32(size(sinogram, 1))
+    nr = Int32(size(sinogram, 2))
     na = Int32(size(sinogram, 3))
-    z_first = Int32(first(active_z)); z_last = Int32(last(active_z))
+    z_first = Int32(first(active_z))
+    z_last = Int32(last(active_z))
     active_nz = z_last - z_first + Int32(1)
     ntiles = (active_nz + _DD_BP_Z_TILE - Int32(1)) ÷ _DD_BP_Z_TILE
 
-    vmx = T(-bounds[1] / 2); vmy = T(-bounds[2] / 2); vmz = T(-bounds[3] / 2)
-    vsx = T(bounds[1]) / T(nx); vsy = T(bounds[2]) / T(ny); vsz = T(bounds[3]) / T(nz)
+    vmx = T(-bounds[1] / 2)
+    vmy = T(-bounds[2] / 2)
+    vmz = T(-bounds[3] / 2)
+    vsx = T(bounds[1]) / T(nx)
+    vsy = T(bounds[2]) / T(ny)
+    vsz = T(bounds[3]) / T(nz)
     mag = T(geom.SDD / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
+    ps = T(geom.pixel_size)
+    prs = T(geom.pixel_row_size)
     prm = prs * mag
-    cc = column_center(T, geom); rc = (T(nr) + one(T)) / T(2)
+    cc = column_center(T, geom)
+    rc = (T(nr) + one(T)) / T(2)
     dγ = T(geom.pixel_size / geom.SAD)
     radius_sq = T(min(bounds[1], bounds[2]) / 2)^2
     # Only the shape is used for iteration.  `ntiles <= active_nz <= nz`.
     tile_domain = view(volume, :, :, Int(z_first):(Int(z_first) + Int(ntiles) - 1))
 
-    let vol = volume, sino = sinogram, sp = sp, dc = dc, du = du, dv = dv,
-            nx = nx, ny = ny, nc = nc, nr = nr, na = na,
-            z_first = z_first, z_last = z_last,
-            vmx = vmx, vmy = vmy, vmz = vmz, vsx = vsx, vsy = vsy, vsz = vsz,
-            mag = mag, ps = ps, prs = prs, prm = prm, cc = cc, rc = rc, dγ = dγ,
-            circular_support = circular_support, radius_sq = radius_sq
+    let vol = volume,
+        sino = sinogram,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        nx = nx,
+        ny = ny,
+        nc = nc,
+        nr = nr,
+        na = na,
+        z_first = z_first,
+        z_last = z_last,
+        vmx = vmx,
+        vmy = vmy,
+        vmz = vmz,
+        vsx = vsx,
+        vsy = vsy,
+        vsz = vsz,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        prm = prm,
+        cc = cc,
+        rc = rc,
+        dγ = dγ,
+        circular_support = circular_support,
+        radius_sq = radius_sq
         AK.foreachindex(tile_domain) do idx
             idx0 = Int32(idx - 1)
             ix = (idx0 % nx) + Int32(1)
             iy = ((idx0 ÷ nx) % ny) + Int32(1)
             tile = idx0 ÷ (nx * ny)
             iz1 = z_first + tile * Int32(4)
-            iz2 = iz1 + Int32(1); iz3 = iz1 + Int32(2); iz4 = iz1 + Int32(3)
-            use2 = iz2 <= z_last; use3 = iz3 <= z_last; use4 = iz4 <= z_last
+            iz2 = iz1 + Int32(1)
+            iz3 = iz1 + Int32(2)
+            iz4 = iz1 + Int32(3)
+            use2 = iz2 <= z_last
+            use3 = iz3 <= z_last
+            use4 = iz4 <= z_last
 
             half = T(0.5)
             xc = fma(T(ix) - half, vsx, vmx)
@@ -115,12 +185,20 @@ function _dd_backproject_arc_tile4!(
                 return
             end
 
-            acc1 = zero(T); acc2 = zero(T); acc3 = zero(T); acc4 = zero(T)
+            acc1 = zero(T)
+            acc2 = zero(T)
+            acc3 = zero(T)
+            acc4 = zero(T)
             angle = Int32(1)
             while angle <= na
-                sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-                dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-                ux = du[1, angle]; uy = du[2, angle]
+                sx = sp[1, angle]
+                sy = sp[2, angle]
+                sz = sp[3, angle]
+                dcx = dc[1, angle]
+                dcy = dc[2, angle]
+                dcz = dc[3, angle]
+                ux = du[1, angle]
+                uy = du[2, angle]
                 vz = dv[3, angle]
 
                 vertical = abs(sy) >= abs(sx)
@@ -136,12 +214,15 @@ function _dd_backproject_arc_tile4!(
                 mf = s_long / (s_long - lp)
                 t0 = _dd_edge(s_tran, vmin_t, T(it - Int32(1)), v_t, mf)
                 t1 = _dd_edge(s_tran, vmin_t, T(it), v_t, mf)
-                tvlo = min(t0, t1); tvhi = max(t0, t1)
+                tvlo = min(t0, t1)
+                tvhi = max(t0, t1)
 
                 # Shared fan-angle and radial extrema for all four z lanes.
-                sdx = dcx - sx; sdy = dcy - sy
+                sdx = dcx - sx
+                sdy = dcy - sy
                 sd_xy = sqrt(sdx * sdx + sdy * sdy)
-                cmin = T(Inf); cmax = T(-Inf)
+                cmin = T(Inf)
+                cmax = T(-Inf)
                 bx = Int32(-1)
                 while bx <= Int32(1)
                     by = Int32(-1)
@@ -151,7 +232,8 @@ function _dd_backproject_arc_tile4!(
                         along = (svx * sdx + svy * sdy) / sd_xy
                         across = svx * ux + svy * uy
                         c = atan(across, along) / dγ + cc
-                        cmin = min(cmin, c); cmax = max(cmax, c)
+                        cmin = min(cmin, c)
+                        cmax = max(cmax, c)
                         by += Int32(2)
                     end
                     bx += Int32(2)
@@ -159,9 +241,12 @@ function _dd_backproject_arc_tile4!(
                 c0 = max(Int32(1), unsafe_trunc(Int32, ceil(cmin - half)) - Int32(1))
                 c1 = min(nc, unsafe_trunc(Int32, floor(cmax + half)) + Int32(1))
 
-                x0 = xc - half * vsx; x1 = xc + half * vsx
-                y0 = yc - half * vsy; y1 = yc + half * vsy
-                qx = sx - clamp(sx, x0, x1); qy = sy - clamp(sy, y0, y1)
+                x0 = xc - half * vsx
+                x1 = xc + half * vsx
+                y0 = yc - half * vsy
+                y1 = yc + half * vsy
+                qx = sx - clamp(sx, x0, x1)
+                qy = sy - clamp(sy, y0, y1)
                 rho_min = max(sqrt(qx * qx + qy * qy), T(1.0e-12))
                 rho_max_sq = zero(T)
                 bx = Int32(-1)
@@ -188,24 +273,94 @@ function _dd_backproject_arc_tile4!(
                 z14 = _dd_edge(sz, vmz, T(iz4), vsz, mf)
 
                 r01, r11 = _dd_arc_row_bounds(
-                    iz1, vmz, vsz, sz, dcz, sd_xy, rho_min, rho_max, prm, rc, nr
+                    iz1,
+                    vmz,
+                    vsz,
+                    sz,
+                    dcz,
+                    sd_xy,
+                    rho_min,
+                    rho_max,
+                    prm,
+                    rc,
+                    nr,
                 )
                 r02, r12 = _dd_arc_row_bounds(
-                    iz2, vmz, vsz, sz, dcz, sd_xy, rho_min, rho_max, prm, rc, nr
+                    iz2,
+                    vmz,
+                    vsz,
+                    sz,
+                    dcz,
+                    sd_xy,
+                    rho_min,
+                    rho_max,
+                    prm,
+                    rc,
+                    nr,
                 )
                 r03, r13 = _dd_arc_row_bounds(
-                    iz3, vmz, vsz, sz, dcz, sd_xy, rho_min, rho_max, prm, rc, nr
+                    iz3,
+                    vmz,
+                    vsz,
+                    sz,
+                    dcz,
+                    sd_xy,
+                    rho_min,
+                    rho_max,
+                    prm,
+                    rc,
+                    nr,
                 )
                 r04, r14 = _dd_arc_row_bounds(
-                    iz4, vmz, vsz, sz, dcz, sd_xy, rho_min, rho_max, prm, rc, nr
+                    iz4,
+                    vmz,
+                    vsz,
+                    sz,
+                    dcz,
+                    sd_xy,
+                    rho_min,
+                    rho_max,
+                    prm,
+                    rc,
+                    nr,
                 )
 
                 col = c0
                 while col <= c1
-                    valid_x, _, s_long_c, _, dXlo, dXhi, detXstep,
-                        deltaT, scale_col, _, _, _, _, v_long_c, _ = _dd_col_setup(
-                        col, sx, sy, sz, dcx, dcy, ux, uy,
-                        mag, ps, cc, nx, ny, vmx, vmy, vsx, vsy, true, dγ
+                    valid_x,
+                        _,
+                        s_long_c,
+                        _,
+                        dXlo,
+                        dXhi,
+                        detXstep,
+                        deltaT,
+                        scale_col,
+                        _,
+                        _,
+                        _,
+                        _,
+                        v_long_c,
+                        _ = _dd_col_setup(
+                        col,
+                        sx,
+                        sy,
+                        sz,
+                        dcx,
+                        dcy,
+                        ux,
+                        uy,
+                        mag,
+                        ps,
+                        cc,
+                        nx,
+                        ny,
+                        vmx,
+                        vmy,
+                        vsx,
+                        vsy,
+                        true,
+                        dγ,
                     )
                     if valid_x
                         ox = _dd_overlap(dXlo, dXhi, tvlo, tvhi)
@@ -213,12 +368,34 @@ function _dd_backproject_arc_tile4!(
                             row = r01
                             while row <= r11
                                 valid_z, dZlo, dZhi, norm = _dd_row_setup(
-                                    row, sz, dcz, vz, mag, prs, rc, scale_col,
-                                    s_long_c, deltaT, v_long_c, detXstep
+                                    row,
+                                    sz,
+                                    dcz,
+                                    vz,
+                                    mag,
+                                    prs,
+                                    rc,
+                                    scale_col,
+                                    s_long_c,
+                                    deltaT,
+                                    v_long_c,
+                                    detXstep,
                                 )
                                 if valid_z
-                                    oz = _dd_overlap(dZlo, dZhi, min(z01, z11), max(z01, z11))
-                                    oz > zero(T) && (acc1 = fma(sino[col, row, angle] * ox * oz, norm, acc1))
+                                    oz = _dd_overlap(
+                                        dZlo,
+                                        dZhi,
+                                        min(z01, z11),
+                                        max(z01, z11),
+                                    )
+                                    oz > zero(T) &&
+                                        (
+                                            acc1 = fma(
+                                                sino[col, row, angle] * ox * oz,
+                                                norm,
+                                                acc1,
+                                            )
+                                        )
                                 end
                                 row += Int32(1)
                             end
@@ -226,12 +403,34 @@ function _dd_backproject_arc_tile4!(
                                 row = r02
                                 while row <= r12
                                     valid_z, dZlo, dZhi, norm = _dd_row_setup(
-                                        row, sz, dcz, vz, mag, prs, rc, scale_col,
-                                        s_long_c, deltaT, v_long_c, detXstep
+                                        row,
+                                        sz,
+                                        dcz,
+                                        vz,
+                                        mag,
+                                        prs,
+                                        rc,
+                                        scale_col,
+                                        s_long_c,
+                                        deltaT,
+                                        v_long_c,
+                                        detXstep,
                                     )
                                     if valid_z
-                                        oz = _dd_overlap(dZlo, dZhi, min(z02, z12), max(z02, z12))
-                                        oz > zero(T) && (acc2 = fma(sino[col, row, angle] * ox * oz, norm, acc2))
+                                        oz = _dd_overlap(
+                                            dZlo,
+                                            dZhi,
+                                            min(z02, z12),
+                                            max(z02, z12),
+                                        )
+                                        oz > zero(T) &&
+                                            (
+                                                acc2 = fma(
+                                                    sino[col, row, angle] * ox * oz,
+                                                    norm,
+                                                    acc2,
+                                                )
+                                            )
                                     end
                                     row += Int32(1)
                                 end
@@ -240,12 +439,34 @@ function _dd_backproject_arc_tile4!(
                                 row = r03
                                 while row <= r13
                                     valid_z, dZlo, dZhi, norm = _dd_row_setup(
-                                        row, sz, dcz, vz, mag, prs, rc, scale_col,
-                                        s_long_c, deltaT, v_long_c, detXstep
+                                        row,
+                                        sz,
+                                        dcz,
+                                        vz,
+                                        mag,
+                                        prs,
+                                        rc,
+                                        scale_col,
+                                        s_long_c,
+                                        deltaT,
+                                        v_long_c,
+                                        detXstep,
                                     )
                                     if valid_z
-                                        oz = _dd_overlap(dZlo, dZhi, min(z03, z13), max(z03, z13))
-                                        oz > zero(T) && (acc3 = fma(sino[col, row, angle] * ox * oz, norm, acc3))
+                                        oz = _dd_overlap(
+                                            dZlo,
+                                            dZhi,
+                                            min(z03, z13),
+                                            max(z03, z13),
+                                        )
+                                        oz > zero(T) &&
+                                            (
+                                                acc3 = fma(
+                                                    sino[col, row, angle] * ox * oz,
+                                                    norm,
+                                                    acc3,
+                                                )
+                                            )
                                     end
                                     row += Int32(1)
                                 end
@@ -254,12 +475,34 @@ function _dd_backproject_arc_tile4!(
                                 row = r04
                                 while row <= r14
                                     valid_z, dZlo, dZhi, norm = _dd_row_setup(
-                                        row, sz, dcz, vz, mag, prs, rc, scale_col,
-                                        s_long_c, deltaT, v_long_c, detXstep
+                                        row,
+                                        sz,
+                                        dcz,
+                                        vz,
+                                        mag,
+                                        prs,
+                                        rc,
+                                        scale_col,
+                                        s_long_c,
+                                        deltaT,
+                                        v_long_c,
+                                        detXstep,
                                     )
                                     if valid_z
-                                        oz = _dd_overlap(dZlo, dZhi, min(z04, z14), max(z04, z14))
-                                        oz > zero(T) && (acc4 = fma(sino[col, row, angle] * ox * oz, norm, acc4))
+                                        oz = _dd_overlap(
+                                            dZlo,
+                                            dZhi,
+                                            min(z04, z14),
+                                            max(z04, z14),
+                                        )
+                                        oz > zero(T) &&
+                                            (
+                                                acc4 = fma(
+                                                    sino[col, row, angle] * ox * oz,
+                                                    norm,
+                                                    acc4,
+                                                )
+                                            )
                                     end
                                     row += Int32(1)
                                 end
@@ -289,39 +532,52 @@ the forward operator. The gather formulation is deterministic and needs no
 floating-point atomics on GPU backends.
 """
 function dd_backproject!(
-        volume::AbstractArray{T, 3},
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        active_z::Union{Nothing, UnitRange{Int}} = nothing,
-        circular_support::Bool = false,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-    ) where {T <: AbstractFloat}
-    nx = Int32(size(volume, 1)); ny = Int32(size(volume, 2)); nz = Int32(size(volume, 3))
-    nc = Int32(size(sinogram, 1)); nr = Int32(size(sinogram, 2))
+    volume::AbstractArray{T, 3},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    active_z::Union{Nothing, UnitRange{Int}} = nothing,
+    circular_support::Bool = false,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+) where {T <: AbstractFloat}
+    nx = Int32(size(volume, 1))
+    ny = Int32(size(volume, 2))
+    nz = Int32(size(volume, 3))
+    nc = Int32(size(sinogram, 1))
+    nr = Int32(size(sinogram, 2))
     na = Int32(size(sinogram, 3))
 
-    if active_z !== nothing && (isempty(active_z) || first(active_z) < 1 || last(active_z) > nz)
-        throw(ArgumentError("active_z must be a nonempty unit range within 1:$(nz), got $(active_z)"))
+    if active_z !== nothing &&
+            (isempty(active_z) || first(active_z) < 1 || last(active_z) > nz)
+        throw(ArgumentError(
+            "active_z must be a nonempty unit range within 1:$(nz), got $(active_z)",
+        ))
     end
 
     bounds = volume_extent === nothing ? geom.fov : volume_extent
-    vmx = T(-bounds[1] / 2); vmy = T(-bounds[2] / 2); vmz = T(-bounds[3] / 2)
-    vsx = T(bounds[1]) / T(nx); vsy = T(bounds[2]) / T(ny); vsz = T(bounds[3]) / T(nz)
+    vmx = T(-bounds[1] / 2)
+    vmy = T(-bounds[2] / 2)
+    vmz = T(-bounds[3] / 2)
+    vsx = T(bounds[1]) / T(nx)
+    vsy = T(bounds[2]) / T(ny)
+    vsz = T(bounds[3]) / T(nz)
     _dd_check_isotropy(vsx, vsy)
 
     mag = T(geom.SDD / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    pm = ps * mag; prm = prs * mag
-    cc = column_center(T, geom); rc = (T(nr) + one(T)) / T(2)
-    arc_det = is_arc(geom); dγ = T(geom.pixel_size / geom.SAD)
+    ps = T(geom.pixel_size)
+    prs = T(geom.pixel_row_size)
+    pm = ps * mag
+    prm = prs * mag
+    cc = column_center(T, geom)
+    rc = (T(nr) + one(T)) / T(2)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
     z_first = active_z === nothing ? Int32(1) : Int32(first(active_z))
     z_last = active_z === nothing ? nz : Int32(last(active_z))
     active_volume = view(volume, :, :, Int(z_first):Int(z_last))
-    active_nz = z_last - z_first + Int32(1)
     radius_sq = T(min(bounds[1], bounds[2]) / 2)^2
 
     sp = _dd_geom_array(ws_source_positions, volume, geom.source_positions, T)
@@ -331,18 +587,47 @@ function dd_backproject!(
 
     if arc_det && active_z !== nothing
         return _dd_backproject_arc_tile4!(
-            volume, sinogram, geom, bounds, active_z, circular_support,
-            sp, dc, du, dv
+            volume,
+            sinogram,
+            geom,
+            bounds,
+            active_z,
+            circular_support,
+            sp,
+            dc,
+            du,
+            dv,
         )
     end
 
-    let sino = sinogram, sp = sp, dc = dc, du = du, dv = dv,
-            nx = nx, ny = ny, nz = nz, nc = nc, nr = nr, na = na,
-            vmx = vmx, vmy = vmy, vmz = vmz, vsx = vsx, vsy = vsy, vsz = vsz,
-            mag = mag, ps = ps, prs = prs, pm = pm, prm = prm,
-            cc = cc, rc = rc, arc_det = arc_det, dγ = dγ,
-            z_first = z_first, z_last = z_last, circular_support = circular_support,
-            radius_sq = radius_sq
+    let sino = sinogram,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        nx = nx,
+        ny = ny,
+        nc = nc,
+        nr = nr,
+        na = na,
+        vmx = vmx,
+        vmy = vmy,
+        vmz = vmz,
+        vsx = vsx,
+        vsy = vsy,
+        vsz = vsz,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        pm = pm,
+        prm = prm,
+        cc = cc,
+        rc = rc,
+        arc_det = arc_det,
+        dγ = dγ,
+        z_first = z_first,
+        circular_support = circular_support,
+        radius_sq = radius_sq
         AK.foreachindex(active_volume) do idx
             idx0 = Int32(idx - 1)
             ix = (idx0 % nx) + Int32(1)
@@ -360,10 +645,18 @@ function dd_backproject!(
 
             angle = Int32(1)
             while angle <= na
-                sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-                dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-                ux = du[1, angle]; uy = du[2, angle]; uz = du[3, angle]
-                vx = dv[1, angle]; vy = dv[2, angle]; vz = dv[3, angle]
+                sx = sp[1, angle]
+                sy = sp[2, angle]
+                sz = sp[3, angle]
+                dcx = dc[1, angle]
+                dcy = dc[2, angle]
+                dcz = dc[3, angle]
+                ux = du[1, angle]
+                uy = du[2, angle]
+                uz = du[3, angle]
+                vx = dv[1, angle]
+                vy = dv[2, angle]
+                vz = dv[3, angle]
 
                 # Voxel/view geometry is independent of the candidate detector
                 # cell.  Hoist it out of the hot col×row loop; `_dd_cell_setup`
@@ -386,10 +679,13 @@ function dd_backproject!(
                 z0_v = _dd_edge(sz, vmz, T(iz - Int32(1)), vsz, mf_v)
                 z1_v = _dd_edge(sz, vmz, T(iz), vsz, mf_v)
 
-                cmin = T(Inf); cmax = T(-Inf)
-                rmin = T(Inf); rmax = T(-Inf)
+                cmin = T(Inf)
+                cmax = T(-Inf)
+                rmin = T(Inf)
+                rmax = T(-Inf)
                 if arc_det
-                    sdx = dcx - sx; sdy = dcy - sy
+                    sdx = dcx - sx
+                    sdy = dcy - sy
                     sd_xy = sqrt(sdx * sdx + sdy * sdy)
                     # Fan-angle extrema occur at the four transverse corners.
                     bx = Int32(-1)
@@ -401,7 +697,8 @@ function dd_backproject!(
                             along = (svx * sdx + svy * sdy) / sd_xy
                             across = svx * ux + svy * uy
                             c = atan(across, along) / dγ + cc
-                            cmin = min(cmin, c); cmax = max(cmax, c)
+                            cmin = min(cmin, c)
+                            cmax = max(cmax, c)
                             by += Int32(2)
                         end
                         bx += Int32(2)
@@ -410,8 +707,10 @@ function dd_backproject!(
                     # Axial cylindrical projection depends on 1/rho. The
                     # closest xy point can lie on a box face, so corner-only
                     # bounds are not conservative here.
-                    x0 = xc - half * vsx; x1 = xc + half * vsx
-                    y0 = yc - half * vsy; y1 = yc + half * vsy
+                    x0 = xc - half * vsx
+                    x1 = xc + half * vsx
+                    y0 = yc - half * vsy
+                    y1 = yc + half * vsy
                     qx = sx - clamp(sx, x0, x1)
                     qy = sy - clamp(sy, y0, y1)
                     rho_min = sqrt(qx * qx + qy * qy)
@@ -434,7 +733,8 @@ function dd_backproject!(
                         zeta = zc + T(bz) * half * vsz - sz
                         ra = (sz + sd_xy * zeta / rho_min - dcz) / prm + rc
                         rb = (sz + sd_xy * zeta / rho_max - dcz) / prm + rc
-                        rmin = min(rmin, ra, rb); rmax = max(rmax, ra, rb)
+                        rmin = min(rmin, ra, rb)
+                        rmax = max(rmax, ra, rb)
                         bz += Int32(2)
                     end
                 else
@@ -451,12 +751,29 @@ function dd_backproject!(
                                     xc + T(bx) * half * vsx,
                                     yc + T(by) * half * vsy,
                                     zc + T(bz) * half * vsz,
-                                    sx, sy, sz, dcx, dcy, dcz,
-                                    ux, uy, uz, vx, vy, vz,
-                                    pm, prm, cc, rc, false, dγ,
+                                    sx,
+                                    sy,
+                                    sz,
+                                    dcx,
+                                    dcy,
+                                    dcz,
+                                    ux,
+                                    uy,
+                                    uz,
+                                    vx,
+                                    vy,
+                                    vz,
+                                    pm,
+                                    prm,
+                                    cc,
+                                    rc,
+                                    false,
+                                    dγ,
                                 )
-                                cmin = min(cmin, c); cmax = max(cmax, c)
-                                rmin = min(rmin, r); rmax = max(rmax, r)
+                                cmin = min(cmin, c)
+                                cmax = max(cmax, c)
+                                rmin = min(rmin, r)
+                                rmax = max(rmax, r)
                                 bz += Int32(2)
                             end
                             by += Int32(2)
@@ -479,30 +796,73 @@ function dd_backproject!(
 
                 col = c0
                 while col <= c1
-                    valid_x, _, s_long_c, _, dXlo, dXhi, detXstep,
-                        deltaT, scale_col, _, _, _, _, v_long_c,
+                    valid_x,
+                        _,
+                        s_long_c,
+                        _,
+                        dXlo,
+                        dXhi,
+                        detXstep,
+                        deltaT,
+                        scale_col,
+                        _,
+                        _,
+                        _,
+                        _,
+                        v_long_c,
                         _ = _dd_col_setup(
-                        col, sx, sy, sz, dcx, dcy, ux, uy,
-                        mag, ps, cc, nx, ny, vmx, vmy, vsx, vsy,
-                        arc_det, dγ,
+                        col,
+                        sx,
+                        sy,
+                        sz,
+                        dcx,
+                        dcy,
+                        ux,
+                        uy,
+                        mag,
+                        ps,
+                        cc,
+                        nx,
+                        ny,
+                        vmx,
+                        vmy,
+                        vsx,
+                        vsy,
+                        arc_det,
+                        dγ,
                     )
                     if valid_x
-                        ox = _dd_overlap(
-                            dXlo, dXhi, min(t0_v, t1_v), max(t0_v, t1_v)
-                        )
+                        ox = _dd_overlap(dXlo, dXhi, min(t0_v, t1_v), max(t0_v, t1_v))
                         if ox > zero(T)
                             row = r0
                             while row <= r1
                                 valid_z, dZlo, dZhi, norm = _dd_row_setup(
-                                    row, sz, dcz, vz, mag, prs, rc, scale_col,
-                                    s_long_c, deltaT, v_long_c, detXstep,
+                                    row,
+                                    sz,
+                                    dcz,
+                                    vz,
+                                    mag,
+                                    prs,
+                                    rc,
+                                    scale_col,
+                                    s_long_c,
+                                    deltaT,
+                                    v_long_c,
+                                    detXstep,
                                 )
                                 if valid_z
                                     oz = _dd_overlap(
-                                        dZlo, dZhi, min(z0_v, z1_v), max(z0_v, z1_v)
+                                        dZlo,
+                                        dZhi,
+                                        min(z0_v, z1_v),
+                                        max(z0_v, z1_v),
                                     )
                                     if oz > zero(T)
-                                        acc = fma(sino[col, row, angle] * ox * oz, norm, acc)
+                                        acc = fma(
+                                            sino[col, row, angle] * ox * oz,
+                                            norm,
+                                            acc,
+                                        )
                                     end
                                 end
                                 row += Int32(1)

@@ -51,23 +51,26 @@ width `noise(h)`, shaped and counted by `shaper`. Pulses farther apart than a pu
 processed one group at a time, so the cost grows with the pulses, not the time they span.
 """
 function pulse_counts(
-        rng,
-        shaper::PulseShaper,
-        rate_per_ns,
-        n_pulses,
-        values,
-        cdf,
-        thresholds_keV;
-        noise = h -> 0.0,
-        dt_ns = 0.2,
-    )
+    rng,
+    shaper::PulseShaper,
+    rate_per_ns,
+    n_pulses,
+    values,
+    cdf,
+    thresholds_keV;
+    noise = h -> 0.0,
+    dt_ns = 0.2,
+)
     n = shaper.order
     τ = shaper.fwhm_ns / shaper_fwhm(n)
     support = (n + 12) * τ
     n_kernel = ceil(Int, support / dt_ns)
 
     times = cumsum(Random.randexp(rng, n_pulses) ./ rate_per_ns)
-    heights = [values[min(searchsortedfirst(cdf, rand(rng)), length(values))] for _ in 1:n_pulses]
+    heights = [
+        values[min(searchsortedfirst(cdf, rand(rng)), length(values))]
+        for _ in 1:n_pulses
+    ]
     heights .+= [randn(rng) * noise(h) for h in heights]
 
     counts = zeros(Int, length(thresholds_keV))
@@ -90,7 +93,8 @@ function pulse_counts(
             for k in 1:n_kernel
                 index = start + k + 1
                 index > n_points && break
-                signal[index] += heights[p] * shaper_pulse((start + k - offset) * dt_ns, τ, n)
+                signal[index] += heights[p] *
+                    shaper_pulse((start + k - offset) * dt_ns, τ, n)
             end
         end
 
@@ -148,14 +152,14 @@ probabilities `p`, each seen with Gaussian noise of width √(σₑ² + F w h), 
 from the nominal as `variation` says. Pulses arriving alone: no pile-up.
 """
 function counts_above(
-        values,
-        p,
-        thresholds_keV;
-        variation::DexelVariation = DexelVariation(),
-        electronic_noise_keV::Real = 1.5,
-        fano::Real = 0.1,
-        pair_energy_eV::Real = 4.43,
-    )
+    values,
+    p,
+    thresholds_keV;
+    variation::DexelVariation = DexelVariation(),
+    electronic_noise_keV::Real = 1.5,
+    fano::Real = 0.1,
+    pair_energy_eV::Real = 4.43,
+)
     w = pair_energy_eV / 1000
     g, δ = variation.gain, variation.threshold_offset_keV
     noise(h) = sqrt(electronic_noise_keV^2 + fano * w * max(h, 0.0))

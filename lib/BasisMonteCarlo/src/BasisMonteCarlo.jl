@@ -57,32 +57,72 @@ include("library_format.jl")
 include("checks.jl")
 include("basissimulator_v0_15_1.jl")
 
-export DetectorMaterial, DETECTOR_MATERIALS, linear_attenuation, beer_lambert_efficiency,
+export DetectorMaterial,
+    DETECTOR_MATERIALS,
+    linear_attenuation,
+    beer_lambert_efficiency,
     geant4_attenuation,
     k_edges
 export AbstractDetector, SlabDetector, Collimator, Septa, PencilBeam, AreaBeam, FocalSpot
-export ArcDetector, ArcReadout, ArcCounts, Spectrum, simulate_spectrum, arc_counts, focal_spot
+export ArcDetector,
+    ArcReadout,
+    ArcCounts,
+    Spectrum,
+    simulate_spectrum,
+    arc_counts,
+    focal_spot
 export ArcEnergyReadout, ArcSignal, arc_signal
 export air_mu_en, air_kerma, half_value_layer
-export RayBeam, PhantomInsert, CylinderPhantom, material_lengths, water_equivalent_length, water_equivalent_diameter
-export ScatterScanner, ScatterReadout, ScatterTally, scatter_tally, merge_tallies, column_edges, row_edges
+export RayBeam,
+    PhantomInsert,
+    CylinderPhantom,
+    material_lengths,
+    water_equivalent_length,
+    water_equivalent_diameter
+export ScatterScanner,
+    ScatterReadout,
+    ScatterTally,
+    scatter_tally,
+    merge_tallies,
+    column_edges,
+    row_edges
 export ForcedScatterReadout, VertexLog, forced_attenuation, scattering_tables, exit_length
 export ScatterLibrary, kernel_ray, scatter_library, library_kernel, library_scan
-export ShapeScatterLibrary, shape_scatter_library, kernel_phantom, view_ellipse, process_ratios
+export ShapeScatterLibrary,
+    shape_scatter_library,
+    kernel_phantom,
+    view_ellipse,
+    process_ratios
 export write_scatter_library, read_scatter_library
 export Check, check_relative, check_below, check_range, scorecard
-export BASISSIMULATOR_V0_15_1_EFFICIENCY, basissimulator_v0_15_1_response, basissimulator_v0_15_1_scatter
+export BASISSIMULATOR_V0_15_1_EFFICIENCY,
+    basissimulator_v0_15_1_response,
+    basissimulator_v0_15_1_scatter
 export cell_pitch, cell_count, face_size_mm, fan_angle_deg, dexel_centre, dexel_edges
 export start_workers, stop_workers, workers, simulate_sweep, checkpoint_directory
 export DexelEnergyReadout, DexelEnergy, dexel_energy, dexel_efficiency, dexel_swank
 export ChargeTransport, weighting_potential
 export PulseShaper, pulse_counts, pulse_heights, DexelVariation, counts_above
-export DexelReadout, DexelResponse, dexel_response, dexel_beam, threshold_counts, dexel_spectrum, DepositLog,
+export DexelReadout,
+    DexelResponse,
+    dexel_response,
+    dexel_beam,
+    threshold_counts,
+    dexel_spectrum,
+    DepositLog,
     response_table
 export PhysicsSettings
 export simulate_monoenergetic, record_tracks, MonoenergeticRun, TrackRecord, TrackStep
-export interaction_probability, quantum_efficiency, energy_absorption_efficiency,
-    swank_factor, photopeak_fraction, absorbed_energy_spectrum, escape_spectrum, fluorescence_lines,
-    energy_budget, standard_error, interpolate_linear
+export interaction_probability,
+    quantum_efficiency,
+    energy_absorption_efficiency,
+    swank_factor,
+    photopeak_fraction,
+    absorbed_energy_spectrum,
+    escape_spectrum,
+    fluorescence_lines,
+    energy_budget,
+    standard_error,
+    interpolate_linear
 
 end

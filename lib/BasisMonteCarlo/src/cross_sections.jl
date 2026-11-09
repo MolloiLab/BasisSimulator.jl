@@ -25,21 +25,35 @@ function em_calculator_symbol()
             Sys.which("clang++"),
             Some(nothing),
         )
-        compiler === nothing && error(
-            """
+        compiler === nothing &&
+            error(
+                """
             Geant4's cross sections need a C++ compiler (c++, g++ or clang++) on the PATH,
             to build the small G4EmCalculator shim once. Install one, or compare with the XCOM
-            values of `linear_attenuation` instead."""
-        )
-        rpath = Sys.islinux() ? ["-Wl,-rpath,$(prefix)/lib", "-Wl,--no-as-needed"] :
+            values of `linear_attenuation` instead.""",
+            )
+        rpath = Sys.islinux() ?
+            ["-Wl,-rpath,$(prefix)/lib", "-Wl,--no-as-needed"] :
             Sys.iswindows() ? String[] : ["-Wl,-rpath,$(prefix)/lib"]
         # Geant4 11.4 splits the processes library (G4processes_core, G4processes_hadronic); 11.3,
         # which Geant4.jl 0.2.4 ships, has one G4processes
-        shipped = vcat((readdir(d) for d in (joinpath(prefix, "lib"), joinpath(prefix, "bin")) if isdir(d))...)
-        processes = any(f -> occursin("G4processes_core", f), shipped) ? "-lG4processes_core" : "-lG4processes"
+        shipped = vcat((
+            readdir(d)
+            for d in (joinpath(prefix, "lib"), joinpath(prefix, "bin"))
+            if isdir(d)
+        )...)
+        processes = any(f -> occursin("G4processes_core", f), shipped) ?
+            "-lG4processes_core" :
+            "-lG4processes"
         libs = [
-            processes, "-lG4particles", "-lG4materials", "-lG4global", "-lG4clhep",
-            "-lG4run", "-lG4track", "-lG4intercoms",
+            processes,
+            "-lG4particles",
+            "-lG4materials",
+            "-lG4global",
+            "-lG4clhep",
+            "-lG4run",
+            "-lG4track",
+            "-lG4intercoms",
         ]
         # the source before the libraries, so a linker that resolves in order (MinGW's) finds them
         cmd = `$compiler -O2 -shared -fPIC -std=c++17 -I$(prefix)/include/Geant4 $source -o $library
@@ -47,7 +61,7 @@ function em_calculator_symbol()
         try
             run(cmd)
         catch
-            rm(library; force = true)      # never reuse a half-written library
+            rm(library; force = true) # never reuse a half-written library
             rethrow()
         end
     end
@@ -69,29 +83,42 @@ some energies. The first call builds a small C++ library (a few seconds, once pe
 version) and, if no simulation has run yet, starts Geant4.
 """
 function geant4_attenuation(
-        m::DetectorMaterial, energy_keV::Real; kind::Symbol = :total,
-        physics::PhysicsSettings = PhysicsSettings()
-    )
+    m::DetectorMaterial,
+    energy_keV::Real;
+    kind::Symbol = :total,
+    physics::PhysicsSettings = PhysicsSettings(),
+)
     kind === :total && return sum(
         geant4_attenuation(m, energy_keV; kind = k, physics)
-            for k in keys(G4_PROCESS_NAMES)
+        for k in keys(G4_PROCESS_NAMES)
     )
     haskey(G4_PROCESS_NAMES, kind) ||
         throw(ArgumentError("kind must be :total, :photoelectric, :compton or :rayleigh"))
     e = ENGINE[]
     if e === nothing || e.detector.material.name != m.name
-        thickness = e !== nothing && e.detector isa SlabDetector ? e.detector.thickness_mm : 1.0
-        engine(SlabDetector(m, thickness), physics)    # the material must be in the geometry
+        thickness = e !== nothing && e.detector isa SlabDetector ?
+            e.detector.thickness_mm :
+            1.0
+        # the material must be in the geometry
+        engine(SlabDetector(m, thickness), physics)
     elseif e.physics != physics
-        engine(e.detector, physics)                     # throws: physics is fixed per process
+        # throws: physics is fixed per process
+        engine(e.detector, physics)
     end
     f = em_calculator_symbol()
     μ = ccall(
-        f, Float64, (Float64, Cstring, Ptr{Cvoid}),
-        energy_keV * keV, G4_PROCESS_NAMES[kind], g4_material(m).cpp_object
+        f,
+        Float64,
+        (Float64, Cstring, Ptr{Cvoid}),
+        energy_keV * keV,
+        G4_PROCESS_NAMES[kind],
+        g4_material(m).cpp_object,
     )
     return μ * mm
 end
 
-geant4_attenuation(key::Symbol, energy_keV::Real; kw...) =
-    geant4_attenuation(DetectorMaterial(key), energy_keV; kw...)
+geant4_attenuation(key::Symbol, energy_keV::Real; kw...) = geant4_attenuation(
+    DetectorMaterial(key),
+    energy_keV;
+    kw...,
+)

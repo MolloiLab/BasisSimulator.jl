@@ -157,10 +157,10 @@ See also: [`focal_spot_small`](@ref), [`focal_spot_medium`](@ref),
 [`focal_spot_large`](@ref), [`compute_focal_spot_blur_fwhm`](@ref)
 """
 struct FocalSpot
-    width::Float64      # mm
-    length::Float64     # mm
-    shape::Symbol       # :gaussian, :uniform, :bimodal
-    n_samples::Int      # samples per dimension for ray tracing
+    width::Float64  # mm
+    length::Float64 # mm
+    shape::Symbol   # :gaussian, :uniform, :bimodal
+    n_samples::Int  # samples per dimension for ray tracing
 end
 
 # =============================================================================
@@ -253,28 +253,32 @@ formula is mathematically equivalent to averaging rays from a finite source.
 
 # Example
 ```julia
-fs = FocalSpot(1.0, 1.0, :gaussian, 3)  # 1 mm focal spot
-geom = CTGeometry(EICTScanner(detector_rows=64, detector_cols=512); n_angles=360, fov_cm=35.0)
+fs = FocalSpot(1.0, 1.0, :gaussian, 3) # 1 mm focal spot
+geom = CTGeometry(
+    EICTScanner(detector_rows = 64, detector_cols = 512);
+    n_angles = 360,
+    fov_cm = 35.0,
+)
 
 # Blur at isocenter
 blur_iso = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD)
 
 # Blur for object closer to source (more magnification, more blur)
 blur_near = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 0.7)
-@assert blur_near[1] > blur_iso[1]  # Closer = more blur
+@assert blur_near[1] > blur_iso[1] # Closer = more blur
 
 # Blur for object farther from source (less magnification, less blur)
 blur_far = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 1.3)
-@assert blur_far[1] < blur_iso[1]  # Farther = less blur
+@assert blur_far[1] < blur_iso[1] # Farther = less blur
 ```
 
 See also: [`create_focal_spot_kernel_spatial`](@ref), [`apply_focal_spot_blur!`](@ref)
 """
 function compute_focal_spot_blur_fwhm(
-        fs::FocalSpot,
-        geom::CTGeometry,
-        object_distance::Float64
-    )
+    fs::FocalSpot,
+    geom::CTGeometry,
+    object_distance::Float64,
+)
     # Convert focal spot size from mm to cm
     fs_width_cm = fs.width / 10.0
     fs_length_cm = fs.length / 10.0
@@ -282,7 +286,7 @@ function compute_focal_spot_blur_fwhm(
     # Magnification of focal spot blur at detector
     # M_blur = (SDD - object_distance) / object_distance
     if object_distance <= 0
-        object_distance = geom.SAD  # Default to isocenter
+        object_distance = geom.SAD # Default to isocenter
     end
 
     M_blur = (geom.SDD - object_distance) / object_distance
@@ -311,10 +315,7 @@ Create small 2D blur kernel for spatial domain focal spot convolution.
 Returns a normalized kernel array of size (2*extent+1) × (2*extent+1),
 capped at MAX_FOCAL_SPOT_KERNEL_SIZE.
 """
-function create_focal_spot_kernel_spatial(
-        fs::FocalSpot,
-        blur_fwhm::Tuple{Float64, Float64}
-    )
+function create_focal_spot_kernel_spatial(fs::FocalSpot, blur_fwhm::Tuple{Float64, Float64})
     # Convert FWHM to sigma for Gaussian
     sigma_x = blur_fwhm[1] / (2 * sqrt(2 * log(2)))
     sigma_y = blur_fwhm[2] / (2 * sqrt(2 * log(2)))
@@ -333,7 +334,9 @@ function create_focal_spot_kernel_spatial(
         for dy in -extent:extent
             for dx in -extent:extent
                 if sigma_x > 0 && sigma_y > 0
-                    kernel[center + dx, center + dy] = exp(-dx^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
+                    kernel[center + dx, center + dy] = exp(
+                        -dx^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2),
+                    )
                 elseif sigma_x > 0
                     kernel[center + dx, center + dy] = exp(-dx^2 / (2 * sigma_x^2))
                 elseif sigma_y > 0
@@ -341,7 +344,6 @@ function create_focal_spot_kernel_spatial(
                 end
             end
         end
-
     elseif fs.shape == :uniform
         # Rectangular uniform distribution
         half_w = min(extent, ceil(Int, blur_fwhm[1] / 2))
@@ -351,14 +353,17 @@ function create_focal_spot_kernel_spatial(
                 kernel[center + dx, center + dy] = 1.0
             end
         end
-
     elseif fs.shape == :bimodal
         separation = blur_fwhm[1] / 4
         for dy in -extent:extent
             for dx in -extent:extent
                 if sigma_x > 0 && sigma_y > 0
-                    g1 = exp(-(dx - separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
-                    g2 = exp(-(dx + separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
+                    g1 = exp(
+                        -(dx - separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2),
+                    )
+                    g2 = exp(
+                        -(dx + separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2),
+                    )
                     kernel[center + dx, center + dy] = g1 + g2
                 end
             end
@@ -395,12 +400,13 @@ Uses spatial domain convolution for GPU compatibility.
 Modified blurred sinogram.
 """
 function apply_focal_spot_blur!(
-        sinogram::AbstractArray{T, 3},
-        fs::FocalSpot,
-        geom::CTGeometry;
-        object_distance::Union{Nothing, Float64} = nothing,
-        ws_output = nothing, ws_kernel = nothing
-    ) where {T}
+    sinogram::AbstractArray{T, 3},
+    fs::FocalSpot,
+    geom::CTGeometry;
+    object_distance::Union{Nothing, Float64} = nothing,
+    ws_output = nothing,
+    ws_kernel = nothing,
+) where {T}
     # Skip if point source
     if fs.width <= 0 && fs.length <= 0
         return sinogram
@@ -480,11 +486,11 @@ Allocating form of [`apply_focal_spot_blur!`](@ref). It blurs a copy of `sinogra
 source-to-object distance in cm, `geom.SAD` (the isocenter) by default.
 """
 function apply_focal_spot_blur(
-        sinogram::AbstractArray{T, 3},
-        fs::FocalSpot,
-        geom::CTGeometry;
-        object_distance::Union{Nothing, Float64} = nothing
-    ) where {T}
+    sinogram::AbstractArray{T, 3},
+    fs::FocalSpot,
+    geom::CTGeometry;
+    object_distance::Union{Nothing, Float64} = nothing,
+) where {T}
     result = copy(sinogram)
     return apply_focal_spot_blur!(result, fs, geom; object_distance = object_distance)
 end
@@ -527,7 +533,6 @@ function generate_focal_spot_samples(fs::FocalSpot)
                 push!(weights, 1.0)
             end
         end
-
     elseif fs.shape == :gaussian
         # Gaussian-weighted sampling
         sigma_x = fs.width / (2 * sqrt(2 * log(2)))

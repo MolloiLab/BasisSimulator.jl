@@ -42,9 +42,10 @@ function load_mc_response(path::String)
     isfile(path) || throw(ArgumentError("photon-counting response not found: $(path)"))
     path == PCCT_NATIVE_TABLE_PATH && return _native_table_response(pcct_native_table())
     d = open(deserialize, path)
-    haskey(d, "schema_version") && throw(
-        ArgumentError("$(path) is a native-dexel table; BasisSimulator reads its own copy, PCCT_NATIVE_TABLE_PATH")
-    )
+    haskey(d, "schema_version") &&
+        throw(ArgumentError(
+            "$(path) is a native-dexel table; BasisSimulator reads its own copy, PCCT_NATIVE_TABLE_PATH",
+        ))
     return MCResponseData(
         Int.(d["energies_keV"]),
         Int.(d["thresholds_keV"]),
@@ -71,10 +72,7 @@ This is cumulative (like survival function). For energy BINS we need:
 # Returns
 - `Matrix{Float64}`: [n_E × n_t] differential bin counts
 """
-function mc_cumulative_to_bins(
-        R_cumulative::Matrix{Float64},
-        thresholds_keV::Vector{Int}
-    )
+function mc_cumulative_to_bins(R_cumulative::Matrix{Float64}, thresholds_keV::Vector{Int})
     n_E, n_t = size(R_cumulative)
     R_bins = zeros(Float64, n_E, n_t)
 
@@ -114,15 +112,21 @@ Returns D[i, b] = probability that a photon of energy E_i registers in bin b.
 
 # Example
 ```julia
-det = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [20.0, 35.0, 55.0, 70.0]))
-D = compute_mc_drm(det, 120.0)  # uses bundled response file
+det = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [
+    20.0,
+    35.0,
+    55.0,
+    70.0,
+]))
+D = compute_mc_drm(det, 120.0) # uses bundled response file
 ```
 """
 function compute_mc_drm(
-        detector::PhotonCountingDetector, kVp::Real;
-        npz_path::String = default_mc_drm_path(),
-        n_energy_points::Int = 200
-    )
+    detector::PhotonCountingDetector,
+    kVp::Real;
+    npz_path::String = default_mc_drm_path(),
+    n_energy_points::Int = 200,
+)
     # Load MC data
     mc = load_mc_response(npz_path)
 
@@ -149,7 +153,7 @@ function compute_mc_drm(
             T_high = target_b < n_target_bins ? target_thresholds[target_b + 1] : Inf
 
             # Sum all MC bins whose energy range overlaps with target bin [T_low, T_high)
-            for mc_b in 1:length(mc_thresholds)
+            for mc_b in eachindex(mc_thresholds)
                 mc_T_low = mc_thresholds[mc_b]
                 mc_T_high = mc_b < length(mc_thresholds) ? mc_thresholds[mc_b + 1] : Inf
 
@@ -165,7 +169,10 @@ function compute_mc_drm(
                         frac = 1.0
                     elseif isinf(mc_width)
                         # MC last bin but target has more bins
-                        frac = min((overlap_high - overlap_low) / (Float64(kVp) - mc_T_low + 1.0), 1.0)
+                        frac = min(
+                            (overlap_high - overlap_low) / (Float64(kVp) - mc_T_low + 1.0),
+                            1.0,
+                        )
                     else
                         frac = (overlap_high - overlap_low) / mc_width
                     end
@@ -221,23 +228,17 @@ by the forward projector. `mean`, `fano`, `correlation`, and `covariance` are
 returned as `Float64` arrays.
 """
 function compute_mc_count_moments(
-        detector::PhotonCountingDetector,
-        energies::AbstractVector,
-        weights::AbstractVector;
-        R = nothing,
-        response_path::String = default_mc_drm_path(),
-    )
-    length(energies) == length(weights) || throw(
-        DimensionMismatch(
-            "energies and weights must have equal length"
-        )
-    )
+    detector::PhotonCountingDetector,
+    energies::AbstractVector,
+    weights::AbstractVector;
+    R = nothing,
+    response_path::String = default_mc_drm_path(),
+)
+    length(energies) == length(weights) ||
+        throw(DimensionMismatch("energies and weights must have equal length"))
     isempty(energies) && throw(ArgumentError("energies must be nonempty"))
-    all(isfinite, weights) && all(>=(0), weights) || throw(
-        ArgumentError(
-            "weights must be finite and nonnegative"
-        )
-    )
+    all(isfinite, weights) && all(>=(0), weights) ||
+        throw(ArgumentError("weights must be finite and nonnegative"))
     sum(weights) > 0 || throw(ArgumentError("weights must have positive sum"))
 
     mc = load_mc_response(response_path)
@@ -272,11 +273,8 @@ function compute_mc_count_moments(
 
     kVp = Float64(maximum(energies))
     R_use = R === nothing ? compute_mc_drm(detector, kVp) : Float64.(R)
-    size(R_use, 2) == n_bins || throw(
-        DimensionMismatch(
-            "R has $(size(R_use, 2)) bins; detector has $n_bins"
-        )
-    )
+    size(R_use, 2) == n_bins ||
+        throw(DimensionMismatch("R has $(size(R_use, 2)) bins; detector has $n_bins"))
 
     mean_eff = zeros(Float64, n_bins)
     second_eff = zeros(Float64, n_bins, n_bins)
@@ -289,16 +287,17 @@ function compute_mc_count_moments(
         w == 0 && continue
         E = Float64(energies[i])
         if E <= first(mc_E)
-            lo = hi = 1; α = 0.0
+            lo = hi = 1
+            α = 0.0
         elseif E >= last(mc_E)
-            lo = hi = length(mc_E); α = 0.0
+            lo = hi = length(mc_E)
+            α = 0.0
         else
             hi = searchsortedfirst(mc_E, E)
             lo = hi - 1
             α = (E - mc_E[lo]) / (mc_E[hi] - mc_E[lo])
         end
-        r_cum = (1 - α) .* @view(mc.R_total[lo, :]) .+
-            α .* @view(mc.R_total[hi, :])
+        r_cum = (1 - α) .* @view(mc.R_total[lo, :]) .+ α .* @view(mc.R_total[hi, :])
         c_cum = (1 - α) .* @view(mc.Cov_total[lo, :, :]) .+
             α .* @view(mc.Cov_total[hi, :, :])
         m_raw = S * r_cum
@@ -320,15 +319,22 @@ function compute_mc_count_moments(
     second_eff .= (second_eff .+ transpose(second_eff)) ./ 2
     fano = [
         mean_eff[b] > eps(Float64) ? second_eff[b, b] / mean_eff[b] : 1.0
-            for b in 1:n_bins
+        for b in 1:n_bins
     ]
     correlation = Matrix{Float64}(I, n_bins, n_bins)
     for j in 1:n_bins, i in 1:n_bins
         denom = sqrt(max(second_eff[i, i] * second_eff[j, j], 0.0))
-        correlation[i, j] = denom > eps(Float64) ? second_eff[i, j] / denom : (i == j ? 1.0 : 0.0)
+        correlation[i, j] = denom > eps(Float64) ?
+            second_eff[i, j] / denom :
+            (i == j ? 1.0 : 0.0)
     end
     correlation .= clamp.(correlation, -1.0, 1.0)
-    return (mean = mean_eff, fano = fano, correlation = correlation, covariance = second_eff)
+    return (
+        mean = mean_eff,
+        fano = fano,
+        correlation = correlation,
+        covariance = second_eff,
+    )
 end
 
 export compute_mc_count_moments

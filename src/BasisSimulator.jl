@@ -11,11 +11,14 @@ Works on: Metal (Apple), CUDA (NVIDIA), ROCm (AMD), oneAPI (Intel), or CPU.
 using BasisSimulator
 
 # Five-struct simulation setup (`:dd_fast` is the default projector)
-phantom = create_gammex_472(n_voxels=128, n_slices=8, fov_cm=35.0, z_cm=0.5)
-scanner = EICTScanner(SOMATOM_FORCE; detector_rows = 8)   # a variant of a clinical constant: its scatter kernels too
-protocol = CTProtocol(kVp=120.0, mA=200.0, views=360)
+phantom = create_gammex_472(n_voxels = 128, n_slices = 8, fov_cm = 35.0, z_cm = 0.5)
+scanner = EICTScanner(
+    SOMATOM_FORCE;
+    detector_rows = 8,
+) # a variant of a clinical constant: its scatter kernels too
+protocol = CTProtocol(kVp = 120.0, mA = 200.0, views = 360)
 sim_opts = SimOptions()
-recon_opts = ReconOptions(matrix_size=(256, 256, 8), fov_cm=35.0, z_cm=0.5)
+recon_opts = ReconOptions(matrix_size = (256, 256, 8), fov_cm = 35.0, z_cm = 0.5)
 
 ws = create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
 simulate!(ws, phantom, protocol, sim_opts)
@@ -71,7 +74,6 @@ include("object/materials.jl")
 # Attenuation coefficient computation
 include("object/attenuation.jl")
 
-
 # =============================================================================
 # Geometry
 # =============================================================================
@@ -90,7 +92,6 @@ include("geometry/affine.jl")
 
 # XCAT voxelized phantom download + load (XCIST phantoms-voxelized, BSD-3)
 include("phantoms/xcat_artifacts.jl")
-
 
 # =============================================================================
 # Projection (ray tracing)
@@ -127,7 +128,6 @@ export scatter_kernels, ScatterKernels
 # Protocol definitions
 include("source/protocol.jl")
 
-
 # Detector absorption efficiency and DQE
 include("detector/detector_efficiency.jl")
 
@@ -137,7 +137,6 @@ include("source/bowtie_filter.jl")
 # CT dose from the simulated beam: CTDI100 / CTDIw / CTDIvol / DLP by Monte Carlo transport of
 # the absolute source spectrum through the bowtie into the PMMA CTDI phantoms.
 include("source/dose.jl")
-
 
 # Finite focal spot modeling
 include("source/focal_spot.jl")
@@ -150,7 +149,6 @@ include("detector/detector_lag.jl")
 
 # Detector fill factor modeling
 include("detector/fill_factor.jl")
-
 
 # =============================================================================
 # CatSim-style Signal Processing (types without PhysicsConfig dependency)
@@ -184,7 +182,6 @@ include("detector/physics_pipeline.jl")
 
 # Calibration pipeline: air scan, offset, gain correction, log transform
 include("correction/calibration.jl")
-
 
 # =============================================================================
 # Projection - Unified API (includes physics)
@@ -245,7 +242,7 @@ include("detector/scatter.jl")
 # =============================================================================
 
 include("api/options.jl")
-include("correction/flat_field.jl")   # the calibrations a workspace holds
+include("correction/flat_field.jl") # the calibrations a workspace holds
 include("api/workspace.jl")
 include("api/view_integration.jl")
 include("api/driver.jl")

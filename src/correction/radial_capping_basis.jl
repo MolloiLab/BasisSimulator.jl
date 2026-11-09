@@ -38,14 +38,14 @@ Returns a NamedTuple with per-basis mean c₁ coefficients and implied
 FOV-edge drops for diagnostics.
 """
 function apply_radial_capping_basis!(
-        a::AbstractArray{Float32, 3},
-        c::AbstractArray{Float32, 3};
-        fov_cm::Real = 35.0,
-        poly_order::Integer = 2,
-        q_lo::Real = 0.25,
-        q_hi::Real = 0.75,
-        verbose::Bool = true,
-    )
+    a::AbstractArray{Float32, 3},
+    c::AbstractArray{Float32, 3};
+    fov_cm::Real = 35.0,
+    poly_order::Integer = 2,
+    q_lo::Real = 0.25,
+    q_hi::Real = 0.75,
+    verbose::Bool = true,
+)
     nx, ny, nz = size(a)
     pixel_cm = Float64(fov_cm) / nx
     cx = (nx + 1) / 2

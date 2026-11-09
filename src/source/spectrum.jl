@@ -71,21 +71,28 @@ Load a pre-computed X-ray spectrum from .dat file.
 # Example
 ```julia
 energies, weights = load_spectrum(120)
-energies, weights = load_spectrum(120; target_angle=10.0)
+energies, weights = load_spectrum(120; target_angle = 10.0)
 ```
 """
-function load_spectrum(kVp::Int; spectrum_dir::AbstractString = SPECTRUM_DIR, target_angle::Float64 = 7.0, source::Symbol = :xspect)
+function load_spectrum(
+    kVp::Int;
+    spectrum_dir::AbstractString = SPECTRUM_DIR,
+    target_angle::Float64 = 7.0,
+    source::Symbol = :xspect,
+)
     # Validate inputs
     valid_kvp_xspect = [70, 80, 90, 100, 110, 120, 130, 140]
     valid_kvp_xcist = [80, 100, 120, 140]
     valid_angles = [7.0, 10.0]
 
     if source == :xspect
-        kVp in valid_kvp_xspect || error("kVp must be one of $valid_kvp_xspect for xspect source")
+        kVp in valid_kvp_xspect ||
+            error("kVp must be one of $valid_kvp_xspect for xspect source")
         target_angle in valid_angles || error("target_angle must be one of $valid_angles")
         filename = "tungsten_tar$(target_angle)_$(kVp)_filt.dat"
     elseif source == :xcist
-        kVp in valid_kvp_xcist || error("kVp must be one of $valid_kvp_xcist for xcist source")
+        kVp in valid_kvp_xcist ||
+            error("kVp must be one of $valid_kvp_xcist for xcist source")
         filename = "xcist_kVp$(kVp)_tar7_bin1.dat"
     else
         error("source must be :xspect or :xcist")
@@ -118,7 +125,6 @@ function load_spectrum(kVp::Int; spectrum_dir::AbstractString = SPECTRUM_DIR, ta
 
     return energies, weights
 end
-
 
 """
     spectrum_mean_energy(energies, weights)
@@ -153,15 +159,15 @@ This is important for memory efficiency in polychromatic projection.
 
 # Example
 ```julia
-energies, weights = load_spectrum(120)  # 240 bins
+energies, weights = load_spectrum(120) # 240 bins
 energies_ds, weights_ds = downsample_spectrum(energies, weights, 24)
 ```
 """
 function downsample_spectrum(
-        energies::Vector{Float64},
-        weights::Vector{Float64},
-        n_bins::Int = 24
-    )
+    energies::Vector{Float64},
+    weights::Vector{Float64},
+    n_bins::Int = 24,
+)
     n_original = length(energies)
     n_bins = min(n_bins, n_original)
 
@@ -205,25 +211,32 @@ end
 # Compound materials for filter μ(E) lookups
 const GD2O2S = XA.Material(
     "Gadolinium Oxysulfide",
-    0.42174,              # Z/A ratio (weighted average)
-    493.3 * eV,           # Mean excitation energy (estimate)
-    7.44 * g / cm^3,        # Bulk density
-    Dict{Int, Float64}(    # Mass fractions from Gd₂O₂S (MW = 378.57 g/mol)
-        64 => 0.8308,     # Gd
-        8 => 0.0845,     # O
-        16 => 0.0847,     # S
-    )
+    0.42174,            # Z/A ratio (weighted average)
+    493.3 * eV,         # Mean excitation energy (estimate)
+    7.44 * g / cm^3,    # Bulk density
+    Dict{Int, Float64}( # Mass fractions from Gd₂O₂S (MW = 378.57 g/mol)
+        64 => 0.8308, # Gd
+        8 => 0.0845,  # O
+        16 => 0.0847, # S
+    ),
 )
 
 # Map user-facing material strings to XA elements/materials for filter μ(E) lookups
 const FILTER_MATERIAL_MAP = Dict{String, Any}(
-    "Al" => XA.Elements.Aluminum, "aluminum" => XA.Elements.Aluminum,
-    "Cu" => XA.Elements.Copper, "copper" => XA.Elements.Copper,
-    "Sn" => XA.Elements.Tin, "tin" => XA.Elements.Tin,
-    "Ti" => XA.Elements.Titanium, "titanium" => XA.Elements.Titanium,
-    "W" => XA.Elements.Tungsten, "tungsten" => XA.Elements.Tungsten,
-    "C" => XA.Elements.Carbon, "graphite" => XA.Elements.Carbon,
-    "Gd2O2S" => GD2O2S, "gadolinium_oxysulfide" => GD2O2S,
+    "Al" => XA.Elements.Aluminum,
+    "aluminum" => XA.Elements.Aluminum,
+    "Cu" => XA.Elements.Copper,
+    "copper" => XA.Elements.Copper,
+    "Sn" => XA.Elements.Tin,
+    "tin" => XA.Elements.Tin,
+    "Ti" => XA.Elements.Titanium,
+    "titanium" => XA.Elements.Titanium,
+    "W" => XA.Elements.Tungsten,
+    "tungsten" => XA.Elements.Tungsten,
+    "C" => XA.Elements.Carbon,
+    "graphite" => XA.Elements.Carbon,
+    "Gd2O2S" => GD2O2S,
+    "gadolinium_oxysulfide" => GD2O2S,
 )
 
 """
@@ -238,10 +251,11 @@ Compounds: `"Gd2O2S"` / `"gadolinium_oxysulfide"`.
 """
 function get_filter_mu(material::String, energy_keV::Float64)
     mat = get(FILTER_MATERIAL_MAP, material, nothing)
-    mat === nothing && error(
-        "Unknown filter material: \"$material\". " *
-            "Supported: $(join(sort(collect(keys(FILTER_MATERIAL_MAP))), ", "))"
-    )
+    mat === nothing &&
+        error(
+            "Unknown filter material: \"$material\". " *
+                "Supported: $(join(sort(collect(keys(FILTER_MATERIAL_MAP))), ", "))",
+        )
     return ustrip(u"cm^-1", XA.linear_attenuation_coeff(mat, energy_keV * u"keV"))
 end
 
@@ -269,7 +283,8 @@ function load_spectrum_unfiltered(kVp::Int; anode_angle::Int = 10)
     valid_kvp = (80, 100, 120, 140)
     valid_angles = (8, 10)
     kVp in valid_kvp || error("kVp must be one of $valid_kvp (got $kVp)")
-    anode_angle in valid_angles || error("anode_angle must be one of $valid_angles (got $anode_angle)")
+    anode_angle in valid_angles ||
+        error("anode_angle must be one of $valid_angles (got $anode_angle)")
 
     filepath = joinpath(SPECTRUM_DIR, "Anode$anode_angle", "$kVp.TXT")
     isfile(filepath) || error("IPEM spectrum file not found: $filepath")
@@ -319,11 +334,11 @@ where `μᵢ(E)` is from XrayAttenuation.jl and `tᵢ` is filter thickness in cm
 - `(energies, filtered_flux)` — same energy grid, attenuated flux.
 """
 function filter_spectrum(
-        energies::Vector{Float64},
-        flux::Vector{Float64};
-        filters::Vector{Tuple{String, Float64}} = Tuple{String, Float64}[],
-        sdd_mm::Float64 = 750.0,
-    )
+    energies::Vector{Float64},
+    flux::Vector{Float64};
+    filters::Vector{Tuple{String, Float64}} = Tuple{String, Float64}[],
+    sdd_mm::Float64 = 750.0,
+)
     filtered = copy(flux)
 
     # Beer-Lambert per filter layer

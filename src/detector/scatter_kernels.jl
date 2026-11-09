@@ -47,7 +47,10 @@ and TOML: the header's contents, with `"arrays"` replaced by
 `Dict(scanner => Dict(kind => Array{Float32}))`. With `entry`, only that scanner's arrays and the
 shared `elements` tables are read. A copy of BasisMonteCarlo's reference reader.
 """
-function read_scatter_library(header_path::AbstractString; entry::Union{Nothing, AbstractString} = nothing)
+function read_scatter_library(
+    header_path::AbstractString;
+    entry::Union{Nothing, AbstractString} = nothing,
+)
     header = TOML.parsefile(header_path)
     data_path = joinpath(dirname(header_path), header["data_file"])
     arrays = Dict{String, Dict{String, Array{Float32}}}()
@@ -128,7 +131,12 @@ struct ScatterKernels
     grid::Symbol
     grid_height_mm::Float64
     grid_opening_mm::NTuple{2, Float64}
-    single_scatter::@NamedTuple{depths::Int, points_per_column::Int, points_per_row::Int, columns_each_side::Int}
+    single_scatter::@NamedTuple{
+        depths::Int,
+        points_per_column::Int,
+        points_per_row::Int,
+        columns_each_side::Int,
+    }
     scatter_angle_edges_deg::Vector{Float64}
     forward_rayleigh_deg::Float64
     path_energy_edges_keV::Vector{Float64}
@@ -141,33 +149,56 @@ function ScatterKernels(header::Dict, name::AbstractString, path::AbstractString
     header["format"] == "BasisSimulator scatter library" ||
         throw(ArgumentError("$(path) is not a BasisSimulator scatter library"))
     header["format_version"] == 2 ||
-        throw(ArgumentError("$(path) is scatter library format $(header["format_version"]); BasisSimulator reads format 2"))
+        throw(ArgumentError(
+            "$(path) is scatter library format $(header["format_version"]); BasisSimulator reads format 2",
+        ))
     names = [s["name"] for s in header["scanners"]]
     k = findfirst(==(name), names)
-    k === nothing && throw(
-        ArgumentError("the scatter library $(path) has no entry \"$(name)\"; its entries are $(names)")
-    )
+    k === nothing &&
+        throw(ArgumentError(
+            "the scatter library $(path) has no entry \"$(name)\"; its entries are $(names)",
+        ))
     s = header["scanners"][k]
     A = header["arrays"][name]
     for kind in ("scatter", "rayleigh", "forward", "paths", "offsets", "spreads", "angles")
-        haskey(A, kind) || throw(
-            ArgumentError("the entry \"$(name)\" of $(path) has no `$(kind)` array (a v2 library has it)")
-        )
+        haskey(A, kind) ||
+            throw(ArgumentError(
+                "the entry \"$(name)\" of $(path) has no `$(kind)` array (a v2 library has it)",
+            ))
     end
     # the single scatter's data: a library written before BasisMonteCarlo swapped each kernel's
     # single scatter for the patient's has none
     elements = header["arrays"]["elements"]
     missing_data = vcat(
-        [key for key in ("water_compton_per_mm", "water_rayleigh_per_mm", "water_pdf_cells", "single_scatter") if !haskey(header, key)],
-        [key for key in ("efficiency", "detector_mu_per_mm", "detector_depth_mm", "grid", "grid_height_mm", "grid_opening_mm") if !haskey(s, key)],
+        [
+            key
+            for key in (
+                "water_compton_per_mm",
+                "water_rayleigh_per_mm",
+                "water_pdf_cells",
+                "single_scatter",
+            )
+            if !haskey(header, key)
+        ],
+        [
+            key
+            for key in (
+                "efficiency",
+                "detector_mu_per_mm",
+                "detector_depth_mm",
+                "grid",
+                "grid_height_mm",
+                "grid_opening_mm",
+            )
+            if !haskey(s, key)
+        ],
         haskey(elements, "water_pdf") ? String[] : ["elements/water_pdf"],
     )
-    isempty(missing_data) || throw(
-        ArgumentError(
+    isempty(missing_data) ||
+        throw(ArgumentError(
             "the scatter library $(path) has no $(join(missing_data, ", ")): it predates the single-scatter " *
-                "quadrature (BasisMonteCarlo's `single_scatter`); write it again with BasisMonteCarlo's `write_scatter_library`"
-        )
-    )
+                "quadrature (BasisMonteCarlo's `single_scatter`); write it again with BasisMonteCarlo's `write_scatter_library`",
+        ))
     axes = header["axes"]
     thicknesses = Float64.(axes["thickness_mm"])
     aspects = Float64.(axes["aspect"])
@@ -176,18 +207,21 @@ function ScatterKernels(header::Dict, name::AbstractString, path::AbstractString
     sid = Float64(s["source_to_isocenter_mm"])
 
     kernels = _kernel_processes(A["scatter"], A["rayleigh"], A["forward"])
-    nr, nc, nE, _, nu, na, nT = size(kernels)
+    nr, nc, nE, _, _, _, _ = size(kernels)
 
     # where each kernel's own ray passes the axis of its ellipse
     node_offsets = [
         _kernel_offset(T / 2, _kernel_half_width(T, r), u)
-            for u in impacts, r in aspects, T in thicknesses
+        for u in impacts, r in aspects, T in thicknesses
     ]
 
     # Each kernel's multiple scatter: each process's scatter less the kernel's own single scatter
     # in its water ellipse, never below none, and all of it their sum
     grid = Symbol(s["grid"])
-    grid in (:none, :across, :both) || throw(ArgumentError("the scatter library $(path) has grid `$(grid)`; a grid is none, across or both"))
+    grid in (:none, :across, :both) ||
+        throw(ArgumentError(
+            "the scatter library $(path) has grid `$(grid)`; a grid is none, across or both",
+        ))
     opening = Tuple(x < 0 ? Inf : Float64(x) for x in s["grid_opening_mm"])
     quadrature = header["single_scatter"]
     single = (;
@@ -197,9 +231,10 @@ function ScatterKernels(header::Dict, name::AbstractString, path::AbstractString
         columns_each_side = Int(quadrature["columns_each_side"]),
     )
     water_pdf = elements["water_pdf"]
-    size(water_pdf, 1) == header["water_pdf_cells"] || throw(
-        ArgumentError("the scatter library $(path) has $(size(water_pdf, 1)) cells of `water_pdf`, its header $(header["water_pdf_cells"])")
-    )
+    size(water_pdf, 1) == header["water_pdf_cells"] ||
+        throw(ArgumentError(
+            "the scatter library $(path) has $(size(water_pdf, 1)) cells of `water_pdf`, its header $(header["water_pdf_cells"])",
+        ))
     water = (
         mu = Float64.(header["water_mu_per_mm"]),
         compton = Float64.(header["water_compton_per_mm"]),
@@ -226,12 +261,17 @@ function ScatterKernels(header::Dict, name::AbstractString, path::AbstractString
         single,
         forward_deg = Float64(header["forward_rayleigh_deg"]),
     )
-    nodes = vec(
-        [
-            (T / 2, _kernel_half_width(T, r), rad2deg(asin(clamp(node_offsets[iu, ia, iT] / sid, -1, 1))))
-                for (iu, u) in enumerate(impacts), (ia, r) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
-        ]
-    )
+    nodes = vec([
+        (
+            T / 2,
+            _kernel_half_width(T, r),
+            rad2deg(asin(clamp(node_offsets[iu, ia, iT] / sid, -1, 1))),
+        )
+        for (iu, u) in enumerate(impacts), (ia, r) in enumerate(aspects), (
+            iT,
+            T,
+        ) in enumerate(thicknesses)
+    ])
     _remove_single_scatter!(reshape(kernels, nr, nc, nE, 4, :), tables, nodes, sid)
     moments = _kernel_moments(kernels, A["offsets"], A["spreads"])
 
@@ -277,11 +317,17 @@ end
 # (row, column) slice next to its energies and processes, so that one corner of the grid is one
 # contiguous block; process 4 (all of it) is filled with the multiple scatter
 # (`_remove_single_scatter!`).
-function _kernel_processes(S::AbstractArray{Float32, 6}, R::AbstractArray{Float32, 6}, F::AbstractArray{Float32, 6})
+function _kernel_processes(
+    S::AbstractArray{Float32, 6},
+    R::AbstractArray{Float32, 6},
+    F::AbstractArray{Float32, 6},
+)
     nc, nr, nu, na, nT, nE = size(S)
     kernels = Array{Float32}(undef, nr, nc, nE, 4, nu, na, nT)
     for iT in 1:nT, ia in 1:na, iu in 1:nu, iE in 1:nE, c in 1:nc, r in 1:nr
-        total, rayleigh, forward = S[c, r, iu, ia, iT, iE], R[c, r, iu, ia, iT, iE], F[c, r, iu, ia, iT, iE]
+        total, rayleigh, forward = S[c, r, iu, ia, iT, iE],
+            R[c, r, iu, ia, iT, iE],
+            F[c, r, iu, ia, iT, iE]
         kernels[r, c, iE, 1, iu, ia, iT] = total - rayleigh
         kernels[r, c, iE, 2, iu, ia, iT] = rayleigh - forward
         kernels[r, c, iE, 3, iu, ia, iT] = forward
@@ -292,8 +338,12 @@ end
 # `moments[column, k, energy, process, impact, aspect, thickness]`: each column's scatter (k = 1)
 # and its first and second moments about the column's centre (k = 2, 3), as the kernel's scatter
 # landed there (`offsets` and `spreads[column, impact, aspect, thickness, energy]`, degrees).
-function _kernel_moments(kernels::Array{Float32, 7}, O::AbstractArray{Float32, 5}, Sd::AbstractArray{Float32, 5})
-    nr, nc, nE, n_p, nu, na, nT = size(kernels)
+function _kernel_moments(
+    kernels::Array{Float32, 7},
+    O::AbstractArray{Float32, 5},
+    Sd::AbstractArray{Float32, 5},
+)
+    _, nc, nE, n_p, nu, na, nT = size(kernels)
     moments = Array{Float32}(undef, nc, 3, nE, n_p, nu, na, nT)
     for iT in 1:nT, ia in 1:na, iu in 1:nu, iE in 1:nE, p in 1:n_p, c in 1:nc
         mass = sum(view(kernels, :, c, iE, p, iu, ia, iT))
@@ -316,10 +366,11 @@ Base.show(io::IO, k::ScatterKernels) = print(
 # =============================================================================
 
 struct ScatterKernelArtifact
-    file::String        # the header's file name inside the artifact
-    url::String         # the release asset (a .zip of the header and its .bin)
-    sha256::String      # SHA-256 of the .zip
-    tree_hash::String   # git-tree-sha1 of the extracted directory (the artifact store's key)
+    file::String   # the header's file name inside the artifact
+    url::String    # the release asset (a .zip of the header and its .bin)
+    sha256::String # SHA-256 of the .zip
+    # git-tree-sha1 of the extracted directory (the artifact store's key)
+    tree_hash::String
 end
 
 # RELEASE: the assets are a data release of their own, tag `scatter-kernels-v2` (made before the
@@ -392,14 +443,21 @@ SHA-256. `path` reads a local copy instead, the header (`.toml`) of a library Ba
 wrote, with its `.bin` beside it; the entry is cached under `entry`, so every scanner naming it
 uses that copy for the rest of the session.
 """
-function scatter_kernels(entry::AbstractString; path::Union{Nothing, AbstractString} = nothing, quiet::Bool = false)
+function scatter_kernels(
+    entry::AbstractString;
+    path::Union{Nothing, AbstractString} = nothing,
+    quiet::Bool = false,
+)
     return lock(_SCATTER_KERNELS_LOCK) do
         cached = get(_SCATTER_KERNELS, entry, nothing)
         if cached !== nothing && (path === nothing || abspath(path) == cached.path)
             return cached
         end
         header = if path === nothing
-            joinpath(_download_scatter_kernels(entry; quiet), SCATTER_KERNEL_ARTIFACTS[entry].file)
+            joinpath(
+                _download_scatter_kernels(entry; quiet),
+                SCATTER_KERNEL_ARTIFACTS[entry].file,
+            )
         else
             abspath(path)
         end
@@ -411,8 +469,8 @@ function scatter_kernels(entry::AbstractString; path::Union{Nothing, AbstractStr
 end
 
 function scatter_kernels(scanner::Scanner)
-    isempty(scanner.scatter_kernels) && throw(
-        ArgumentError(
+    isempty(scanner.scatter_kernels) &&
+        throw(ArgumentError(
             "this scanner names no scatter kernels (`scatter_kernels = \"\"`), so " *
                 "`SimOptions(use_scatter = true)` has nothing to simulate. The library has kernels for " *
                 "SOMATOM_FORCE and SOMATOM_FORCE_B (\"SOMATOM Force\"), SOMATOM_DEFINITION_FLASH and " *
@@ -421,31 +479,29 @@ function scatter_kernels(scanner::Scanner)
                 "for \"Brilliance iCT\" and \"Aquilion ONE\". Start from one of those constants, name " *
                 "an entry (`$(nameof(typeof(scanner)))(s; scatter_kernels = \"SOMATOM Force\")`), or " *
                 "set `use_scatter = false`.",
-        )
-    )
+        ))
     return scatter_kernels(scanner.scatter_kernels)
 end
 
 # The directory holding the entry's files, from Julia's artifact store, downloading it if needed.
 function _download_scatter_kernels(entry::AbstractString; quiet::Bool = false)
-    haskey(SCATTER_KERNEL_ARTIFACTS, entry) || throw(
-        ArgumentError(
+    haskey(SCATTER_KERNEL_ARTIFACTS, entry) ||
+        throw(ArgumentError(
             "no scatter library entry \"$(entry)\"; the entries are $(sort!(collect(keys(SCATTER_KERNEL_ARTIFACTS)))). " *
-                "A library of your own loads with `scatter_kernels(\"$(entry)\"; path = \"…/library.toml\")`."
-        )
-    )
+                "A library of your own loads with `scatter_kernels(\"$(entry)\"; path = \"…/library.toml\")`.",
+        ))
     a = SCATTER_KERNEL_ARTIFACTS[entry]
-    isempty(a.sha256) && throw(
-        ArgumentError(
+    isempty(a.sha256) &&
+        throw(ArgumentError(
             "the scatter kernels of \"$(entry)\" are not released yet (the GitHub release " *
                 "`scatter-kernels-v2` will carry them). Load a local copy of the library BasisMonteCarlo wrote with " *
-                "`scatter_kernels(\"$(entry)\"; path = \"…/$(a.file)\")`, or set `use_scatter = false`."
-        )
-    )
+                "`scatter_kernels(\"$(entry)\"; path = \"…/$(a.file)\")`, or set `use_scatter = false`.",
+        ))
     hash = Base.SHA1(a.tree_hash)
     Artifacts.artifact_exists(hash) && return Artifacts.artifact_path(hash)
 
-    quiet || @info "Downloading the scatter kernels of \"$(entry)\" into the Julia artifact store…"
+    quiet ||
+        @info "Downloading the scatter kernels of \"$(entry)\" into the Julia artifact store…"
     dest = Artifacts.artifact_path(hash)
     mkpath(dirname(dest))
     # staged on the store's own filesystem, so that the install is a rename
@@ -454,13 +510,18 @@ function _download_scatter_kernels(entry::AbstractString; quiet::Bool = false)
         archive = joinpath(staging, basename(a.url))
         Downloads.download(a.url, archive)
         got = open(io -> bytes2hex(SHA.sha256(io)), archive)
-        got == a.sha256 || error(
-            "SHA-256 mismatch for the scatter kernels of \"$(entry)\"\n  expected $(a.sha256)\n  got      $(got)"
-        )
+        got == a.sha256 ||
+            error(
+                "SHA-256 mismatch for the scatter kernels of \"$(entry)\"\n  expected $(a.sha256)\n  got      $(got)",
+            )
         extracted = joinpath(staging, "extracted")
         mkpath(extracted)
-        run(pipeline(`$(p7zip_jll.p7zip()) x -y -o$(extracted) $(archive)`; stdout = devnull))
-        Artifacts.artifact_exists(hash) && return Artifacts.artifact_path(hash)   # a concurrent download won
+        run(pipeline(
+            `$(p7zip_jll.p7zip()) x -y -o$(extracted) $(archive)`;
+            stdout = devnull,
+        ))
+        # a concurrent download won
+        Artifacts.artifact_exists(hash) && return Artifacts.artifact_path(hash)
         mv(extracted, dest)
     finally
         rm(staging; recursive = true, force = true)
@@ -501,7 +562,8 @@ function _kernel_seen_half_width(a, b, impact_fraction)
 end
 
 # The distance (mm) from the axis at which the kernel ray of `impact_fraction` passes it.
-_kernel_offset(a, b, impact_fraction) = impact_fraction * _kernel_seen_half_width(a, b, impact_fraction)
+_kernel_offset(a, b, impact_fraction) = impact_fraction *
+    _kernel_seen_half_width(a, b, impact_fraction)
 
 # The length (mm) of the kernel ray of impact `u` inside its ellipse: a line passing the centre of
 # an ellipse at `u` times its half-width `h` across the line crosses it for 2ab·√(1 − u²)/h.
@@ -551,8 +613,10 @@ end
 
 # The width across the view each ray stands for, from where the rays pass the isocentre.
 _ray_widths(xs) = [
-    i == 1 ? xs[2] - xs[1] : i == length(xs) ? xs[end] - xs[end - 1] : (xs[i + 1] - xs[i - 1]) / 2
-        for i in eachindex(xs)
+    i == 1 ?
+        xs[2] - xs[1] :
+        i == length(xs) ? xs[end] - xs[end - 1] : (xs[i + 1] - xs[i - 1]) / 2
+    for i in eachindex(xs)
 ]
 
 # For rays at `angle_deg` from the central ray (sorted, at least two): `rays[(x, width, sin, cos), ray]`,
@@ -563,10 +627,16 @@ function _ray_pairs(::Type{T}, angle_deg, sid) where {T}
     xs = [sid * sind(γ) for γ in angle_deg]
     rays = reduce(
         hcat,
-        [[_pair(T, x)..., _pair(T, w)..., _pair(T, sind(γ))..., _pair(T, cosd(γ))...] for (x, w, γ) in zip(xs, _ray_widths(xs), angle_deg)],
+        [
+            [_pair(T, x)..., _pair(T, w)..., _pair(T, sind(γ))..., _pair(T, cosd(γ))...]
+            for (x, w, γ) in zip(xs, _ray_widths(xs), angle_deg)
+        ],
     )
     halfway = (angle_deg[1:(end - 1)] .+ angle_deg[2:end]) ./ 2
-    boundaries = reduce(hcat, [[_pair(T, sind(β))..., _pair(T, cosd(β))...] for β in halfway])
+    boundaries = reduce(
+        hcat,
+        [[_pair(T, sind(β))..., _pair(T, cosd(β))...] for β in halfway],
+    )
     return rays, boundaries
 end
 
@@ -702,8 +772,10 @@ end
     j = m.base + i
     return ((m.strips[1, j], m.strips[2, j]), m.strips[3, j], m.strips[4, j])
 end
-@inline _ray_segment(m::_RayStrips, γ::AbstractFloat) =
-    _ray_segment(m, clamp(unsafe_trunc(Int, round((γ - m.first) / m.step)), 0, m.n - 1) + 1)
+@inline _ray_segment(m::_RayStrips, γ::AbstractFloat) = _ray_segment(
+    m,
+    clamp(unsafe_trunc(Int, round((γ - m.first) / m.step)), 0, m.n - 1) + 1,
+)
 
 # The water-equivalent length (mm) from the in-plane point `P` to the edge of the medium along the
 # unit direction `ω` (BasisMonteCarlo's `exit_wet`; both double-floats, `((x hi, x lo), (y hi, y lo))`):
@@ -723,12 +795,16 @@ end
 end
 
 # A point of the way out, `t` mm from `P` along `ω`, as a double-float
-@inline _dd_along(P, ω, t) = (_dd_add(P[1], _dd_mul(_dd(t), ω[1])), _dd_add(P[2], _dd_mul(_dd(t), ω[2])))
+@inline _dd_along(P, ω, t) = (
+    _dd_add(P[1], _dd_mul(_dd(t), ω[1])),
+    _dd_add(P[2], _dd_mul(_dd(t), ω[2])),
+)
 
 @inline function _exit_wet(m::_RayStrips, P, ω)
     T = typeof(P[1][1])
     step = T(2)
-    near = T(1.0e-3)            # mm, and steps: well beyond single precision's error on either
+    # mm, and steps: well beyond single precision's error on either
+    near = T(1.0e-3)
     total, t, inside = zero(T), step / 2, false
     while t < T(1000)
         x, y = P[1][1] + t * ω[1][1], P[2][1] + t * ω[2][1]
@@ -757,7 +833,8 @@ end
             r2 = _dd_add(_dd_mul(X, X), _dd_mul(Y, Y))
             E = (entry, m.strips[2, j])
             F = _dd_add(E, _dd(L))
-            within = _dd_sub(r2, _dd_mul(E, E))[1] >= 0 && _dd_sub(_dd_mul(F, F), r2)[1] >= 0
+            within = _dd_sub(r2, _dd_mul(E, E))[1] >= 0 &&
+                _dd_sub(_dd_mul(F, F), r2)[1] >= 0
         end
         ρ = L > 0 && within ? m.strips[4, j] : zero(T)
         ρ > 0 && (inside = true)
@@ -769,7 +846,9 @@ end
 end
 
 # The fraction a focused grid lets through at `α` (rad) from its focus, one way
-@inline _grid_acceptance(α, height, opening) = isinf(opening) ? one(α) : max(zero(α), 1 - height * abs(tan(α)) / opening)
+@inline _grid_acceptance(α, height, opening) = isinf(opening) ?
+    one(α) :
+    max(zero(α), 1 - height * abs(tan(α)) / opening)
 
 # Linear interpolation of a table on the 1-keV grid from 1 keV, clamped (BasisMonteCarlo's `on_kev_grid`)
 @inline function _on_kev_grid(table, E)
@@ -789,38 +868,46 @@ end
 # (efficiency, mud, norm, E / mₑc²)]`: what the quadrature takes once per energy, not per point), the grid (0 none, 1 across, 2 both), the quadrature's counts, the forward
 # Rayleigh's (1 − cos θ)/2 (and as a pair), and whether water scatters at all.
 function _single_tables(
-        ::Type{T};
-        cols,
-        rows,
-        sdd,
-        energies,
-        water,
-        water_pdf,
-        detector,
-        energy_weighted,
-        grid,
-        grid_height,
-        grid_opening,
-        single,
-        forward_deg,
-    ) where {T}
+    ::Type{T};
+    cols,
+    rows,
+    sdd,
+    energies,
+    water,
+    water_pdf,
+    detector,
+    energy_weighted,
+    grid,
+    grid_height,
+    grid_opening,
+    single,
+    forward_deg,
+) where {T}
     E = Float64.(energies)
-    mu = [_on_kev_grid(table, Ek) for Ek in E, table in (water.mu, water.compton, water.rayleigh)]
+    mu = [
+        _on_kev_grid(table, Ek)
+        for Ek in E, table in (water.mu, water.compton, water.rayleigh)
+    ]
     n_keV = size(water_pdf, 2)
     pdf_row = [min(floor(Int, clamp(Ek, 1, n_keV)), n_keV - 1) for Ek in E]
     pdf_t = T.(clamp.(E, 1, n_keV) .- pdf_row)
     pdf = [
-        (one(T) - pdf_t[e]) * T(water_pdf[j, pdf_row[e], p]) + pdf_t[e] * T(water_pdf[j, pdf_row[e] + 1, p])
-            for j in axes(water_pdf, 1), e in eachindex(E), p in 1:2
+        (one(T) - pdf_t[e]) * T(water_pdf[j, pdf_row[e], p]) +
+            pdf_t[e] * T(water_pdf[j, pdf_row[e] + 1, p])
+        for j in axes(water_pdf, 1), e in eachindex(E), p in 1:2
     ]
     mud = [detector.depth > 0 && μ > 0 ? μ * detector.depth : 0.0 for μ in detector.mu]
-    efficiency, mud, norm = T.(detector.efficiency), T.(mud), T.([m > 0 ? 1 / (1 - exp(-m)) : 0.0 for m in mud])
+    efficiency, mud, norm = T.(detector.efficiency),
+        T.(mud),
+        T.([m > 0 ? 1 / (1 - exp(-m)) : 0.0 for m in mud])
     k = [clamp(unsafe_trunc(Int, round(T(Ek))), 1, length(efficiency)) for Ek in E]
     at_energy = hcat(efficiency[k], mud[k], norm[k], T.(E) ./ T(_ELECTRON_REST_KEV))
     Q, nc = single.points_per_column, length(cols) - 1
     column_points = zeros(T, 4, Q, nc)
     for c in 1:nc, q in 1:Q
-        s, co = sincos(deg2rad(Float64(T(cols[c]) + (q - T(0.5)) / Q * (T(cols[2]) - T(cols[1])))))
+        s, co = sincos(deg2rad(Float64(
+            T(cols[c]) + (q - T(0.5)) / Q * (T(cols[2]) - T(cols[1])),
+        )))
         column_points[:, q, c] .= (_pair(T, s)..., _pair(T, co)...)
     end
     forward = (1 - cosd(forward_deg)) / 2
@@ -893,7 +980,10 @@ end
     L = sqrt(L2)
     grid == 2 && (g *= _grid_acceptance(atan(z * (D - ℓ), ℓ * D + z^2), height, opening))
     facing = along / L
-    obliquity = max(oftype(L, 1.0e-3), abs((facing + (z / D) * (z / L)) / sqrt(1 + (z / D)^2)))
+    obliquity = max(
+        oftype(L, 1.0e-3),
+        abs((facing + (z / D) * (z / L)) / sqrt(1 + (z / D)^2)),
+    )
     cos_ε = ℓ / L
     half_versine = ((z / L)^2 / (1 + cos_ε) + cos_ε * turn) / 2
     return area * abs(facing) / L2 * g, half_versine, obliquity, L / ℓ
@@ -917,7 +1007,9 @@ end
     ℓ2 = _dd_add(_dd_mul(dot, dot), _dd_mul(cross, cross))
     ℓ = _dd_sqrt(ℓ2)
     c = _dd_div(dot, ℓ)
-    turn = c[1] > 0 ? _dd_div(_dd_div(_dd_mul(cross, cross), ℓ2), _dd_add(o, c)) : _dd_sub(o, c)
+    turn = c[1] > 0 ?
+        _dd_div(_dd_div(_dd_mul(cross, cross), ℓ2), _dd_add(o, c)) :
+        _dd_sub(o, c)
     z2 = _two_prod(z, z)
     L2 = _dd_add(ℓ2, z2)
     cos_ε = _dd_div(ℓ, _dd_sqrt(L2))
@@ -937,7 +1029,8 @@ end
         g = _dd_mul(v2, _dd(oftype(v, cells)))
         c = ceil(g[1])
         c = g[1] == c && g[2] > 0 ? c + 1 : c
-        return clamp(cells + 1 - unsafe_trunc(Int, c), 1, cells), _dd_sub(v2, forward)[1] < 0 ? 3 : 2
+        return clamp(cells + 1 - unsafe_trunc(Int, c), 1, cells),
+            _dd_sub(v2, forward)[1] < 0 ? 3 : 2
     end
     return clamp(cells + 1 - unsafe_trunc(Int, ceil(f)), 1, cells), v < forward[1] ? 3 : 2
 end
@@ -948,11 +1041,19 @@ end
 @inline function _single_energy(t, e, j, v, τ, path, obliquity)
     E = t.energies[e]
     μT, μC, μR = t.mu[e, 1], t.mu[e, 2], t.mu[e, 3]
-    η, m, norm, recoil = t.at_energy[e, 1], t.at_energy[e, 2], t.at_energy[e, 3], t.at_energy[e, 4]
+    η, m, norm, recoil = t.at_energy[e, 1],
+        t.at_energy[e, 2],
+        t.at_energy[e, 3],
+        t.at_energy[e, 4]
     o = one(E)
-    rayleigh = μR * t.pdf[j, e, 2] * exp(-μT * (τ + path)) * _detected(η, m, norm, E, obliquity, t.energy_weighted)
+    rayleigh = μR *
+        t.pdf[j, e, 2] *
+        exp(-μT * (τ + path)) *
+        _detected(η, m, norm, E, obliquity, t.energy_weighted)
     E′ = E / (o + recoil * 2v)
-    compton = μC * t.pdf[j, e, 1] * exp(-μT * τ - _on_kev_grid(t.total, E′) * path) *
+    compton = μC *
+        t.pdf[j, e, 1] *
+        exp(-μT * τ - _on_kev_grid(t.total, E′) * path) *
         _single_efficiency(E′, obliquity, t.efficiency, t.mud, t.norm, t.energy_weighted)
     return compton, rayleigh
 end
@@ -986,7 +1087,14 @@ function _single_scatter!(out::AbstractArray{<:Real, 4}, medium, angle_deg, t)
         τ = ρ * depth[1]
         for ci in window, qc in 1:Q
             γ = cols[ci] + (qc - T(0.5)) / Q * Δc
-            ℓ, along, turn, g_fan = _single_column(site[1], deg2rad(u - γ), D, t.grid, t.grid_height, t.opening[1])
+            ℓ, along, turn, g_fan = _single_column(
+                site[1],
+                deg2rad(u - γ),
+                D,
+                t.grid,
+                t.grid_height,
+                t.opening[1],
+            )
             g_fan > 0 || continue
             sγ = (t.column_points[1, qc, ci], t.column_points[2, qc, ci])
             cγ = (t.column_points[3, qc, ci], t.column_points[4, qc, ci])
@@ -995,11 +1103,30 @@ function _single_scatter!(out::AbstractArray{<:Real, 4}, medium, angle_deg, t)
             cΔ = _dd_add(_dd_mul(cu2, cγ), _dd_mul(su2, sγ))
             for ri in 1:nr, qz in 1:Z
                 z = rows[ri] + (qz - T(0.5)) / Z * Δr
-                w, v, obliquity, lengthen = _single_point(ℓ, along, turn, z, D, area, g_fan, t.grid, t.grid_height, t.opening[2])
+                w, v, obliquity, lengthen = _single_point(
+                    ℓ,
+                    along,
+                    turn,
+                    z,
+                    D,
+                    area,
+                    g_fan,
+                    t.grid,
+                    t.grid_height,
+                    t.opening[2],
+                )
                 w > 0 || continue
                 j, p = _single_cell(v, size(t.pdf, 1), t.forward, site, sΔ, cΔ, t.sdd2, z)
                 for e in eachindex(t.energies)
-                    compton, rayleigh = _single_energy(t, e, j, v, τ, exit * lengthen, obliquity)
+                    compton, rayleigh = _single_energy(
+                        t,
+                        e,
+                        j,
+                        v,
+                        τ,
+                        exit * lengthen,
+                        obliquity,
+                    )
                     out[ri, ci, e, 1] += ρ * dt * w * compton
                     out[ri, ci, e, p] += ρ * dt * w * rayleigh
                 end
@@ -1049,11 +1176,12 @@ function _angular_factor(k::ScatterKernels, fractions, water, process::Int, keV:
     E = clamp(round(Int, keV), 1, size(k.element_scattering, 4))
     nbins = size(k.element_scattering, 3)
     i1, i2, t = _bracket(k.energies_keV, Float64(E))
-    f = (1 - t) .* Float64.(k.angles[process, :, i1]) .+ t .* Float64.(k.angles[process, :, i2])
+    f = (1 - t) .* Float64.(k.angles[process, :, i1]) .+
+        t .* Float64.(k.angles[process, :, i2])
     f = sum(f) > 0 ? f ./ sum(f) : fill(1 / nbins, nbins)
     split(fr) = sum(
         w .* Float64.(k.element_scattering[findfirst(==(Z), k.element_Z), process, :, E])
-            for (Z, w) in fr
+        for (Z, w) in fr
     )
     m, w = split(fractions), split(water)
     sm, sw = m ./ sum(m), w ./ sum(w)
@@ -1068,7 +1196,6 @@ function _rayleigh_bins(k::ScatterKernels)
     forward = findall(<=(k.forward_rayleigh_deg), upper)
     return (forward = forward, wide = setdiff(eachindex(upper), forward))
 end
-
 
 # =============================================================================
 # The superposition (BasisMonteCarlo's `library_scan`), every coarse ray at once
@@ -1107,14 +1234,17 @@ end
 # `ellipse[(a, b, centre), group, view]` from `lengths[column, group, view]`, the rays passing the
 # isocentre at `xs` (mm), each standing for a width `dxs`.
 function _scatter_ellipses!(
-        ellipse::AbstractArray{T, 3},
-        xs::AbstractVector,
-        dxs::AbstractVector,
-        lengths::AbstractArray{T, 3},
-    ) where {T}
+    ellipse::AbstractArray{T, 3},
+    xs::AbstractVector,
+    dxs::AbstractVector,
+    lengths::AbstractArray{T, 3},
+) where {T}
     n_cc = size(lengths, 1)
     let ellipse = ellipse, xs = xs, dxs = dxs, lengths = lengths, n_cc = n_cc
-        _foreachindex(1:(size(lengths, 2) * size(lengths, 3)), AK.get_backend(ellipse)) do gv
+        _foreachindex(
+            1:(size(lengths, 2) * size(lengths, 3)),
+            AK.get_backend(ellipse),
+        ) do gv
             e = _view_ellipse(xs, dxs, view(lengths, ((gv - 1) * n_cc + 1):(gv * n_cc)))
             ellipse[3gv - 2] = e.a
             ellipse[3gv - 1] = e.b
@@ -1131,18 +1261,25 @@ end
 # With `mark`, `clamped[ray]` is set to 1 for a ray outside the library's grids (and otherwise left
 # as it is). `grid` = (thinnest, thickest, narrowest, widest, last impact).
 function _scatter_ray_shapes!(
-        shapes::AbstractMatrix{T},
-        clamped::AbstractArray{Int32},
-        wet::AbstractArray{T, 3},
-        ellipse::AbstractArray{T, 3},
-        xs::AbstractVector{T},
-        angle_deg::AbstractVector{T},
-        grid::NTuple{5, T},
-        mark::Bool,
-    ) where {T}
+    shapes::AbstractMatrix{T},
+    clamped::AbstractArray{Int32},
+    wet::AbstractArray{T, 3},
+    ellipse::AbstractArray{T, 3},
+    xs::AbstractVector{T},
+    angle_deg::AbstractVector{T},
+    grid::NTuple{5, T},
+    mark::Bool,
+) where {T}
     n_cc = size(wet, 1)
-    let shapes = shapes, clamped = clamped, wet = wet, ellipse = ellipse, xs = xs, angle_deg = angle_deg,
-            grid = grid, n_cc = n_cc, mark = mark
+    let shapes = shapes,
+        clamped = clamped,
+        wet = wet,
+        ellipse = ellipse,
+        xs = xs,
+        angle_deg = angle_deg,
+        grid = grid,
+        n_cc = n_cc,
+        mark = mark
         AK.foreachindex(wet) do ray
             T_min, T_max, r_min, r_max, u_last = grid
             o = one(T)
@@ -1171,7 +1308,12 @@ function _scatter_ray_shapes!(
                 amount = o
                 if thickness < T_min
                     r_node = clamp(aspect, r_min, r_max)
-                    chord = _kernel_chord(T_min / 2, _kernel_half_width(T_min, r_node), u, q)
+                    chord = _kernel_chord(
+                        T_min / 2,
+                        _kernel_half_width(T_min, r_node),
+                        u,
+                        q,
+                    )
                     amount = min(o, L / max(chord, o))
                 end
                 graze = u > u_last ? q / sqrt(o - u_last^2) : o
@@ -1210,32 +1352,54 @@ end
 # For the `n_rays` rays from `ray0 + 1` on (a chunk of the views): `shapes`, `plain`, `dmu` are
 # every ray's, the others the chunk's.
 function _scatter_corners!(
-        corner::AbstractMatrix{Int32},
-        corner_weight::AbstractMatrix{T},
-        factor::AbstractArray{T, 3},
-        mix::AbstractArray{T, 4},
-        boxes::AbstractArray{T, 5},
-        window::AbstractArray{Int32, 4},
-        shapes::AbstractMatrix{T},
-        weights::AbstractArray{T, 4},
-        plain::AbstractVector{Bool},
-        dmu::AbstractMatrix{T},
-        angle::AbstractMatrix{T},
-        lib,
-        n_used::Int,
-        ray0::Int,
-        n_rays::Int,
-    ) where {T}
+    corner::AbstractMatrix{Int32},
+    corner_weight::AbstractMatrix{T},
+    factor::AbstractArray{T, 3},
+    mix::AbstractArray{T, 4},
+    boxes::AbstractArray{T, 5},
+    window::AbstractArray{Int32, 4},
+    shapes::AbstractMatrix{T},
+    weights::AbstractArray{T, 4},
+    plain::AbstractVector{Bool},
+    dmu::AbstractMatrix{T},
+    angle::AbstractMatrix{T},
+    lib,
+    n_used::Int,
+    ray0::Int,
+    n_rays::Int,
+) where {T}
     nE, n_ch = size(weights, 1), size(weights, 3)
     nc = length(lib.cols) - 1
     n_cc = size(angle, 2)
     nu, na = length(lib.impacts), length(lib.log_aspects)
     nb = size(dmu, 1)
-    let corner = corner, corner_weight = corner_weight, factor = factor, mix = mix, boxes = boxes, window = window,
-            shapes = shapes, weights = weights, plain = plain, dmu = dmu, angle = angle,
-            moments = lib.moments, paths = lib.paths, node = lib.node_deg, thick = lib.thicknesses,
-            log_r = lib.log_aspects, impacts = lib.impacts, w_col = lib.column_width,
-            nE = nE, n_ch = n_ch, nc = nc, n_cc = n_cc, nu = nu, na = na, nb = nb, n_used = n_used, ray0 = ray0
+    let corner = corner,
+        corner_weight = corner_weight,
+        factor = factor,
+        mix = mix,
+        boxes = boxes,
+        window = window,
+        shapes = shapes,
+        weights = weights,
+        plain = plain,
+        dmu = dmu,
+        angle = angle,
+        moments = lib.moments,
+        paths = lib.paths,
+        node = lib.node_deg,
+        thick = lib.thicknesses,
+        log_r = lib.log_aspects,
+        impacts = lib.impacts,
+        w_col = lib.column_width,
+        nE = nE,
+        n_ch = n_ch,
+        nc = nc,
+        n_cc = n_cc,
+        nu = nu,
+        na = na,
+        nb = nb,
+        n_used = n_used,
+        ray0 = ray0
         _foreachindex(1:(n_ch * 8 * n_rays), AK.get_backend(factor)) do idx
             o = one(T)
             q = idx - 1
@@ -1279,10 +1443,28 @@ function _scatter_corners!(
                             end
                             escape = exp(-path)
                             if pp == 1
-                                mix[g, ch, c + 1, local_ray] = weights[g, 1, ch, local_ray] * escape
+                                mix[g, ch, c + 1, local_ray] = weights[
+                                    g,
+                                    1,
+                                    ch,
+                                    local_ray,
+                                ] *
+                                    escape
                             else
-                                mix[g + nE, ch, c + 1, local_ray] = weights[g, 2, ch, local_ray] * escape
-                                mix[g + 2nE, ch, c + 1, local_ray] = weights[g, 3, ch, local_ray] * escape
+                                mix[g + nE, ch, c + 1, local_ray] = weights[
+                                    g,
+                                    2,
+                                    ch,
+                                    local_ray,
+                                ] *
+                                    escape
+                                mix[g + 2nE, ch, c + 1, local_ray] = weights[
+                                    g,
+                                    3,
+                                    ch,
+                                    local_ray,
+                                ] *
+                                    escape
                             end
                         end
                     end
@@ -1357,15 +1539,21 @@ end
 # each coarse ray passes the isocentre (`sid` mm from the focal spot, a pair, as `π` is), the width
 # across the view it stands for, and its direction.
 function _scatter_strips!(
-        strips::AbstractMatrix{T},
-        rays::AbstractMatrix{T},
-        wet::AbstractArray{T, 3},
-        outline::AbstractArray{T, 3},
-        sid::NTuple{2, T},
-        π2::NTuple{2, T},
-    ) where {T}
+    strips::AbstractMatrix{T},
+    rays::AbstractMatrix{T},
+    wet::AbstractArray{T, 3},
+    outline::AbstractArray{T, 3},
+    sid::NTuple{2, T},
+    π2::NTuple{2, T},
+) where {T}
     n_cc = size(wet, 1)
-    let strips = strips, rays = rays, wet = wet, outline = outline, sid = sid, π2 = π2, n_cc = n_cc
+    let strips = strips,
+        rays = rays,
+        wet = wet,
+        outline = outline,
+        sid = sid,
+        π2 = π2,
+        n_cc = n_cc
         _foreachindex(1:(size(wet, 2) * size(wet, 3)), AK.get_backend(strips)) do gv
             base = (gv - 1) * n_cc
             z = _dd(zero(T))
@@ -1381,7 +1569,13 @@ function _scatter_strips!(
                 spread = z
                 @inbounds for i in 1:n_cc
                     d = _dd_sub((rays[1, i], rays[2, i]), x0)
-                    spread = _dd_add(spread, _dd_mul(_dd_mul(d, d), _dd_mul(_dd(outline[base + i]), (rays[3, i], rays[4, i]))))
+                    spread = _dd_add(
+                        spread,
+                        _dd_mul(
+                            _dd_mul(d, d),
+                            _dd_mul(_dd(outline[base + i]), (rays[3, i], rays[4, i])),
+                        ),
+                    )
                 end
                 b = _dd_mul(_dd(T(2)), _dd_sqrt(_dd_div(spread, m0)))
                 if b[1] > 0
@@ -1394,7 +1588,10 @@ function _scatter_strips!(
                 L = outline[base + i]
                 middle = if a2[1] > 0 && b2[1] > 0
                     _dd_div(
-                        _dd_add(_dd_div(_dd_mul(x0, sγ), b2), _dd_div(_dd_mul(sid, cγ), a2)),
+                        _dd_add(
+                            _dd_div(_dd_mul(x0, sγ), b2),
+                            _dd_div(_dd_mul(sid, cγ), a2),
+                        ),
                         _dd_add(_dd_div(_dd_mul(sγ, sγ), b2), _dd_div(_dd_mul(cγ, cγ), a2)),
                     )
                 else
@@ -1418,18 +1615,24 @@ end
 # (`corner_weight`; BasisMonteCarlo's escape factors): the weights of the ray's own single scatter.
 # The ray is the fastest index: `_scatter_single!`'s warps read 32 rays' weights at once.
 function _scatter_single_weights!(
-        own::AbstractArray{T, 4},
-        corner_weight::AbstractMatrix{T},
-        mix::AbstractArray{T, 4},
-        plain::AbstractVector{Bool},
-        n_used::Int,
-        own0::Int,
-        ray0::Int,
-        n_rays::Int,
-    ) where {T}
+    own::AbstractArray{T, 4},
+    corner_weight::AbstractMatrix{T},
+    mix::AbstractArray{T, 4},
+    plain::AbstractVector{Bool},
+    n_used::Int,
+    own0::Int,
+    ray0::Int,
+    n_rays::Int,
+) where {T}
     nE = size(own, 2)
-    let own = own, corner_weight = corner_weight, mix = mix, plain = plain, nE = nE, n_rays = n_rays,
-            own0 = own0, ray0 = ray0
+    let own = own,
+        corner_weight = corner_weight,
+        mix = mix,
+        plain = plain,
+        nE = nE,
+        n_rays = n_rays,
+        own0 = own0,
+        ray0 = ray0
         _foreachindex(1:(n_rays * nE * n_used), AK.get_backend(own)) do idx
             q = idx - 1
             local_ray = q % n_rays + 1
@@ -1458,7 +1661,14 @@ end
 # channel by channel: a closure (`ntuple(k -> …)`) is not inlined into a GPU kernel, and the call
 # passes `acc` through memory once per energy and point.
 @generated function _single_add(acc::NTuple{N}, own, e, p, ray, compton, rayleigh) where {N}
-    sums = [:(@inbounds(acc[$k] + (own[ray, e, 1, $k] * compton + own[ray, e, p, $k] * rayleigh))) for k in 1:N]
+    sums = [
+        :(
+            @inbounds(
+                acc[$k] + (own[ray, e, 1, $k] * compton + own[ray, e, p, $k] * rayleigh),
+            )
+        )
+        for k in 1:N
+    ]
     return quote
         Base.@_inline_meta
         tuple($(sums...))
@@ -1475,30 +1685,61 @@ end
 # (`_scatter_strips!`) and `boundaries` the lines between them (`_RayStrips`). A thread for each
 # column of a ray, a warp's 32 threads one column of 32 rays: alike, they take the same branches.
 function _scatter_single!(
-        single::AbstractArray{T, 4},
-        weights::AbstractArray{T, 4},
-        strips::AbstractMatrix{T},
-        angle_deg::AbstractVector{T},
-        rays::AbstractMatrix{T},
-        boundaries::AbstractMatrix{T},
-        window0::AbstractVector{Int32},
-        first::T,
-        step::T,
-        t,
-        ray0::Int,
-        n_rays::Int,
-        ::Val{N},
-    ) where {T, N}
+    single::AbstractArray{T, 4},
+    weights::AbstractArray{T, 4},
+    strips::AbstractMatrix{T},
+    angle_deg::AbstractVector{T},
+    rays::AbstractMatrix{T},
+    boundaries::AbstractMatrix{T},
+    window0::AbstractVector{Int32},
+    first::T,
+    step::T,
+    t,
+    ray0::Int,
+    n_rays::Int,
+    ::Val{N},
+) where {T, N}
     nr, nc, n_win = size(single, 2), length(t.cols) - 1, size(single, 4)
     nE = size(weights, 2)
     n_cc = length(angle_deg)
-    let single = single, weights = weights, strips = strips, angle_deg = angle_deg, rays = rays,
-            boundaries = boundaries, window0 = window0, first = first, step = step, cols = t.cols, rows = t.rows,
-            column_points = t.column_points, energies = t.energies, total = t.total, mu = t.mu, pdf = t.pdf,
-            at_energy = t.at_energy, efficiency = t.efficiency, mud = t.mud, norm = t.norm,
-            energy_weighted = t.energy_weighted, grid = t.grid, height = t.grid_height, opening = t.opening,
-            M = t.depths, Q = t.points_per_column, Z = t.points_per_row, forward = t.forward, scatters = t.scatters,
-            D = t.sdd, D2 = t.sdd2, nr = nr, nc = nc, n_win = n_win, nE = nE, n_cc = n_cc, ray0 = ray0, n_rays = n_rays
+    let single = single,
+        weights = weights,
+        strips = strips,
+        angle_deg = angle_deg,
+        rays = rays,
+        boundaries = boundaries,
+        window0 = window0,
+        first = first,
+        step = step,
+        cols = t.cols,
+        rows = t.rows,
+        column_points = t.column_points,
+        energies = t.energies,
+        total = t.total,
+        mu = t.mu,
+        pdf = t.pdf,
+        at_energy = t.at_energy,
+        efficiency = t.efficiency,
+        mud = t.mud,
+        norm = t.norm,
+        energy_weighted = t.energy_weighted,
+        grid = t.grid,
+        height = t.grid_height,
+        opening = t.opening,
+        M = t.depths,
+        Q = t.points_per_column,
+        Z = t.points_per_row,
+        forward = t.forward,
+        scatters = t.scatters,
+        D = t.sdd,
+        D2 = t.sdd2,
+        nr = nr,
+        nc = nc,
+        n_win = n_win,
+        nE = nE,
+        n_cc = n_cc,
+        ray0 = ray0,
+        n_rays = n_rays
         _foreachindex(1:(32 * n_win * cld(n_rays, 32)), AK.get_backend(single)) do idx
             q = idx - 1
             lane = q % 32
@@ -1538,7 +1779,14 @@ function _scatter_single!(
                 τ = ρ * depth[1]
                 for qc in 1:Q
                     γ = cols[ci] + (qc - T(0.5)) / Q * Δc
-                    ℓ, along, turn, g_fan = _single_column(site[1], deg2rad(u - γ), D, grid, height, opening[1])
+                    ℓ, along, turn, g_fan = _single_column(
+                        site[1],
+                        deg2rad(u - γ),
+                        D,
+                        grid,
+                        height,
+                        opening[1],
+                    )
                     g_fan > 0 || continue
                     sγ = (column_points[1, qc, ci], column_points[2, qc, ci])
                     cγ = (column_points[3, qc, ci], column_points[4, qc, ci])
@@ -1549,15 +1797,42 @@ function _scatter_single!(
                         acc = ntuple(_ -> zero(T), Val(N))
                         for qz in 1:Z
                             z = rows[ri] + (qz - T(0.5)) / Z * Δr
-                            wp, v, obliquity, lengthen = _single_point(ℓ, along, turn, z, D, area, g_fan, grid, height, opening[2])
+                            wp, v, obliquity, lengthen = _single_point(
+                                ℓ,
+                                along,
+                                turn,
+                                z,
+                                D,
+                                area,
+                                g_fan,
+                                grid,
+                                height,
+                                opening[2],
+                            )
                             wp > 0 || continue
                             j, p = _single_cell(v, cells, forward, site, sΔ, cΔ, D2, z)
                             s = ρ * dt * wp
                             path = exit * lengthen
                             for e in 1:nE
                                 (used >> (e - 1)) & 1 == 0 && continue
-                                compton, rayleigh = _single_energy(tables, e, j, v, τ, path, obliquity)
-                                acc = _single_add(acc, weights, e, p, local_ray, s * compton, s * rayleigh)
+                                compton, rayleigh = _single_energy(
+                                    tables,
+                                    e,
+                                    j,
+                                    v,
+                                    τ,
+                                    path,
+                                    obliquity,
+                                )
+                                acc = _single_add(
+                                    acc,
+                                    weights,
+                                    e,
+                                    p,
+                                    local_ray,
+                                    s * compton,
+                                    s * rayleigh,
+                                )
                             end
                         end
                         for k in 1:N
@@ -1577,33 +1852,52 @@ end
 # `n_gv` view-groups of the chunk whose rays start after `ray0` (`shapes`, `plain`: every ray's; the
 # rest the chunk's).
 function _scatter_deposit!(
-        rows::AbstractArray{T, 5},
-        corner::AbstractMatrix{Int32},
-        factor::AbstractArray{T, 3},
-        mix::AbstractArray{T, 4},
-        boxes::AbstractArray{T, 5},
-        window::AbstractArray{Int32, 4},
-        single::AbstractArray{T, 4},
-        single0::Int,
-        window0::AbstractVector{Int32},
-        shapes::AbstractMatrix{T},
-        plain::AbstractVector{Bool},
-        lib,
-        n_cc::Int,
-        n_used::Int,
-        ray0::Int,
-        n_gv::Int,
-    ) where {T}
+    rows::AbstractArray{T, 5},
+    corner::AbstractMatrix{Int32},
+    factor::AbstractArray{T, 3},
+    mix::AbstractArray{T, 4},
+    boxes::AbstractArray{T, 5},
+    window::AbstractArray{Int32, 4},
+    single::AbstractArray{T, 4},
+    single0::Int,
+    window0::AbstractVector{Int32},
+    shapes::AbstractMatrix{T},
+    plain::AbstractVector{Bool},
+    lib,
+    n_cc::Int,
+    n_used::Int,
+    ray0::Int,
+    n_gv::Int,
+) where {T}
     nr, nc, n_ch = size(rows, 1), size(rows, 2), size(rows, 3)
     nE = size(mix, 1) ÷ 3
     L = nr * nc
     block = L * 4nE
     lanes = 32 * cld(nr, 32)
-    let rows = rows, corner = corner, factor = factor, mix = mix, boxes = boxes, window = window,
-            single = single, single0 = Int32(single0), window0 = window0, n_win = Int32(size(single, 4)),
-            shapes = shapes, plain = plain, kernels = lib.kernels, w_col = lib.column_width,
-            nr = Int32(nr), nc = Int32(nc), n_ch = Int32(n_ch), nE = Int32(nE), L = Int32(L), block = Int32(block),
-            n_cc = Int32(n_cc), n_used = Int32(n_used), lanes = Int32(lanes), ray0 = Int32(ray0)
+    let rows = rows,
+        corner = corner,
+        factor = factor,
+        mix = mix,
+        boxes = boxes,
+        window = window,
+        single = single,
+        single0 = Int32(single0),
+        window0 = window0,
+        n_win = Int32(size(single, 4)),
+        shapes = shapes,
+        plain = plain,
+        kernels = lib.kernels,
+        w_col = lib.column_width,
+        nr = Int32(nr),
+        nc = Int32(nc),
+        n_ch = Int32(n_ch),
+        nE = Int32(nE),
+        L = Int32(L),
+        block = Int32(block),
+        n_cc = Int32(n_cc),
+        n_used = Int32(n_used),
+        lanes = Int32(lanes),
+        ray0 = Int32(ray0)
         # the rows in whole warps: a warp is one bin's column, all its threads taking the same branches
         _foreachindex(1:(lanes * nc * n_ch * n_gv), AK.get_backend(rows)) do idx
             q = Int32(idx - 1)
@@ -1624,17 +1918,23 @@ function _scatter_deposit!(
                         acc, comp = _kahan(acc, comp, single[ray, dr, single0 + ch, w])
                     end
                     mirror = shapes[4, ray + ray0] < 0
-                    slot0, n_slots = plain[ray + ray0] ? (Int32(3) * nE, nE) : (Int32(0), Int32(3) * nE)
+                    slot0, n_slots = plain[ray + ray0] ?
+                        (Int32(3) * nE, nE) :
+                        (Int32(0), Int32(3) * nE)
                     for c in Int32(1):Int32(8)
                         f = factor[ch, c, ray]
                         f == 0 && continue
                         base = corner[c, ray] * block + dr + slot0 * L
-                        for ii in max(Int32(1), ci - window[2, ch, c, ray]):min(nc, ci - window[1, ch, c, ray])
+                        for ii in max(Int32(1), ci - window[2, ch, c, ray]):min(
+                                    nc,
+                                    ci - window[1, ch, c, ray],
+                                )
                             # the box from the left edge of this bin's column, and its share of it
                             off = w_col * (boxes[1, ii, ch, c, ray] - T(ci))
                             lo, hi = boxes[2, ii, ch, c, ray], boxes[3, ii, ch, c, ray]
                             l, h = off + lo, off + hi
-                            share = hi > lo ? (min(h, w_col) - max(l, zero(T))) / (hi - lo) :
+                            share = hi > lo ?
+                                (min(h, w_col) - max(l, zero(T))) / (hi - lo) :
                                 (zero(T) <= l < w_col ? one(T) : zero(T))
                             share > 0 || continue
                             src = mirror ? nc + Int32(1) - ii : ii
@@ -1658,17 +1958,25 @@ end
 # scatter of each view, its groups' `rows` laid over each row of their beams (`row_share[row,
 # group]`); with `combine`, the geometric mean of that and what `out` holds.
 function _scatter_rows!(
-        out::AbstractArray{T, 4},
-        rows::AbstractArray{T, 5},
-        row_share::AbstractMatrix{T},
-        v0::Int,
-        n_v::Int;
-        combine::Bool,
-    ) where {T}
+    out::AbstractArray{T, 4},
+    rows::AbstractArray{T, 5},
+    row_share::AbstractMatrix{T},
+    v0::Int,
+    n_v::Int;
+    combine::Bool,
+) where {T}
     nc, nr, n_ch = size(out, 1), size(out, 2), size(out, 3)
     n_g = size(rows, 4)
-    let out = out, rows = rows, row_share = row_share, nc = nc, nr = nr, n_ch = n_ch, n_g = n_g,
-            mid = (nr + 1) ÷ 2, combine = combine, v0 = v0
+    let out = out,
+        rows = rows,
+        row_share = row_share,
+        nc = nc,
+        nr = nr,
+        n_ch = n_ch,
+        n_g = n_g,
+        mid = (nr + 1) ÷ 2,
+        combine = combine,
+        v0 = v0
         _foreachindex(1:(nc * nr * n_ch * n_v), AK.get_backend(out)) do q1
             q = q1 - 1
             ci = q % nc + 1

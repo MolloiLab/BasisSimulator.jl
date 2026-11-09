@@ -32,20 +32,20 @@ changes from the upstream source are:
 @inline function __middle_bits(x::Float64, y::Float64)
     xint = reinterpret(UInt64, abs(x))
     yint = reinterpret(UInt64, abs(y))
-    mid  = (xint + yint) >> 1
+    mid = (xint + yint) >> 1
     sign(x + y) * reinterpret(Float64, mid)
 end
 
 @inline function __middle_bits(x::Float32, y::Float32)
     xint = reinterpret(UInt32, abs(x))
     yint = reinterpret(UInt32, abs(y))
-    mid  = (xint + yint) >> 1
+    mid = (xint + yint) >> 1
     sign(x + y) * reinterpret(Float32, mid)
 end
 
 # Roots.jl _middle(x, y): handle inf and opposite-sign inputs, else
 # fall through to __middle_bits.
-@inline function _middle_gpu(x::T, y::T) where {T<:AbstractFloat}
+@inline function _middle_gpu(x::T, y::T) where {T <: AbstractFloat}
     a = isinf(x) ? nextfloat(x) : x
     b = isinf(y) ? prevfloat(y) : y
     if sign(a) * sign(b) < 0
@@ -91,13 +91,13 @@ Roots.jl `default_tolerances` at `convergence.jl:55-56`).
 - `f` must be pure (no allocations, no I/O) for GPU execution.
 """
 @inline function brent_solve(
-        f,
-        a::T,
-        b::T;
-        xabstol::T = eps(T) * oneunit(T),
-        xreltol::T = eps(T),
-        maxiters::Int = 100,
-    ) where {T<:AbstractFloat}
+    f,
+    a::T,
+    b::T;
+    xabstol::T = eps(T) * oneunit(T),
+    xreltol::T = eps(T),
+    maxiters::Int = 100,
+) where {T <: AbstractFloat}
     fa = f(a)
     fb = f(b)
 
@@ -107,7 +107,7 @@ Roots.jl `default_tolerances` at `convergence.jl:55-56`).
 
     # Init ensures |fa| ≥ |fb| (Roots brent.jl init_state lines 27-29).
     if abs(fa) < abs(fb)
-        a,  b  = b,  a
+        a, b = b, a
         fa, fb = fb, fa
     end
 
@@ -117,8 +117,9 @@ Roots.jl `default_tolerances` at `convergence.jl:55-56`).
         return (abs(fa) < abs(fb) ? a : b, false)
     end
 
-    c  = a;   fc = fa                  # initial c = a per Brent init
-    d  = c                             # d is dummy until second iter
+    c = a
+    fc = fa # initial c = a per Brent init
+    d = c   # d is dummy until second iter
     mflag = true
 
     for _ in 1:maxiters
@@ -139,11 +140,10 @@ Roots.jl `default_tolerances` at `convergence.jl:55-56`).
         end
 
         tol = max(xabstol, max(abs(b), abs(c), abs(d)) * xreltol)
-        force_bisect =
-            !(u < s < v) ||
-            (mflag  && abs(s - b) >= abs(b - c) / 2) ||
+        force_bisect = !(u < s < v) ||
+            (mflag && abs(s - b) >= abs(b - c) / 2) ||
             (!mflag && abs(s - b) >= abs(c - d) / 2) ||
-            (mflag  && abs(b - c) <= tol) ||
+            (mflag && abs(b - c) <= tol) ||
             (!mflag && abs(c - d) <= tol)
 
         if force_bisect
@@ -164,24 +164,25 @@ Roots.jl `default_tolerances` at `convergence.jl:55-56`).
         end
 
         # ── Bracket update (brent.jl lines 79-90) ──
-        d  = c
-        c  = b
+        d = c
+        c = b
         fc = fb
         if sign(fa) * sign(fs) < 0
-            b  = s
+            b = s
             fb = fs
         else
-            a  = s
+            a = s
             fa = fs
         end
         if abs(fa) < abs(fb)
-            a,  b  = b,  a
+            a, b = b, a
             fa, fb = fb, fa
         end
 
         # ── Termination (convergence.jl iszero_Δx_xexact, Float64 path) ──
         # `nextfloat(min(a,b)) == max(a,b)` → bracket is one ULP wide.
-        lo = min(a, b); hi = max(a, b)
+        lo = min(a, b)
+        hi = max(a, b)
         if nextfloat(lo) == hi
             return (abs(fa) < abs(fb) ? a : b, true)
         end

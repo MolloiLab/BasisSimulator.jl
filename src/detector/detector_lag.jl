@@ -51,9 +51,9 @@ Typical Gd₂O₂S (GOS/Gadox) scintillator lag.
 GOS detectors have moderate afterglow with ~1-2% lag.
 Two-component decay: fast (~1ms) and slow (~10ms).
 """
-function lag_gadox(; frame_time::Float64=0.5)
-    amplitudes = [0.01, 0.005]       # 1% fast + 0.5% slow
-    time_constants = [1.0, 10.0]     # 1ms and 10ms decay
+function lag_gadox(; frame_time::Float64 = 0.5)
+    amplitudes = [0.01, 0.005]   # 1% fast + 0.5% slow
+    time_constants = [1.0, 10.0] # 1ms and 10ms decay
     return LagModel(amplitudes, time_constants, frame_time)
 end
 
@@ -73,14 +73,14 @@ function compute_lag_coefficients(model::LagModel, n_frames::Int)
     coeffs = zeros(Float64, n_frames)
     total_lag = sum(model.amplitudes)
 
-    for k in 0:(n_frames-1)
+    for k in 0:(n_frames - 1)
         t = k * model.frame_time
 
         if k == 0
-            coeffs[k+1] = 1.0 - total_lag
+            coeffs[k + 1] = 1.0 - total_lag
         else
             for (a, τ) in zip(model.amplitudes, model.time_constants)
-                coeffs[k+1] += a * exp(-t / τ)
+                coeffs[k + 1] += a * exp(-t / τ)
             end
         end
     end
@@ -99,11 +99,13 @@ Each output pixel `(col, row, angle)` is a weighted sum over the previous
 Operates in intensity domain (exp / log conversions handled internally).
 """
 function apply_lag!(
-    sinogram::AbstractArray{T,3},
+    sinogram::AbstractArray{T, 3},
     model::LagModel;
-    n_history::Int=20,
-    ws_output=nothing, ws_intensity=nothing, ws_coeffs=nothing
-) where T
+    n_history::Int = 20,
+    ws_output = nothing,
+    ws_intensity = nothing,
+    ws_coeffs = nothing,
+) where {T}
     if isempty(model.amplitudes)
         return sinogram
     end
@@ -130,7 +132,12 @@ function apply_lag!(
 
     output = ws_output !== nothing ? ws_output : similar(sinogram)
 
-    let coeffs = coeffs, intensity = intensity, output = output, n_frames = n_frames, n_cols = n_cols, n_rows = n_rows
+    let coeffs = coeffs,
+        intensity = intensity,
+        output = output,
+        n_frames = n_frames,
+        n_cols = n_cols,
+        n_rows = n_rows
         AK.foreachindex(sinogram) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % Int32(n_cols)) + Int32(1)
@@ -139,16 +146,16 @@ function apply_lag!(
             angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             weighted_sum = zero(T)
-            for k in 0:(n_frames-1)
+            for k in 0:(n_frames - 1)
                 prev_angle = angle - k
                 if prev_angle >= 1
-                    weighted_sum += coeffs[k+1] * intensity[col, row, prev_angle]
+                    weighted_sum += coeffs[k + 1] * intensity[col, row, prev_angle]
                 else
-                    weighted_sum += coeffs[k+1] * intensity[col, row, 1]
+                    weighted_sum += coeffs[k + 1] * intensity[col, row, 1]
                 end
             end
 
-            output[idx] = -log(max(weighted_sum, T(1e-10)))
+            output[idx] = -log(max(weighted_sum, T(1.0e-10)))
         end
     end
 

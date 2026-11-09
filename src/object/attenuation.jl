@@ -51,7 +51,6 @@ function compute_mass_μ_at_energy(material, energy_keV::Float64)
     return ustrip(u"cm^2/g", μ_ρ_unitful)
 end
 
-
 # =============================================================================
 # HU Conversion
 # =============================================================================
@@ -118,7 +117,6 @@ end
 # Source: DukeSim team pre-calculated values
 # =============================================================================
 
-
 """
     get_reference_μ_water(energy_keV::Float64=60.0)
 
@@ -166,7 +164,7 @@ recon = fdk_reconstruct(sinogram, geom, matrix_size)
 water_mask = phantom.mask .== UInt8(REGION_SOLID_WATER)
 
 # Convert to HU with empirical calibration
-recon_hu = to_hounsfield(recon; water_mask=water_mask)
+recon_hu = to_hounsfield(recon; water_mask = water_mask)
 # Water region will be ~0 HU by construction
 ```
 
@@ -174,10 +172,10 @@ recon_hu = to_hounsfield(recon; water_mask=water_mask)
 ```julia
 # Measure μ_water from reconstruction
 cx, cy, cz = size(recon) .÷ 2
-μ_water_measured = mean(recon[cx-5:cx+5, cy-5:cy+5, cz])
+μ_water_measured = mean(recon[cx - 5:cx + 5, cy - 5:cy + 5, cz])
 
 # Convert
-recon_hu = to_hounsfield(recon; μ_water=μ_water_measured)
+recon_hu = to_hounsfield(recon; μ_water = μ_water_measured)
 ```
 
 **Option 3: Use NIST reference (less accurate)**
@@ -194,10 +192,10 @@ recon_hu = to_hounsfield(recon)
   referenced to water at each target energy; it needs no `to_hounsfield`.
 """
 function to_hounsfield(
-        reconstruction::AbstractArray{T};
-        water_mask::Union{Nothing, AbstractArray{Bool}} = nothing,
-        μ_water::Union{Nothing, Real} = nothing
-    ) where {T}
+    reconstruction::AbstractArray{T};
+    water_mask::Union{Nothing, AbstractArray{Bool}} = nothing,
+    μ_water::Union{Nothing, Real} = nothing,
+) where {T}
     # Determine μ_water for calibration
     if water_mask !== nothing
         # Empirical calibration from water region

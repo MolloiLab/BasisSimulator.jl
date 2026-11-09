@@ -36,24 +36,52 @@ end
 function _dd_line_integrals(mask, geom, μ, energies; volume_extent = nothing)
     m = Array(mask)
     μh = Array(μ)
-    return Dict(e => BS.dd_forward_project(map(x -> μh[Int(x) + 1, e], m), geom; volume_extent) for e in energies)
+    return Dict(
+        e => BS.dd_forward_project(map(x -> μh[Int(x) + 1, e], m), geom; volume_extent)
+        for e in energies
+    )
 end
-function _dd_poly_reference!(sino, mask, geom, μ, w, ::Val{N_E}; volume_extent = nothing, ws_bowtie_spectral = nothing) where {N_E}
+function _dd_poly_reference!(
+    sino,
+    mask,
+    geom,
+    μ,
+    w,
+    ::Val{N_E};
+    volume_extent = nothing,
+    ws_bowtie_spectral = nothing,
+) where {N_E}
     L = _dd_line_integrals(mask, geom, μ, 1:N_E; volume_extent)
     wh = Array(w)
-    I = sum(wh[e] .* (ws_bowtie_spectral === nothing ? 1 : ws_bowtie_spectral[:, :, e]) .* exp.(-L[e]) for e in 1:N_E)
+    I = sum(
+        wh[e] .*
+            (ws_bowtie_spectral === nothing ? 1 : ws_bowtie_spectral[:, :, e]) .*
+            exp.(-L[e])
+        for e in 1:N_E
+    )
     sino .= -log.(max.(I, 1.0f-10))
     return sino
 end
 function _dd_spectral_reference!(
-        pilot, out, n_bins, mask, geom, μ, W, ::Val{K}, tile_start;
-        volume_extent = nothing, ws_bowtie_spectral = nothing,
-    ) where {K}
+    pilot,
+    out,
+    n_bins,
+    mask,
+    geom,
+    μ,
+    W,
+    ::Val{K},
+    tile_start;
+    volume_extent = nothing,
+    ws_bowtie_spectral = nothing,
+) where {K}
     energies = Int(tile_start):min(Int(tile_start) + K - 1, size(W, 1))
     L = _dd_line_integrals(mask, geom, μ, energies; volume_extent)
     ne = length(pilot)
     for b in 1:n_bins, e in energies
-        t = W[e, b] .* (ws_bowtie_spectral === nothing ? 1 : ws_bowtie_spectral[:, :, e]) .* exp.(-L[e])
+        t = W[e, b] .*
+            (ws_bowtie_spectral === nothing ? 1 : ws_bowtie_spectral[:, :, e]) .*
+            exp.(-L[e])
         out[((b - 1) * ne + 1):(b * ne)] .+= vec(t)
     end
     return out
@@ -62,14 +90,21 @@ end
 @testset "distance-driven exact transpose" begin
     for shape in (:flat, :arc)
         scanner = BS.EICTScanner(
-            source_to_isocenter = 540.0, source_to_detector = 1080.0,
-            detector_rows = 7, detector_cols = 24,
-            detector_row_size = 0.8, detector_col_size = 0.8,
+            source_to_isocenter = 540.0,
+            source_to_detector = 1080.0,
+            detector_rows = 7,
+            detector_cols = 24,
+            detector_row_size = 0.8,
+            detector_col_size = 0.8,
             detector_shape = shape,
         )
         geom = BS.CTGeometry(
-            scanner; n_angles = 9, n_rows = 7, n_cols = 24,
-            fov_cm = 8.0, z_cm = 1.4,
+            scanner;
+            n_angles = 9,
+            n_rows = 7,
+            n_cols = 24,
+            fov_cm = 8.0,
+            z_cm = 1.4,
         )
         rng = MersenneTwister(0x0DD3 + (shape === :arc))
         x = randn(rng, Float64, 9, 9, 5)
@@ -216,9 +251,9 @@ end
     @testset "agrees with Siddon on object rays" begin
         mask = sino_siddon .> 1.0f-4
         relΔ = abs.(sino_dd[mask] .- sino_siddon[mask]) ./ sino_siddon[mask]
-        @test count(mask) > 1000                 # object actually illuminated
-        @test sum(relΔ) / length(relΔ) < 0.01    # mean relative deviation < 1%
-        @test maximum(relΔ) < 0.05               # worst-ray deviation < 5%
+        @test count(mask) > 1000              # object actually illuminated
+        @test sum(relΔ) / length(relΔ) < 0.01 # mean relative deviation < 1%
+        @test maximum(relΔ) < 0.05            # worst-ray deviation < 5%
     end
 
     @testset "in-place == allocating" begin
@@ -252,7 +287,7 @@ end
             mask[i, j, k] = UInt16(1)
         end
     end
-    μ_table = zeros(Float32, 2, N_E)             # row 1 = air (0), row 2 = water
+    μ_table = zeros(Float32, 2, N_E) # row 1 = air (0), row 2 = water
     for e in 1:N_E
         μ_table[2, e] = 0.3f0 - 0.12f0 * (e - 1) / (N_E - 1)
     end
@@ -266,7 +301,7 @@ end
         m = sino_s .> 1.0f-4
         relΔ = abs.(sino_d[m] .- sino_s[m]) ./ sino_s[m]
         @test count(m) > 1000
-        @test sum(relΔ) / length(relΔ) < 0.01      # mean within 1%
+        @test sum(relΔ) / length(relΔ) < 0.01 # mean within 1%
         @test maximum(relΔ) < 0.05
     end
 
@@ -282,15 +317,35 @@ end
         ne = length(pilot)
         out_s = zeros(Float32, ne * 2)
         out_d = zeros(Float32, ne * 2)
-        BS.siddon_fused_spectral_project!(pilot, out_s, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
-        BS.dd_fast_fused_spectral_project!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
+        BS.siddon_fused_spectral_project!(
+            pilot,
+            out_s,
+            n_bins,
+            mask,
+            geom,
+            μ_table,
+            W,
+            Val(K),
+            Int32(1),
+        )
+        BS.dd_fast_fused_spectral_project!(
+            pilot,
+            out_d,
+            n_bins,
+            mask,
+            geom,
+            μ_table,
+            W,
+            Val(K),
+            Int32(1),
+        )
         for b in 1:2
             seg = ((b - 1) * ne + 1):(b * ne)
             bs = out_s[seg]
             bd = out_d[seg]
             mm = bs .> 1.0f-6
             relb = abs.(bd[mm] .- bs[mm]) ./ bs[mm]
-            @test sum(relb) / length(relb) < 0.02   # bin mean within 2%
+            @test sum(relb) / length(relb) < 0.02 # bin mean within 2%
         end
     end
 end
@@ -330,7 +385,7 @@ end
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         _dd_poly_reference!(sino_d, mask, geom, μ_table, wη, Val(N_E))
         BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_table, wη, Val(N_E))
-        @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4        # reassociation noise only
+        @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4 # reassociation noise only
     end
 
     @testset "fused poly: dd_fast tracks Siddon exactly as per-energy DD does" begin
@@ -363,50 +418,100 @@ end
         ne = length(pilot)
         out_d = zeros(Float32, ne * 2)
         out_f = zeros(Float32, ne * 2)
-        _dd_spectral_reference!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
-        BS.dd_fast_fused_spectral_project!(pilot, out_f, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
-        @test maximum(abs.(out_f .- out_d)) < 1.0f-4          # reassociation noise only
+        _dd_spectral_reference!(
+            pilot,
+            out_d,
+            n_bins,
+            mask,
+            geom,
+            μ_table,
+            W,
+            Val(K),
+            Int32(1),
+        )
+        BS.dd_fast_fused_spectral_project!(
+            pilot,
+            out_f,
+            n_bins,
+            mask,
+            geom,
+            μ_table,
+            W,
+            Val(K),
+            Int32(1),
+        )
+        @test maximum(abs.(out_f .- out_d)) < 1.0f-4 # reassociation noise only
     end
 
     @testset "helical arc geometry + spectral bowtie remain equivalent" begin
         scanner_h = BS.EICTScanner(
-            source_to_isocenter = 540.0, source_to_detector = 1080.0,
-            detector_rows = 4, detector_cols = 32,
-            detector_row_size = 1.0, detector_col_size = 1.0,
+            source_to_isocenter = 540.0,
+            source_to_detector = 1080.0,
+            detector_rows = 4,
+            detector_cols = 32,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0,
             detector_shape = :arc,
         )
         geom_h = BS.CTGeometry(
-            scanner_h; n_angles = 16, fov_cm = 10.0,
-            z_cm = 1.0, pitch = 1.0, n_rotations = 2.0
+            scanner_h;
+            n_angles = 16,
+            fov_cm = 10.0,
+            z_cm = 1.0,
+            pitch = 1.0,
+            n_rotations = 2.0,
         )
         mask_h = mask[17:48, 17:48, 3:6]
         bowtie = Array{Float32}(undef, geom_h.n_cols, geom_h.n_rows, N_E)
         for e in 1:N_E, r in 1:geom_h.n_rows, c in 1:geom_h.n_cols
-            bowtie[c, r, e] = 0.7f0 + 0.25f0 * (c - 1) / (geom_h.n_cols - 1) +
+            bowtie[c, r, e] = 0.7f0 +
+                0.25f0 * (c - 1) / (geom_h.n_cols - 1) +
                 0.03f0 * (e - 1) / (N_E - 1)
         end
 
         sino_d = zeros(Float32, geom_h.n_cols, geom_h.n_rows, geom_h.n_angles)
         sino_f = similar(sino_d)
         _dd_poly_reference!(
-            sino_d, mask_h, geom_h, μ_table, wη, Val(N_E);
-            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie
+            sino_d,
+            mask_h,
+            geom_h,
+            μ_table,
+            wη,
+            Val(N_E);
+            volume_extent = (10.0, 10.0, 1.0),
+            ws_bowtie_spectral = bowtie,
         )
         BS.dd_fast_fused_poly_project!(
-            sino_f, mask_h, geom_h, μ_table, wη, Val(N_E);
-            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie
+            sino_f,
+            mask_h,
+            geom_h,
+            μ_table,
+            wη,
+            Val(N_E);
+            volume_extent = (10.0, 10.0, 1.0),
+            ws_bowtie_spectral = bowtie,
         )
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 
     @testset "a table no basis reproduces is an error, up to 64 materials one pass" begin
         rng = MersenneTwister(70)
-        μ_rand = rand(rng, Float32, 70, 80) .+ 0.1f0           # full rank: no 64-energy basis
+        # full rank: no 64-energy basis
+        μ_rand = rand(rng, Float32, 70, 80) .+ 0.1f0
         @test BS._plen_lanes(μ_rand, ones(80)) === nothing
-        @test BS._plen_lanes(μ_rand[1:10, :], ones(80)).lanes === nothing   # few materials: their own lanes
-        @test BS._plen_lanes(μ_rand[1:64, :], ones(80)) !== nothing         # up to 64: always one pass
+        # few materials: their own lanes
+        @test BS._plen_lanes(μ_rand[1:10, :], ones(80)).lanes === nothing
+        # up to 64: always one pass
+        @test BS._plen_lanes(μ_rand[1:64, :], ones(80)) !== nothing
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-        @test_throws ArgumentError BS.dd_fast_fused_poly_project!(sino, mask, geom, μ_rand, fill(1.0f0 / 80, 80), Val(80))
+        @test_throws ArgumentError BS.dd_fast_fused_poly_project!(
+            sino,
+            mask,
+            geom,
+            μ_rand,
+            fill(1.0f0 / 80, 80),
+            Val(80),
+        )
     end
 
     @testset "40 random materials: one pass, as per-energy DD" begin
@@ -426,8 +531,28 @@ end
         out_f = zeros(Float32, n_bins * ne)
         pilot_d = reshape(view(out_d, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
         pilot_f = reshape(view(out_f, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
-        _dd_spectral_reference!(pilot_d, out_d, Int32(n_bins), mask40, geom, μ40, W, Val(N_E), Int32(1))
-        @test_logs BS.dd_fast_fused_spectral_project!(pilot_f, out_f, Int32(n_bins), mask40, geom, μ40, W, Val(N_E), Int32(1))
+        _dd_spectral_reference!(
+            pilot_d,
+            out_d,
+            Int32(n_bins),
+            mask40,
+            geom,
+            μ40,
+            W,
+            Val(N_E),
+            Int32(1),
+        )
+        @test_logs BS.dd_fast_fused_spectral_project!(
+            pilot_f,
+            out_f,
+            Int32(n_bins),
+            mask40,
+            geom,
+            μ40,
+            W,
+            Val(N_E),
+            Int32(1),
+        )
         @test isapprox(out_f, out_d; rtol = 1.0e-5)
     end
 
@@ -439,7 +564,10 @@ end
         mask3 = UInt8.(mask100 .% 3)
         paths3 = zeros(Float32, 3, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_fast_material_paths!(paths3, mask3, geom)
-        grouped = cat((sum(paths100[(k + 1):3:end, :, :, :]; dims = 1) for k in 0:2)...; dims = 1)
+        grouped = cat(
+            (sum(paths100[(k + 1):3:end, :, :, :]; dims = 1) for k in 0:2)...;
+            dims = 1,
+        )
         @test count(>(0), paths3) > 0
         @test isapprox(grouped, paths3; rtol = 1.0e-5)
     end
@@ -449,7 +577,7 @@ end
         mask100 = rand(rng, UInt8(0):UInt8(99), size(mask))
         paths100 = zeros(Float32, 100, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_fast_material_paths!(paths100, mask100, geom)
-        Ct = rand(rng, Float32, 130, 100)                     # 130 lanes: three walks
+        Ct = rand(rng, Float32, 130, 100) # 130 lanes: three walks
         sums = zeros(Float32, 130, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_fast_lane_sums!(sums, mask100, geom, Ct)
         expected = reshape(Ct * reshape(paths100, 100, :), size(sums))
@@ -465,7 +593,8 @@ end
         _dd_poly_reference!(sino_d, mask, geom, μ_big, wη, Val(N_E))
         @test_logs BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_big, wη, Val(N_E))
         b = BS._attenuation_basis(μ_big, abs.(Float64.(wη)))
-        @test b !== nothing && length(b.J) == 2                # two distinct materials: rank 2
+        # two distinct materials: rank 2
+        @test b !== nothing && length(b.J) == 2
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 end
@@ -480,8 +609,12 @@ end
         @info "Skipping the device basis-rank test: no GPU backend"
     else
         sc = BS.EICTScanner(
-            source_to_isocenter = 540.0, source_to_detector = 1080.0,
-            detector_rows = 4, detector_cols = 32, detector_row_size = 1.0, detector_col_size = 1.0,
+            source_to_isocenter = 540.0,
+            source_to_detector = 1080.0,
+            detector_rows = 4,
+            detector_cols = 32,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0,
         )
         geom = BS.CTGeometry(sc; n_angles = 8, fov_cm = 20.0, z_cm = 1.0)
         K, nb, M = 32, 2, 27
@@ -493,9 +626,24 @@ end
             μ[1, :] .= 0
             mask = UInt8.(rand(rng, 0:(M - 1), 32, 32, 8))
             W = rand(rng, Float32, K, nb)
-            run(arr) = let pilot = arr(zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)),
-                    out = arr(zeros(Float32, nb * length(pilot)))
-                BS.dd_fast_fused_spectral_project!(pilot, out, Int32(nb), arr(mask), geom, arr(μ), arr(W), Val(K), Int32(1))
+            run(arr) = let pilot = arr(zeros(
+                Float32,
+                geom.n_cols,
+                geom.n_rows,
+                geom.n_angles,
+            )),
+                out = arr(zeros(Float32, nb * length(pilot)))
+                BS.dd_fast_fused_spectral_project!(
+                    pilot,
+                    out,
+                    Int32(nb),
+                    arr(mask),
+                    geom,
+                    arr(μ),
+                    arr(W),
+                    Val(K),
+                    Int32(1),
+                )
                 Array(out)
             end
             lanes = BS._plen_lanes(μ, ones(K))
@@ -515,27 +663,18 @@ end
     if !HAS_GPU
         @info "Skipping the fused spectral Int32-offset test: no GPU backend"
     else
-        geom = _toy_proj_geom(
-            n_cols = 2752,
-            n_rows = 288,
-            n_angles = 904,
-        )
+        geom = _toy_proj_geom(n_cols = 2752, n_rows = 288, n_angles = 904)
         n_bins = 4
         ne = geom.n_cols * geom.n_rows * geom.n_angles
         @test (n_bins - 1) * ne > typemax(Int32)
         K = 8
         mask = to_gpu(ones(UInt8, 4, 4, 4))
-        μ_table = to_gpu(zeros(Float32, 2, K))       # μ = 0: every ray reads its bin's Σ W
+        μ_table = to_gpu(zeros(Float32, 2, K)) # μ = 0: every ray reads its bin's Σ W
         W_cpu = Float32[e + 10 * b for e in 1:K, b in 1:n_bins]
         W = to_gpu(W_cpu)
         out = similar(mask, Float32, n_bins * ne)
         # the pilot only sizes the launch: the first bin's segment, rather than another 2.9 GB
-        pilot = reshape(
-            view(out, 1:ne),
-            geom.n_cols,
-            geom.n_rows,
-            geom.n_angles,
-        )
+        pilot = reshape(view(out, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
         for project! in (
                 BS.dd_fast_fused_spectral_project!,
                 BS.siddon_fused_spectral_project!,
@@ -556,15 +695,11 @@ end
 @testset "create_μ_volume!" begin
     nx, ny, nz = 8, 8, 2
     labels = zeros(UInt8, nx, ny, nz)
-    labels[1:4, :, :] .= 0x01    # half = water
-    labels[5:8, :, :] .= 0x02    # other half = Ca_100
+    labels[1:4, :, :] .= 0x01 # half = water
+    labels[5:8, :, :] .= 0x02 # other half = Ca_100
 
     # Index 1 = label 0 (air), 2 = label 1 (water), 3 = label 2 (Ca_100).
-    materials = [
-        BS.XA.Materials.air,
-        BS.XA.Materials.water,
-        BS.get_material(:Ca_100),
-    ]
+    materials = [BS.XA.Materials.air, BS.XA.Materials.water, BS.get_material(:Ca_100)]
     E = 80.0
     μ_vol = zeros(Float32, nx, ny, nz)
     BS.create_μ_volume!(μ_vol, labels, materials, E)
@@ -581,7 +716,7 @@ end
     # Re-running at a different energy gives a different μ.
     μ_vol_2 = zeros(Float32, nx, ny, nz)
     BS.create_μ_volume!(μ_vol_2, labels, materials, 120.0)
-    @test μ_vol_2[1, 1, 1] < μ_vol[1, 1, 1]   # water μ drops with E
+    @test μ_vol_2[1, 1, 1] < μ_vol[1, 1, 1] # water μ drops with E
 end
 
 @testset "create_μ_volume! — Float64 / Float32 element type respected" begin
@@ -608,7 +743,7 @@ end
         @test BS._validate_projector(:dd_fast) === :dd_fast
         @test BS._validate_projector(:siddon) === :siddon
         @test_throws ArgumentError BS._validate_projector(:bogus)
-        @test_throws ArgumentError BS._validate_projector(:dd)     # removed option
+        @test_throws ArgumentError BS._validate_projector(:dd) # removed option
     end
 
     @testset "allocating shim routes to the exact projector" begin
@@ -632,9 +767,9 @@ end
         # Same line integral (both discretise ∫μ·dl) but not byte-identical.
         s_dd = BS._project_mono(:dd_fast, vol, geom)
         s_si = BS._project_mono(:siddon, vol, geom)
-        @test s_dd != s_si                       # different projectors
+        @test s_dd != s_si # different projectors
         mid = geom.n_cols ÷ 2 + 1
-        @test isapprox(s_dd[mid, 2, 1], s_si[mid, 2, 1]; rtol = 0.05)  # but close
+        @test isapprox(s_dd[mid, 2, 1], s_si[mid, 2, 1]; rtol = 0.05) # but close
     end
 end
 
@@ -650,16 +785,22 @@ end
 # -----------------------------------------------------------------------------
 @testset "arc detector — projectors" begin
     scanner_flat = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_rows = 8, detector_cols = 128,
-        detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_shape = :flat
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 8,
+        detector_cols = 128,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_shape = :flat,
     )
     scanner_arc = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_rows = 8, detector_cols = 128,
-        detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_shape = :arc
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 8,
+        detector_cols = 128,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_shape = :arc,
     )
     gf = BS.CTGeometry(scanner_flat; n_angles = 8, fov_cm = 20.0)
     ga = BS.CTGeometry(scanner_arc; n_angles = 8, fov_cm = 20.0)
@@ -681,13 +822,14 @@ end
     sino_arc = BS.dd_forward_project(vol, ga)
 
     @testset "flat→arc resampling oracle (MATLAB fanbeam-style)" begin
-        SAD = gf.SAD; SDD = gf.SDD
+        SAD = gf.SAD
+        SDD = gf.SDD
         dγ = gf.pixel_size / SAD
         pm = gf.pixel_size * (SDD / SAD)
         nc = gf.n_cols
         cc = (nc + 1) / 2
         resampled = similar(sino_flat)
-        for a in 1:size(sino_flat, 3), r in 1:size(sino_flat, 2), i in 1:nc
+        for a in axes(sino_flat, 3), r in axes(sino_flat, 2), i in 1:nc
             γ = (i - cc) * dγ
             colf = SDD * tan(γ) / pm + cc
             c0 = clamp(floor(Int, colf), 1, nc - 1)
@@ -707,7 +849,7 @@ end
     end
 
     @testset "central columns: arc ≈ flat (small-angle limit)" begin
-        mid = 57:72                                 # |γ| < 0.03 rad
+        mid = 57:72 # |γ| < 0.03 rad
         Δ = abs.(sino_arc[mid, :, :] .- sino_flat[mid, :, :])
         rel = Δ ./ max.(sino_flat[mid, :, :], 1.0f-3)
         @test maximum(rel[sino_flat[mid, :, :] .> 0.5f0]) < 0.01
@@ -726,14 +868,16 @@ end
         @test sum(relΔ) / length(relΔ) <= 1.3 * sum(relΔ_f) / length(relΔ_f) + 0.002
 
         N_E = 4
-        mask8 = UInt8.(vol .> 0) .+ UInt8.(vol .> 0.5f0)   # 0 air, 1 water, 2 rod
-        μt = zeros(Float32, 3, N_E); μt[2, :] .= 0.2f0; μt[3, :] .= 1.0f0
+        mask8 = UInt8.(vol .> 0) .+ UInt8.(vol .> 0.5f0) # 0 air, 1 water, 2 rod
+        μt = zeros(Float32, 3, N_E)
+        μt[2, :] .= 0.2f0
+        μt[3, :] .= 1.0f0
         wη = fill(Float32(1 / N_E), N_E)
         sd = zeros(Float32, ga.n_cols, ga.n_rows, ga.n_angles)
         sf = zeros(Float32, ga.n_cols, ga.n_rows, ga.n_angles)
         _dd_poly_reference!(sd, mask8, ga, μt, wη, Val(N_E))
         BS.dd_fast_fused_poly_project!(sf, mask8, ga, μt, wη, Val(N_E))
-        @test maximum(abs.(sf .- sd)) < 1.0f-4     # path-length ≡ per-energy DD, on arc
+        @test maximum(abs.(sf .- sd)) < 1.0f-4 # path-length ≡ per-energy DD, on arc
     end
 end
 
@@ -777,7 +921,7 @@ end
             @test isapprox(Array(paths_gpu), paths_cpu; rtol = 1.0e-5)
             again = to_gpu(zero(paths_cpu))
             BS.dd_fast_material_paths!(again, to_gpu(mask), geom)
-            @test again == paths_gpu                          # deterministic on the device
+            @test again == paths_gpu # deterministic on the device
 
             # the :dd forward projection of a volume
             sino_cpu = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)

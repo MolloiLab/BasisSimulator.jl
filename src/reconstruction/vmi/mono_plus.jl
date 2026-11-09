@@ -82,10 +82,10 @@ total working set (3 scratch + n_energies output volumes) just doesn't
 fit.  Downsize the volume or reduce `n_energies`.
 """
 function create_mono_plus_workspace(
-        vol_template::AbstractArray{<:AbstractFloat, 3};
-        n_energies::Integer,
-        mem_budget_GB::Union{Nothing, Real} = nothing,
-    )
+    vol_template::AbstractArray{<:AbstractFloat, 3};
+    n_energies::Integer,
+    mem_budget_GB::Union{Nothing, Real} = nothing,
+)
     T = eltype(vol_template)
     n_energies > 0 || error("create_mono_plus_workspace: n_energies must be ≥ 1.")
     sh = size(vol_template)
@@ -99,18 +99,31 @@ function create_mono_plus_workspace(
         floor(Int, Float64(mem_budget_GB) * 2^30)
     end
     if total_need > avail
-        @warn ("MonoPlusWorkspace working set exceeds 60% of free memory; allocation may fail. " *
-               "Pass `mem_budget_GB = ...` to override the probe, or downsize the volume / reduce n_energies.") total_need_GB=round(total_need/2^30, digits=2) avail_GB=round(avail/2^30, digits=2) n_energies vol_shape=sh
+        @warn (
+            "MonoPlusWorkspace working set exceeds 60% of free memory; allocation may fail. " *
+                "Pass `mem_budget_GB = ...` to override the probe, or downsize the volume / reduce n_energies."
+        ) total_need_GB = round(total_need / 2^30, digits = 2) avail_GB = round(
+            avail / 2^30,
+            digits = 2,
+        ) n_energies vol_shape = sh
     end
 
     with_oom_retry("create_mono_plus_workspace", 1) do _
-        lp_buf  = similar(vol_template, T, sh);  fill!(lp_buf, zero(T))
-        lp_opt  = similar(vol_template, T, sh);  fill!(lp_opt, zero(T))
-        hp_opt  = similar(vol_template, T, sh);  fill!(hp_opt, zero(T))
+        lp_buf = similar(vol_template, T, sh)
+        fill!(lp_buf, zero(T))
+        lp_opt = similar(vol_template, T, sh)
+        fill!(lp_opt, zero(T))
+        hp_opt = similar(vol_template, T, sh)
+        fill!(hp_opt, zero(T))
         out_vols = [similar(vol_template, T, sh) for _ in 1:Int(n_energies)]
-        for v in out_vols; fill!(v, zero(T)); end
+        for v in out_vols
+            fill!(v, zero(T))
+        end
         MonoPlusWorkspace{T, typeof(lp_buf)}(
-            lp_buf, lp_opt, hp_opt, out_vols,
+            lp_buf,
+            lp_opt,
+            hp_opt,
+            out_vols,
             Dict{Float64, Matrix{Float64}}(),
         )
     end
@@ -158,19 +171,23 @@ Mutates `ws.out_vols` in place and returns a NamedTuple with `energies`,
   no masking, identical to legacy behavior.
 """
 function apply_mono_plus!(
-        ws::MonoPlusWorkspace,
-        volumes::AbstractVector{<:AbstractArray{Float32, 3}},
-        energies::AbstractVector;
-        E_noise_opt::Real                    = 70.0,
-        σ_lp_px::Union{Real, AbstractVector} = 2.0,
-        verbose::Bool                        = true,
-        phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
-    )
+    ws::MonoPlusWorkspace,
+    volumes::AbstractVector{<:AbstractArray{Float32, 3}},
+    energies::AbstractVector;
+    E_noise_opt::Real = 70.0,
+    σ_lp_px::Union{Real, AbstractVector} = 2.0,
+    verbose::Bool = true,
+    phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
+)
     length(volumes) == length(energies) ||
-        error("apply_mono_plus!: length(volumes) = $(length(volumes)) ≠ length(energies) = $(length(energies))")
+        error(
+            "apply_mono_plus!: length(volumes) = $(length(volumes)) ≠ length(energies) = $(length(energies))",
+        )
     length(ws.out_vols) == length(energies) ||
-        error("apply_mono_plus!: workspace has $(length(ws.out_vols)) output slots ≠ length(energies) = $(length(energies)).  " *
-              "Recreate workspace with `create_mono_plus_workspace(...; n_energies = $(length(energies)))`.")
+        error(
+            "apply_mono_plus!: workspace has $(length(ws.out_vols)) output slots ≠ length(energies) = $(length(energies)).  " *
+                "Recreate workspace with `create_mono_plus_workspace(...; n_energies = $(length(energies)))`.",
+        )
     sh = size(ws.lp_buf)
     for (i, v) in enumerate(volumes)
         size(v) == sh ||
@@ -178,18 +195,24 @@ function apply_mono_plus!(
     end
     if phantom_mask !== nothing
         size(phantom_mask) == sh ||
-            error("apply_mono_plus!: phantom_mask shape $(size(phantom_mask)) ≠ workspace shape $(sh).")
+            error(
+                "apply_mono_plus!: phantom_mask shape $(size(phantom_mask)) ≠ workspace shape $(sh).",
+            )
     end
 
     i_opt = findfirst(==(Float64(E_noise_opt)), Float64.(energies))
     i_opt === nothing &&
-        error("apply_mono_plus!: E_noise_opt = $(E_noise_opt) keV not in energies = $(energies)")
+        error(
+            "apply_mono_plus!: E_noise_opt = $(E_noise_opt) keV not in energies = $(energies)",
+        )
 
     σ_vec = if σ_lp_px isa Real
         fill(Float64(σ_lp_px), length(energies))
     else
         length(σ_lp_px) == length(energies) ||
-            error("apply_mono_plus!: σ_lp_px length $(length(σ_lp_px)) ≠ energies length $(length(energies))")
+            error(
+                "apply_mono_plus!: σ_lp_px length $(length(σ_lp_px)) ≠ energies length $(length(energies))",
+            )
         Float64.(σ_lp_px)
     end
 
@@ -207,7 +230,11 @@ function apply_mono_plus!(
     end
 
     # 2D per-slice Gaussian LP via FFT — writes into the provided `dst`.
-    function _gaussian_lp!(dst::AbstractArray{Float32, 3}, img::AbstractArray{Float32, 3}, σ::Float64)
+    function _gaussian_lp!(
+        dst::AbstractArray{Float32, 3},
+        img::AbstractArray{Float32, 3},
+        σ::Float64,
+    )
         kernel = _kernel_for(σ)
         Threads.@threads for k in 1:nz
             slice = Float64.(@view img[:, :, k])
@@ -263,7 +290,7 @@ function apply_mono_plus!(
                 copyto!(ws.out_vols[i], volumes[i])
             else
                 _gaussian_lp!(ws.lp_buf, volumes[i], σ_i)
-                _gaussian_lp!(ws.lp_opt, vmi_opt,    σ_i)
+                _gaussian_lp!(ws.lp_opt, vmi_opt, σ_i)
                 @. ws.out_vols[i] = ws.lp_buf + vmi_opt - ws.lp_opt
                 _apply_mask!(ws.out_vols[i], volumes[i])
             end
@@ -278,10 +305,12 @@ function apply_mono_plus!(
         @info "  sanity: Mono+(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
     end
 
-    (energies = collect(energies),
-     volumes  = ws.out_vols,
-     σ_lp_px  = (σ_lp_px isa Real ? Float64(σ_lp_px) : σ_vec),
-     E_noise_opt = Float64(E_noise_opt))
+    (
+        energies = collect(energies),
+        volumes = ws.out_vols,
+        σ_lp_px = (σ_lp_px isa Real ? Float64(σ_lp_px) : σ_vec),
+        E_noise_opt = Float64(E_noise_opt),
+    )
 end
 
 # ════════════════════════════════════════════════════════════════════════
@@ -349,40 +378,52 @@ across subsequent calls on the same `ws`.  Returns a NamedTuple with
 `β_mean` / `β_frac_active` (fraction of pixels with β > 0).
 """
 function apply_mono_plus_regression!(
-        ws::MonoPlusWorkspace,
-        volumes::AbstractVector{<:AbstractArray{Float32, 3}},
-        energies::AbstractVector;
-        E_noise_opt::Real                    = 70.0,
-        σ_lp_px::Union{Real, AbstractVector} = 1.5,
-        window::Integer                      = 4,
-        beta_max::Real                       = 4.0,
-        verbose::Bool                        = true,
-        phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
-    )
+    ws::MonoPlusWorkspace,
+    volumes::AbstractVector{<:AbstractArray{Float32, 3}},
+    energies::AbstractVector;
+    E_noise_opt::Real = 70.0,
+    σ_lp_px::Union{Real, AbstractVector} = 1.5,
+    window::Integer = 4,
+    beta_max::Real = 4.0,
+    verbose::Bool = true,
+    phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
+)
     length(volumes) == length(energies) ||
-        error("apply_mono_plus_regression!: length(volumes) = $(length(volumes)) ≠ length(energies) = $(length(energies))")
+        error(
+            "apply_mono_plus_regression!: length(volumes) = $(length(volumes)) ≠ length(energies) = $(length(energies))",
+        )
     length(ws.out_vols) == length(energies) ||
-        error("apply_mono_plus_regression!: workspace has $(length(ws.out_vols)) output slots ≠ length(energies) = $(length(energies)).  " *
-              "Recreate workspace with `create_mono_plus_workspace(...; n_energies = $(length(energies)))`.")
+        error(
+            "apply_mono_plus_regression!: workspace has $(length(ws.out_vols)) output slots ≠ length(energies) = $(length(energies)).  " *
+                "Recreate workspace with `create_mono_plus_workspace(...; n_energies = $(length(energies)))`.",
+        )
     sh = size(ws.lp_buf)
     for (i, v) in enumerate(volumes)
         size(v) == sh ||
-            error("apply_mono_plus_regression!: volumes[$i] shape $(size(v)) ≠ workspace shape $(sh).")
+            error(
+                "apply_mono_plus_regression!: volumes[$i] shape $(size(v)) ≠ workspace shape $(sh).",
+            )
     end
     if phantom_mask !== nothing
         size(phantom_mask) == sh ||
-            error("apply_mono_plus_regression!: phantom_mask shape $(size(phantom_mask)) ≠ workspace shape $(sh).")
+            error(
+                "apply_mono_plus_regression!: phantom_mask shape $(size(phantom_mask)) ≠ workspace shape $(sh).",
+            )
     end
 
     i_opt = findfirst(==(Float64(E_noise_opt)), Float64.(energies))
     i_opt === nothing &&
-        error("apply_mono_plus_regression!: E_noise_opt = $(E_noise_opt) keV not in energies = $(energies)")
+        error(
+            "apply_mono_plus_regression!: E_noise_opt = $(E_noise_opt) keV not in energies = $(energies)",
+        )
 
     σ_vec = if σ_lp_px isa Real
         fill(Float64(σ_lp_px), length(energies))
     else
         length(σ_lp_px) == length(energies) ||
-            error("apply_mono_plus_regression!: σ_lp_px length $(length(σ_lp_px)) ≠ energies length $(length(energies))")
+            error(
+                "apply_mono_plus_regression!: σ_lp_px length $(length(σ_lp_px)) ≠ energies length $(length(energies))",
+            )
         Float64.(σ_lp_px)
     end
 
@@ -398,7 +439,11 @@ function apply_mono_plus_regression!(
             [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
         end
     end
-    function _gaussian_lp!(dst::AbstractArray{Float32, 3}, img::AbstractArray{Float32, 3}, σ::Float64)
+    function _gaussian_lp!(
+        dst::AbstractArray{Float32, 3},
+        img::AbstractArray{Float32, 3},
+        σ::Float64,
+    )
         kernel = _kernel_for(σ)
         Threads.@threads for k in 1:nz
             slice = Float64.(@view img[:, :, k])
@@ -422,34 +467,45 @@ function apply_mono_plus_regression!(
     #   out  = lpE + β·hOpt
     function _hf_regress!(out, vol_E, lpE, hOpt)
         # per-energy global HF ratio → variance-limited β ceiling (Kalender)
-        sEE = 0.0; sOO = 0.0
+        sEE = 0.0
+        sOO = 0.0
         @inbounds for idx in eachindex(vol_E)
-            he = Float64(vol_E[idx] - lpE[idx]); ho = Float64(hOpt[idx])
-            sEE += he * he; sOO += ho * ho
+            he = Float64(vol_E[idx] - lpE[idx])
+            ho = Float64(hOpt[idx])
+            sEE += he * he
+            sOO += ho * ho
         end
         λ = sqrt(sEE / max(sOO, 1.0e-30))
         βmax = Float32(min(Float64(beta_max), λ))
-        β_acc = 0.0; β_active = 0
+        β_acc = 0.0
+        β_active = 0
         β_lock = Threads.SpinLock()
         Threads.@threads for k in 1:nz
-            local_acc = 0.0; local_active = 0
+            local_acc = 0.0
+            local_active = 0
             @inbounds for j in 1:ny, i in 1:nx
-                sOOw = 0.0f0; sEOw = 0.0f0
+                sOOw = 0.0f0
+                sEOw = 0.0f0
                 for dj in -w:w
-                    jj = j + dj; (1 <= jj <= ny) || continue
+                    jj = j + dj
+                    (1 <= jj <= ny) || continue
                     for di in -w:w
-                        ii = i + di; (1 <= ii <= nx) || continue
+                        ii = i + di
+                        (1 <= ii <= nx) || continue
                         ho = hOpt[ii, jj, k]
                         he = vol_E[ii, jj, k] - lpE[ii, jj, k]
-                        sOOw += ho * ho; sEOw += he * ho
+                        sOOw += ho * ho
+                        sEOw += he * ho
                     end
                 end
                 β = clamp(sEOw / max(sOOw, 1.0f-20), 0.0f0, βmax)
                 out[i, j, k] = lpE[i, j, k] + β * hOpt[i, j, k]
-                local_acc += β; (β > 0) && (local_active += 1)
+                local_acc += β
+                (β > 0) && (local_active += 1)
             end
             Threads.lock(β_lock) do
-                β_acc += local_acc; β_active += local_active
+                β_acc += local_acc
+                β_active += local_active
             end
         end
         npix = nx * ny * nz
@@ -458,12 +514,15 @@ function apply_mono_plus_regression!(
 
     t0 = time()
     σ_uniform = all(σ -> σ == σ_vec[1], σ_vec)
-    diags = Vector{NamedTuple{(:β_mean, :β_frac_active), Tuple{Float64, Float64}}}(undef, length(energies))
+    diags = Vector{NamedTuple{(:β_mean, :β_frac_active), Tuple{Float64, Float64}}}(
+        undef,
+        length(energies),
+    )
 
     if σ_uniform && σ_vec[1] != 0.0
         σ0 = σ_vec[1]
         _gaussian_lp!(ws.lp_opt, vmi_opt, σ0)
-        @. ws.hp_opt = vmi_opt - ws.lp_opt              # reference HF (cached)
+        @. ws.hp_opt = vmi_opt - ws.lp_opt # reference HF (cached)
         for i in eachindex(energies)
             if i == i_opt
                 copyto!(ws.out_vols[i], vmi_opt)
@@ -482,7 +541,7 @@ function apply_mono_plus_regression!(
                 copyto!(ws.out_vols[i], vmi_opt)
                 diags[i] = (β_mean = 1.0, β_frac_active = 1.0)
             elseif σ_i == 0.0
-                copyto!(ws.out_vols[i], volumes[i])         # identity
+                copyto!(ws.out_vols[i], volumes[i]) # identity
                 diags[i] = (β_mean = 0.0, β_frac_active = 0.0)
             else
                 _gaussian_lp!(ws.lp_opt, vmi_opt, σ_i)
@@ -505,12 +564,14 @@ function apply_mono_plus_regression!(
         @info "  sanity: Mono+_res(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
     end
 
-    (energies = collect(energies),
-     volumes  = ws.out_vols,
-     σ_lp_px  = (σ_lp_px isa Real ? Float64(σ_lp_px) : σ_vec),
-     E_noise_opt = Float64(E_noise_opt),
-     β_mean = [d.β_mean for d in diags],
-     β_frac_active = [d.β_frac_active for d in diags])
+    (
+        energies = collect(energies),
+        volumes = ws.out_vols,
+        σ_lp_px = (σ_lp_px isa Real ? Float64(σ_lp_px) : σ_vec),
+        E_noise_opt = Float64(E_noise_opt),
+        β_mean = [d.β_mean for d in diags],
+        β_frac_active = [d.β_frac_active for d in diags],
+    )
 end
 
 # ════════════════════════════════════════════════════════════════════════
@@ -565,23 +626,25 @@ larger = wider transplant = more denoising (until the LP base gets too coarse
 to hold per-rod HU).  All arguments as in `apply_mono_plus_regression!`.
 """
 function apply_mono_plus_structure!(
-        ws::MonoPlusWorkspace,
-        volumes::AbstractVector{<:AbstractArray{Float32, 3}},
-        energies::AbstractVector;
-        E_noise_opt::Real                    = 70.0,
-        σ_lp_px::Union{Real, AbstractVector} = 6.0,
-        window::Integer                      = 5,
-        beta_max::Real                       = 6.0,
-        verbose::Bool                        = true,
-        phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
-    )
+    ws::MonoPlusWorkspace,
+    volumes::AbstractVector{<:AbstractArray{Float32, 3}},
+    energies::AbstractVector;
+    E_noise_opt::Real = 70.0,
+    σ_lp_px::Union{Real, AbstractVector} = 6.0,
+    window::Integer = 5,
+    beta_max::Real = 6.0,
+    verbose::Bool = true,
+    phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
+)
     return apply_mono_plus_regression!(
-        ws, volumes, energies;
+        ws,
+        volumes,
+        energies;
         E_noise_opt = E_noise_opt,
-        σ_lp_px     = σ_lp_px,
-        window      = window,
-        beta_max    = beta_max,
-        verbose     = verbose,
+        σ_lp_px = σ_lp_px,
+        window = window,
+        beta_max = beta_max,
+        verbose = verbose,
         phantom_mask = phantom_mask,
     )
 end

@@ -7,31 +7,66 @@
 using Serialization: deserialize
 using Statistics: var
 
-const _BINNED_TABLE = joinpath(pkgdir(BS), "lib", "BasisMonteCarlo", "tables", "naeotom_alpha_cdte_binned2x2_v1.jls")
+const _BINNED_TABLE = joinpath(
+    pkgdir(BS),
+    "lib",
+    "BasisMonteCarlo",
+    "tables",
+    "naeotom_alpha_cdte_binned2x2_v1.jls",
+)
 
 function _alpha_air_draws(scanner)
-    air = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 2)), Dict{Int, Any}(0 => BS.XA.Materials.air), (0.1, 0.1, 0.1))
-    opts(seed) = BS.SimOptions(; use_scatter = false, use_heel_effect = false, use_focal_spot = false, seed)
+    air = BS.Phantom(
+        to_gpu(zeros(UInt8, 8, 8, 2)),
+        Dict{Int, Any}(0 => BS.XA.Materials.air),
+        (0.1, 0.1, 0.1),
+    )
+    opts(seed) = BS.SimOptions(;
+        use_scatter = false,
+        use_heel_effect = false,
+        use_focal_spot = false,
+        seed,
+    )
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 20.0, views = 40)
     recon = BS.ReconOptions(; matrix_size = (64, 64, 1), fov_cm = 10.0, z_cm = 0.2)
     ws = BS.create_workspace(scanner, protocol, opts(1), recon, air)
-    a = [copy(x) for x in BS.simulate!(ws, air, protocol, opts(1); report_dose = false).raw_counts]
+    a = [
+        copy(x)
+        for x in BS.simulate!(ws, air, protocol, opts(1); report_dose = false).raw_counts
+    ]
     b = BS.simulate!(ws, air, protocol, opts(2); report_dose = false).raw_counts
-    return (; ws, a = sum(Float64.(x) for x in a), b = sum(Float64.(x) for x in b), protocol)
+    return (; ws, a = sum(Float64.(x) for x in a), b = sum(
+        Float64.(x)
+        for x in b
+    ), protocol)
 end
 
 _quiet(s; kw...) = BS.PCCTScanner(
-    s; bowtie_filter = :none, pileup = false,
-    scatter_correction = false, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-    gain_spread = 0.0, threshold_spread_keV = 0.0, kw...
+    s;
+    bowtie_filter = :none,
+    pileup = false,
+    scatter_correction = false,
+    energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+    gain_spread = 0.0,
+    threshold_spread_keV = 0.0,
+    kw...,
 )
 
 @testset "NAEOTOM Alpha: standard and UHR modes" begin
-    std_mode = _alpha_air_draws(_quiet(BS.NAEOTOM_ALPHA; detector_cols = 48, detector_rows = 12))
-    uhr_mode = _alpha_air_draws(_quiet(BS.NAEOTOM_ALPHA_UHR; detector_cols = 96, detector_rows = 24))
+    std_mode = _alpha_air_draws(_quiet(
+        BS.NAEOTOM_ALPHA;
+        detector_cols = 48,
+        detector_rows = 12,
+    ))
+    uhr_mode = _alpha_air_draws(_quiet(
+        BS.NAEOTOM_ALPHA_UHR;
+        detector_cols = 96,
+        detector_rows = 24,
+    ))
 
     # a standard pixel is four native dexels: four times the counts in air
-    @test sum(std_mode.a) / length(std_mode.a) ≈ 4 * sum(uhr_mode.a) / length(uhr_mode.a) rtol = 2.0e-3
+    @test sum(std_mode.a) / length(std_mode.a) ≈
+        4 * sum(uhr_mode.a) / length(uhr_mode.a) rtol = 2.0e-3
 
     # UHR: each native dexel is Poisson; neighbours across the fan covary by their shared photons
     d = (uhr_mode.a .- uhr_mode.b) ./ sqrt(2)
@@ -49,11 +84,16 @@ _quiet(s; kw...) = BS.PCCTScanner(
     fano = sum(abs2, ds) / length(ds) / (sum(std_mode.a) / length(std_mode.a))
     t = deserialize(_BINNED_TABLE)
     e, w = BS.resolve_source_spectrum_without_bowtie(
-        BS.SimOptions(), std_mode.protocol; scanner = BS.NAEOTOM_ALPHA,
+        BS.SimOptions(),
+        std_mode.protocol;
+        scanner = BS.NAEOTOM_ALPHA,
     )
     wt = BS._table_weights(Float64.(t["energies_keV"]), e, w)
     types = [findfirst(==(s), t["type_labels"]) for s in t["type_map"]]
-    second = sum(wt[k] * sum(t["pair"][ty, k, 2, 2, 1, 1] for ty in types) for k in eachindex(wt))
+    second = sum(
+        wt[k] * sum(t["pair"][ty, k, 2, 2, 1, 1] for ty in types)
+        for k in eachindex(wt)
+    )
     mean_ = sum(wt[k] * sum(t["mean"][ty, k, 1] for ty in types) for k in eachindex(wt))
     @test fano > 1.05
     @test fano ≈ second / mean_ rtol = 0.03
@@ -76,7 +116,10 @@ function _noisy_mean_bias(scanner, phantom; behind = 0.0, draws = 2)
     # the noise-free counts and the rays of the set
     ws = BS.create_workspace(scanner, protocol, opts(1), recon, phantom)
     free = BS.simulate!(
-        ws, phantom, protocol, opts(1; noise = false);
+        ws,
+        phantom,
+        protocol,
+        opts(1; noise = false);
         report_dose = false,
         keep_projection = true,
     )
@@ -88,7 +131,10 @@ function _noisy_mean_bias(scanner, phantom; behind = 0.0, draws = 2)
     rel = zeros(draws * nv, length(λ))
     for d in 1:draws
         noisy = BS.simulate!(
-            ws, phantom, protocol, opts(1 + d);
+            ws,
+            phantom,
+            protocol,
+            opts(1 + d);
             report_dose = false,
             projection = free.projection,
         )
@@ -97,7 +143,8 @@ function _noisy_mean_bias(scanner, phantom; behind = 0.0, draws = 2)
             for v in 1:nv
                 on = view(rays, :, :, v)
                 expected = view(λ[b], :, :, v)[on]
-                rel[(d - 1) * nv + v, b] = sum(view(counts, :, :, v)[on] .- expected) / sum(expected)
+                rel[(d - 1) * nv + v, b] = sum(view(counts, :, :, v)[on] .- expected) /
+                    sum(expected)
             end
         end
     end
@@ -132,7 +179,10 @@ _ideal(s; kw...) = BS.PCCTScanner(
     materials = Dict{Int, Any}(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water)
     air = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 2)), materials, (0.1, 0.1, 0.1))
     water = let n = 64, c = (n + 1) / 2
-        mask = [hypot(i - c, j - c) * 0.5 <= 15.0 ? 0x01 : 0x00 for i in 1:n, j in 1:n, k in 1:2]
+        mask = [
+            hypot(i - c, j - c) * 0.5 <= 15.0 ? 0x01 : 0x00
+            for i in 1:n, j in 1:n, k in 1:2
+        ]
         BS.Phantom(to_gpu(mask), materials, (0.5, 0.5, 0.5))
     end
 
@@ -140,7 +190,7 @@ _ideal(s; kw...) = BS.PCCTScanner(
     # mean within 3σ, σ under 0.1 %
     for scanner in (standard, uhr)
         bias = [
-            _noisy_mean_bias(scanner, air);
+            _noisy_mean_bias(scanner, air)
             _noisy_mean_bias(scanner, water; behind = 3.5)
         ]
         for (μ, σ) in bias

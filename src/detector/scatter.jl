@@ -118,7 +118,9 @@ _device_copy(ref, x::AbstractArray) = copyto!(similar(ref, eltype(x), size(x)...
 # geometry, or `nothing` without either.
 _scatter_source(bowtie, heel, energies) = function (g::CTGeometry)
     E = Float64.(energies)
-    b = bowtie !== nothing && bowtie.name != "none" ? compute_bowtie_attenuation_spectral(bowtie, g, E) : nothing
+    b = bowtie !== nothing && bowtie.name != "none" ?
+        compute_bowtie_attenuation_spectral(bowtie, g, E) :
+        nothing
     h = heel !== nothing ? compute_heel_spectral(heel, g, E) : nothing
     return b === nothing ? h : (h === nothing ? b : b .* h)
 end
@@ -137,52 +139,60 @@ empty without the `correction`); `air`
 correction reads.
 """
 function _scatter_plan(
-        k::ScatterKernels,
-        geom::CTGeometry,
-        energies::AbstractVector,
-        weights::AbstractVector;
-        source,
-        detection::AbstractVector,
-        channels::AbstractMatrix,
-        measured_channels::Int,
-        correction::Bool,
-        air::AbstractMatrix,
-        materials,
-        ref,
-        T::Type,
-    )
+    k::ScatterKernels,
+    geom::CTGeometry,
+    energies::AbstractVector,
+    weights::AbstractVector;
+    source,
+    detection::AbstractVector,
+    channels::AbstractMatrix,
+    measured_channels::Int,
+    correction::Bool,
+    air::AbstractMatrix,
+    materials,
+    ref,
+    T::Type,
+)
     sad_mm, sdd_mm = geom.SAD * 10, geom.SDD * 10
-    if abs(sad_mm / k.source_to_isocenter_mm - 1) > 0.02 || abs(sdd_mm / k.source_to_detector_mm - 1) > 0.02
+    if abs(sad_mm / k.source_to_isocenter_mm - 1) > 0.02 ||
+            abs(sdd_mm / k.source_to_detector_mm - 1) > 0.02
         @warn "the scatter kernels \"$(k.name)\" were made for a source–isocentre distance of " *
             "$(k.source_to_isocenter_mm) mm and a source–detector distance of $(k.source_to_detector_mm) mm; " *
             "this scanner's are $(sad_mm) and $(sdd_mm) mm" maxlog = 1
     end
     E = Float64.(energies)
     w̄ = Float64.(weights) ./ sum(Float64.(weights))
-    outside = sum(w̄[(E .< first(k.energies_keV) - 0.5) .| (E .> last(k.energies_keV) + 0.5)])
-    outside > 1.0e-3 && @warn "$(round(100 * outside; digits = 1)) % of the spectrum lies outside the scatter " *
-        "kernels' $(first(k.energies_keV))–$(last(k.energies_keV)) keV; those photons take the nearest " *
-        "energy's kernels" maxlog = 1
+    outside = sum(w̄[
+        (E .< first(k.energies_keV) - 0.5) .| (E .> last(k.energies_keV) + 0.5),
+    ])
+    outside > 1.0e-3 &&
+        @warn "$(round(100 * outside; digits = 1)) % of the spectrum lies outside the scatter " *
+            "kernels' $(first(k.energies_keV))–$(last(k.energies_keV)) keV; those photons take the nearest " *
+            "energy's kernels" maxlog = 1
 
     # ─── The coarse rays: across the detector's fan, in groups of rows, every few views ───
     cc = column_center(Float64, geom)
     dexel_angle(c) = rad2deg(
-        is_arc(geom) ? (c - cc) * geom.pixel_size / geom.SAD : atan((c - cc) * geom.pixel_size / geom.SAD)
+        is_arc(geom) ?
+            (c - cc) * geom.pixel_size / geom.SAD :
+            atan((c - cc) * geom.pixel_size / geom.SAD),
     )
     γ_dexel = [dexel_angle(c) for c in 1:geom.n_cols]
     γ_min, γ_max = dexel_angle(0.5), dexel_angle(geom.n_cols + 0.5)
     n_cc = max(1, ceil(Int, (γ_max - γ_min) / _SCATTER_RAY_STEP_DEG))
     # a view's rays describe its patient (the ellipse, the strips): one ray describes none
-    n_cc >= 2 || throw(
-        ArgumentError(
-            "the scatter superposition needs a fan of at least two coarse rays ($(2 * _SCATTER_RAY_STEP_DEG)°); this detector spans $(γ_max - γ_min)°"
-        )
-    )
+    n_cc >= 2 ||
+        throw(ArgumentError(
+            "the scatter superposition needs a fan of at least two coarse rays ($(2 * _SCATTER_RAY_STEP_DEG)°); this detector spans $(γ_max - γ_min)°",
+        ))
     Δγ = (γ_max - γ_min) / n_cc
     angle_deg = [γ_min + (i - 0.5) * Δγ for i in 1:n_cc]
 
     mag = geom.SDD / geom.SAD
-    z_dexel = [(r - (geom.n_rows + 1) / 2) * geom.pixel_row_size * 10 * mag for r in 1:geom.n_rows]
+    z_dexel = [
+        (r - (geom.n_rows + 1) / 2) * geom.pixel_row_size * 10 * mag
+        for r in 1:geom.n_rows
+    ]
     width = geom.n_rows * geom.pixel_row_size * 10 * mag
     rows_lib = k.row_edges_mm
     row_bin = rows_lib[2] - rows_lib[1]
@@ -192,7 +202,7 @@ function _scatter_plan(
     z_mm = z_lo .+ h / 2
     row_share = [
         max(0.0, min(rows_lib[r + 1], z_lo[g] + h) - max(rows_lib[r], z_lo[g])) / row_bin
-            for r in 1:(length(rows_lib) - 1), g in 1:n_g
+        for r in 1:(length(rows_lib) - 1), g in 1:n_g
     ]
 
     n_v = geom.n_angles
@@ -236,8 +246,10 @@ function _scatter_plan(
         fp_rows[:, g] .= (first(inside), last(inside))
     end
     footprint_mean(A, i, g) = sum(
-        A[c, r] for c in fp_cols[1, i]:fp_cols[2, i], r in fp_rows[1, g]:fp_rows[2, g]
-    ) / ((fp_cols[2, i] - fp_cols[1, i] + 1) * (fp_rows[2, g] - fp_rows[1, g] + 1))
+        A[c, r]
+        for c in fp_cols[1, i]:fp_cols[2, i], r in fp_rows[1, g]:fp_rows[2, g]
+    ) /
+        ((fp_cols[2, i] - fp_cols[1, i] + 1) * (fp_rows[2, g] - fp_rows[1, g] + 1))
 
     # ─── Every coarse ray's photons, and the weights of the signal it measures ───
     # `spectrum[e, i, g]`: the photons of each spectral energy, the ray's share of a library bin;
@@ -270,14 +282,18 @@ function _scatter_plan(
         used = findall(!iszero, view(lib_share, :, g))
         lib_range[:, g] .= isempty(used) ? (1, 0) : (first(used), last(used))
     end
-    photons = [spectrum[e, i, g] * channels[e, ch] for e in 1:nE, ch in 1:n_ch, i in 1:n_cc, g in 1:n_g]
+    photons = [
+        spectrum[e, i, g] * channels[e, ch]
+        for e in 1:nE, ch in 1:n_ch, i in 1:n_cc, g in 1:n_g
+    ]
     # through water, every process weighed alike
     water_photons = zeros(nE_lib, n_ch, n_cc, n_g)
     for g in 1:n_g, i in 1:n_cc, ch in 1:n_ch, e in 1:nE
         base = photons[e, ch, i, g]
         base == 0 && continue
         for gl in 1:nE_lib
-            lib_share[e, gl] == 0 || (water_photons[gl, ch, i, g] += base * lib_share[e, gl])
+            lib_share[e, gl] == 0 ||
+                (water_photons[gl, ch, i, g] += base * lib_share[e, gl])
         end
     end
     air_coarse = [footprint_mean(air, i, g) for i in 1:n_cc, g in 1:n_g]
@@ -292,7 +308,11 @@ function _scatter_plan(
     all_bins = eachindex(k.scatter_angle_edges_deg[2:end])
     band_keV(b) = max(1, 5(b - 1)):min(150, 5b - 1)
     nbands = size(k.paths, 1)
-    band_mu_of(m) = [sum(compute_μ_at_energy(m, Float64(x)) / 10 for x in band_keV(b)) / length(band_keV(b)) for b in 1:nbands]
+    band_mu_of(m) = [
+        sum(compute_μ_at_energy(m, Float64(x)) / 10 for x in band_keV(b)) /
+            length(band_keV(b))
+        for b in 1:nbands
+    ]
     n_m = length(materials)
     compton_water = [μ(water, Ek, XA.IncoherentScattering()) for Ek in E]
     rayleigh_water = [μ(water, Ek, XA.CoherentScattering()) for Ek in E]
@@ -322,7 +342,9 @@ function _scatter_plan(
         band_mu = band_mu_of(m)
         wet_per_mm[j] = mu70 / mu70_water
         dmu[j, :] .= band_mu .- band_mu_water .* wet_per_mm[j]
-        like_water = all(==(1.0), view(ratio, j, :, :)) && band_mu == band_mu_water && mu70 == mu70_water
+        like_water = all(==(1.0), view(ratio, j, :, :)) &&
+            band_mu == band_mu_water &&
+            mu70 == mu70_water
         kind[j] = density < _SCATTER_GAS_DENSITY ? 0 : like_water ? 1 : 2
     end
     # What the rays need from the walk is linear in each material's path length: its water-equivalent
@@ -341,12 +363,14 @@ function _scatter_plan(
     ray_maps = [_bin_bracket(cols, γ) for γ in angle_deg]
     group_maps = [_bin_bracket(rows_lib, z) for z in z_mm]
     nlc, nlr = length(cols) - 1, length(rows_lib) - 1
-    all(≈(cols[2] - cols[1]), diff(cols)) || throw(
-        ArgumentError(
-            "the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform"
-        )
-    )
-    nE_lib <= 64 || throw(ArgumentError("the scatter kernels \"$(k.name)\" have $(nE_lib) energies; the superposition takes at most 64"))
+    all(≈(cols[2] - cols[1]), diff(cols)) ||
+        throw(ArgumentError(
+            "the scatter kernels \"$(k.name)\" have columns of unequal widths; the superposition needs them uniform",
+        ))
+    nE_lib <= 64 ||
+        throw(ArgumentError(
+            "the scatter kernels \"$(k.name)\" have $(nE_lib) energies; the superposition takes at most 64",
+        ))
     device_int(v) = _device_copy(ref, Int32.(v))
     device_real(v) = _device_copy(ref, T.(v))
     # the library itself as it is (Float32): on the host, the kernels' own arrays
@@ -354,7 +378,9 @@ function _scatter_plan(
     pair(maps) = device_int(reduce(hcat, [[m[1], m[2]] for m in maps]))
     # each value as the two floats of the workspace's type that sum to it
     float_pairs(x) = reduce(hcat, [[T(v), T(v - T(v))] for v in x])
-    node_deg = rad2deg.(asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1)))
+    node_deg = rad2deg.(
+        asin.(clamp.(vec(k.node_offsets_mm) ./ k.source_to_isocenter_mm, -1, 1)),
+    )
     sid = k.source_to_isocenter_mm
 
     # The rays' own single scatter: the quadrature's tables, in the workspace's type (water's
@@ -365,9 +391,17 @@ function _scatter_plan(
         rows = rows_lib,
         sdd = k.source_to_detector_mm,
         energies = k.energies_keV,
-        water = (mu = k.water_mu_per_mm, compton = k.water_compton_per_mm, rayleigh = k.water_rayleigh_per_mm),
+        water = (
+            mu = k.water_mu_per_mm,
+            compton = k.water_compton_per_mm,
+            rayleigh = k.water_rayleigh_per_mm,
+        ),
         water_pdf = k.water_pdf,
-        detector = (efficiency = k.efficiency, mu = k.detector_mu_per_mm, depth = k.detector_depth_mm),
+        detector = (
+            efficiency = k.efficiency,
+            mu = k.detector_mu_per_mm,
+            depth = k.detector_depth_mm,
+        ),
         energy_weighted = k.energy_weighted,
         grid = k.grid,
         grid_height = k.grid_height_mm,
@@ -377,7 +411,10 @@ function _scatter_plan(
     )
     C = k.single_scatter.columns_each_side
     n_win = k.grid === :none ? nlc : min(nlc, 2C + 1)
-    window0 = [k.grid === :none ? 0 : clamp(searchsortedlast(cols, γ), 1, nlc) - C - 1 for γ in angle_deg]
+    window0 = [
+        k.grid === :none ? 0 : clamp(searchsortedlast(cols, γ), 1, nlc) - C - 1
+        for γ in angle_deg
+    ]
     xs = [sid * sind(γ) for γ in angle_deg]
     ray_pairs, boundary_pairs = _ray_pairs(T, angle_deg, sid)
 
@@ -391,15 +428,13 @@ function _scatter_plan(
         impacts = device_real(k.impact_fractions),
         cols = device_real(cols),
         column_width = T(cols[2] - cols[1]),
-        grid = T.(
-            (
-                first(k.thicknesses_mm),
-                last(k.thicknesses_mm),
-                first(k.aspects),
-                last(k.aspects),
-                last(k.impact_fractions),
-            )
-        ),
+        grid = T.((
+            first(k.thicknesses_mm),
+            last(k.thicknesses_mm),
+            first(k.aspects),
+            last(k.aspects),
+            last(k.impact_fractions),
+        )),
         sid2 = _pair(T, sid),
         π2 = _pair(T, Float64(π)),
         single = map(x -> x isa AbstractArray ? _device_copy(ref, x) : x, tables),
@@ -424,7 +459,9 @@ function _scatter_plan(
         air = device_real(air_coarse),
         kind = _device_copy(ref, kind),
         lanes_Ct = lanes.Ct === nothing ? nothing : device_real(_pad_lanes(lanes.Ct)),
-        lanes_Gt = lanes.G === nothing ? nothing : device_real(permutedims(lanes.Ct === nothing ? lanes.G : _pad_lanes(lanes.G))),
+        lanes_Gt = lanes.G === nothing ?
+            nothing :
+            device_real(permutedims(lanes.Ct === nothing ? lanes.G : _pad_lanes(lanes.G))),
         other = any(==(2), kind),
         ray_cols = pair(ray_maps),
         ray_col_w = device_real(last.(ray_maps)),
@@ -432,14 +469,17 @@ function _scatter_plan(
         group_row_w = device_real(last.(group_maps)),
     )
     n_ray = n_cc * n_g * n_cv
-    n_chunk = n_cc * n_g * clamp(_SCATTER_CHUNK_RAYS ÷ (n_cc * n_g), 1, n_cv)       # whole views
+    # whole views
+    n_chunk = n_cc * n_g * clamp(_SCATTER_CHUNK_RAYS ÷ (n_cc * n_g), 1, n_cv)
     # the forward model's ellipses: the water-equivalent one, and the outline's through a material
     # other than water (`_scatter_forward!`), their single scatters' weights side by side
     n_ellipses = ray_consts.other ? 2 : 1
     scratch = (;
         # every ray's features (`[feature, column, group, view]`): the lane sums themselves with a
         # lane per feature, else the lane sums times the features (one matrix product)
-        features = lanes.G === nothing ? nothing : similar(ref, T, size(lanes.G, 2), n_cc, n_g, n_cv),
+        features = lanes.G === nothing ?
+            nothing :
+            similar(ref, T, size(lanes.G, 2), n_cc, n_g, n_cv),
         wet = similar(ref, T, n_cc, n_g, n_cv),
         outline = similar(ref, T, n_cc, n_g, n_cv),
         plain = similar(ref, Bool, n_ray),
@@ -466,10 +506,24 @@ function _scatter_plan(
         angle_deg,
         z_mm,
         Float64.(channels),
-        similar(ref, T, lanes.Ct === nothing ? size(lanes.G, 1) : _lane_rows(size(lanes.Ct, 1)), n_cc, n_g, n_cv),
+        similar(
+            ref,
+            T,
+            lanes.Ct === nothing ? size(lanes.G, 1) : _lane_rows(size(lanes.Ct, 1)),
+            n_cc,
+            n_g,
+            n_cv,
+        ),
         correction ? similar(ref, T, n_cc, n_g, n_cv) : similar(ref, T, 0, 0, 0),
         fill!(similar(ref, T, nlc, nlr, n_ch, n_cv), zero(T)),
-        fill!(similar(ref, T, (correction ? (nlc, nlr, measured_channels, n_cv) : (0, 0, 0, 0))...), zero(T)),
+        fill!(
+            similar(
+                ref,
+                T,
+                (correction ? (nlc, nlr, measured_channels, n_cv) : (0, 0, 0, 0))...,
+            ),
+            zero(T),
+        ),
         device_int(vec(fp_cols)),
         device_int(vec(fp_rows)),
         device_int(views),
@@ -518,16 +572,24 @@ function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
     n_m = length(kind)
     solid = kind .!= 0
     F = hcat(
-        wet_per_mm .* solid, Float64.(solid), Float64.(kind .== 2), dmu .* solid,
+        wet_per_mm .* solid,
+        Float64.(solid),
+        Float64.(kind .== 2),
+        dmu .* solid,
         reshape(ratio, n_m, :) .* solid,
     )
     Q = size(F, 2)
-    n_m <= _DIRECT_MAX_MATERIALS[] && return (Ct = nothing, G = F)        # a lane per material, selected
+    # a lane per material, selected
+    n_m <= _DIRECT_MAX_MATERIALS[] && return (Ct = nothing, G = F)
     rest = F[:, 4:Q]
     scale = [max(maximum(abs, c), floatmin(Float64)) for c in eachcol(rest)]
     restn = rest ./ scale'
     f = svd(restn)
-    residual(r) = maximum(abs, f.U[:, 1:r] * Diagonal(f.S[1:r]) * f.V[:, 1:r]' .- restn; init = 0.0)
+    residual(r) = maximum(
+        abs,
+        f.U[:, 1:r] * Diagonal(f.S[1:r]) * f.V[:, 1:r]' .- restn;
+        init = 0.0,
+    )
     r = min(count(>(_SCATTER_SVD_TOL * f.S[1]), f.S), length(f.S))
     while r < min(length(f.S), _PLEN_MAX_MATERIALS - 3) && residual(r) > 1.0e-7
         r += 1
@@ -539,7 +601,9 @@ function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
         G[4:(3 + r), 4:Q] = permutedims(f.V[:, 1:r] .* scale)
         return (; Ct, G)
     end
-    return n_m <= Q ? (Ct = Matrix{Float64}(I, n_m, n_m), G = F) : (Ct = permutedims(F), G = nothing)
+    return n_m <= Q ?
+        (Ct = Matrix{Float64}(I, n_m, n_m), G = F) :
+        (Ct = permutedims(F), G = nothing)
 end
 
 const _SCATTER_SVD_TOL = 1.0e-8
@@ -561,9 +625,14 @@ function _scatter_phantom_rays!(p::ScatterPlan, F)
     s = p.scratch
     Q = size(F, 1)
     nb = size(s.dmu, 1)
-    let wet = s.wet, outline = s.outline, plain = s.plain, dmu = s.dmu, F = F, Q = Q, nb = nb
+    let wet = s.wet,
+        outline = s.outline,
+        plain = s.plain,
+        dmu = s.dmu,
+        F = F,
+        Q = Q,
+        nb = nb
         AK.foreachindex(wet) do ray
-            T = eltype(wet)
             base = Q * (ray - 1)
             w = 10 * F[1 + base]
             wet[ray] = w
@@ -592,9 +661,23 @@ function _scatter_weights!(p::ScatterPlan, n_used::Int, ray0::Int, n_rays::Int)
     Q = size(F, 1)
     nE = size(r.photons, 1)
     nb = size(s.dmu, 1)
-    let weights = s.weights, wet = s.wet, plain = s.plain, F = F, water = r.water_photons,
-            photons = r.photons, lib_share = r.lib_share, lib_range = r.lib_range,
-            nE_lib = nE_lib, n_ch = n_ch, n_cc = n_cc, n_g = n_g, Q = Q, nE = nE, nb = nb, n_used = n_used, ray0 = ray0
+    let weights = s.weights,
+        wet = s.wet,
+        plain = s.plain,
+        F = F,
+        water = r.water_photons,
+        photons = r.photons,
+        lib_share = r.lib_share,
+        lib_range = r.lib_range,
+        nE_lib = nE_lib,
+        n_ch = n_ch,
+        n_cc = n_cc,
+        n_g = n_g,
+        Q = Q,
+        nE = nE,
+        nb = nb,
+        n_used = n_used,
+        ray0 = ray0
         _foreachindex(1:(nE_lib * 3 * n_ch * n_rays), AK.get_backend(weights)) do idx
             T = eltype(weights)
             q = idx - 1
@@ -666,14 +749,14 @@ end
 # by side in its channels); with `single = false` it is the last call's (`scratch.single`), not
 # computed again.
 function _superpose!(
-        out::AbstractArray,
-        p::ScatterPlan,
-        ellipses::Tuple,
-        outline::AbstractArray,
-        v0::Int,
-        n_v::Int;
-        single::Bool = true,
-    )
+    out::AbstractArray,
+    p::ScatterPlan,
+    ellipses::Tuple,
+    outline::AbstractArray,
+    v0::Int,
+    n_v::Int;
+    single::Bool = true,
+)
     s, lib, r = p.scratch, p.library, p.rays
     n_used = size(out, 3)
     n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
@@ -683,7 +766,16 @@ function _superpose!(
     # each ellipse's rays, and the chunk's photons by library energy
     for (e, lengths) in enumerate(ellipses)
         _scatter_ellipses!(s.ellipse[e], r.xs, r.dxs, lengths)
-        _scatter_ray_shapes!(s.shapes[e], s.clamped, s.wet, s.ellipse[e], r.xs, r.angle_deg, lib.grid, e == 1)
+        _scatter_ray_shapes!(
+            s.shapes[e],
+            s.clamped,
+            s.wet,
+            s.ellipse[e],
+            r.xs,
+            r.angle_deg,
+            lib.grid,
+            e == 1,
+        )
     end
     _scatter_weights!(p, n_used, ray0, n_rays)
 
@@ -693,7 +785,16 @@ function _superpose!(
         _scatter_strips!(s.strips, r.pairs, s.wet, outline, lib.sid2, lib.π2)
         for e in n_e:-1:1
             _superpose_corners!(p, e, n_used, ray0, n_rays)
-            _scatter_single_weights!(s.own, s.corner_weight, s.mix, s.plain, n_used, (e - 1) * n_used, ray0, n_rays)
+            _scatter_single_weights!(
+                s.own,
+                s.corner_weight,
+                s.mix,
+                s.plain,
+                n_used,
+                (e - 1) * n_used,
+                ray0,
+                n_rays,
+            )
         end
         _scatter_single!(
             s.single,
@@ -745,9 +846,10 @@ end
 function _warn_clamped(p::ScatterPlan)
     k = p.kernels
     n = Int(sum(p.scratch.clamped))
-    n > 0 && @warn "scatter: $(n) rays' ellipses lie outside the kernels' " *
-        "$(first(k.thicknesses_mm))–$(last(k.thicknesses_mm)) mm and aspects " *
-        "$(first(k.aspects))–$(last(k.aspects)); the nearest kernels stand in" maxlog = 1
+    n > 0 &&
+        @warn "scatter: $(n) rays' ellipses lie outside the kernels' " *
+            "$(first(k.thicknesses_mm))–$(last(k.thicknesses_mm)) mm and aspects " *
+            "$(first(k.aspects))–$(last(k.aspects)); the nearest kernels stand in" maxlog = 1
     return n
 end
 
@@ -759,9 +861,17 @@ path length along the coarse rays, then the superposition (`view = :mean`). Fill
 the device.
 """
 function _scatter_forward!(p::ScatterPlan, phantom)
-    extent = hasproperty(phantom, :extent) && phantom.extent !== nothing ? Tuple(Float64.(phantom.extent)) : nothing
+    extent = hasproperty(phantom, :extent) && phantom.extent !== nothing ?
+        Tuple(Float64.(phantom.extent)) :
+        nothing
     s = p.scratch
-    dd_fast_lane_sums!(p.paths, phantom.mask, p.geom, p.rays.lanes_Ct; volume_extent = extent)
+    dd_fast_lane_sums!(
+        p.paths,
+        phantom.mask,
+        p.geom,
+        p.rays.lanes_Ct;
+        volume_extent = extent,
+    )
     _scatter_phantom_rays!(p, _scatter_features!(p))
     fill!(s.clamped, Int32(0))
     # the geometric mean with the outline's ellipse, which is another only through a material other
@@ -783,9 +893,22 @@ function _scatter_water_lengths!(p::ScatterPlan, photons::Real, subtract::Bool)
     n_cc, n_g = size(s.wet, 1), size(s.wet, 2)
     nE = size(r.detected, 1)
     photons = eltype(s.wet)(photons)
-    let wet = s.wet, measured = p.measured, estimate = p.estimate, air = r.air, detected = r.detected,
-            μ = r.water_mu_per_mm, rc = r.ray_cols, rcw = r.ray_col_w, gr = r.group_rows, grw = r.group_row_w,
-            n_cc = n_cc, n_g = n_g, nE = nE, n_est = size(p.estimate, 3), photons = photons, subtract = subtract
+    let wet = s.wet,
+        measured = p.measured,
+        estimate = p.estimate,
+        air = r.air,
+        detected = r.detected,
+        μ = r.water_mu_per_mm,
+        rc = r.ray_cols,
+        rcw = r.ray_col_w,
+        gr = r.group_rows,
+        grw = r.group_row_w,
+        n_cc = n_cc,
+        n_g = n_g,
+        nE = nE,
+        n_est = size(p.estimate, 3),
+        photons = photons,
+        subtract = subtract
         AK.foreachindex(wet) do ray
             T = eltype(wet)
             o = one(T)
@@ -798,8 +921,16 @@ function _scatter_water_lengths!(p::ScatterPlan, photons::Real, subtract::Bool)
                 c0, c1, wc = rc[1, i], rc[2, i], rcw[i]
                 r0, r1, wr = gr[1, g], gr[2, g], grw[g]
                 for ch in 1:n_est
-                    scatter += (o - wr) * ((o - wc) * estimate[c0, r0, ch, v] + wc * estimate[c1, r0, ch, v]) +
-                        wr * ((o - wc) * estimate[c0, r1, ch, v] + wc * estimate[c1, r1, ch, v])
+                    scatter += (o - wr) *
+                        (
+                            (o - wc) * estimate[c0, r0, ch, v] +
+                                wc * estimate[c1, r0, ch, v]
+                        ) +
+                        wr *
+                            (
+                                (o - wc) * estimate[c0, r1, ch, v] +
+                                    wc * estimate[c1, r1, ch, v]
+                            )
                 end
             end
             t = (measured[ray] / photons - scatter) / max(air[i, g], T(1.0e-30))
@@ -864,20 +995,28 @@ end
 # view]`; with `i0` (`[cols, rows, …]`), of the counts `i0[col, row, plane] · exp(-src)`, added to
 # what `out` holds.
 function _reduce_footprints!(
-        out::AbstractArray{T, 3},
-        p::ScatterPlan,
-        src::AbstractArray{T, 3};
-        i0 = nothing,
-        plane::Int = 1,
-        accumulate::Bool = false,
-    ) where {T}
+    out::AbstractArray{T, 3},
+    p::ScatterPlan,
+    src::AbstractArray{T, 3};
+    i0 = nothing,
+    plane::Int = 1,
+    accumulate::Bool = false,
+) where {T}
     accumulate || fill!(out, zero(T))
     n_cc, n_g = Int32(size(out, 1)), Int32(size(out, 2))
     nc, nr = Int32(size(src, 1)), Int32(size(src, 2))
     has_i0 = i0 !== nothing
-    let out = out, src = src, fc = p.footprint_cols, fr = p.footprint_rows, vi = p.view_index,
-            i0 = has_i0 ? i0 : p.col_w, h = has_i0, off = Int32(plane - 1) * nc * nr,
-            n_cc = n_cc, n_g = n_g, nc = nc
+    let out = out,
+        src = src,
+        fc = p.footprint_cols,
+        fr = p.footprint_rows,
+        vi = p.view_index,
+        i0 = has_i0 ? i0 : p.col_w,
+        h = has_i0,
+        off = Int32(plane - 1) * nc * nr,
+        n_cc = n_cc,
+        n_g = n_g,
+        nc = nc
         AK.foreachindex(out) do idx
             q = Int32(idx - 1)
             i = q % n_cc + Int32(1)
@@ -913,11 +1052,26 @@ end
 
 # An energy integrator's signal with the scatter added: S₁ (as `-log S₁` in `sinogram`) and the
 # dispersion S₂/S₁.
-function _add_eict_scatter!(sinogram::AbstractArray{T, 3}, dispersion::AbstractArray{T, 3}, p::ScatterPlan) where {T}
+function _add_eict_scatter!(
+    sinogram::AbstractArray{T, 3},
+    dispersion::AbstractArray{T, 3},
+    p::ScatterPlan,
+) where {T}
     nc, nr = Int32(size(sinogram, 1)), Int32(size(sinogram, 2))
-    let s = sinogram, d = dispersion, F = p.field, cl = p.col_lo, chi = p.col_hi, cw = p.col_w,
-            rl = p.row_lo, rh = p.row_hi, rw = p.row_w, vl = p.view_lo, vh = p.view_hi, vw = p.view_w,
-            nc = nc, nr = nr
+    let s = sinogram,
+        d = dispersion,
+        F = p.field,
+        cl = p.col_lo,
+        chi = p.col_hi,
+        cw = p.col_w,
+        rl = p.row_lo,
+        rh = p.row_hi,
+        rw = p.row_w,
+        vl = p.view_lo,
+        vh = p.view_hi,
+        vw = p.view_w,
+        nc = nc,
+        nr = nr
         AK.foreachindex(s) do idx
             q = Int32(idx - 1)
             col = q % nc + Int32(1)
@@ -936,11 +1090,26 @@ end
 
 # An energy integrator's DAS: the measured signal (`sinogram`, relative to `I0v`) less the
 # estimated scatter, held at one quantum, as a log line integral.
-function _subtract_eict_scatter!(sinogram::AbstractArray{T, 3}, p::ScatterPlan, I0v::T) where {T}
+function _subtract_eict_scatter!(
+    sinogram::AbstractArray{T, 3},
+    p::ScatterPlan,
+    I0v::T,
+) where {T}
     nc, nr = Int32(size(sinogram, 1)), Int32(size(sinogram, 2))
-    let s = sinogram, F = p.estimate, cl = p.col_lo, chi = p.col_hi, cw = p.col_w,
-            rl = p.row_lo, rh = p.row_hi, rw = p.row_w, vl = p.view_lo, vh = p.view_hi, vw = p.view_w,
-            nc = nc, nr = nr, floor = one(T) / I0v
+    let s = sinogram,
+        F = p.estimate,
+        cl = p.col_lo,
+        chi = p.col_hi,
+        cw = p.col_w,
+        rl = p.row_lo,
+        rh = p.row_hi,
+        rw = p.row_w,
+        vl = p.view_lo,
+        vh = p.view_hi,
+        vw = p.view_w,
+        nc = nc,
+        nr = nr,
+        floor = one(T) / I0v
         AK.foreachindex(s) do idx
             q = Int32(idx - 1)
             col = q % nc + Int32(1)
@@ -956,22 +1125,45 @@ end
 # A photon counter's bins with the scatter added (`sign = 1`, the expected counts before
 # detection) or the estimate subtracted (`sign = -1`, held at one count): `I0[col, row, b]` is
 # each ray's air response, `photons` the incident photons per pixel the fields are relative to.
-function _pcct_scatter!(bins, I0::AbstractArray{T, 3}, p::ScatterPlan, photons::Real, sign::Int) where {T}
+function _pcct_scatter!(
+    bins,
+    I0::AbstractArray{T, 3},
+    p::ScatterPlan,
+    photons::Real,
+    sign::Int,
+) where {T}
     nc, nr = Int32(size(I0, 1)), Int32(size(I0, 2))
     m = nc * nr
     F = sign > 0 ? p.field : p.estimate
     floor = sign > 0 ? T(1.0e-30) : one(T)
     for (b, bin) in enumerate(bins)
-        let s = bin, i0 = I0, F = F, cl = p.col_lo, chi = p.col_hi, cw = p.col_w,
-                rl = p.row_lo, rh = p.row_hi, rw = p.row_w, vl = p.view_lo, vh = p.view_hi, vw = p.view_w,
-                nc = nc, nr = nr, m = m, off = Int32(b - 1) * m, ch = Int32(b), n = T(sign * photons), floor = floor
+        let s = bin,
+            i0 = I0,
+            F = F,
+            cl = p.col_lo,
+            chi = p.col_hi,
+            cw = p.col_w,
+            rl = p.row_lo,
+            rh = p.row_hi,
+            rw = p.row_w,
+            vl = p.view_lo,
+            vh = p.view_hi,
+            vw = p.view_w,
+            nc = nc,
+            nr = nr,
+            m = m,
+            off = Int32(b - 1) * m,
+            ch = Int32(b),
+            n = T(sign * photons),
+            floor = floor
             AK.foreachindex(s) do idx
                 q = Int32(idx - 1)
                 col = q % nc + Int32(1)
                 row = (q ÷ nc) % nr + Int32(1)
                 iv = q ÷ m + Int32(1)
                 i0b = i0[q % m + Int32(1) + off]
-                N = i0b * exp(-s[idx]) + n * _field_at(F, ch, col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
+                N = i0b * exp(-s[idx]) +
+                    n * _field_at(F, ch, col, row, iv, cl, chi, cw, rl, rh, rw, vl, vh, vw)
                 s[idx] = -log(max(N, floor) / i0b)
             end
         end

@@ -34,20 +34,23 @@ sum to less than one: piled-up pulses are lost, or counted in a higher bin. Memo
 argument set ([`empty_pileup_cache!`](@ref)).
 """
 function compute_mc_pileup_matrix(
-        thresholds_keV::AbstractVector{<:Real},
-        spectrum_weights::AbstractVector{<:Real},
-        energies::AbstractVector{<:Real},
-        count_rate::Real,
-        dead_time_ns::Real;
-        n_pulses::Integer = 200_000,
-        seed::Integer = 42,
-    )
-    key = hash(
-        (
-            Float64.(thresholds_keV), Float64.(spectrum_weights), Float64.(energies),
-            Float64(count_rate), Float64(dead_time_ns), n_pulses, seed,
-        )
-    )
+    thresholds_keV::AbstractVector{<:Real},
+    spectrum_weights::AbstractVector{<:Real},
+    energies::AbstractVector{<:Real},
+    count_rate::Real,
+    dead_time_ns::Real;
+    n_pulses::Integer = 200_000,
+    seed::Integer = 42,
+)
+    key = hash((
+        Float64.(thresholds_keV),
+        Float64.(spectrum_weights),
+        Float64.(energies),
+        Float64(count_rate),
+        Float64(dead_time_ns),
+        n_pulses,
+        seed,
+    ))
     cached = lock(() -> get(_PILEUP_MATRIX_CACHE, key, nothing), _PILEUP_MATRIX_LOCK)
     cached === nothing || return copy(cached)
 
@@ -55,14 +58,21 @@ function compute_mc_pileup_matrix(
     thr = Float64.(thresholds_keV)
     nb = length(thr)
     w = _table_weights(pu.energies, energies, spectrum_weights)
-    H = vec(sum(w .* pu.heights; dims = 1))                 # pulses per photon, per height bin
+    # pulses per photon, per height bin
+    H = vec(sum(w .* pu.heights; dims = 1))
     per_photon = sum(H)
-    rate_ns = Float64(count_rate) * per_photon * 1.0e-9     # pulses per ns
+    rate_ns = Float64(count_rate) * per_photon * 1.0e-9 # pulses per ns
     S = Matrix{Float64}(I, nb, nb)
     if rate_ns > 0 && per_photon > 0
         S = _comparator_migration(
-            thr, H ./ per_photon, pu.edges, rate_ns, Float64(dead_time_ns),
-            pu.shaper_fwhm_ns / _CRRC_FWHM_PER_TAU, Int(n_pulses), MersenneTwister(seed),
+            thr,
+            H ./ per_photon,
+            pu.edges,
+            rate_ns,
+            Float64(dead_time_ns),
+            pu.shaper_fwhm_ns / _CRRC_FWHM_PER_TAU,
+            Int(n_pulses),
+            MersenneTwister(seed),
         )
     end
     lock(() -> (_PILEUP_MATRIX_CACHE[key] = copy(S)), _PILEUP_MATRIX_LOCK)
@@ -76,24 +86,29 @@ function _comparator_migration(thr, p_height, edges, rate_ns, dead_ns, τ, n, rn
     cdf = cumsum(p_height)
     centres = (edges[1:(end - 1)] .+ edges[2:end]) ./ 2
     t = cumsum(randexp(rng, n) ./ rate_ns)
-    h = [centres[min(searchsortedfirst(cdf, rand(rng) * cdf[end]), length(centres))] for _ in 1:n]
-    bin_of(x) = searchsortedlast(thr, x)                    # 0 below the lowest threshold
+    h = [
+        centres[min(searchsortedfirst(cdf, rand(rng) * cdf[end]), length(centres))]
+        for _ in 1:n
+    ]
+    bin_of(x) = searchsortedlast(thr, x) # 0 below the lowest threshold
     truth = zeros(nb)
     for x in h
         b = bin_of(x)
         b > 0 && (truth[b] += 1)
     end
 
-    reach = 10τ                                             # a pulse is spent after 10 τ
+    reach = 10τ # a pulse is spent after 10 τ
     dt = τ / 16
     peaks_t, peaks_s, peaks_bin = Float64[], Float64[], Int[]
     i = 1
     while i <= n
-        j = i                                               # the cluster of overlapping pulses
+        # the cluster of overlapping pulses
+        j = i
         while j < n && t[j + 1] - t[j] < reach
             j += 1
         end
-        if j == i                                           # an isolated pulse peaks at its height, τ after it
+        # an isolated pulse peaks at its height, τ after it
+        if j == i
             push!(peaks_t, t[i] + τ)
             push!(peaks_s, h[i])
             push!(peaks_bin, bin_of(h[i]))
@@ -124,7 +139,7 @@ function _comparator_migration(thr, p_height, edges, rate_ns, dead_ns, τ, n, rn
         i = j + 1
     end
 
-    C = zeros(nb, nb)                                       # counts at comparator k, by bin
+    C = zeros(nb, nb) # counts at comparator k, by bin
     for k in 1:nb
         last = -Inf
         for (x, s, b) in zip(peaks_t, peaks_s, peaks_bin)
@@ -188,18 +203,30 @@ numbers), so the family is smooth in both. A dexel takes the matrix bilinear in 
 its mean bin. With one threshold the spectrum cannot be told apart, and the family has the source
 spectrum only (twice, so that it still has two hardness nodes).
 """
-function pileup_family(thresholds_keV, spectrum_weights, energies, rate_max::Real, dead_time_ns::Real)
+function pileup_family(
+    thresholds_keV,
+    spectrum_weights,
+    energies,
+    rate_max::Real,
+    dead_time_ns::Real,
+)
     thr = Float64.(thresholds_keV)
     nb = length(thr)
     e = Float64.(energies)
     w0 = Float64.(spectrum_weights) ./ sum(spectrum_weights)
-    μ = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(XA.Materials.water, x * u"keV")) for x in e]
+    μ = [
+        ustrip(u"cm^-1", XA.linear_attenuation_coeff(XA.Materials.water, x * u"keV"))
+        for x in e
+    ]
     cms = nb > 1 ? collect(PILEUP_HARDENING_CM) : [0.0, 0.0]
     spectra = map(cms) do t
         w = w0 .* exp.(.-μ .* t)
         w ./ sum(w)
     end
-    step = max(PILEUP_RATE_STEP_TAU / (Float64(dead_time_ns) * 1.0e-9), Float64(rate_max) / (PILEUP_MAX_RATES - 1))
+    step = max(
+        PILEUP_RATE_STEP_TAU / (Float64(dead_time_ns) * 1.0e-9),
+        Float64(rate_max) / (PILEUP_MAX_RATES - 1),
+    )
     K = max(2, ceil(Int, Float64(rate_max) / step) + 1)
     rates = collect(0:(K - 1)) .* step
     # the mean bin of each spectrum at zero rate, from the pulse heights the matrices count
@@ -207,7 +234,13 @@ function pileup_family(thresholds_keV, spectrum_weights, energies, rate_max::Rea
     centres = (pu.edges[1:(end - 1)] .+ pu.edges[2:end]) ./ 2
     hardness = map(spectra) do w
         H = vec(sum(_table_weights(pu.energies, e, w) .* pu.heights; dims = 1))
-        counts = [sum(H[(centres .>= thr[b]) .& (b < nb ? centres .< thr[b + 1] : trues(length(centres)))]) for b in 1:nb]
+        counts = [
+            sum(H[
+                (centres .>= thr[b]) .&
+                    (b < nb ? centres .< thr[b + 1] : trues(length(centres))),
+            ])
+            for b in 1:nb
+        ]
         sum((1:nb) .* counts) / sum(counts)
     end
     nb == 1 && (hardness = [1.0, 2.0])
@@ -215,13 +248,24 @@ function pileup_family(thresholds_keV, spectrum_weights, energies, rate_max::Rea
     S = zeros(nb, nb, K, length(spectra))
     jobs = [(k, m) for k in 1:K for m in eachindex(spectra)]
     Threads.@threads for (k, m) in jobs
-        S[:, :, k, m] = k == 1 ? Matrix{Float64}(I, nb, nb) :
-            compute_mc_pileup_matrix(thr, spectra[m], e, rates[k] / per_photon[m], dead_time_ns; seed = 42)
+        S[:, :, k, m] = k == 1 ?
+            Matrix{Float64}(I, nb, nb) :
+            compute_mc_pileup_matrix(
+                thr,
+                spectra[m],
+                e,
+                rates[k] / per_photon[m],
+                dead_time_ns;
+                seed = 42,
+            )
     end
     return (; S, rates, hardness)
 end
 
 "Forget every memoised pile-up migration matrix (see [`compute_mc_pileup_matrix`](@ref))."
-empty_pileup_cache!() = lock(() -> (empty!(_PILEUP_MATRIX_CACHE); nothing), _PILEUP_MATRIX_LOCK)
+empty_pileup_cache!() = lock(
+    () -> (empty!(_PILEUP_MATRIX_CACHE); nothing),
+    _PILEUP_MATRIX_LOCK,
+)
 
 export compute_mc_pileup_matrix, empty_pileup_cache!, pileup_family, counted_per_photon

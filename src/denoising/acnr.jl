@@ -56,15 +56,15 @@ Returns a NamedTuple of diagnostics (smoother choice, γ, σ_n_orth,
 σ_s_orth, σ_s_smooth).
 """
 function apply_acnr!(
-        sino_a::AbstractArray{Float32, 3},
-        sino_b::AbstractArray{Float32, 3};
-        c_a::Real,
-        c_b::Real,
-        σ::Union{Real, Nothing} = nothing,
-        λ::Union{Real, Nothing} = nothing,
-        γ::Real = 1.0,
-        verbose::Bool = true,
-    )
+    sino_a::AbstractArray{Float32, 3},
+    sino_b::AbstractArray{Float32, 3};
+    c_a::Real,
+    c_b::Real,
+    σ::Union{Real, Nothing} = nothing,
+    λ::Union{Real, Nothing} = nothing,
+    γ::Real = 1.0,
+    verbose::Bool = true,
+)
     (σ === nothing) ⊻ (λ === nothing) ||
         error("apply_acnr!: specify exactly one of σ (Gaussian LP) or λ (Tikhonov).")
 
@@ -137,10 +137,10 @@ end
 Allocating wrapper around `apply_acnr!`.
 """
 function apply_acnr(
-        sino_a::AbstractArray{Float32, 3},
-        sino_b::AbstractArray{Float32, 3};
-        kwargs...,
-    )
+    sino_a::AbstractArray{Float32, 3},
+    sino_b::AbstractArray{Float32, 3};
+    kwargs...,
+)
     a_out = copy(sino_a)
     b_out = copy(sino_b)
     info = apply_acnr!(a_out, b_out; kwargs...)
@@ -178,13 +178,13 @@ via a closed-form 2×2 eigen-rotation:
 `W` and `I` are updated in place.
 """
 function apply_image_acnr!(
-        W::AbstractArray{T, 3},
-        I::AbstractArray{T, 3};
-        gamma::Real = 1.0,
-        bilat_radius::Integer = 3,
-        bilat_sigma_s::Real = 2.0,
-        bilat_range_k::Real = 2.5,
-    ) where {T}
+    W::AbstractArray{T, 3},
+    I::AbstractArray{T, 3};
+    gamma::Real = 1.0,
+    bilat_radius::Integer = 3,
+    bilat_sigma_s::Real = 2.0,
+    bilat_range_k::Real = 2.5,
+) where {T}
     size(I) == size(W) ||
         error("apply_image_acnr!: W $(size(W)) and I $(size(I)) must match shape.")
     γ = T(gamma)
@@ -192,62 +192,84 @@ function apply_image_acnr!(
 
     # robust per-basis noise std (adjacent-column difference / √2)
     _nstd = function (V)
-        s = 0.0; m = 0
+        s = 0.0
+        m = 0
         @inbounds for k in 1:nz, j in 1:ny, i in 2:nx
-            d = V[i, j, k] - V[i - 1, j, k]; s += d * d; m += 1
+            d = V[i, j, k] - V[i - 1, j, k]
+            s += d * d
+            m += 1
         end
         sqrt(s / max(m, 1)) / sqrt(2)
     end
-    σW = max(_nstd(W), 1.0e-8)   # Float64 (matches the inline cell's arithmetic)
+    σW = max(_nstd(W), 1.0e-8) # Float64 (matches the inline cell's arithmetic)
     σI = max(_nstd(I), 1.0e-8)
 
     # covariance of the joint (W, I) field → eigen-rotation angle θ
     mW = T(sum(W) / length(W))
     mI = T(sum(I) / length(I))
-    a = 0.0; bb = 0.0; c = 0.0
+    a = 0.0
+    bb = 0.0
+    c = 0.0
     @inbounds for idx in eachindex(W)
-        dw = Float64(W[idx] - mW); di = Float64(I[idx] - mI)
-        a += dw * dw; bb += dw * di; c += di * di
+        dw = Float64(W[idx] - mW)
+        di = Float64(I[idx] - mI)
+        a += dw * dw
+        bb += dw * di
+        c += di * di
     end
     ρ_struct = bb / sqrt(max(a, 1.0e-30) * max(c, 1.0e-30))
 
-    if γ <= 0   # identity
-        return (θ_deg = 0.0, ρ_struct = ρ_struct,
-                σ_W = Float64(σW), σ_I = Float64(σI), γ = Float64(γ))
+    if γ <= 0
+        # identity
+        return (
+            θ_deg = 0.0,
+            ρ_struct = ρ_struct,
+            σ_W = Float64(σW),
+            σ_I = Float64(σI),
+            γ = Float64(γ),
+        )
     end
 
-    θ  = 0.5 * atan(2bb, a - c)               # e1 = (cosθ, sinθ) → larger eigenvalue
-    ct = T(cos(θ)); st = T(sin(θ))
+    θ = 0.5 * atan(2bb, a - c) # e1 = (cosθ, sinθ) → larger eigenvalue
+    ct = T(cos(θ))
+    st = T(sin(θ))
 
     # rotate centered (W, I) into (signal, noise) axes
-    p_sig   = Array{T}(undef, nx, ny, nz)
+    p_sig = Array{T}(undef, nx, ny, nz)
     p_noise = Array{T}(undef, nx, ny, nz)
     @inbounds for idx in eachindex(W)
-        dw = W[idx] - mW; di = I[idx] - mI
-        p_sig[idx]   =  ct * dw + st * di
+        dw = W[idx] - mW
+        di = I[idx] - mI
+        p_sig[idx] = ct * dw + st * di
         p_noise[idx] = -st * dw + ct * di
     end
 
     # joint-bilateral denoise of the noise axis, guided by BOTH basis maps
     denW = T(2 * (bilat_range_k * σW)^2)
     denI = T(2 * (bilat_range_k * σI)^2)
-    r    = Int(bilat_radius)
-    σs2  = T(2 * bilat_sigma_s^2)
-    sw   = T[exp(-(di * di + dj * dj) / σs2) for di in -r:r, dj in -r:r]
+    r = Int(bilat_radius)
+    σs2 = T(2 * bilat_sigma_s^2)
+    sw = T[exp(-(di * di + dj * dj) / σs2) for di in -r:r, dj in -r:r]
 
     p_noise_s = Array{T}(undef, nx, ny, nz)
     @inbounds for k in 1:nz
         for j in 1:ny, i in 1:nx
-            Wc = W[i, j, k]; Ic = I[i, j, k]
-            acc = zero(T); wsum = zero(T)
+            Wc = W[i, j, k]
+            Ic = I[i, j, k]
+            acc = zero(T)
+            wsum = zero(T)
             for dj in -r:r
-                jj = j + dj; (1 ≤ jj ≤ ny) || continue
+                jj = j + dj
+                (1 ≤ jj ≤ ny) || continue
                 for di in -r:r
-                    ii = i + di; (1 ≤ ii ≤ nx) || continue
-                    dW = W[ii, jj, k] - Wc; dI = I[ii, jj, k] - Ic
+                    ii = i + di
+                    (1 ≤ ii ≤ nx) || continue
+                    dW = W[ii, jj, k] - Wc
+                    dI = I[ii, jj, k] - Ic
                     wr = exp(-(dW * dW / denW + dI * dI / denI))
-                    w  = sw[di + r + 1, dj + r + 1] * wr
-                    acc += w * p_noise[ii, jj, k]; wsum += w
+                    w = sw[di + r + 1, dj + r + 1] * wr
+                    acc += w * p_noise[ii, jj, k]
+                    wsum += w
                 end
             end
             p_noise_s[i, j, k] = acc / wsum
@@ -263,8 +285,13 @@ function apply_image_acnr!(
         I[idx] = mI + st * ps + ct * pn
     end
 
-    return (θ_deg = rad2deg(θ), ρ_struct = ρ_struct,
-            σ_W = Float64(σW), σ_I = Float64(σI), γ = Float64(γ))
+    return (
+        θ_deg = rad2deg(θ),
+        ρ_struct = ρ_struct,
+        σ_W = Float64(σW),
+        σ_I = Float64(σI),
+        γ = Float64(γ),
+    )
 end
 
 """
@@ -273,11 +300,12 @@ end
 Allocating wrapper around [`apply_image_acnr!`].
 """
 function apply_image_acnr(
-        W::AbstractArray{T, 3},
-        I::AbstractArray{T, 3};
-        kwargs...,
-    ) where {T}
-    W_out = copy(W); I_out = copy(I)
+    W::AbstractArray{T, 3},
+    I::AbstractArray{T, 3};
+    kwargs...,
+) where {T}
+    W_out = copy(W)
+    I_out = copy(I)
     info = apply_image_acnr!(W_out, I_out; kwargs...)
     return (W_out, I_out, info)
 end
@@ -317,13 +345,13 @@ edge-stopping heuristic.  Symmetric correction is applied to `W` from
 `hI`.  Returns `(ρ_hp, σ_hW, σ_hI)` global HF statistics.
 """
 function apply_acnr_kalender!(
-        W::AbstractArray{T, 3},
-        I::AbstractArray{T, 3};
-        hp_sigma_px::Real = 1.5,
-        window::Int = 4,
-        beta_max::Real = 8.0,
-        passes::Int = 2,
-    ) where {T <: AbstractFloat}
+    W::AbstractArray{T, 3},
+    I::AbstractArray{T, 3};
+    hp_sigma_px::Real = 1.5,
+    window::Int = 4,
+    beta_max::Real = 8.0,
+    passes::Int = 2,
+) where {T <: AbstractFloat}
     # Multi-pass: the one-sided clamp on a NOISY local β̂ under-corrects on
     # average (β̂ > 0 pixels keep their full anti-correlated noise), leaving
     # residual C_WI < 0 that puts the VMI noise-vs-keV minimum inside the
@@ -333,8 +361,14 @@ function apply_acnr_kalender!(
     if passes > 1
         info = nothing
         for _ in 1:passes
-            info = apply_acnr_kalender!(W, I; hp_sigma_px = hp_sigma_px,
-                window = window, beta_max = beta_max, passes = 1)
+            info = apply_acnr_kalender!(
+                W,
+                I;
+                hp_sigma_px = hp_sigma_px,
+                window = window,
+                beta_max = beta_max,
+                passes = 1,
+            )
         end
         return info
     end
@@ -345,7 +379,7 @@ function apply_acnr_kalender!(
         out = similar(vol)
         σ = Float64(hp_sigma_px)
         r = max(2, ceil(Int, 3σ))
-        k = T.(exp.(-(collect(-r:r) .^ 2) ./ (2σ^2)))
+        k = T.(exp.(-(collect(-r:r).^2) ./ (2σ^2)))
         k ./= sum(k)
         tmp = similar(vol)
         # x
@@ -369,7 +403,8 @@ function apply_acnr_kalender!(
         out
     end
 
-    Wc = Array(W); Ic = Array(I)
+    Wc = Array(W)
+    Ic = Array(I)
     hW = Wc .- G(Wc)
     hI = Ic .- G(Ic)
 
@@ -382,16 +417,23 @@ function apply_acnr_kalender!(
     λ_W = sqrt(sum(abs2, hW) / max(sum(abs2, hI), T(1.0e-30)))
     βmaxI = min(T(beta_max), λ_I)
     βmaxW = min(T(beta_max), λ_W)
-    outW = copy(Wc); outI = copy(Ic)
+    outW = copy(Wc)
+    outI = copy(Ic)
     for z in 1:nz
         for j in 1:ny, i in 1:nx
-            sWW = zero(T); sII = zero(T); sWI = zero(T)
+            sWW = zero(T)
+            sII = zero(T)
+            sWI = zero(T)
             n = 0
             for dj in -w:w, di in -w:w
-                ii = i + di; jj = j + dj
+                ii = i + di
+                jj = j + dj
                 (1 <= ii <= nx && 1 <= jj <= ny) || continue
-                a = hW[ii, jj, z]; b = hI[ii, jj, z]
-                sWW += a * a; sII += b * b; sWI += a * b
+                a = hW[ii, jj, z]
+                b = hI[ii, jj, z]
+                sWW += a * a
+                sII += b * b
+                sWI += a * b
                 n += 1
             end
             # regression of hI on hW (for I) and hW on hI (for W), clamped ≤ 0
@@ -401,10 +443,15 @@ function apply_acnr_kalender!(
             outW[i, j, z] = Wc[i, j, z] - βW * hI[i, j, z]
         end
     end
-    copyto!(W, outW); copyto!(I, outI)
+    copyto!(W, outW)
+    copyto!(I, outI)
 
-    ρ = sum(hW .* hI) / sqrt(max(sum(hW .^ 2) * sum(hI .^ 2), T(1.0e-30)))
-    return (ρ_hp = ρ, σ_hW = sqrt(sum(hW .^ 2) / length(hW)), σ_hI = sqrt(sum(hI .^ 2) / length(hI)))
+    ρ = sum(hW .* hI) / sqrt(max(sum(hW.^2) * sum(hI.^2), T(1.0e-30)))
+    return (
+        ρ_hp = ρ,
+        σ_hW = sqrt(sum(hW.^2) / length(hW)),
+        σ_hI = sqrt(sum(hI.^2) / length(hI)),
+    )
 end
 
 export apply_acnr_kalender!

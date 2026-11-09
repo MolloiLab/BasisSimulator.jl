@@ -53,7 +53,6 @@ function mad_haar_σ(vol::AbstractArray{Float32, 3})
     return Float32(1.4826) * Float32(median(absvec))
 end
 
-
 # =============================================================================
 # Joint bilateral filter — 2 channel
 # =============================================================================
@@ -69,10 +68,15 @@ This is an internal helper for [`apply_rskr`](@ref).  Inputs/outputs must
 all be on the same backend (Metal/CUDA) and have matching shapes.
 """
 function joint_bf_2ch_gpu!(
-        out1::AbstractArray{Float32, 3}, out2::AbstractArray{Float32, 3},
-        in1::AbstractArray{Float32, 3}, in2::AbstractArray{Float32, 3},
-        σ1::Float32, σ2::Float32, h::Float32, radius::Int,
-    )
+    out1::AbstractArray{Float32, 3},
+    out2::AbstractArray{Float32, 3},
+    in1::AbstractArray{Float32, 3},
+    in2::AbstractArray{Float32, 3},
+    σ1::Float32,
+    σ2::Float32,
+    h::Float32,
+    radius::Int,
+)
     n_col, n_row, n_z = size(in1)
     inv_2hσ²_1 = 1.0f0 / (2.0f0 * (h * σ1) * (h * σ1) + 1.0f-30)
     inv_2hσ²_2 = 1.0f0 / (2.0f0 * (h * σ2) * (h * σ2) + 1.0f-30)
@@ -85,8 +89,11 @@ function joint_bf_2ch_gpu!(
         ri = ((i0 ÷ n_col) % n_row) + 1
         zi = ((i0 ÷ (n_col * n_row)) % n_z) + 1
 
-        v1 = in1[ci, ri, zi]; v2 = in2[ci, ri, zi]
-        sum_1 = 0.0f0; sum_2 = 0.0f0; wtot = 0.0f0
+        v1 = in1[ci, ri, zi]
+        v2 = in2[ci, ri, zi]
+        sum_1 = 0.0f0
+        sum_2 = 0.0f0
+        wtot = 0.0f0
 
         for dz in -r_i32:r_i32
             zi2 = zi + dz
@@ -104,8 +111,10 @@ function joint_bf_2ch_gpu!(
                     dist² = drz² + Int32(dc) * Int32(dc)
                     dist² > radius² && continue
 
-                    nv1 = in1[ci2, ri2, zi2]; nv2 = in2[ci2, ri2, zi2]
-                    d1 = nv1 - v1; d2 = nv2 - v2
+                    nv1 = in1[ci2, ri2, zi2]
+                    nv2 = in2[ci2, ri2, zi2]
+                    d1 = nv1 - v1
+                    d2 = nv2 - v2
                     log_w = -d1 * d1 * inv_2hσ²_1 - d2 * d2 * inv_2hσ²_2
                     w = exp(log_w)
                     sum_1 += w * nv1
@@ -122,7 +131,6 @@ function joint_bf_2ch_gpu!(
     return nothing
 end
 
-
 # =============================================================================
 # Joint bilateral filter — 4 channel
 # =============================================================================
@@ -135,13 +143,21 @@ In-place 4-channel joint bilateral filter (PCCT 4-bin).  Same structure
 as [`joint_bf_2ch_gpu!`](@ref) with four channels.
 """
 function joint_bf_4ch_gpu!(
-        out1::AbstractArray{Float32, 3}, out2::AbstractArray{Float32, 3},
-        out3::AbstractArray{Float32, 3}, out4::AbstractArray{Float32, 3},
-        in1::AbstractArray{Float32, 3}, in2::AbstractArray{Float32, 3},
-        in3::AbstractArray{Float32, 3}, in4::AbstractArray{Float32, 3},
-        σ1::Float32, σ2::Float32, σ3::Float32, σ4::Float32,
-        h::Float32, radius::Int,
-    )
+    out1::AbstractArray{Float32, 3},
+    out2::AbstractArray{Float32, 3},
+    out3::AbstractArray{Float32, 3},
+    out4::AbstractArray{Float32, 3},
+    in1::AbstractArray{Float32, 3},
+    in2::AbstractArray{Float32, 3},
+    in3::AbstractArray{Float32, 3},
+    in4::AbstractArray{Float32, 3},
+    σ1::Float32,
+    σ2::Float32,
+    σ3::Float32,
+    σ4::Float32,
+    h::Float32,
+    radius::Int,
+)
     n_col, n_row, n_z = size(in1)
     inv_2hσ²_1 = 1.0f0 / (2.0f0 * (h * σ1) * (h * σ1) + 1.0f-30)
     inv_2hσ²_2 = 1.0f0 / (2.0f0 * (h * σ2) * (h * σ2) + 1.0f-30)
@@ -156,9 +172,14 @@ function joint_bf_4ch_gpu!(
         ri = ((i0 ÷ n_col) % n_row) + 1
         zi = ((i0 ÷ (n_col * n_row)) % n_z) + 1
 
-        v1 = in1[ci, ri, zi]; v2 = in2[ci, ri, zi]
-        v3 = in3[ci, ri, zi]; v4 = in4[ci, ri, zi]
-        sum_1 = 0.0f0; sum_2 = 0.0f0; sum_3 = 0.0f0; sum_4 = 0.0f0
+        v1 = in1[ci, ri, zi]
+        v2 = in2[ci, ri, zi]
+        v3 = in3[ci, ri, zi]
+        v4 = in4[ci, ri, zi]
+        sum_1 = 0.0f0
+        sum_2 = 0.0f0
+        sum_3 = 0.0f0
+        sum_4 = 0.0f0
         wtot = 0.0f0
 
         for dz in -r_i32:r_i32
@@ -182,8 +203,10 @@ function joint_bf_4ch_gpu!(
                     nv3 = in3[ci2, ri2, zi2]
                     nv4 = in4[ci2, ri2, zi2]
 
-                    d1 = nv1 - v1; d2 = nv2 - v2
-                    d3 = nv3 - v3; d4 = nv4 - v4
+                    d1 = nv1 - v1
+                    d2 = nv2 - v2
+                    d3 = nv3 - v3
+                    d4 = nv4 - v4
                     log_w = -d1 * d1 * inv_2hσ²_1 -
                         d2 * d2 * inv_2hσ²_2 -
                         d3 * d3 * inv_2hσ²_3 -
@@ -206,7 +229,6 @@ function joint_bf_4ch_gpu!(
     end
     return nothing
 end
-
 
 # =============================================================================
 # Public driver — apply_rskr
@@ -257,14 +279,14 @@ out = BS.apply_rskr([vol_low, vol_high]; n_iter = 2, h_param = 2.0, radius = 2)
 ```
 """
 function apply_rskr(
-        vols::Vector{Array{Float32, 3}};
-        n_iter::Int = 4,
-        h_param::Real = 1.0,
-        radius::Int = 6,
-        γ::Real = 0.5,
-        gpu_arr_type = identity,
-        verbose::Bool = true,
-    )
+    vols::Vector{Array{Float32, 3}};
+    n_iter::Int = 4,
+    h_param::Real = 1.0,
+    radius::Int = 6,
+    γ::Real = 0.5,
+    gpu_arr_type = identity,
+    verbose::Bool = true,
+)
     nch = length(vols)
     nch in (2, 4) || error("apply_rskr: requires exactly 2 or 4 channel volumes (got $nch)")
     sz = size(vols[1])
@@ -283,7 +305,9 @@ function apply_rskr(
     for iter in 1:n_iter
         t0 = time()
         F = svd(V_mat; full = false)
-        U = F.U; Σ = F.S; V₀ = F.V
+        U = F.U
+        Σ = F.S
+        V₀ = F.V
 
         σ_per_sv = Vector{Float32}(undef, nch)
         h_per_sv = Vector{Float32}(undef, nch)
@@ -300,31 +324,59 @@ function apply_rskr(
         # backend.
 
         if nch == 2
-            in1 = gpu_arr_type(U_vols[1]); in2 = gpu_arr_type(U_vols[2])
-            out1 = similar(in1);             out2 = similar(in2)
+            in1 = gpu_arr_type(U_vols[1])
+            in2 = gpu_arr_type(U_vols[2])
+            out1 = similar(in1)
+            out2 = similar(in2)
             σ_eff_1 = h_per_sv[1] * σ_per_sv[1]
             σ_eff_2 = h_per_sv[2] * σ_per_sv[2]
             joint_bf_2ch_gpu!(out1, out2, in1, in2, σ_eff_1, σ_eff_2, 1.0f0, radius)
             U_denoised = hcat(vec(Array(out1)), vec(Array(out2)))
-            in1 = nothing; in2 = nothing; out1 = nothing; out2 = nothing
-        else  # nch == 4
-            in1 = gpu_arr_type(U_vols[1]); in2 = gpu_arr_type(U_vols[2])
-            in3 = gpu_arr_type(U_vols[3]); in4 = gpu_arr_type(U_vols[4])
-            out1 = similar(in1); out2 = similar(in2)
-            out3 = similar(in3); out4 = similar(in4)
+            in1 = nothing
+            in2 = nothing
+            out1 = nothing
+            out2 = nothing
+        else
+            # nch == 4
+            in1 = gpu_arr_type(U_vols[1])
+            in2 = gpu_arr_type(U_vols[2])
+            in3 = gpu_arr_type(U_vols[3])
+            in4 = gpu_arr_type(U_vols[4])
+            out1 = similar(in1)
+            out2 = similar(in2)
+            out3 = similar(in3)
+            out4 = similar(in4)
             σ_eff = [h_per_sv[e] * σ_per_sv[e] for e in 1:4]
             joint_bf_4ch_gpu!(
-                out1, out2, out3, out4,
-                in1, in2, in3, in4,
-                σ_eff[1], σ_eff[2], σ_eff[3], σ_eff[4],
-                1.0f0, radius
+                out1,
+                out2,
+                out3,
+                out4,
+                in1,
+                in2,
+                in3,
+                in4,
+                σ_eff[1],
+                σ_eff[2],
+                σ_eff[3],
+                σ_eff[4],
+                1.0f0,
+                radius,
             )
             U_denoised = hcat(
-                vec(Array(out1)), vec(Array(out2)),
-                vec(Array(out3)), vec(Array(out4))
+                vec(Array(out1)),
+                vec(Array(out2)),
+                vec(Array(out3)),
+                vec(Array(out4)),
             )
-            in1 = nothing; in2 = nothing; in3 = nothing; in4 = nothing
-            out1 = nothing; out2 = nothing; out3 = nothing; out4 = nothing
+            in1 = nothing
+            in2 = nothing
+            in3 = nothing
+            in4 = nothing
+            out1 = nothing
+            out2 = nothing
+            out3 = nothing
+            out4 = nothing
         end
 
         V_mat = U_denoised * Diagonal(Σ) * V₀'
@@ -337,6 +389,5 @@ function apply_rskr(
 
     return [reshape(V_mat[:, b], sz) for b in 1:nch]
 end
-
 
 export apply_rskr, mad_haar_σ, joint_bf_2ch_gpu!, joint_bf_4ch_gpu!

@@ -236,18 +236,19 @@ No code changes needed - just pass appropriate array types.
 
 ```julia
 using BasisSimulator
-using Metal  # or: using CUDA
+using Metal # or: using CUDA
 
 # Create scanner and geometry
 scanner = GERevolutionApex()
-geom = CTGeometry(scanner; n_angles=360, fov=(350.0, 350.0, 160.0))
+geom = CTGeometry(scanner; n_angles = 360, fov = (350.0, 350.0, 160.0))
 
 # Create a water cylinder phantom
 phantom = zeros(Float32, 256, 256, 64)
-μ_water = 0.02f0  # mm⁻¹ at ~60 keV
+μ_water = 0.02f0 # mm⁻¹ at ~60 keV
 for i in 1:256, j in 1:256, k in 1:64
-    x, y = (i - 128.5) * 1.37, (j - 128.5) * 1.37  # mm from center
-    if x^2 + y^2 < 100^2  # 100mm radius cylinder
+    x, y = (i - 128.5) * 1.37, (j - 128.5) * 1.37 # mm from center
+    if x^2 + y^2 < 100^2
+        # 100mm radius cylinder
         phantom[i, j, k] = μ_water
     end
 end
@@ -261,11 +262,11 @@ recon_gpu = fdk_reconstruct(sinogram_gpu, geom, (256, 256, 64))
 
 # Convert to Hounsfield Units
 recon_cpu = Array(recon_gpu)
-recon_hu = 1000f0 .* (recon_cpu .- μ_water) ./ μ_water
+recon_hu = 1000.0f0 .* (recon_cpu .- μ_water) ./ μ_water
 
 # Water region should have HU ≈ 0
 water_mask = phantom .> 0
-println("Mean HU in water: ", mean(recon_hu[water_mask]))  # Should be ≈ 0 ± 20
+println("Mean HU in water: ", mean(recon_hu[water_mask])) # Should be ≈ 0 ± 20
 ```
 
 # Filter Selection Guide
@@ -333,26 +334,37 @@ function fdk_reconstruct(
     helical_q::Real = 0.7,
     coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
     mask_fov::Bool = true,
-) where T <: AbstractFloat
-
+) where {T <: AbstractFloat}
     # Helical trajectories route to the rebinned WFBP chain (Stierstorfer
     # 2004 family) — the circular FDK weighting below assumes a full-orbit
     # circular scan.  `helical_q` and `coverage` are that path's knobs; see
     # [`wfbp_helical_reconstruct`](@ref), and pass `coverage` to find out which
     # voxels the helix actually sampled.
     if is_helical(geom)
-        return wfbp_helical_reconstruct(sinogram, geom, volume_size;
-            filter = filter, cutoff = cutoff, helical_q = helical_q, coverage = coverage,
-            mask_fov = mask_fov)
+        return wfbp_helical_reconstruct(
+            sinogram,
+            geom,
+            volume_size;
+            filter = filter,
+            cutoff = cutoff,
+            helical_q = helical_q,
+            coverage = coverage,
+            mask_fov = mask_fov,
+        )
     end
-    coverage === nothing || throw(ArgumentError(
-        "coverage is only defined for a helical geometry; this one is axial"
-    ))
+    coverage === nothing ||
+        throw(ArgumentError(
+            "coverage is only defined for a helical geometry; this one is axial",
+        ))
 
     # Step 1: Filter sinogram (includes cosine weighting)
     # GPU-native spatial domain filtering - no CPU transfer needed
     filtered = filter_sinogram(
-        sinogram, geom; filter=filter, cutoff=cutoff, bandlimit=grid_bandlimit(geom, volume_size),
+        sinogram,
+        geom;
+        filter = filter,
+        cutoff = cutoff,
+        bandlimit = grid_bandlimit(geom, volume_size),
     )
 
     # Step 2: Backproject
@@ -438,20 +450,36 @@ function fdk_reconstruct(
     volume_size::NTuple{3, Int},
     fov::NTuple{3, Float64};
     filter::FilterType = StandardFilter(),
-    cutoff::Float64 = 1.0
-) where T <: AbstractFloat
-
+    cutoff::Float64 = 1.0,
+) where {T <: AbstractFloat}
     # Create a copy of geometry with modified FOV
     geom_fov = CTGeometry(
-        geom.SAD, geom.SDD,
-        geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size, geom.pixel_row_size,
-        geom.angles, geom.source_positions, geom.detector_centers,
-        geom.detector_u, geom.detector_v,
-        fov,  # Use specified FOV
-        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
+        geom.SAD,
+        geom.SDD,
+        geom.n_angles,
+        geom.n_rows,
+        geom.n_cols,
+        geom.pixel_size,
+        geom.pixel_row_size,
+        geom.angles,
+        geom.source_positions,
+        geom.detector_centers,
+        geom.detector_u,
+        geom.detector_v,
+        fov, # Use specified FOV
+        geom.pitch,
+        geom.table_feed,
+        geom.detector_shape,
+        geom.column_offset,
     )
 
-    return fdk_reconstruct(sinogram, geom_fov, volume_size; filter=filter, cutoff=cutoff)
+    return fdk_reconstruct(
+        sinogram,
+        geom_fov,
+        volume_size;
+        filter = filter,
+        cutoff = cutoff,
+    )
 end
 
 """
@@ -471,9 +499,12 @@ The default sentinel_μ = -0.04 cm⁻¹ gives approximately -2048 HU for typical
 # Keyword Arguments
 - `sentinel_μ`: Raw μ value to assign outside FOV (default: -0.04 cm⁻¹)
 """
-function apply_fov_mask!(volume::AbstractArray{T,3}, geom::CTGeometry;
-                         sentinel_μ::Real = T(-0.04)) where T
-    nx, ny, nz = size(volume)
+function apply_fov_mask!(
+    volume::AbstractArray{T, 3},
+    geom::CTGeometry;
+    sentinel_μ::Real = T(-0.04),
+) where {T}
+    nx, ny, _ = size(volume)
     fov_x, fov_y = geom.fov[1], geom.fov[2]
 
     # FOV radius (use the smaller of x/y for a circular mask)
@@ -486,7 +517,7 @@ function apply_fov_mask!(volume::AbstractArray{T,3}, geom::CTGeometry;
 
     AK.foreachindex(volume) do idx
         ci = CartesianIndices(volume)[idx]
-        ix, iy, iz = Tuple(ci)
+        ix, iy, _ = Tuple(ci)
 
         # Voxel center in physical coordinates (centered at origin)
         x = (T(ix) - T(0.5) - T(nx) / T(2)) * voxel_x

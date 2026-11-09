@@ -41,25 +41,29 @@ const XCAT_REGISTRY = Dict{Symbol, XCATPhantomEntry}(
         "Adult_Female_50percentile_Chest_Phantom_slab_400_1650x1050x1.zip",
         "99229613a794100bfa1d4fe22393596d904696cc3199d329dcdba9fcb62af363",
         "48a5b0b4de4f204b3b8f0ce626ac8a147a027393",
-        (1650, 1050, 1), "Adult female 50th-percentile chest — single slab (slice 400)",
+        (1650, 1050, 1),
+        "Adult female 50th-percentile chest — single slab (slice 400)",
     ),
     :female_chest => XCATPhantomEntry(
         "Adult_Female_50percentile_Chest_Phantom_1650x1050x880.zip",
         "6db9aa8e3430a1d72595a9c4ee467c2360958e9ed782d4a22fbb52de4c317693",
         "8f1da0e052498c4de7de5b5973559f3cb8664d9d",
-        (1650, 1050, 880), "Adult female 50th-percentile chest — full volume",
+        (1650, 1050, 880),
+        "Adult female 50th-percentile chest — full volume",
     ),
     :male_slab => XCATPhantomEntry(
         "Adult_Male_50percentile_Chest_Phantom_slab_400_1700x1050x1.zip",
         "c2bc6898daed9719ba9203a4e3ed6fa9ca51c7dcb22bca070be94264c7fa539d",
         "c40b8751aa72f236a0404192984de4578b56b066",
-        (1700, 1050, 1), "Adult male 50th-percentile chest — single slab (slice 400)",
+        (1700, 1050, 1),
+        "Adult male 50th-percentile chest — single slab (slice 400)",
     ),
     :male_chest => XCATPhantomEntry(
         "Adult_Male_50percentile_Chest_Phantom_1700x1050x900.zip",
         "5a04b384fb126f1cd944908b6a3dcfbf6b43b0384039eb0c74cd9b53d1185b32",
         "ce69351073fc478cbcf2b44b503c2480c18b6e0d",
-        (1700, 1050, 900), "Adult male 50th-percentile chest — full volume",
+        (1700, 1050, 900),
+        "Adult male 50th-percentile chest — full volume",
     ),
 )
 
@@ -83,18 +87,18 @@ used by [`load_xcat_phantom`](@ref).  Copy, edit, and pass back via the
 `materials` keyword to override (e.g. to dope the blood pool with iodine).
 """
 xcat_default_materials() = Dict{String, XA.Material}(
-    "ncat_water"     => XA.Materials.water,
-    "ncat_muscle"    => XA.Materials.ncat_muscle,
-    "ncat_lung"      => XA.Materials.ncat_lung,
+    "ncat_water" => XA.Materials.water,
+    "ncat_muscle" => XA.Materials.ncat_muscle,
+    "ncat_lung" => XA.Materials.ncat_lung,
     "ncat_dry_spine" => XA.Materials.ncat_spine,
-    "ncat_dry_rib"   => XA.Materials.ncat_rib,
-    "ncat_adipose"   => XA.Materials.ncat_fat,
-    "ncat_blood"     => XA.Materials.ncat_blood,
-    "ncat_heart"     => XA.Materials.ncat_heart,
+    "ncat_dry_rib" => XA.Materials.ncat_rib,
+    "ncat_adipose" => XA.Materials.ncat_fat,
+    "ncat_blood" => XA.Materials.ncat_blood,
+    "ncat_heart" => XA.Materials.ncat_heart,
     "ncat_cartilage" => XA.Materials.cartilage,
-    "ncat_liver"     => XA.Materials.ncat_liver,
+    "ncat_liver" => XA.Materials.ncat_liver,
     "ncat_intestine" => XA.Materials.intestine,
-    "ncat_spleen"    => XA.Materials.ncat_spleen,
+    "ncat_spleen" => XA.Materials.ncat_spleen,
 )
 
 # =============================================================================
@@ -143,7 +147,11 @@ Resolution order:
 
 The full-volume phantoms are ~65 MB; the slabs are <100 KB.
 """
-function download_xcat_phantom(name::Symbol; path::Union{Nothing, AbstractString} = nothing, quiet::Bool = false)
+function download_xcat_phantom(
+    name::Symbol;
+    path::Union{Nothing, AbstractString} = nothing,
+    quiet::Bool = false,
+)
     quiet || @info xcat_citation()
     path !== nothing && return String(path)
     haskey(XCAT_REGISTRY, name) ||
@@ -155,7 +163,8 @@ function download_xcat_phantom(name::Symbol; path::Union{Nothing, AbstractString
     Artifacts.artifact_exists(hash) && return Artifacts.artifact_path(hash)
 
     # (3) download → verify → extract → install
-    quiet || @info "Downloading XCAT phantom :$name ($(entry.desc)) into the Julia artifact store…"
+    quiet ||
+        @info "Downloading XCAT phantom :$name ($(entry.desc)) into the Julia artifact store…"
 
     dest = Artifacts.artifact_path(hash)
     artifacts_dir = dirname(dest)
@@ -170,16 +179,22 @@ function download_xcat_phantom(name::Symbol; path::Union{Nothing, AbstractString
 
         got = open(io -> bytes2hex(SHA.sha256(io)), zippath)
         got == entry.sha256 ||
-            error("SHA-256 mismatch for XCAT :$name\n  expected $(entry.sha256)\n  got      $got")
+            error(
+                "SHA-256 mismatch for XCAT :$name\n  expected $(entry.sha256)\n  got      $got",
+            )
 
         extracted = joinpath(staging, "extracted")
         mkpath(extracted)
-        run(pipeline(`$(p7zip_jll.p7zip()) x -y -o$(extracted) $(zippath)`; stdout = devnull))
+        run(pipeline(
+            `$(p7zip_jll.p7zip()) x -y -o$(extracted) $(zippath)`;
+            stdout = devnull,
+        ))
 
-        if Artifacts.artifact_exists(hash)          # a concurrent download won the race
+        if Artifacts.artifact_exists(hash)
+            # a concurrent download won the race
             return Artifacts.artifact_path(hash)
         end
-        mv(extracted, dest)                          # same-fs install
+        mv(extracted, dest) # same-fs install
     finally
         rm(staging; recursive = true, force = true)
     end
@@ -196,15 +211,20 @@ function _xcat_progress(name::Symbol, quiet::Bool)
         pct = round(Int, 100 * now / total)
         pct == last[] && return
         last[] = pct
-        print(stderr, "\r  :$name  $(lpad(pct, 3))%  ($(round(now / 1e6, digits = 1)) / $(round(total / 1e6, digits = 1)) MB)   ")
+        print(
+            stderr,
+            "\r  :$name  $(lpad(pct, 3))%  ($(round(now / 1.0e6, digits = 1)) / $(round(total / 1.0e6, digits = 1)) MB)   ",
+        )
         flush(stderr)
     end
 end
 
 # Convenience wrappers -------------------------------------------------------
 for (fn, sym) in (
-        (:download_xcat_female_slab, :female_slab), (:download_xcat_female_chest, :female_chest),
-        (:download_xcat_male_slab, :male_slab), (:download_xcat_male_chest, :male_chest),
+        (:download_xcat_female_slab, :female_slab),
+        (:download_xcat_female_chest, :female_chest),
+        (:download_xcat_male_slab, :male_slab),
+        (:download_xcat_male_chest, :male_chest),
     )
     local entry = XCAT_REGISTRY[sym]
     local doc = """
@@ -229,12 +249,15 @@ function _find_xcist_json(dir::AbstractString)
     error("no .json phantom header found under $dir")
 end
 
-_xcist_eltype(dt::AbstractString) =
-    dt == "int8"    ? Int8    :
-    dt == "uint8"   ? UInt8   :
-    dt == "float32" ? Float32 :
-    dt == "float64" ? Float64 :
-    error("unsupported XCIST volumefractionmap_datatype \"$dt\"")
+_xcist_eltype(dt::AbstractString) = dt == "int8" ?
+    Int8 :
+    dt == "uint8" ?
+        UInt8 :
+        dt == "float32" ?
+            Float32 :
+            dt == "float64" ?
+                Float64 :
+                error("unsupported XCIST volumefractionmap_datatype \"$dt\"")
 
 # Assemble the per-material volume-fraction maps under `dir` into a single
 # labeled UInt8 mask (one label per voxel; label i = XCIST material i, 0 = air),
@@ -242,21 +265,27 @@ _xcist_eltype(dt::AbstractString) =
 # Each material map is placed on a common grid by isocenter alignment (see the
 # offset conventions below); binary XCAT maps make the label reduction exact.
 function _assemble_xcist(
-        dir::AbstractString;
-        voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
-        downsample::Integer = 1,
-    )
+    dir::AbstractString;
+    voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
+    downsample::Integer = 1,
+)
     jf = _find_xcist_json(dir)
     base = dirname(jf)
     hdr = JSON.parsefile(jf)
 
     nm = Int(hdr["n_materials"])
-    names  = String.(hdr["mat_name"])
-    files  = String.(hdr["volumefractionmap_filename"])
+    names = String.(hdr["mat_name"])
+    files = String.(hdr["volumefractionmap_filename"])
     dtypes = String.(hdr["volumefractionmap_datatype"])
-    cols   = Int.(hdr["cols"]);   rows   = Int.(hdr["rows"]);   slices = Int.(hdr["slices"])
-    xoff   = Float64.(hdr["x_offset"]); yoff = Float64.(hdr["y_offset"]); zoff = Float64.(hdr["z_offset"])
-    xs     = Float64.(hdr["x_size"]);   ys   = Float64.(hdr["y_size"]);   zs   = Float64.(hdr["z_size"])
+    cols = Int.(hdr["cols"])
+    rows = Int.(hdr["rows"])
+    slices = Int.(hdr["slices"])
+    xoff = Float64.(hdr["x_offset"])
+    yoff = Float64.(hdr["y_offset"])
+    zoff = Float64.(hdr["z_offset"])
+    xs = Float64.(hdr["x_size"])
+    ys = Float64.(hdr["y_size"])
+    zs = Float64.(hdr["z_size"])
 
     # Common grid spanning the union of all bounding boxes, aligned by isocenter.
     #
@@ -285,9 +314,11 @@ function _assemble_xcist(
     lo_c = [-xoff[i] for i in 1:nm]
     lo_r = [-yoff[i] for i in 1:nm]
     lo_s = [-zoff[i] for i in 1:nm]
-    gc0 = minimum(lo_c); gr0 = minimum(lo_r); gs0 = minimum(lo_s)
-    GC = round(Int, maximum(lo_c[i] + cols[i]   - 1 for i in 1:nm) - gc0) + 1
-    GR = round(Int, maximum(lo_r[i] + rows[i]   - 1 for i in 1:nm) - gr0) + 1
+    gc0 = minimum(lo_c)
+    gr0 = minimum(lo_r)
+    gs0 = minimum(lo_s)
+    GC = round(Int, maximum(lo_c[i] + cols[i] - 1 for i in 1:nm) - gc0) + 1
+    GR = round(Int, maximum(lo_r[i] + rows[i] - 1 for i in 1:nm) - gr0) + 1
     GS = round(Int, maximum(lo_s[i] + slices[i] - 1 for i in 1:nm) - gs0) + 1
 
     # Recombine the material pieces into one labeled mask by MAJORITY VOTE: for
@@ -299,26 +330,35 @@ function _assemble_xcist(
     # structures into scattered noise.  Fused so the full-resolution mask is
     # never materialized (the full chest is ~1.4 billion voxels).
     f = max(1, Int(downsample))
-    dGC = max(1, GC ÷ f); dGR = max(1, GR ÷ f); dGS = max(1, GS ÷ f)
+    dGC = max(1, GC ÷ f)
+    dGR = max(1, GR ÷ f)
+    dGS = max(1, GS ÷ f)
     mask = zeros(UInt8, dGC, dGR, dGS)
-    best = zeros(UInt16, dGC, dGR, dGS)     # votes for the current winner per voxel
-    cnt = zeros(UInt16, dGC, dGR, dGS)      # votes for material i (reused each i)
+    best = zeros(UInt16, dGC, dGR, dGS) # votes for the current winner per voxel
+    cnt = zeros(UInt16, dGC, dGR, dGS)  # votes for material i (reused each i)
     for i in 1:nm
         T = _xcist_eltype(dtypes[i])
-        A = reshape(read!(joinpath(base, files[i]), Vector{T}(undef, cols[i] * rows[i] * slices[i])),
-            (cols[i], rows[i], slices[i]))                       # [col, row, slice], col fastest
+        A = reshape(
+            read!(
+                joinpath(base, files[i]),
+                Vector{T}(undef, cols[i] * rows[i] * slices[i]),
+            ),
+            # [col, row, slice], col fastest
+            (cols[i], rows[i], slices[i]),
+        )
         c0 = round(Int, lo_c[i] - gc0)
         r0 = round(Int, lo_r[i] - gr0)
         s0 = round(Int, lo_s[i] - gs0)
         fill!(cnt, zero(UInt16))
         @inbounds for s in 1:slices[i], r in 1:rows[i], c in 1:cols[i]
-            A[c, rows[i] + 1 - r, s] > 0 || continue     # rows stored bottom-up
+            A[c, rows[i] + 1 - r, s] > 0 || continue # rows stored bottom-up
             I = (c + c0 - 1) ÷ f + 1
             J = (r + r0 - 1) ÷ f + 1
             K = (s + s0 - 1) ÷ f + 1
             (I <= dGC && J <= dGR && K <= dGS) && (cnt[I, J, K] += one(UInt16))
         end
-        @inbounds for idx in eachindex(cnt)          # winner-takes-block; ties → later material
+        # winner-takes-block; ties → later material
+        @inbounds for idx in eachindex(cnt)
             v = cnt[idx]
             (v > 0 && v >= best[idx]) && (best[idx] = v; mask[idx] = UInt8(i))
         end
@@ -327,18 +367,24 @@ function _assemble_xcist(
     # header is mm → cm; scale each axis by its full/downsampled size ratio so
     # the physical extent is preserved (degenerate axes stay unscaled).  An
     # explicit voxel_size_cm is taken as the final size.
-    vs_cm = voxel_size_cm !== nothing ? Float64.(voxel_size_cm) :
+    vs_cm = voxel_size_cm !== nothing ?
+        Float64.(voxel_size_cm) :
         (xs[1] / 10, ys[1] / 10, zs[1] / 10) .* ((GC, GR, GS) ./ (dGC, dGR, dGS))
     return (mask = mask, names = names, voxel_size_cm = vs_cm)
 end
 
 # label → XA.Material dict (0 = air) from per-label names + an XCIST-name→material map.
-function _xcist_materials_dict(names::Vector{String}; materials::Union{Nothing, AbstractDict} = nothing)
+function _xcist_materials_dict(
+    names::Vector{String};
+    materials::Union{Nothing, AbstractDict} = nothing,
+)
     matmap = materials === nothing ? xcat_default_materials() : materials
     mdict = Dict{Int, XA.Material}(0 => XA.Materials.air)
     for (i, nm) in enumerate(names)
         haskey(matmap, nm) ||
-            error("no material mapping for XCIST material \"$nm\" — pass a `materials` dict covering it")
+            error(
+                "no material mapping for XCIST material \"$nm\" — pass a `materials` dict covering it",
+            )
         mdict[i] = matmap[nm]
     end
     return mdict
@@ -358,11 +404,12 @@ the compute backend from the mask's array type):
 
 ```julia
 p = load_xcat_female_slab()                                     # auto-download → pieces
-phantom = Phantom(p.mask, p.materials, p.voxel_size_cm)          # CPU
-phantom = Phantom(to_gpu(p.mask), p.materials, p.voxel_size_cm)  # GPU
+phantom = Phantom(p.mask, p.materials, p.voxel_size_cm)         # CPU
+phantom = Phantom(to_gpu(p.mask), p.materials, p.voxel_size_cm) # GPU
 
 # customize materials up front, by XCIST name …
-mats = xcat_default_materials(); mats["ncat_blood"] = XA.Materials.wholeblood
+mats = xcat_default_materials()
+mats["ncat_blood"] = XA.Materials.wholeblood
 p = load_xcat_female_slab(; materials = mats, downsample = 6)
 # … or edit the returned label-keyed dict before building:
 p.materials[7] = XA.Materials.wholeblood
@@ -372,13 +419,13 @@ p.materials[7] = XA.Materials.wholeblood
 label-preserving nearest-neighbor integer factor (extent preserved).
 """
 function load_xcat_phantom(
-        name::Symbol;
-        path::Union{Nothing, AbstractString} = nothing,
-        materials::Union{Nothing, AbstractDict} = nothing,
-        voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
-        downsample::Integer = 1,
-        quiet::Bool = false,
-    )
+    name::Symbol;
+    path::Union{Nothing, AbstractString} = nothing,
+    materials::Union{Nothing, AbstractDict} = nothing,
+    voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
+    downsample::Integer = 1,
+    quiet::Bool = false,
+)
     dir = download_xcat_phantom(name; path = path, quiet = quiet)
     a = _assemble_xcist(dir; voxel_size_cm = voxel_size_cm, downsample = downsample)
     return (
@@ -408,9 +455,16 @@ end
 # Exports
 # =============================================================================
 
-export xcat_phantoms, xcat_default_materials, xcat_citation,
-    download_xcat_phantom, load_xcat_phantom,
-    download_xcat_female_slab, download_xcat_female_chest,
-    download_xcat_male_slab, download_xcat_male_chest,
-    load_xcat_female_slab, load_xcat_female_chest,
-    load_xcat_male_slab, load_xcat_male_chest
+export xcat_phantoms,
+    xcat_default_materials,
+    xcat_citation,
+    download_xcat_phantom,
+    load_xcat_phantom,
+    download_xcat_female_slab,
+    download_xcat_female_chest,
+    download_xcat_male_slab,
+    download_xcat_male_chest,
+    load_xcat_female_slab,
+    load_xcat_female_chest,
+    load_xcat_male_slab,
+    load_xcat_male_chest

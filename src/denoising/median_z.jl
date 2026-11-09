@@ -40,17 +40,20 @@ At slice boundaries the window shrinks to the available extent (no
 padding bias).
 """
 function apply_median_z!(
-        out::AbstractArray{Float32, 3},
-        src::AbstractArray{Float32, 3};
-        adjacent_slices::Int = 1,
-    )
-    size(out) == size(src) || error("apply_median_z!: out shape $(size(out)) ≠ src shape $(size(src))")
-    adjacent_slices ≥ 0 || error("apply_median_z!: adjacent_slices = $(adjacent_slices) must be ≥ 0")
+    out::AbstractArray{Float32, 3},
+    src::AbstractArray{Float32, 3};
+    adjacent_slices::Int = 1,
+)
+    size(out) == size(src) ||
+        error("apply_median_z!: out shape $(size(out)) ≠ src shape $(size(src))")
+    adjacent_slices ≥ 0 ||
+        error("apply_median_z!: adjacent_slices = $(adjacent_slices) must be ≥ 0")
     adjacent_slices == 0 && (copyto!(out, src); return out)
     nx, ny, nz = size(src)
     n_max = 2 * adjacent_slices + 1
     Threads.@threads for k in 1:nz
-        klo = max(1, k - adjacent_slices); khi = min(nz, k + adjacent_slices)
+        klo = max(1, k - adjacent_slices)
+        khi = min(nz, k + adjacent_slices)
         n = khi - klo + 1
         buf = Vector{Float32}(undef, n_max)
         @inbounds for j in 1:ny, i in 1:nx
@@ -73,11 +76,9 @@ allocated denoised volume (same shape + element type as `src`).
 
 `adjacent_slices = 0` returns a plain copy of `src` (no filtering).
 """
-function apply_median_z(
-        src::AbstractArray{Float32, 3};
-        adjacent_slices::Int = 1,
-    )
-    adjacent_slices ≥ 0 || error("apply_median_z: adjacent_slices = $(adjacent_slices) must be ≥ 0")
+function apply_median_z(src::AbstractArray{Float32, 3}; adjacent_slices::Int = 1)
+    adjacent_slices ≥ 0 ||
+        error("apply_median_z: adjacent_slices = $(adjacent_slices) must be ≥ 0")
     adjacent_slices == 0 && return copy(src)
     out = similar(src)
     apply_median_z!(out, src; adjacent_slices = adjacent_slices)

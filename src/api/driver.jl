@@ -45,7 +45,11 @@ upstream `filter_spectrum` step, so no distance factor appears here.
                                           factor (which BasisSimulator folds
                                           into `filter_spectrum` instead).
 """
-function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_flux_sum::Float64)
+function compute_detector_I0(
+    geom::CTGeometry,
+    protocol::CTProtocol,
+    spectrum_flux_sum::Float64,
+)
     SDD_mm = geom.SDD * 10.0
     SAD_mm = geom.SAD * 10.0
     magnification = SDD_mm / SAD_mm
@@ -61,15 +65,19 @@ end
 # =============================================================================
 
 function _capture_pcct_raw_counts(
-        bins::Vector{<:AbstractArray{T, 3}},
-        I0::AbstractArray{T, 3},
-    ) where {T <: AbstractFloat}
+    bins::Vector{<:AbstractArray{T, 3}},
+    I0::AbstractArray{T, 3},
+) where {T <: AbstractFloat}
     length(bins) == size(I0, 3) ||
         throw(DimensionMismatch("one I0 plane is required per PCCT bin"))
     captured = [similar(bin) for bin in bins]
     n_rays = Int32(size(I0, 1) * size(I0, 2))
     for (b, bin_sino) in enumerate(bins)
-        let out = captured[b], input = bin_sino, i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays
+        let out = captured[b],
+            input = bin_sino,
+            i0 = I0,
+            m = n_rays,
+            off = Int32(b - 1) * n_rays
             AK.foreachindex(input) do idx
                 out[idx] = i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-input[idx])
             end
@@ -78,14 +86,20 @@ function _capture_pcct_raw_counts(
     return captured
 end
 
-
 # The photon-counting detection of `simulate!`, on the workspace's backend: the expected counts
 # of every native dexel (the projection's native counts scaled, group by group, to the binned
 # bins, which carry the focal-spot blur and the scatter; in place of the native projection), its
 # defects, then one kernel for the counting noise, the pile-up at each dexel's own rate and the
 # digital sum to pixels (`pcct_count!`). Writes the bins as `-log(max(N, 1) / I0)` and, when
 # given, the summed counts before that floor into `raw`.
-function _pcct_detect!(ws::PCCTWorkspace{T}, bins, use_noise::Bool, seed, raw, time_per_view) where {T}
+function _pcct_detect!(
+    ws::PCCTWorkspace{T},
+    bins,
+    use_noise::Bool,
+    seed,
+    raw,
+    time_per_view,
+) where {T}
     nb = length(bins)
     bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
     I0 = ws.I0
@@ -100,16 +114,30 @@ function _pcct_detect!(ws::PCCTWorkspace{T}, bins, use_noise::Bool, seed, raw, t
     end
     ws.defects === nothing || _apply_pcct_defects!(expected, I0_dexel, ws.defects)
     pileup = if ws.pileup && ws.pileup_S !== nothing
-        (S = ws.pileup_S, rates = ws.pileup_rates, hardness = ws.pileup_hardness, time_per_view = time_per_view)
+        (
+            S = ws.pileup_S,
+            rates = ws.pileup_rates,
+            hardness = ws.pileup_hardness,
+            time_per_view = time_per_view,
+        )
     else
         nothing
     end
     counts = raw === nothing ? [similar(b) for b in bins] : raw
-    pcct_count!(counts, expected, use_noise ? ws.noise_classes : nothing; seed, binning = bf, pileup)
+    pcct_count!(
+        counts,
+        expected,
+        use_noise ? ws.noise_classes : nothing;
+        seed,
+        binning = bf,
+        pileup,
+    )
     nr = T(ws.noise_reduction)
     for b in 1:nb
         N, i0 = counts[b], view(I0, :, :, b)
-        use_noise && nr > 0 && (N .= i0 .* exp.(.-bins[b]) .+ (1 - nr) .* (N .- i0 .* exp.(.-bins[b])))
+        use_noise &&
+            nr > 0 &&
+            (N .= i0 .* exp.(.-bins[b]) .+ (1 - nr) .* (N .- i0 .* exp.(.-bins[b])))
         bins[b] .= .-log.(max.(N, one(T)) ./ i0)
     end
     bf == 1 && release_backend!(expected; collect = false)
@@ -131,7 +159,9 @@ function _scale_to_pixels!(native::AbstractArray{<:Real, 3}, binned, I0, bf::Int
             total += @inbounds native[c0 + i, r0 + j, v]
         end
         for j in Int32(1):n, i in Int32(1):n
-            @inbounds native[c0 + i, r0 + j, v] = total > 0 ? native[c0 + i, r0 + j, v] * (target / total) : target / (n * n)
+            @inbounds native[c0 + i, r0 + j, v] = total > 0 ?
+                native[c0 + i, r0 + j, v] * (target / total) :
+                target / (n * n)
         end
     end
     return native
@@ -162,7 +192,12 @@ before the other two corrections, it would leave each dexel S·(1 − 1/g) of it
 to 8 HU on the NAEOTOM Alpha's Gammex 472.
 
 ```julia
-calibration = calibrate(NAEOTOM_ALPHA, protocol, recon_opts, phantom)   # once per scanner and protocol
+calibration = calibrate(
+    NAEOTOM_ALPHA,
+    protocol,
+    recon_opts,
+    phantom,
+) # once per scanner and protocol
 ws = create_workspace(NAEOTOM_ALPHA, protocol, sim_opts, recon_opts, phantom; calibration)
 result = simulate!(ws, phantom, protocol, sim_opts)
 ```
@@ -224,31 +259,43 @@ function simulate!(
         # integrated over each view's arc (`_integrate_views!`, the same pathway as the EICT chain)
         function load_pcct!(g)
             _load_view_geometry!(
-                ws.geom_source_positions, ws.geom_detector_centers,
-                ws.geom_detector_u, ws.geom_detector_v, g
+                ws.geom_source_positions,
+                ws.geom_detector_centers,
+                ws.geom_detector_u,
+                ws.geom_detector_v,
+                g,
             )
             ws.native_geom === nothing && return nothing
-            ng = g === geom ? ws.native_geom : rotate_geometry(ws.native_geom, g.angles[1] - geom.angles[1])
+            ng = g === geom ?
+                ws.native_geom :
+                rotate_geometry(ws.native_geom, g.angles[1] - geom.angles[1])
             _load_view_geometry!(
-                ws.native_geom_source_positions, ws.native_geom_detector_centers,
-                ws.native_geom_detector_u, ws.native_geom_detector_v, ng
+                ws.native_geom_source_positions,
+                ws.native_geom_detector_centers,
+                ws.native_geom_detector_u,
+                ws.native_geom_detector_v,
+                ng,
             )
             return nothing
         end
         projected = Ref{Any}(nothing)
         _integrate_views!(geom, sim_opts, load_pcct!) do s_view, g_view
-            ng_view = ws.native_geom === nothing || g_view === geom ? ws.native_geom :
+            ng_view = ws.native_geom === nothing || g_view === geom ?
+                ws.native_geom :
                 rotate_geometry(ws.native_geom, g_view.angles[1] - geom.angles[1])
-            projected[] = pcct_forward_project(
-                phantom.mask, g_view, pcct_detector;
-                energies = energies, weights = weights,
+            projected[] = pcct_forward_project(phantom.mask, g_view, pcct_detector;
+                energies = energies,
+                weights = weights,
                 materials = mats,
-                ws_bins = ws.bins, ws_μ_volume = ws.μ_volume, ws_sino_buf = ws.sino_buf,
+                ws_bins = ws.bins,
+                ws_μ_volume = ws.μ_volume,
+                ws_sino_buf = ws.sino_buf,
                 ws_scratch = ws.scratch,
                 ws_thresholds_T = ws.thresholds_T,
-                ws_R = ws.R, ws_R_energies = ws.R_energies,
+                ws_R = ws.R,
                 ws_I0 = ws.I0,
-                ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
+                ws_μ_lut_cpu = ws.μ_lut_cpu,
+                ws_μ_lut_gpu = ws.μ_lut_gpu,
                 ws_μ_table = ws.μ_table,
                 ws_source_positions = ws.geom_source_positions,
                 ws_detector_centers = ws.geom_detector_centers,
@@ -269,7 +316,9 @@ function simulate!(
                 ws_outputs_flat = ws.outputs_flat,
                 ws_native_outputs_flat = ws.native_outputs_flat,
                 # the source transmission per ray (bowtie × heel) at the projection's resolution
-                ws_source_spectral = ws.native_geom !== nothing ? ws.native_bowtie_spectral : ws.bowtie_spectral,
+                ws_source_spectral = ws.native_geom !== nothing ?
+                    ws.native_bowtie_spectral :
+                    ws.bowtie_spectral,
                 projector = sim_opts.projector,
             )
             Tuple(projected[].bins)
@@ -289,9 +338,11 @@ function simulate!(
         if config.focal_spot !== nothing
             for bin_sino in pcct_sino.bins
                 apply_focal_spot_blur!(
-                    bin_sino, config.focal_spot, geom;
+                    bin_sino,
+                    config.focal_spot,
+                    geom;
                     ws_output = ws.tube_physics_scratch,
-                    ws_kernel = ws.focal_spot_kernel
+                    ws_kernel = ws.focal_spot_kernel,
                 )
             end
         end
@@ -300,23 +351,37 @@ function simulate!(
         # each bin's expected counts (src/detector/scatter.jl) ───
         if ws.scatter !== nothing
             _scatter_forward!(ws.scatter, phantom)
-            _pcct_scatter!(pcct_sino.bins, I0, ws.scatter, compute_detector_I0(geom, protocol, sum(weights)), 1)
+            _pcct_scatter!(
+                pcct_sino.bins,
+                I0,
+                ws.scatter,
+                compute_detector_I0(geom, protocol, sum(weights)),
+                1,
+            )
         end
     else
-        length(projection.bins) == length(ws.bins) && size(first(projection.bins)) == size(first(ws.bins)) ||
+        length(projection.bins) == length(ws.bins) &&
+            size(first(projection.bins)) == size(first(ws.bins)) ||
             throw(DimensionMismatch("the projection does not match this workspace's bins"))
-        pcct_sino = EnergyResolvedSinogram([copy(b) for b in projection.bins], projection.thresholds_keV)
+        pcct_sino = EnergyResolvedSinogram(
+            [copy(b) for b in projection.bins],
+            projection.thresholds_keV,
+        )
         if ws.native_bins !== nothing
             for (dst, src) in zip(ws.native_bins, projection.native_bins)
                 copyto!(dst, src)
             end
         end
     end
-    kept = keep_projection ? (
+    kept = keep_projection ?
+        (
             bins = [copy(b) for b in pcct_sino.bins],
-            native_bins = ws.native_bins === nothing ? nothing : [copy(b) for b in ws.native_bins],
+            native_bins = ws.native_bins === nothing ?
+                nothing :
+                [copy(b) for b in ws.native_bins],
             thresholds_keV = pcct_sino.thresholds_keV,
-        ) : nothing
+        ) :
+        nothing
 
     # ─── Detection: every native dexel counts, piles up, and the counts are summed ───
     # The expected counts of each native dexel (primary, focal-spot blur and scatter included),
@@ -325,14 +390,23 @@ function simulate!(
     # counting (digital binning), so a binned pixel's variance exceeds its mean. `raw_counts` are
     # the summed counts before the log-domain floor at one and before any correction.
     raw_counts = capture_raw_counts ? [similar(b) for b in pcct_sino.bins] : nothing
-    _pcct_detect!(ws, pcct_sino.bins, sim_opts.use_noise, sim_opts.seed, raw_counts, protocol.rotation_time / protocol.views)
+    _pcct_detect!(
+        ws,
+        pcct_sino.bins,
+        sim_opts.use_noise,
+        sim_opts.seed,
+        raw_counts,
+        protocol.rotation_time / protocol.views,
+    )
 
     # ─── The scanner's corrections, in its order: pile-up, the flat field, then the scatter ───
     # The scatter estimate is a smooth field on a nominal dexel's scale; subtracted from counts
     # that still carry each dexel's gain (or its pile-up), it leaves that dexel S·(1 − 1/g): rings.
     if calibration !== nothing
-        calibration.pileup === nothing || _correct_pileup!(pcct_sino.bins, I0, calibration.pileup, protocol)
-        calibration.flat_field === nothing || _correct_flat_field!(pcct_sino.bins, calibration.flat_field)
+        calibration.pileup === nothing ||
+            _correct_pileup!(pcct_sino.bins, I0, calibration.pileup, protocol)
+        calibration.flat_field === nothing ||
+            _correct_flat_field!(pcct_sino.bins, calibration.flat_field)
     end
 
     # ─── Scatter correction (`scatter_correction`): the scatter estimated from the corrected
@@ -340,7 +414,14 @@ function simulate!(
     if corrects_scatter
         plan = ws.scatter
         for b in eachindex(pcct_sino.bins)
-            _reduce_footprints!(plan.measured, plan, pcct_sino.bins[b]; i0 = I0, plane = b, accumulate = b > 1)
+            _reduce_footprints!(
+                plan.measured,
+                plan,
+                pcct_sino.bins[b];
+                i0 = I0,
+                plane = b,
+                accumulate = b > 1,
+            )
         end
         photons = compute_detector_I0(geom, protocol, sum(weights))
         _scatter_estimate!(plan, photons)
@@ -363,10 +444,12 @@ function simulate!(
     # body phantom, so a head protocol wants `(; phantom = :head16)` and a dual-source scanner
     # `(; n_tubes = 2)`.
 
-    ws.scatter === nothing || _warn_clamped(ws.scatter)      # here, where reading the device waits for nothing
+    # here, where reading the device waits for nothing
+    ws.scatter === nothing || _warn_clamped(ws.scatter)
     result = (
         pcct_sino = pcct_sino,
-        I0_bins = ws.I0,            # per ray: [n_cols, n_rows, n_bins], the air response of each ray and bin
+        # per ray: [n_cols, n_rows, n_bins], the air response of each ray and bin
+        I0_bins = ws.I0,
         dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing,
     )
     result = capture_raw_counts ? merge(result, (; raw_counts)) : result
@@ -420,16 +503,16 @@ dexel's (without the scatter correction, on the final sinogram).
 Reconstruction is NOT included — handled by the caller via `reconstruct!`.
 """
 function simulate!(
-        ws::EICTWorkspace{T},
-        phantom,
-        protocol::CTProtocol,
-        sim_opts::SimOptions = SimOptions();
-        report_dose::Bool = true,
-        dose_kwargs = (;),
-        paths = nothing,
-        projection = nothing,
-        keep_projection::Bool = false,
-    ) where {T}
+    ws::EICTWorkspace{T},
+    phantom,
+    protocol::CTProtocol,
+    sim_opts::SimOptions = SimOptions();
+    report_dose::Bool = true,
+    dose_kwargs = (;),
+    paths = nothing,
+    projection = nothing,
+    keep_projection::Bool = false,
+) where {T}
     flat_field = ws.calibration === nothing ? nothing : ws.calibration.flat_field
     geom = ws.geom
     energies = ws.energies
@@ -458,7 +541,12 @@ function simulate!(
         _integrate_views!(geom, sim_opts, load_eict!) do s_view, g_view
             fill!(ws.sinogram, zero(T))
             _forward_project_poly!(
-                ws.sinogram, phantom.mask, g_view, energies, ws.weights, mats;
+                ws.sinogram,
+                phantom.mask,
+                g_view,
+                energies,
+                ws.weights,
+                mats;
                 ws_μ_volume = ws.μ_volume,
                 ws_sino_mono = ws.sino_mono,
                 ws_I_transmitted = ws.I_transmitted,
@@ -477,7 +565,7 @@ function simulate!(
                 ws_w2_gpu = ws.wm2_gpu,
                 ws_out2 = ws.dispersion,
                 paths = _view_paths(paths, n_sub),
-                projector = sim_opts.projector
+                projector = sim_opts.projector,
             )
             (ws.sinogram, ws.dispersion)
         end
@@ -493,13 +581,15 @@ function simulate!(
         # STEP 2: Signal chain (always active)
         # ═══════════════════════════════════════════════════════════════════════
         _apply_physics_no_noise!(
-            ws.sinogram, geom, config;
+            ws.sinogram,
+            geom,
+            config;
             ws_output = ws.physics_output,
             ws_optical_crosstalk_kernel = ws.optical_crosstalk_kernel,
             ws_focal_spot_kernel = ws.focal_spot_kernel,
             ws_lag_output = ws.physics_output,
             ws_lag_intensity = ws.lag_intensity,
-            ws_lag_coeffs = ws.lag_coeffs
+            ws_lag_coeffs = ws.lag_coeffs,
         )
 
         # ─── Patient scatter: the Geant4 library on the patient's own rays, added to S₁ and S₂
@@ -509,18 +599,16 @@ function simulate!(
             _add_eict_scatter!(ws.sinogram, ws.dispersion, ws.scatter)
         end
     else
-        size(projection.sinogram) == size(ws.sinogram) || throw(
-            DimensionMismatch(
-                "the projection is $(size(projection.sinogram)); this workspace's sinogram is $(size(ws.sinogram))"
-            )
-        )
+        size(projection.sinogram) == size(ws.sinogram) ||
+            throw(DimensionMismatch(
+                "the projection is $(size(projection.sinogram)); this workspace's sinogram is $(size(ws.sinogram))",
+            ))
         copyto!(ws.sinogram, projection.sinogram)
         copyto!(ws.dispersion, projection.dispersion)
     end
-    kept = keep_projection ? (
-            sinogram = copy(ws.sinogram),
-            dispersion = copy(ws.dispersion),
-        ) : nothing
+    kept = keep_projection ?
+        (sinogram = copy(ws.sinogram), dispersion = copy(ws.dispersion)) :
+        nothing
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 3: Noise and scatter subtraction, in signal units (E_ref):
@@ -548,17 +636,24 @@ function simulate!(
             copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
         end
     end
-    let sino = ws.sinogram, disp = ws.dispersion, rg = ws.noise_rand_gpu,
-            gain = ws.dexel_gain, offset = ws.dexel_offset, ncnr = length(ws.dexel_gain),
-            eg = σ > zero(T) ? ws.enoise_rand_gpu : ws.noise_rand_gpu,
-            I0v = I0v, σ = σ, noisy = sim_opts.use_noise, linear = corrects_scatter
+    let sino = ws.sinogram,
+        disp = ws.dispersion,
+        rg = ws.noise_rand_gpu,
+        gain = ws.dexel_gain,
+        offset = ws.dexel_offset,
+        ncnr = length(ws.dexel_gain),
+        eg = σ > zero(T) ? ws.enoise_rand_gpu : ws.noise_rand_gpu,
+        I0v = I0v,
+        σ = σ,
+        noisy = sim_opts.use_noise,
+        linear = corrects_scatter
         AK.foreachindex(sino) do idx
             λ = I0v * exp(-sino[idx])
             if noisy
                 λ += sqrt(max(disp[idx] * λ, zero(T))) * rg[idx] + σ * eg[idx]
             end
             ray = (idx - 1) % ncnr + 1
-            λ = gain[ray] * λ + offset[ray]          # the dexel's own gain and offset
+            λ = gain[ray] * λ + offset[ray] # the dexel's own gain and offset
             # with scatter, the measured signal (relative to I₀) waits for the DAS's estimate
             sino[idx] = linear ? λ / I0v : -log(max(λ, one(T)) / I0v)
         end
@@ -566,9 +661,12 @@ function simulate!(
     # the flat field before the scatter correction, on the air-normalised signal (a DAS's order:
     # the estimate is a nominal dexel's, so it is subtracted from gain- and offset-corrected signals)
     if corrects_scatter && flat_field !== nothing
-        let sino = ws.sinogram, air = ws.air_reference, ncnr = length(ws.air_reference),
-                g = copyto!(similar(ws.air_reference), T.(flat_field.gain)),
-                o = copyto!(similar(ws.air_reference), T.(flat_field.offset)), ε = T(1.0e-10)
+        let sino = ws.sinogram,
+            air = ws.air_reference,
+            ncnr = length(ws.air_reference),
+            g = copyto!(similar(ws.air_reference), T.(flat_field.gain)),
+            o = copyto!(similar(ws.air_reference), T.(flat_field.offset)),
+            ε = T(1.0e-10)
             AK.foreachindex(sino) do idx
                 ray = (idx - 1) % ncnr + 1
                 a = max(air[ray], ε)
@@ -601,12 +699,17 @@ function simulate!(
     end
 
     # without the scatter correction, the flat field on the final sinogram
-    !corrects_scatter && flat_field !== nothing && _correct_flat_field!(ws.sinogram, flat_field)
+    !corrects_scatter &&
+        flat_field !== nothing &&
+        _correct_flat_field!(ws.sinogram, flat_field)
 
     # BHC is decoupled — applied at notebook level
-    ws.scatter === nothing || _warn_clamped(ws.scatter)      # here, where reading the device waits for nothing
+    # here, where reading the device waits for nothing
+    ws.scatter === nothing || _warn_clamped(ws.scatter)
     dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing
-    return keep_projection ? (; sinogram = ws.sinogram, dose, projection = kept) : (; sinogram = ws.sinogram, dose)
+    return keep_projection ?
+        (; sinogram = ws.sinogram, dose, projection = kept) :
+        (; sinogram = ws.sinogram, dose)
 end
 
 # =============================================================================
@@ -695,7 +798,11 @@ carry the DAS term through the reconstruction.
 # Returns
 The mutated `vol` (same object — `===` to the input).
 """
-function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Union{Int, Nothing} = nothing) where {T}
+function add_system_noise_floor!(
+    vol::AbstractArray{T},
+    sigma_hu::Real;
+    seed::Union{Int, Nothing} = nothing,
+) where {T}
     sigma_hu <= 0 && return vol
     rng = isnothing(seed) ? Random.default_rng() : Random.MersenneTwister(seed + 7919)
     vol .+= T(sigma_hu) .* randn(rng, T, size(vol))
@@ -725,14 +832,24 @@ has a bowtie — use the `_with_bowtie` variant.
 Pass `scanner` so the pipeline can read `flat_filter_material`,
 `flat_filter_thickness`, and `source_to_detector` from the hardware spec.
 """
-function resolve_source_spectrum_without_bowtie(sim_opts::SimOptions, protocol::CTProtocol; scanner::Scanner)
+function resolve_source_spectrum_without_bowtie(
+    sim_opts::SimOptions,
+    protocol::CTProtocol;
+    scanner::Scanner,
+)
     # Physics-based: raw IPEM spectrum + Beer-Lambert filtering
-    e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle = ipem_anode_angle(scanner.target_angle))
+    e, w = load_spectrum_unfiltered(
+        Int(protocol.kVp);
+        anode_angle = ipem_anode_angle(scanner.target_angle),
+    )
 
     # Build filter list: scanner's built-in flat filter + protocol extras
     filters = Tuple{String, Float64}[]
     if scanner.flat_filter_thickness > 0
-        push!(filters, (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)))
+        push!(
+            filters,
+            (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)),
+        )
     end
     append!(filters, protocol.additional_filters)
 
@@ -789,14 +906,14 @@ material composition are inherited from CatSim.
   `"high"`) so multi-bin pipelines label their logs.
 """
 function apply_bowtie_to_spectrum(
-        w_1d::AbstractVector,
-        e::AbstractVector{<:Real},
-        scanner,
-        geom,
-        protocol;
-        include_bowtie::Bool = true,
-        label::String = "",
-    )
+    w_1d::AbstractVector,
+    e::AbstractVector{<:Real},
+    scanner,
+    geom,
+    protocol;
+    include_bowtie::Bool = true,
+    label::String = "",
+)
     n_E = length(e)
     bowtie_present = include_bowtie &&
         hasproperty(scanner, :bowtie_filter) &&
@@ -856,17 +973,22 @@ basis decomposition, per-ray BHC, or any other forward-model step that
 needs the exact spectrum each ray saw.
 """
 function resolve_source_spectrum_with_bowtie(
-        sim_opts::SimOptions,
-        protocol::CTProtocol;
-        scanner,
-        geom,
-        include_bowtie::Bool = true,
-        label::String = "",
-    )
+    sim_opts::SimOptions,
+    protocol::CTProtocol;
+    scanner,
+    geom,
+    include_bowtie::Bool = true,
+    label::String = "",
+)
     e, w_1d = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     ŵ = apply_bowtie_to_spectrum(
-        w_1d, e, scanner, geom, protocol;
-        include_bowtie = include_bowtie, label = label
+        w_1d,
+        e,
+        scanner,
+        geom,
+        protocol;
+        include_bowtie = include_bowtie,
+        label = label,
     )
     return e, ŵ
 end
@@ -931,24 +1053,28 @@ simulate! applied.
 # Example
 ```julia
 e_L, ŵ_L = BS.resolve_source_spectrum_full(
-    sim_opts, protocol_low;
-    scanner = scanner, geom = sim_low.geom,
+    sim_opts,
+    protocol_low;
+    scanner = scanner,
+    geom = sim_low.geom,
 )
 e_H, ŵ_H = BS.resolve_source_spectrum_full(
-    sim_opts, protocol_high;
-    scanner = scanner, geom = sim_high.geom,
+    sim_opts,
+    protocol_high;
+    scanner = scanner,
+    geom = sim_high.geom,
 )
 material_basis = (ŵ_L = ŵ_L, p_L = …, q_L = …, ŵ_H = ŵ_H, p_H = …, q_H = …)
 ```
 """
 function resolve_source_spectrum_full(
-        sim_opts::SimOptions,
-        protocol::CTProtocol;
-        scanner,
-        geom,
-        diagnostic::Bool = false,
-        label::String = "",
-    )
+    sim_opts::SimOptions,
+    protocol::CTProtocol;
+    scanner,
+    geom,
+    diagnostic::Bool = false,
+    label::String = "",
+)
     # Step 1: 1D source spectrum (tube × flat filter × additional filters × SDD)
     e, w_1d = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
 
@@ -965,7 +1091,7 @@ function resolve_source_spectrum_full(
 
     # Step 3: bowtie B[col, row, E]
     bowtie = resolve_bowtie_filter(scanner.bowtie_filter)
-    B = compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e))   # [col, row, E]
+    B = compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e)) # [col, row, E]
 
     # Step 4: conditional heel(col, row, E) and η(E)
     heel = config.heel_effect !== nothing ?
@@ -981,7 +1107,7 @@ function resolve_source_spectrum_full(
     ŵ_raw = similar(B)
     @inbounds for k in 1:length(e)
         wη = w_norm[k] * m1[k]
-        for row in 1:size(B, 2), col in 1:size(B, 1)
+        for row in axes(B, 2), col in axes(B, 1)
             ŵ_raw[col, row, k] = wη * B[col, row, k] * heel[col, row, k]
         end
     end
@@ -1029,11 +1155,11 @@ construction time).  Original BasisSim glue — not a CatSim port.  CatSim's
 equivalent is the per-effect callback registry on `cfg.physics.*Callback`.
 """
 function build_physics_config(
-        scanner::Scanner,
-        sim_opts::SimOptions,
-        energies::Vector{Float64},
-        weights::Vector{Float64},
-    )
+    scanner::Scanner,
+    sim_opts::SimOptions,
+    energies::Vector{Float64},
+    weights::Vector{Float64},
+)
     kwargs = Dict{Symbol, Any}()
 
     # --- Common settings ---
@@ -1161,15 +1287,16 @@ and is masked outside the reconstruction circle along with the volume.
 The mutated `ws.volume` (same object — `===` to the workspace field).
 """
 function reconstruct!(
-        ws::FDKReconWorkspace{T},
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry;
-        helical_q::Real = 0.7,
-        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
-    ) where {T <: AbstractFloat}
-
+    ws::FDKReconWorkspace{T},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry;
+    helical_q::Real = 0.7,
+    coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
+) where {T <: AbstractFloat}
     if !is_helical(geom) && coverage !== nothing
-        throw(ArgumentError("coverage is only defined for a helical geometry; this one is axial"))
+        throw(ArgumentError(
+            "coverage is only defined for a helical geometry; this one is axial",
+        ))
     end
     if is_helical(geom)
         # Helical → rebinned WFBP chain (Stierstorfer family), reusing the
@@ -1178,10 +1305,12 @@ function reconstruct!(
         # is the correct parallel ramp kernel as-is.
         _, Δt = _wfbp_rebin!(ws.filtered, sinogram, geom)
         filter_sinogram!(
-            ws.filtered, geom;
+            ws.filtered,
+            geom;
             ws_conv_scratch = ws.conv_scratch,
             ws_filter_kernel = ws.filter_kernel,
-            apply_cosine = false, ray_spacing = Δt
+            apply_cosine = false,
+            ray_spacing = Δt,
         )
         fill!(ws.volume, zero(T))
         _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt); helical_q, coverage)
@@ -1198,20 +1327,23 @@ function reconstruct!(
     # Filter and kernel size are baked into ws.filter_kernel at workspace
     # creation time; filter_sinogram! short-circuits to ws_filter_kernel.
     filter_sinogram!(
-        ws.filtered, geom;
+        ws.filtered,
+        geom;
         ws_conv_scratch = ws.conv_scratch,
-        ws_filter_kernel = ws.filter_kernel
+        ws_filter_kernel = ws.filter_kernel,
     )
 
     # Step 3: Backproject into pre-allocated volume
     fill!(ws.volume, zero(T))
     backproject!(
-        ws.volume, ws.filtered, geom;
+        ws.volume,
+        ws.filtered,
+        geom;
         weighted = true,
         ws_source_positions = ws.bp_source_positions,
         ws_detector_centers = ws.bp_detector_centers,
         ws_detector_u = ws.bp_detector_u,
-        ws_detector_v = ws.bp_detector_v
+        ws_detector_v = ws.bp_detector_v,
     )
 
     # Step 4: Mask outside FOV (clinical convention)
@@ -1255,11 +1387,19 @@ function _hir_continue_z!(work::AbstractArray{T, 3}, output_z) where {T}
 end
 
 "Place a caller's initial volume (the requested grid) into its window of the work grid."
-function _hir_seed_work!(work::AbstractArray{T, 3}, init::AbstractArray{T, 3}, output_x, output_y, output_z) where {T}
+function _hir_seed_work!(
+    work::AbstractArray{T, 3},
+    init::AbstractArray{T, 3},
+    output_x,
+    output_y,
+    output_z,
+) where {T}
     work === init && return work
     nx = Int32(size(init, 1))
     ny = Int32(size(init, 2))
-    x0 = Int32(first(output_x)); y0 = Int32(first(output_y)); z0 = Int32(first(output_z))
+    x0 = Int32(first(output_x))
+    y0 = Int32(first(output_y))
+    z0 = Int32(first(output_z))
     backend = AK.get_backend(work)
     _foreachindex(init, backend) do idx
         idx0 = Int32(idx - 1)
@@ -1272,11 +1412,19 @@ function _hir_seed_work!(work::AbstractArray{T, 3}, init::AbstractArray{T, 3}, o
 end
 
 "The requested grid, read out of its window of the work grid."
-function _hir_extract_output!(output::AbstractArray{T, 3}, work::AbstractArray{T, 3}, output_x, output_y, output_z) where {T}
+function _hir_extract_output!(
+    output::AbstractArray{T, 3},
+    work::AbstractArray{T, 3},
+    output_x,
+    output_y,
+    output_z,
+) where {T}
     output === work && return output
     nx = Int32(size(output, 1))
     ny = Int32(size(output, 2))
-    x0 = Int32(first(output_x)); y0 = Int32(first(output_y)); z0 = Int32(first(output_z))
+    x0 = Int32(first(output_x))
+    y0 = Int32(first(output_y))
+    z0 = Int32(first(output_z))
     backend = AK.get_backend(output)
     _foreachindex(output, backend) do idx
         idx0 = Int32(idx - 1)
@@ -1378,36 +1526,36 @@ decomposition's inverse-variance map (see [`vmi_pipeline`](@ref)) or `:uniform`;
 no meaning for it.
 """
 function reconstruct!(
-        ws::HIRReconWorkspace{T},
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry;
-        init_volume::Union{Nothing, AbstractArray{T, 3}} = nothing,
-        air_reference::Union{Nothing, AbstractArray} = nothing,
-        weights::Union{Symbol, AbstractArray} = :transmission,
-    ) where {T <: AbstractFloat}
+    ws::HIRReconWorkspace{T},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry;
+    init_volume::Union{Nothing, AbstractArray{T, 3}} = nothing,
+    air_reference::Union{Nothing, AbstractArray} = nothing,
+    weights::Union{Symbol, AbstractArray} = :transmission,
+) where {T <: AbstractFloat}
     # `weights` is how the data term knows what it is fitting. `:transmission` is the Poisson
     # heuristic for a log-transmission sinogram, w = exp(-y): a ray through more material carried
     # fewer photons and is trusted less. That is only right when `y` IS a log-transmission. A
     # basis sinogram from a material decomposition is not — it is g/cm² of one material, can be
     # negative, and its variance comes from the decomposition's Fisher information, not from
     # exp(-y) — so for it the caller passes `:uniform` or the inverse-variance map itself.
-    weights isa Symbol && (
-        weights in (:transmission, :uniform) || throw(
-            ArgumentError("weights must be :transmission, :uniform or an array; got :$(weights)")
+    weights isa Symbol &&
+        (
+            weights in (:transmission, :uniform) ||
+                throw(ArgumentError(
+                    "weights must be :transmission, :uniform or an array; got :$(weights)",
+                ))
         )
-    )
     if weights isa AbstractArray
-        size(weights) == size(sinogram) || throw(
-            DimensionMismatch(
-                "weights has size $(size(weights)); the sinogram is $(size(sinogram))"
-            )
-        )
-        air_reference === nothing || throw(
-            ArgumentError(
+        size(weights) == size(sinogram) ||
+            throw(DimensionMismatch(
+                "weights has size $(size(weights)); the sinogram is $(size(sinogram))",
+            ))
+        air_reference === nothing ||
+            throw(ArgumentError(
                 "air_reference is the transmission weighting's bowtie map; it has no meaning " *
-                    "alongside explicit weights"
-            )
-        )
+                    "alongside explicit weights",
+            ))
     end
 
     params = ws.params
@@ -1420,19 +1568,22 @@ function reconstruct!(
             # Helical FDK init → rebinned WFBP (see FDKReconWorkspace path)
             _, Δt_h = _wfbp_rebin!(ws.filtered, sinogram, model_geom)
             filter_sinogram!(
-                ws.filtered, model_geom;
+                ws.filtered,
+                model_geom;
                 ws_conv_scratch = ws.conv_scratch,
                 ws_filter_kernel = ws.filter_kernel,
-                apply_cosine = false, ray_spacing = Δt_h
+                apply_cosine = false,
+                ray_spacing = Δt_h,
             )
             fill!(model_volume, zero(T))
             _wfbp_backproject!(model_volume, ws.filtered, model_geom, T(Δt_h))
         else
             copyto!(ws.filtered, sinogram)
             filter_sinogram!(
-                ws.filtered, geom;
+                ws.filtered,
+                geom;
                 ws_conv_scratch = ws.conv_scratch,
-                ws_filter_kernel = ws.filter_kernel
+                ws_filter_kernel = ws.filter_kernel,
             )
             # Seed the whole in-plane support by FDK — the fan covers the scan circle, so the
             # data support it — and the axial halo by continuation: FDK from the narrower
@@ -1441,21 +1592,22 @@ function reconstruct!(
             # components there (V_inv is zero on its nullspace).
             fill!(model_volume, zero(T))
             backproject!(
-                model_volume, ws.filtered, model_geom;
+                model_volume,
+                ws.filtered,
+                model_geom;
                 weighted = true,
                 ws_source_positions = ws.geom_source_positions,
                 ws_detector_centers = ws.geom_detector_centers,
                 ws_detector_u = ws.geom_detector_u,
-                ws_detector_v = ws.geom_detector_v
+                ws_detector_v = ws.geom_detector_v,
             )
             _hir_continue_z!(model_volume, ws.output_z)
         end
     else
-        size(init_volume) == size(ws.volume) || throw(
-            DimensionMismatch(
-                "init_volume has size $(size(init_volume)); expected $(size(ws.volume))"
-            )
-        )
+        size(init_volume) == size(ws.volume) ||
+            throw(DimensionMismatch(
+                "init_volume has size $(size(init_volume)); expected $(size(ws.volume))",
+            ))
         # The caller's volume is the requested grid; the support beyond it (the in-plane ring
         # of patient outside the requested circle, the cone halo) must still hold the object,
         # or the data term piles that attenuation onto the circle's edge exactly as a
@@ -1465,18 +1617,21 @@ function reconstruct!(
         if size(model_volume) != size(ws.volume)
             copyto!(ws.filtered, sinogram)
             filter_sinogram!(
-                ws.filtered, geom;
+                ws.filtered,
+                geom;
                 ws_conv_scratch = ws.conv_scratch,
-                ws_filter_kernel = ws.filter_kernel
+                ws_filter_kernel = ws.filter_kernel,
             )
             fill!(model_volume, zero(T))
             backproject!(
-                model_volume, ws.filtered, model_geom;
+                model_volume,
+                ws.filtered,
+                model_geom;
                 weighted = true,
                 ws_source_positions = ws.geom_source_positions,
                 ws_detector_centers = ws.geom_detector_centers,
                 ws_detector_u = ws.geom_detector_u,
-                ws_detector_v = ws.geom_detector_v
+                ws_detector_v = ws.geom_detector_v,
             )
         end
         copyto!(ws.volume, init_volume)
@@ -1528,8 +1683,11 @@ function reconstruct!(
     elseif weights === :uniform
         fill!(ws.data_weights, one(T))
     elseif air_reference !== nothing
-        let sw = ws.data_weights, ε = T(1.0e-6), aref = air_reference,
-                nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
+        let sw = ws.data_weights,
+            ε = T(1.0e-6),
+            aref = air_reference,
+            nc = Int32(size(sinogram, 1)),
+            nr = Int32(size(sinogram, 2))
             _foreachindex(sw, backend) do idx
                 idx_0 = Int32(idx - 1)
                 col = (idx_0 % nc) + Int32(1)
@@ -1574,7 +1732,8 @@ function reconstruct!(
             # repeatedly applies one stale Laplacian step; on high-frequency
             # modes its cumulative gain can cross zero and amplify the very
             # texture the Huber prior is meant to suppress.
-            ws.projector === :siddon || compute_huber_gradient!(ws.reg_grad, model_volume, δ)
+            ws.projector === :siddon ||
+                compute_huber_gradient!(ws.reg_grad, model_volume, δ)
 
             n_sub = length(angle_indices)
             geom_s = ws.subset_geometries[s]
@@ -1585,31 +1744,36 @@ function reconstruct!(
             # that otherwise-equivalent view is ~2.3× slower for both A and Aᵀ.
             # Uneven final subsets retain the bounded view fallback.
             ax_view = n_sub == size(ws.subset_Ax_buf, 3) ?
-                ws.subset_Ax_buf : view(ws.subset_Ax_buf, :, :, 1:n_sub)
+                ws.subset_Ax_buf :
+                view(ws.subset_Ax_buf, :, :, 1:n_sub)
             fill!(ax_view, zero(T))
             _project_mono_hir!(
                 ws.projector,
-                ax_view, model_volume, geom_s;
+                ax_view,
+                model_volume,
+                geom_s;
                 ws_source_positions = ws.subset_geom_source_positions[s],
                 ws_detector_centers = ws.subset_geom_detector_centers[s],
                 ws_detector_u = ws.subset_geom_detector_u[s],
-                ws_detector_v = ws.subset_geom_detector_v[s]
+                ws_detector_v = ws.subset_geom_detector_v[s],
             )
 
             # Compute weighted residual in-place:
             # Ax_s = (W ⊙ stat_w)_s ⊙ (sino_s - Ax_s)
             # The subset's rays are gathered straight out of the full arrays via
             # the angle map, so no staging copy is needed.
-            let ax = ax_view, sino = sinogram, dw = ws.data_weights,
-                    aidx = ws.subset_angle_idx[s],
-                    nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
-
+            let ax = ax_view,
+                sino = sinogram,
+                dw = ws.data_weights,
+                aidx = ws.subset_angle_idx[s],
+                nc = Int32(size(sinogram, 1)),
+                nr = Int32(size(sinogram, 2))
                 _foreachindex(ax, backend) do idx
                     idx_0 = Int32(idx - 1)
                     col = (idx_0 % nc) + Int32(1)
                     row = ((idx_0 ÷ nc) % nr) + Int32(1)
-                    k = (idx_0 ÷ (nc * nr)) + Int32(1)   # slot within the subset
-                    a = aidx[k]                          # global view index
+                    k = (idx_0 ÷ (nc * nr)) + Int32(1) # slot within the subset
+                    a = aidx[k]                        # global view index
                     residual = sino[col, row, a] - ax[idx]
                     ax[idx] = dw[col, row, a] * residual
                 end
@@ -1619,20 +1783,27 @@ function reconstruct!(
             fill!(ws.correction, zero(T))
             if ws.projector === :siddon
                 _backproject_mono!(
-                    ws.projector, ws.correction, ax_view, geom_s;
+                    ws.projector,
+                    ws.correction,
+                    ax_view,
+                    geom_s;
                     ws_source_positions = ws.subset_geom_source_positions[s],
                     ws_detector_centers = ws.subset_geom_detector_centers[s],
                     ws_detector_u = ws.subset_geom_detector_u[s],
-                    ws_detector_v = ws.subset_geom_detector_v[s]
+                    ws_detector_v = ws.subset_geom_detector_v[s],
                 )
             else
                 _backproject_mono!(
-                    ws.projector, ws.correction, ax_view, geom_s;
-                    active_z = 1:size(ws.work_volume, 3), circular_support = true,
+                    ws.projector,
+                    ws.correction,
+                    ax_view,
+                    geom_s;
+                    active_z = 1:size(ws.work_volume, 3),
+                    circular_support = true,
                     ws_source_positions = ws.subset_geom_source_positions[s],
                     ws_detector_centers = ws.subset_geom_detector_centers[s],
                     ws_detector_u = ws.subset_geom_detector_u[s],
-                    ws_detector_v = ws.subset_geom_detector_v[s]
+                    ws_detector_v = ws.subset_geom_detector_v[s],
                 )
             end
 
@@ -1644,14 +1815,18 @@ function reconstruct!(
             # protocol.  Scale the reg term by n_views/1000 to make it
             # protocol-invariant (bands anchored at ~1000-view protocols).
             reg_views_scale = T(length(geom.angles)) / T(1000)
-            let vol = model_volume, vinv = ws.V_inv, corr = ws.correction,
-                    rg = ws.reg_grad, ss = subset_scale, rvs = reg_views_scale,
-                    nx = Int32(size(model_volume, 1)), ny = Int32(size(model_volume, 2)),
-                    dx = T(model_geom.fov[1]) / T(size(model_volume, 1)),
-                    dy = T(model_geom.fov[2]) / T(size(model_volume, 2)),
-                    radius_sq = T(min(model_geom.fov[1], model_geom.fov[2]) / 2)^2,
-                    half = T(0.5)
-
+            let vol = model_volume,
+                vinv = ws.V_inv,
+                corr = ws.correction,
+                rg = ws.reg_grad,
+                ss = subset_scale,
+                rvs = reg_views_scale,
+                nx = Int32(size(model_volume, 1)),
+                ny = Int32(size(model_volume, 2)),
+                dx = T(model_geom.fov[1]) / T(size(model_volume, 1)),
+                dy = T(model_geom.fov[2]) / T(size(model_volume, 2)),
+                radius_sq = T(min(model_geom.fov[1], model_geom.fov[2]) / 2)^2,
+                half = T(0.5)
                 _foreachindex(vol, backend) do idx
                     idx0 = Int32(idx - 1)
                     ix = (idx0 % nx) + Int32(1)
@@ -1697,8 +1872,9 @@ it to [`simulate!`](@ref) as `paths` and each further acquisition costs the spec
 alone, bit-identically.
 
 ```julia
-paths = material_paths(ws_120, phantom)              # one walk
-for (kvp, ws) in workspaces                          # 80, 100, 120, 140 kVp
+paths = material_paths(ws_120, phantom) # one walk
+for (kvp, ws) in workspaces
+    # 80, 100, 120, 140 kVp
     simulate!(ws, phantom, protocols[kvp], sim_opts; paths)
 end
 ```
@@ -1719,18 +1895,23 @@ function material_paths(ws::EICTWorkspace{T}, phantom; kwargs...) where {T}
     return material_paths!(paths, ws, phantom; kwargs...)
 end
 
-@doc (@doc material_paths)
-function material_paths!(
-        paths::AbstractArray{T, 4}, ws::EICTWorkspace{T}, phantom;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    ) where {T}
-    extent = volume_extent !== nothing ? volume_extent :
+@doc (@doc material_paths) function material_paths!(
+    paths::AbstractArray{T, 4},
+    ws::EICTWorkspace{T},
+    phantom;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+) where {T}
+    extent = volume_extent !== nothing ?
+        volume_extent :
         (
             hasproperty(phantom, :extent) && phantom.extent !== nothing ?
-            Tuple(Float64.(phantom.extent)) : nothing
+                Tuple(Float64.(phantom.extent)) :
+                nothing
         )
     return dd_fast_material_paths!(
-        paths, phantom.mask, ws.geom;
+        paths,
+        phantom.mask,
+        ws.geom;
         volume_extent = extent,
         ws_source_positions = ws.geom_source_positions,
         ws_detector_centers = ws.geom_detector_centers,

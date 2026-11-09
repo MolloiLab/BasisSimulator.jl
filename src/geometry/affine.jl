@@ -30,19 +30,14 @@ The transform encodes:
 ```julia
 A = phantom_to_world_affine(phantom)
 # World coordinate of voxel (0,0,0):
-world = A * [0, 0, 0, 1]  # == [origin_x, origin_y, origin_z, 1]
+world = A * [0, 0, 0, 1] # == [origin_x, origin_y, origin_z, 1]
 ```
 """
 function phantom_to_world_affine(phantom::Phantom)
     sx, sy, sz = phantom.voxel_size
     tx, ty, tz = phantom.origin
 
-    return Float64[
-        sx  0   0   tx
-        0   sy  0   ty
-        0   0   sz  tz
-        0   0   0   1
-    ]
+    return Float64[sx 0 0 tx; 0 sy 0 ty; 0 0 sz tz; 0 0 0 1]
 end
 
 """
@@ -58,7 +53,7 @@ The reconstruction grid is centered at isocenter with voxel size `geom.fov ./ ma
 ```julia
 A = recon_to_world_affine(geom, (512, 512, 64))
 # World coordinate of first voxel:
-world = A * [0, 0, 0, 1]  # == [-fov_x/2 + vx/2, -fov_y/2 + vy/2, -fov_z/2 + vz/2, 1]
+world = A * [0, 0, 0, 1] # == [-fov_x/2 + vx/2, -fov_y/2 + vy/2, -fov_z/2 + vz/2, 1]
 ```
 """
 function recon_to_world_affine(geom::CTGeometry, matrix_size)
@@ -73,12 +68,7 @@ function recon_to_world_affine(geom::CTGeometry, matrix_size)
     ty = -fov_y / 2 + sy / 2
     tz = -fov_z / 2 + sz / 2
 
-    return Float64[
-        sx  0   0   tx
-        0   sy  0   ty
-        0   0   sz  tz
-        0   0   0   1
-    ]
+    return Float64[sx 0 0 tx; 0 sy 0 ty; 0 0 sz tz; 0 0 0 1]
 end
 
 # =============================================================================
@@ -114,10 +104,11 @@ ground_truth = resample_to_recon(phantom, geom, (350, 350, 128))
 ```
 """
 function resample_to_recon(
-        phantom::Phantom, geom::CTGeometry, matrix_size;
-        method::Symbol = :nearest
-    )
-
+    phantom::Phantom,
+    geom::CTGeometry,
+    matrix_size;
+    method::Symbol = :nearest,
+)
     # Pull mask to CPU if on GPU
     mask_cpu = Array(phantom.mask)
     pnx, pny, pnz = size(mask_cpu)
@@ -147,7 +138,7 @@ function resample_to_recon(
         @inbounds for k in 0:(nz - 1)
             wz = roz + k * rvz
             pzi = (wz - poz) * inv_pvz
-            pk = round(Int, pzi) + 1  # 0-indexed → 1-indexed
+            pk = round(Int, pzi) + 1 # 0-indexed → 1-indexed
             (pk < 1 || pk > pnz) && continue
 
             for j in 0:(ny - 1)
@@ -168,7 +159,6 @@ function resample_to_recon(
         end
 
         return out
-
     elseif method == :linear
         out = zeros(Float32, nx, ny, nz)
 
@@ -178,7 +168,8 @@ function resample_to_recon(
             kz0 = floor(Int, pzi)
             kz1 = kz0 + 1
             fz = Float32(pzi - kz0)
-            kz0 += 1; kz1 += 1  # 0-indexed → 1-indexed
+            kz0 += 1
+            kz1 += 1 # 0-indexed → 1-indexed
             (kz1 < 1 || kz0 > pnz) && continue
 
             for j in 0:(ny - 1)
@@ -187,7 +178,8 @@ function resample_to_recon(
                 jy0 = floor(Int, pyi)
                 jy1 = jy0 + 1
                 fy = Float32(pyi - jy0)
-                jy0 += 1; jy1 += 1
+                jy0 += 1
+                jy1 += 1
                 (jy1 < 1 || jy0 > pny) && continue
 
                 for i in 0:(nx - 1)
@@ -196,7 +188,8 @@ function resample_to_recon(
                     ix0 = floor(Int, pxi)
                     ix1 = ix0 + 1
                     fx = Float32(pxi - ix0)
-                    ix0 += 1; ix1 += 1
+                    ix0 += 1
+                    ix1 += 1
                     (ix1 < 1 || ix0 > pnx) && continue
 
                     # Clamp to valid range
@@ -272,21 +265,33 @@ the largest array is shrunk first: a 1600 × 1400 × 200 window onto 512 × 512 
 first and never holds more than the input's size in Float64.
 """
 function resample_field_to_recon(
-        field::AbstractArray{<:Real, 3}, voxel_size, origin, geom::CTGeometry, matrix_size;
-        outside::Real = 0.0, to_backend = identity,
-    )
-    length(voxel_size) == 3 && length(origin) == 3 || throw(ArgumentError(
-        "voxel_size and origin are 3-vectors in cm"))
+    field::AbstractArray{<:Real, 3},
+    voxel_size,
+    origin,
+    geom::CTGeometry,
+    matrix_size;
+    outside::Real = 0.0,
+    to_backend = identity,
+)
+    length(voxel_size) == 3 && length(origin) == 3 ||
+        throw(ArgumentError("voxel_size and origin are 3-vectors in cm"))
     nx, ny, nz = matrix_size
     fov = geom.fov
     dst = ntuple(3) do d
-        (n = matrix_size[d], step = fov[d] / matrix_size[d],
-            first = -fov[d] / 2 + fov[d] / matrix_size[d] / 2)
+        (
+            n = matrix_size[d],
+            step = fov[d] / matrix_size[d],
+            first = -fov[d] / 2 + fov[d] / matrix_size[d] / 2,
+        )
     end
     W = ntuple(3) do d
         _overlap_weights(
-            size(field, d), Float64(voxel_size[d]), Float64(origin[d]),
-            dst[d].n, dst[d].step, dst[d].first,
+            size(field, d),
+            Float64(voxel_size[d]),
+            Float64(origin[d]),
+            dst[d].n,
+            dst[d].step,
+            dst[d].first,
         )
     end
     # separable contraction in Float64, one axis at a time, the axis that shrinks most first
@@ -329,7 +334,12 @@ function _band(W::AbstractMatrix)
     return lo, band
 end
 
-function _contract_axis(f::AbstractArray{<:Real, 3}, W::AbstractMatrix, d::Integer, to_backend)
+function _contract_axis(
+    f::AbstractArray{<:Real, 3},
+    W::AbstractMatrix,
+    d::Integer,
+    to_backend,
+)
     lo_host, band_host = _band(W)
     lo = to_backend(lo_host)
     band = to_backend(band_host)
@@ -361,9 +371,13 @@ end
 # Rows: destination voxels; columns: source voxels. Entry = overlap length / destination pitch,
 # so a fully covered destination row sums to 1.
 function _overlap_weights(
-        n_src::Integer, d_src::Float64, first_src::Float64,
-        n_dst::Integer, d_dst::Float64, first_dst::Float64,
-    )
+    n_src::Integer,
+    d_src::Float64,
+    first_src::Float64,
+    n_dst::Integer,
+    d_dst::Float64,
+    first_dst::Float64,
+)
     W = zeros(Float64, n_dst, n_src)
     for j in 1:n_dst
         lo_j = first_dst + (j - 1) * d_dst - d_dst / 2

@@ -71,23 +71,22 @@ two extents differed; it has been removed.
 So A, Hsieh J, Li JY, Lee TY. Phys Med Biol. 2009;54(10):3031-3050.
 """
 function apply_bhc_image_domain(
-        recon_μ::AbstractArray{T, 3},
-        geom,
-        matrix_size::Tuple{Int, Int, Int},
-        μ_water_ref::Real;
-        hu_low::Real = 70.0,
-        hu_high::Real = 150.0,
-        scale_factor::Real = 0.5,
-        projector::Symbol = :dd_fast,
-    ) where {T <: AbstractFloat}
-
+    recon_μ::AbstractArray{T, 3},
+    geom,
+    matrix_size::Tuple{Int, Int, Int},
+    μ_water_ref::Real;
+    hu_low::Real = 70.0,
+    hu_high::Real = 150.0,
+    scale_factor::Real = 0.5,
+    projector::Symbol = :dd_fast,
+) where {T <: AbstractFloat}
     Base.depwarn(
         "apply_bhc_image_domain is DEPRECATED and disabled from the canonical " *
-        "correction chain: audit found it subtracts a scaled copy of the " *
-        "dense-material image itself (FBP∘FP ≈ identity), deflating bone/iodine " *
-        "HU by ~scale_factor instead of removing dark-band artifacts.  Use the " *
-        "sinogram-domain apply_bhc_two_material (now calibrated on the full " *
-        "detected spectrum) alone.",
+            "correction chain: audit found it subtracts a scaled copy of the " *
+            "dense-material image itself (FBP∘FP ≈ identity), deflating bone/iodine " *
+            "HU by ~scale_factor instead of removing dark-band artifacts.  Use the " *
+            "sinogram-domain apply_bhc_two_material (now calibrated on the full " *
+            "detected spectrum) alone.",
         :apply_bhc_image_domain,
     )
 
@@ -99,8 +98,11 @@ function apply_bhc_image_domain(
     # Step 1: segment high-attenuation voxels → weighted μ image (GPU).
     # Linear interpolation weighting factor per So et al. 2009 §2.2.
     high_atten_μ = similar(recon_μ)
-    let recon_μ = recon_μ, high_atten_μ = high_atten_μ,
-            μ_w_ref = μ_w_ref, hu_low_T = hu_low_T, hu_high_T = hu_high_T
+    let recon_μ = recon_μ,
+        high_atten_μ = high_atten_μ,
+        μ_w_ref = μ_w_ref,
+        hu_low_T = hu_low_T,
+        hu_high_T = hu_high_T
         AK.foreachindex(recon_μ) do idx
             μ_val = recon_μ[idx]
             hu_val = T(1000) * (μ_val - μ_w_ref) / μ_w_ref

@@ -34,7 +34,7 @@ end
 @testset "hypr_lr keeps totals, is unbiased and never mixes rows" begin
     # rays of one spectral shape per row; row 2 has a different split than row 1
     nc, nr, nv, K = 48, 2, 48, 2
-    λ = [600.0 400.0; 300.0 700.0]            # row × channel expected counts
+    λ = [600.0 400.0; 300.0 700.0] # row × channel expected counts
     I0 = ones(Float64, nc, nr, K) .* 2000.0
     h_true = [fill(Float32(-log(λ[r, k] / 2000)), nc, 1, nv) for k in 1:K, r in 1:nr]
     clean = [cat(h_true[k, 1], h_true[k, 2]; dims = 2) for k in 1:K]
@@ -55,7 +55,8 @@ end
         end
         den = BS.hypr_lr(noisy, I0; kernel = BS.HYPRKernel((5, 5)))
         y(h) = 2000 .* exp.(-Float64.(h))
-        @test maximum(abs.(sum(y.(den)) .- sum(y.(noisy)))) < 1.0e-2 * maximum(sum(y.(noisy)))
+        @test maximum(abs.(sum(y.(den)) .- sum(y.(noisy)))) <
+            1.0e-2 * maximum(sum(y.(noisy)))
         for k in 1:K
             sums[:, :, :, k] .+= y(den[k])
         end
@@ -75,7 +76,11 @@ end
     h1 = Float32.(repeat(reshape(-log.(T .* p1 ./ 2000), nc, 1, 1), 1, 1, nv))
     h2 = Float32.(repeat(reshape(-log.(T .* (1 .- p1) ./ 2000), nc, 1, 1), 1, 1, nv))
     lin = BS.hypr_lr([h1, h2], I0; kernel = BS.HYPRKernel((7, 3); guided = false))
-    con = BS.hypr_lr([h1, h2], I0; kernel = BS.HYPRKernel((7, 3); guided = false, linear = false))
+    con = BS.hypr_lr(
+        [h1, h2],
+        I0;
+        kernel = BS.HYPRKernel((7, 3); guided = false, linear = false),
+    )
     @test maximum(abs.(lin[1] .- h1)) < 1.0e-4
     @test maximum(abs.(con[1][1, 1, :] .- h1[1, 1, :])) > 1.0e-2
 end
@@ -133,13 +138,31 @@ end
     pooled = BS.guided_pool(noisy, noisy, ones(size(noisy)), k)
     @test std(pooled[1:14, :, :]) < 0.7 * std(noisy[1:14, :, :])
     @test abs(mean(pooled[16, :, :])) < 1.0 && abs(mean(pooled[17, :, :]) - 100) < 1.0
-    unguided = BS.guided_pool(noisy, noisy, ones(size(noisy)), BS.HYPRKernel((5, 5, 1); guided = false, linear = false))
-    @test mean(unguided[16, :, :]) > 20                     # plain box blurs across the edge
-    @test BS.guided_pool(fill(3.0, 8, 8, 2), zeros(8, 8, 2), ones(8, 8, 2), k) ≈ fill(3.0, 8, 8, 2)
+    unguided = BS.guided_pool(
+        noisy,
+        noisy,
+        ones(size(noisy)),
+        BS.HYPRKernel((5, 5, 1); guided = false, linear = false),
+    )
+    # plain box blurs across the edge
+    @test mean(unguided[16, :, :]) > 20
+    @test BS.guided_pool(fill(3.0, 8, 8, 2), zeros(8, 8, 2), ones(8, 8, 2), k) ≈
+        fill(3.0, 8, 8, 2)
     # within the slice only: a window across slices is refused, and slices never exchange values
-    @test_throws ArgumentError BS.guided_pool(noisy, noisy, ones(size(noisy)), BS.HYPRKernel((5, 5, 3); linear = false))
+    @test_throws ArgumentError BS.guided_pool(
+        noisy,
+        noisy,
+        ones(size(noisy)),
+        BS.HYPRKernel((5, 5, 3); linear = false),
+    )
     layered = cat(zeros(8, 8, 1), fill(100.0, 8, 8, 1); dims = 3)
-    @test BS.guided_pool(layered, layered, ones(8, 8, 2), BS.HYPRKernel((5, 5, 1); guided = false, linear = false)) ≈ layered
+    @test BS.guided_pool(
+        layered,
+        layered,
+        ones(8, 8, 2),
+        BS.HYPRKernel((5, 5, 1); guided = false, linear = false),
+    ) ≈
+        layered
 end
 
 @testset "view_stride pools one parity of views" begin
@@ -150,13 +173,18 @@ end
     base = [Float32.(-log.((400 .+ 200 .* rand(rng, nc, nr, nv)) ./ 2000)) for _ in 1:2]
     moved = [copy(b) for b in base]
     for b in moved
-        b[:, :, 1:2:nv] .+= 0.3f0                          # perturb the odd views only
+        b[:, :, 1:2:nv] .+= 0.3f0 # perturb the odd views only
     end
     k = BS.HYPRKernel((3, 3))
-    a2, b2 = BS.hypr_lr(base, I0; kernel = k, view_stride = 2), BS.hypr_lr(moved, I0; kernel = k, view_stride = 2)
-    @test all(maximum(abs.(a2[c][:, :, 2:2:nv] .- b2[c][:, :, 2:2:nv])) < 1.0e-6 for c in 1:2)
+    a2, b2 = BS.hypr_lr(base, I0; kernel = k, view_stride = 2),
+        BS.hypr_lr(moved, I0; kernel = k, view_stride = 2)
+    @test all(
+        maximum(abs.(a2[c][:, :, 2:2:nv] .- b2[c][:, :, 2:2:nv])) < 1.0e-6
+        for c in 1:2
+    )
     a1, b1 = BS.hypr_lr(base, I0; kernel = k), BS.hypr_lr(moved, I0; kernel = k)
-    @test maximum(abs.(a1[1][:, :, 2:2:nv] .- b1[1][:, :, 2:2:nv])) > 1.0e-3   # adjacent views mix
+    # adjacent views mix
+    @test maximum(abs.(a1[1][:, :, 2:2:nv] .- b1[1][:, :, 2:2:nv])) > 1.0e-3
 end
 
 @testset "local_noise measures a nonstationary noise level" begin
@@ -172,8 +200,12 @@ end
 
 @testset "vmi_pipeline with SpectralHYPR" begin
     scanner = BS.PCCTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
-        detector_cols = 128, detector_row_size = 1.0, detector_col_size = 1.5,
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 4,
+        detector_cols = 128,
+        detector_row_size = 1.0,
+        detector_col_size = 1.5,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
     )
     geom = BS.CTGeometry(scanner; n_angles = 180, fov_cm = 16.0, z_cm = 0.4)
@@ -190,27 +222,50 @@ end
     ref = BS.vmi_pipeline(; channels = clean, common..., use_acnr = false)
     plain = BS.vmi_pipeline(; channels = noisy, common..., use_acnr = false)
     out = BS.vmi_pipeline(; channels = noisy, common..., denoiser = BS.SpectralHYPR())
-    @test out.settings.acnr.on === :complement               # ACNR runs, on the complement, first
+    # ACNR runs, on the complement, first
+    @test out.settings.acnr.on === :complement
     @test out.settings.denoiser.projection.kernel.window == (3, 3)
     @test out.settings.denoiser.projection.view_stride == 2
-    @test all(d -> 0.8 < d < 1.25, out.settings.denoiser.dispersion)   # photon counting ≈ 1
+    @test all(d -> 0.8 < d < 1.25, out.settings.denoiser.dispersion) # photon counting ≈ 1
     est = out.settings.denoiser.image_estimates
     @test 40 <= est.Estar <= 140
     @test est.window in BS.ImageHYPR().candidates && first(est.risks) == (3, 1.0)
     for k in 1:geom.n_rows
-        @test mean(out.images.water[centre, centre, k]) ≈ mean(ref.images.water[centre, centre, k]) rtol = 0.02
+        @test mean(out.images.water[centre, centre, k]) ≈
+            mean(ref.images.water[centre, centre, k]) rtol = 0.02
     end
     # the image-domain instance takes out most of the 40 keV spectral noise
     σ(x) = std(x.vmis[centre, centre, :, 1])
     @test σ(out) < 0.7 * σ(plain)
     # either instance alone
-    proj = BS.vmi_pipeline(; channels = noisy, common..., use_acnr = false, denoiser = BS.SpectralHYPR(image = nothing))
+    proj = BS.vmi_pipeline(;
+        channels = noisy,
+        common...,
+        use_acnr = false,
+        denoiser = BS.SpectralHYPR(image = nothing),
+    )
     @test proj.settings.denoiser.image === nothing && σ(proj) <= 1.05 * σ(plain)
-    img = BS.vmi_pipeline(; channels = noisy, common..., denoiser = BS.SpectralHYPR(projection = nothing))
+    img = BS.vmi_pipeline(;
+        channels = noisy,
+        common...,
+        denoiser = BS.SpectralHYPR(projection = nothing),
+    )
     @test img.settings.denoiser.dispersion === nothing && σ(img) < 0.7 * σ(plain)
     # the sinograms, for the pair tests
-    sinos = BS.vmi_pipeline(; channels = noisy, common..., use_acnr = false, keep_sinograms = true).sinograms
-    sp(filter; kw...) = BS.spectral_pair(sinos.water, sinos.iodine, geom, common.matrix_size; filter, kw...)
+    sinos = BS.vmi_pipeline(;
+        channels = noisy,
+        common...,
+        use_acnr = false,
+        keep_sinograms = true,
+    ).sinograms
+    sp(filter; kw...) = BS.spectral_pair(
+        sinos.water,
+        sinos.iodine,
+        geom,
+        common.matrix_size;
+        filter,
+        kw...,
+    )
     # one window: FDK of each basis image; the same window on composite and complement is that window
     one = sp(BS.SoftFilter())
     @test one.water ≈ plain.images.water && one.iodine ≈ plain.images.iodine
@@ -227,12 +282,20 @@ end
     @test M(pf)[circle] ≈ M(twice)[circle] rtol = 1.0e-4
     @test !(pf.iodine[circle] ≈ twice.iodine[circle])
     # a fixed basis is used as given
-    fixed = sp(BS.PairFilter(BS.SoftFilter(), BS.BoneFilter()); basis = (Estar = 70.0, β = 0.0))
+    fixed = sp(
+        BS.PairFilter(BS.SoftFilter(), BS.BoneFilter());
+        basis = (Estar = 70.0, β = 0.0),
+    )
     @test fixed.basis == (Estar = 70.0, β = 0.0)
     # the composite ACNR and the image-domain instance act on is the reconstructed pair's own
     # minimum-noise VMI, so its noise is uncorrelated with the complement's
-    μ(E) = [BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E), BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E)]
-    v(E) = let g = μ(E) ./ μ(E)[2]; g' * fixed.Σ * g end
+    μ(E) = [
+        BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E),
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E),
+    ]
+    v(E) = let g = μ(E) ./ μ(E)[2]
+        g' * fixed.Σ * g
+    end
     @test 40 <= fixed.Estar <= 140 && v(fixed.Estar) <= min(v(40.0), v(140.0))
     # ACNR on the complement leaves the composite exactly where it was
     before = M(pf)
@@ -241,9 +304,11 @@ end
     @test !(pf.iodine ≈ sp(BS.PairFilter(BS.SoftFilter(), BS.BoneFilter())).iodine)
     # the image-domain instance keeps an unpooled composite and returns its selected window
     x = BS.image_hypr(sp(BS.SoftFilter()))
-    @test M((f = one.f, water = x.water, iodine = x.iodine))[circle] ≈ M(one)[circle] rtol = 1.0e-4
+    @test M((f = one.f, water = x.water, iodine = x.iodine))[circle] ≈
+        M(one)[circle] rtol = 1.0e-4
     # the complement uses the pair's β as measured before ACNR, not re-measured after it
-    q = sp(BS.PairFilter(BS.SoftFilter(), BS.BoneFilter())); β0 = q.β
+    q = sp(BS.PairFilter(BS.SoftFilter(), BS.BoneFilter()))
+    β0 = q.β
     BS.acnr_complement!(q)
     @test BS.image_hypr(q).β == β0
     one1 = BS.image_hypr(sp(BS.SoftFilter()); image = BS.ImageHYPR(candidates = (7,)))
@@ -252,13 +317,25 @@ end
     fe = sp(BS.SoftFilter(); composite_energy = 65.0)
     @test fe.Estar == 65.0 && fe.f ≈ μ(65.0)
     # vmi_pipeline with a PairFilter and no image instance: the pair, then ACNR on its complement
-    pp = BS.vmi_pipeline(; channels = noisy, common..., fbp_filter = BS.PairFilter(BS.SoftFilter(), BS.BoneFilter()))
+    pp = BS.vmi_pipeline(;
+        channels = noisy,
+        common...,
+        fbp_filter = BS.PairFilter(BS.SoftFilter(), BS.BoneFilter()),
+    )
     @test pp.settings.acnr.on === :complement && pp.settings.pair.Estar == pf.Estar
     # basis-vmi's plain chain is unchanged: one window, ACNR on the pair
     @test BS.vmi_pipeline(; channels = noisy, common...).settings.acnr.on === :pair
     # the spectral pair measures its noise from FDK halves, so HIR is refused
-    @test_throws ArgumentError BS.vmi_pipeline(; channels = noisy, common...,
-        denoiser = BS.SpectralHYPR(), recon_method = :hir)
-    @test_throws ArgumentError BS.vmi_pipeline(; channels = noisy, common...,
-        fbp_filter = BS.PairFilter(BS.SoftFilter(), BS.SoftFilter()), recon_method = :hir)
+    @test_throws ArgumentError BS.vmi_pipeline(;
+        channels = noisy,
+        common...,
+        denoiser = BS.SpectralHYPR(),
+        recon_method = :hir,
+    )
+    @test_throws ArgumentError BS.vmi_pipeline(;
+        channels = noisy,
+        common...,
+        fbp_filter = BS.PairFilter(BS.SoftFilter(), BS.SoftFilter()),
+        recon_method = :hir,
+    )
 end

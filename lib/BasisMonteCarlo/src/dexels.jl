@@ -141,9 +141,19 @@ end
 function Base.show(io::IO, r::DexelReadout)
     return print(
         io,
-        "DexelReadout(", r.pitch_x_mm, " × ", r.pitch_y_mm, " mm dexels, ",
-        r.neighborhood, " × ", r.neighborhood, " neighbourhood, ",
-        r.transport === nothing ? "σ_cloud = $(r.cloud_sigma_um) µm" : "charge transported at $(r.transport.bias_V) V", ")",
+        "DexelReadout(",
+        r.pitch_x_mm,
+        " × ",
+        r.pitch_y_mm,
+        " mm dexels, ",
+        r.neighborhood,
+        " × ",
+        r.neighborhood,
+        " neighbourhood, ",
+        r.transport === nothing ?
+            "σ_cloud = $(r.cloud_sigma_um) µm" :
+            "charge transported at $(r.transport.bias_V) V",
+        ")",
     )
 end
 
@@ -178,7 +188,8 @@ end
 """
 Share of a Gaussian cloud centred at `x` (width `σ`) that lands between `a` and `b`.
 """
-cloud_share(x, a, b, σ) = 0.5 * (erf((b - x) / (sqrt(2) * σ)) - erf((a - x) / (sqrt(2) * σ)))
+cloud_share(x, a, b, σ) = 0.5 *
+    (erf((b - x) / (sqrt(2) * σ)) - erf((a - x) / (sqrt(2) * σ)))
 
 """
     dexel_response(run, readout) -> DexelResponse
@@ -189,18 +200,25 @@ neighbourhood collected from each photon: every deposit spreads into a Gaussian 
 Charge that lands outside the neighbourhood is not recorded.
 """
 function dexel_response(run::MonoenergeticRun, readout::DexelReadout)
-    run.deposits === nothing && throw(
-        ArgumentError("the run has no deposits: simulate it with record_deposits = true")
-    )
+    run.deposits === nothing &&
+        throw(ArgumentError(
+            "the run has no deposits: simulate it with record_deposits = true",
+        ))
     isodd(readout.neighborhood) || throw(ArgumentError("neighborhood must be odd"))
     readout.transport === nothing || return transported_response(run, readout)
 
     n = readout.neighborhood
     σ = readout.cloud_sigma_um / 1000
-    reach = 6σ                                  # beyond this a cloud's share is < 1e-9
+    reach = 6σ # beyond this a cloud's share is < 1e-9
     mx, my = recorded_dexels(readout)
-    edges_x = [dexel_edges(m, readout.pitch_x_mm, readout.group[1], readout.gap_mm[1]) for m in mx]
-    edges_y = [dexel_edges(m, readout.pitch_y_mm, readout.group[2], readout.gap_mm[2]) for m in my]
+    edges_x = [
+        dexel_edges(m, readout.pitch_x_mm, readout.group[1], readout.gap_mm[1])
+        for m in mx
+    ]
+    edges_y = [
+        dexel_edges(m, readout.pitch_y_mm, readout.group[2], readout.gap_mm[2])
+        for m in my
+    ]
     x_min, x_max = first(edges_x)[1] - reach, last(edges_x)[2] + reach
     y_min, y_max = first(edges_y)[1] - reach, last(edges_y)[2] + reach
 
@@ -239,20 +257,23 @@ function transport_lengths(p::ChargeTransport)
     field = p.bias_V / p.thickness_mm
     return (
         field = field,
-        electron = p.mu_tau_electron * 100 * field,  # μτ (cm²/V) × field (V/mm) × 100 mm²/cm² = mm
+        # μτ (cm²/V) × field (V/mm) × 100 mm²/cm² = mm
+        electron = p.mu_tau_electron * 100 * field,
         hole = p.mu_tau_hole * 100 * field,
     )
 end
 
 """Width (mm) a cloud gains by diffusion while drifting `d` mm: σ² = 2 (kT/q) d / E."""
-diffusion_sigma(d, p::ChargeTransport) = sqrt(2 * p.thermal_voltage * max(d, 0.0) / (p.bias_V / p.thickness_mm))
+diffusion_sigma(d, p::ChargeTransport) = sqrt(
+    2 * p.thermal_voltage * max(d, 0.0) / (p.bias_V / p.thickness_mm),
+)
 
 """Width (mm, per axis) a cloud of `energy_keV` gains by its own repulsion while drifting `d` mm."""
 function repulsion_sigma(energy_keV, d, p::ChargeTransport)
-    Q = energy_keV * 1000 / p.pair_energy_eV * 1.602176634e-19  # C
-    ε = 8.8541878128e-12 * p.relative_permittivity  # F/m
-    E = p.bias_V / (p.thickness_mm * 1.0e-3)  # V/m
-    R = cbrt(3 * Q * max(d, 0.0) * 1.0e-3 / (4π * ε * E))  # m
+    Q = energy_keV * 1000 / p.pair_energy_eV * 1.602176634e-19 # C
+    ε = 8.8541878128e-12 * p.relative_permittivity             # F/m
+    E = p.bias_V / (p.thickness_mm * 1.0e-3)                   # V/m
+    R = cbrt(3 * Q * max(d, 0.0) * 1.0e-3 / (4π * ε * E))      # m
     return R * 1.0e3 / sqrt(5)
 end
 
@@ -283,12 +304,27 @@ function weighting_potential(x, y, d, wx, wy, L; images = 40)
 end
 
 struct InductionTable
-    xs::StepRangeLen{Float64, Base.TwicePrecision{Float64}, Base.TwicePrecision{Float64}, Int}
-    ys::StepRangeLen{Float64, Base.TwicePrecision{Float64}, Base.TwicePrecision{Float64}, Int}
-    zs::StepRangeLen{Float64, Base.TwicePrecision{Float64}, Base.TwicePrecision{Float64}, Int}
+    xs::StepRangeLen{
+        Float64,
+        Base.TwicePrecision{Float64},
+        Base.TwicePrecision{Float64},
+        Int,
+    }
+    ys::StepRangeLen{
+        Float64,
+        Base.TwicePrecision{Float64},
+        Base.TwicePrecision{Float64},
+        Int,
+    }
+    zs::StepRangeLen{
+        Float64,
+        Base.TwicePrecision{Float64},
+        Base.TwicePrecision{Float64},
+        Int,
+    }
     φ::Array{Float32, 3}
-    ge::Array{Float32, 3}  # what the drifting electrons add beyond their arrival
-    gh::Array{Float32, 3}  # what the drifting holes add
+    ge::Array{Float32, 3} # what the drifting electrons add beyond their arrival
+    gh::Array{Float32, 3} # what the drifting holes add
 end
 
 const INDUCTION_TABLES = Dict{Tuple{ChargeTransport, Float64, Float64}, InductionTable}()
@@ -299,7 +335,14 @@ The induction table of one electrode `wx × wy` (built once per process): φ on 
 offsets (one quadrant) and depths z from the cathode, with
 `ge = −φ(z) + (1/λe) ∫_z^L e^{−(z'−z)/λe} φ dz'` and `gh = φ(z) − (1/λh) ∫_0^z e^{−(z−z')/λh} φ dz'`.
 """
-function induction_table(wx, wy, p::ChargeTransport; reach = (0.75, 0.85), spacing = 0.005, dz = 0.01)
+function induction_table(
+    wx,
+    wy,
+    p::ChargeTransport;
+    reach = (0.75, 0.85),
+    spacing = 0.005,
+    dz = 0.01,
+)
     key = (p, round(wx; digits = 4), round(wy; digits = 4))
     return lock(INDUCTION_LOCK) do
         haskey(INDUCTION_TABLES, key) && return INDUCTION_TABLES[key]
@@ -320,17 +363,26 @@ function induction_table(wx, wy, p::ChargeTransport; reach = (0.75, 0.85), spaci
             acc = 0.0
             ge[i, j, end] = -φ[i, j, end]
             for k in (length(zs) - 1):-1:1
-                acc = exp(-h / λ.electron) * acc + h / 2 * (φ[i, j, k] + exp(-h / λ.electron) * φ[i, j, k + 1])
+                acc = exp(-h / λ.electron) * acc +
+                    h / 2 * (φ[i, j, k] + exp(-h / λ.electron) * φ[i, j, k + 1])
                 ge[i, j, k] = -φ[i, j, k] + acc / λ.electron
             end
             acc = 0.0
             gh[i, j, 1] = φ[i, j, 1]
             for k in 2:length(zs)
-                acc = exp(-h / λ.hole) * acc + h / 2 * (φ[i, j, k] + exp(-h / λ.hole) * φ[i, j, k - 1])
+                acc = exp(-h / λ.hole) * acc +
+                    h / 2 * (φ[i, j, k] + exp(-h / λ.hole) * φ[i, j, k - 1])
                 gh[i, j, k] = φ[i, j, k] - acc / λ.hole
             end
         end
-        INDUCTION_TABLES[key] = InductionTable(xs, ys, zs, Float32.(φ), Float32.(ge), Float32.(gh))
+        INDUCTION_TABLES[key] = InductionTable(
+            xs,
+            ys,
+            zs,
+            Float32.(φ),
+            Float32.(ge),
+            Float32.(gh),
+        )
     end
 end
 
@@ -346,7 +398,10 @@ function induction_lookup(t::InductionTable, table, x, y, z)
     k = min(floor(Int, fz), length(t.zs) - 1)
     u, v, w = fx - i, fy - j, fz - k
     c = 0.0
-    for (di, wi) in ((0, 1 - u), (1, u)), (dj, wj) in ((0, 1 - v), (1, v)), (dk, wk) in ((0, 1 - w), (1, w))
+    for (di, wi) in ((0, 1 - u), (1, u)), (dj, wj) in ((0, 1 - v), (1, v)), (dk, wk) in (
+            (0, 1 - w),
+            (1, w),
+        )
         c += wi * wj * wk * table[i + di, j + dj, k + dk]
     end
     return c
@@ -359,11 +414,20 @@ function transported_response(run::MonoenergeticRun, readout::DexelReadout)
     λ = transport_lengths(p)
     n = readout.neighborhood
     mx, my = recorded_dexels(readout)
-    edges_x = [dexel_edges(m, readout.pitch_x_mm, readout.group[1], readout.gap_mm[1]) for m in mx]
-    edges_y = [dexel_edges(m, readout.pitch_y_mm, readout.group[2], readout.gap_mm[2]) for m in my]
+    edges_x = [
+        dexel_edges(m, readout.pitch_x_mm, readout.group[1], readout.gap_mm[1])
+        for m in mx
+    ]
+    edges_y = [
+        dexel_edges(m, readout.pitch_y_mm, readout.group[2], readout.gap_mm[2])
+        for m in my
+    ]
     centre_x = [sum(e) / 2 for e in edges_x]
     centre_y = [sum(e) / 2 for e in edges_y]
-    tables = [induction_table(edges_x[i][2] - edges_x[i][1], edges_y[j][2] - edges_y[j][1], p) for i in 1:n, j in 1:n]
+    tables = [
+        induction_table(edges_x[i][2] - edges_x[i][1], edges_y[j][2] - edges_y[j][1], p)
+        for i in 1:n, j in 1:n
+    ]
     energies = zeros(Float32, run.n, n, n)
     dep = run.deposits
     share_x, share_y = zeros(n), zeros(n)
@@ -382,7 +446,10 @@ function transported_response(run::MonoenergeticRun, readout::DexelReadout)
         cluster .= 1:m
         for a in 1:m, b in (a + 1):m
             ka, kb = idx[a], idx[b]
-            close = (dep.x_mm[ka] - dep.x_mm[kb])^2 + (dep.y_mm[ka] - dep.y_mm[kb])^2 + (dep.z_mm[ka] - dep.z_mm[kb])^2 < p.cluster_mm^2
+            close = (dep.x_mm[ka] - dep.x_mm[kb])^2 +
+                (dep.y_mm[ka] - dep.y_mm[kb])^2 +
+                (dep.z_mm[ka] - dep.z_mm[kb])^2 <
+                p.cluster_mm^2
             if close && cluster[a] != cluster[b]
                 ca, cb = cluster[a], cluster[b]
                 for c in 1:m
@@ -400,7 +467,13 @@ function transported_response(run::MonoenergeticRun, readout::DexelReadout)
                 z_cloud += dep.energy_keV[idx[b]] * dep.z_mm[idx[b]]
             end
             z_cloud /= e_cloud
-            σ = max(sqrt(diffusion_sigma(L - z, p)^2 + repulsion_sigma(e_cloud, L - z_cloud, p)^2), 1.0e-4)
+            σ = max(
+                sqrt(
+                    diffusion_sigma(L - z, p)^2 +
+                        repulsion_sigma(e_cloud, L - z_cloud, p)^2,
+                ),
+                1.0e-4,
+            )
             arrival = exp(-(L - z) / λ.electron)
             for i in 1:n
                 share_x[i] = cloud_share(x, edges_x[i]..., σ)
@@ -410,7 +483,9 @@ function transported_response(run::MonoenergeticRun, readout::DexelReadout)
             for j in 1:n, i in 1:n
                 t = tables[i, j]
                 ox, oy = x - centre_x[i], y - centre_y[j]
-                q = arrival * share_x[i] * share_y[j] + induction_lookup(t, t.ge, ox, oy, z) + induction_lookup(t, t.gh, ox, oy, z)
+                q = arrival * share_x[i] * share_y[j] +
+                    induction_lookup(t, t.ge, ox, oy, z) +
+                    induction_lookup(t, t.gh, ox, oy, z)
                 energies[ev, i, j] += e * q
             end
         end
@@ -436,13 +511,13 @@ threshold it exceeds adds one count.
 The noise is drawn from a generator seeded with `seed`, so results are reproducible.
 """
 function threshold_counts(
-        r::DexelResponse,
-        thresholds_keV::AbstractVector;
-        electronic_noise_keV::Real = 1.5,
-        fano::Real = 0.1,
-        pair_energy_eV::Real = 4.43,
-        seed::Integer = 1,
-    )
+    r::DexelResponse,
+    thresholds_keV::AbstractVector;
+    electronic_noise_keV::Real = 1.5,
+    fano::Real = 0.1,
+    pair_energy_eV::Real = 4.43,
+    seed::Integer = 1,
+)
     rng = Xoshiro(seed)
     w = pair_energy_eV / 1000
     n, nx, ny = size(r.dexel_energy_keV)
@@ -470,10 +545,10 @@ Histogram of the energy dexel `dexel` (offset from the target dexel: `(0, 0)` is
 that gave it anything; normalised per keV per incident photon.
 """
 function dexel_spectrum(
-        r::DexelResponse,
-        dexel::Tuple{Int, Int} = (0, 0);
-        bin_keV::Real = 0.5,
-    )
+    r::DexelResponse,
+    dexel::Tuple{Int, Int} = (0, 0);
+    bin_keV::Real = 0.5,
+)
     h = r.readout.neighborhood ÷ 2
     i, j = dexel[1] + h + 1, dexel[2] + h + 1
     nbins = ceil(Int, r.energy_keV / bin_keV) + 1
@@ -506,16 +581,17 @@ in the layout of BasisSimulator's `cdte_response_v4` so it can be loaded the sam
 Noise is drawn as in [`threshold_counts`](@ref), from a generator seeded with `seed`.
 """
 function response_table(
-        responses::AbstractVector,
-        thresholds_keV::AbstractVector;
-        electronic_noise_keV::Real = 1.5,
-        fano::Real = 0.1,
-        pair_energy_eV::Real = 4.43,
-        seed::Integer = 1,
-        metadata::AbstractDict = Dict{String, Any}(),
-    )
+    responses::AbstractVector,
+    thresholds_keV::AbstractVector;
+    electronic_noise_keV::Real = 1.5,
+    fano::Real = 0.1,
+    pair_energy_eV::Real = 4.43,
+    seed::Integer = 1,
+    metadata::AbstractDict = Dict{String, Any}(),
+)
     n_E, n_t = length(responses), length(thresholds_keV)
-    first(responses).readout.neighborhood == 3 || throw(ArgumentError("the table layout needs a 3 × 3 neighbourhood"))
+    first(responses).readout.neighborhood == 3 ||
+        throw(ArgumentError("the table layout needs a 3 × 3 neighbourhood"))
     w = pair_energy_eV / 1000
 
     R_total = zeros(n_E, n_t)
@@ -544,7 +620,8 @@ function response_table(
         C = (flat' * flat) ./ r.n .- μ * μ'
         Cov_pixpair[e, :, :, :, :] = permutedims(reshape(C, 9, n_t, 9, n_t), (1, 3, 2, 4))
 
-        totals = dropdims(sum(indicators; dims = 2); dims = 2)          # photons × thresholds
+        # photons × thresholds
+        totals = dropdims(sum(indicators; dims = 2); dims = 2)
         R_total[e, :] = vec(sum(totals; dims = 1)) ./ r.n
         μ_total = R_total[e, :]
         Cov_total[e, :, :] = (totals' * totals) ./ r.n .- μ_total * μ_total'
@@ -563,7 +640,10 @@ function response_table(
         "Cov_total" => Cov_total,
         "Cov_pixpair" => Cov_pixpair,
         # the fixed cloud's width; NaN when the charge was transported (no single width)
-        "sigma_cloud_um" => first(responses).readout.transport === nothing ? first(responses).readout.cloud_sigma_um : NaN,
+        "sigma_cloud_um" =>
+            first(responses).readout.transport === nothing ?
+                first(responses).readout.cloud_sigma_um :
+                NaN,
         "sigma_elec_keV" => Float64(electronic_noise_keV),
     )
     merge!(table, Dict{String, Any}(string(k) => v for (k, v) in metadata))
@@ -636,19 +716,19 @@ end
 
 """Mean energy one dexel (default: the target) collects per photon, divided by the photon energy."""
 function dexel_efficiency(
-        d::DexelEnergy,
-        i::Integer = (size(d.dexel_keV, 1) + 1) ÷ 2,
-        j::Integer = i,
-    )
+    d::DexelEnergy,
+    i::Integer = (size(d.dexel_keV, 1) + 1) ÷ 2,
+    j::Integer = i,
+)
     return d.dexel_keV[i, j] / (d.n * d.energy_keV)
 end
 
 """The Swank factor of one dexel's signal (default: the target)."""
 function dexel_swank(
-        d::DexelEnergy,
-        i::Integer = (size(d.dexel_keV, 1) + 1) ÷ 2,
-        j::Integer = i,
-    )
+    d::DexelEnergy,
+    i::Integer = (size(d.dexel_keV, 1) + 1) ÷ 2,
+    j::Integer = i,
+)
     M0, M1, M2 = d.dexel_hit[i, j] / d.n, d.dexel_keV[i, j] / d.n, d.dexel2_keV2[i, j] / d.n
     return M1^2 / (M0 * M2)
 end

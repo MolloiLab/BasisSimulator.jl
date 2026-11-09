@@ -17,9 +17,9 @@
             e, w = BS.load_spectrum(kVp; source = :xspect)
             @test length(e) == length(w)
             @test length(e) > 0
-            @test all(>=(0), w)        # photon counts non-negative
-            @test issorted(e)          # energy grid monotonic
-            @test maximum(e) < kVp + 1.0  # max E bounded by kVp
+            @test all(>=(0), w)          # photon counts non-negative
+            @test issorted(e)            # energy grid monotonic
+            @test maximum(e) < kVp + 1.0 # max E bounded by kVp
         end
     end
 
@@ -39,10 +39,11 @@
     end
 
     @testset "validation errors" begin
-        @test_throws ErrorException BS.load_spectrum(60)                       # bad kVp
-        @test_throws ErrorException BS.load_spectrum(120; target_angle = 5.0)  # bad angle
-        @test_throws ErrorException BS.load_spectrum(120; source = :bogus)     # bad source
-        @test_throws ErrorException BS.load_spectrum(90; source = :xcist)      # 90 kVp not in xcist
+        @test_throws ErrorException BS.load_spectrum(60)                      # bad kVp
+        @test_throws ErrorException BS.load_spectrum(120; target_angle = 5.0) # bad angle
+        @test_throws ErrorException BS.load_spectrum(120; source = :bogus)    # bad source
+        # 90 kVp not in xcist
+        @test_throws ErrorException BS.load_spectrum(90; source = :xcist)
     end
 end
 
@@ -51,9 +52,9 @@ end
         e, w = BS.load_spectrum_unfiltered(kVp; anode_angle = angle)
         @test length(e) == length(w)
         @test all(>=(0), w)
-        @test all(>(0), w)            # zero-flux tails dropped
+        @test all(>(0), w) # zero-flux tails dropped
         @test issorted(e)
-        @test maximum(e) <= kVp + 0.5  # max E bounded by kVp
+        @test maximum(e) <= kVp + 0.5 # max E bounded by kVp
         # First non-zero bin should be > 0 — characteristic line / bremsstrahlung onset.
         @test minimum(e) > 0
     end
@@ -78,14 +79,14 @@ end
     @testset "real spectra: filtered > raw mean E (filtration hardens)" begin
         e, w = BS.load_spectrum_unfiltered(120)
         ē_raw = BS.spectrum_mean_energy(e, w)
-        @test 30.0 < ē_raw < 60.0   # unfiltered tungsten 120 kVp ~43 keV
+        @test 30.0 < ē_raw < 60.0 # unfiltered tungsten 120 kVp ~43 keV
         # After Al-2mm filtration the mean E should rise (filtration hardens).
         _, w_f = BS.filter_spectrum(e, w; filters = [("Al", 2.0)])
         ē_filt = BS.spectrum_mean_energy(e, w_f)
         @test ē_filt > ē_raw
     end
 
-    @test_throws ErrorException BS.spectrum_mean_energy([60.0], [0.0])  # zero fluence
+    @test_throws ErrorException BS.spectrum_mean_energy([60.0], [0.0]) # zero fluence
 end
 
 @testset "downsample_spectrum" begin
@@ -96,7 +97,7 @@ end
         e_d, w_d = BS.downsample_spectrum(e, w, n_orig + 100)
         @test e_d == e
         @test w_d == w
-        @test e_d !== e   # fresh allocation
+        @test e_d !== e # fresh allocation
     end
 
     @testset "halving bin count preserves total fluence" begin
@@ -107,14 +108,15 @@ end
         @test sum(w_d) ≈ sum(w) atol = 1.0e-6 * sum(w)
         # Mean energy preserved to within a bin width.
         bin_width = (maximum(e) - minimum(e)) / n_orig
-        @test abs(BS.spectrum_mean_energy(e_d, w_d) - BS.spectrum_mean_energy(e, w)) < 2 * bin_width
+        @test abs(BS.spectrum_mean_energy(e_d, w_d) - BS.spectrum_mean_energy(e, w)) <
+            2 * bin_width
     end
 
     @testset "n_bins = 1 collapses to total fluence" begin
         e_d, w_d = BS.downsample_spectrum(e, w, 1)
         @test length(e_d) == 1
         @test length(w_d) == 1
-        @test w_d[1] ≈ sum(w)  atol = 1.0e-6 * sum(w)
+        @test w_d[1] ≈ sum(w) atol = 1.0e-6 * sum(w)
     end
 end
 
@@ -131,9 +133,9 @@ end
         e_f, w_f = BS.filter_spectrum(e, w; filters = [("Al", 2.0)])
         @test e_f == e
         # Expected: w[i] × exp(-μ_Al(E_i) × 0.2 cm).  Use the internal helper.
-        for i in 1:length(e)
+        for i in eachindex(e)
             μ = BasisSimulator.get_filter_mu("Al", e[i])
-            @test w_f[i] ≈ w[i] * exp(-μ * 0.2)  atol = 1.0e-12 * w[i]
+            @test w_f[i] ≈ w[i] * exp(-μ * 0.2) atol = 1.0e-12 * w[i]
         end
     end
 
@@ -145,13 +147,19 @@ end
     end
 
     @testset "SDD ≠ 750 mm applies inverse-square-law" begin
-        _, w_at_1500 = BS.filter_spectrum(e, w; filters = Tuple{String, Float64}[], sdd_mm = 1500.0)
-        @test w_at_1500 ≈ 0.25 .* w   # (750/1500)² = 1/4
+        _, w_at_1500 = BS.filter_spectrum(
+            e,
+            w;
+            filters = Tuple{String, Float64}[],
+            sdd_mm = 1500.0,
+        )
+        @test w_at_1500 ≈ 0.25 .* w # (750/1500)² = 1/4
     end
 
     @testset "filtered spectrum is harder than raw (mean E increases)" begin
-        e_raw = e; w_raw = w
-        _, w_filt = BS.filter_spectrum(e, w; filters = [("Al", 5.0)])  # 5 mm Al
+        e_raw = e
+        w_raw = w
+        _, w_filt = BS.filter_spectrum(e, w; filters = [("Al", 5.0)]) # 5 mm Al
         @test BS.spectrum_mean_energy(e, w_filt) > BS.spectrum_mean_energy(e_raw, w_raw)
     end
 end
@@ -167,14 +175,15 @@ end
     @test p.rotation_time == 1.0
     @test p.n_rotations == 1.0
     @test p.collimation_mm === nothing
-    @test !hasproperty(p, :anode_angle)          # the anode is the scanner's (`target_angle`)
+    # the anode is the scanner's (`target_angle`)
+    @test !hasproperty(p, :anode_angle)
     @test isempty(p.additional_filters)
 end
 
 @testset "CTProtocol — mA vs mAs exclusivity" begin
     @testset "mAs path: mA = mAs / rotation_time" begin
         p = BS.CTProtocol(; mAs = 100.0, rotation_time = 0.5)
-        @test p.mA == 200.0   # 100 / 0.5
+        @test p.mA == 200.0 # 100 / 0.5
     end
 
     @testset "mA explicit wins when both supplied (mA takes priority)" begin
@@ -236,9 +245,9 @@ end
 @testset "constant_dose_protocol" begin
     base = BS.CTProtocol(; mA = 200.0, views = 1000)
     new = BS.constant_dose_protocol(base, 500)
-    @test new.mA == 200.0           # mA preserved
-    @test new.views == 500          # views changed
-    @test new.kVp == base.kVp        # other fields preserved
+    @test new.mA == 200.0     # mA preserved
+    @test new.views == 500    # views changed
+    @test new.kVp == base.kVp # other fields preserved
     @test new.rotation_time == base.rotation_time
     @test new.collimation_mm == base.collimation_mm
 end
@@ -247,7 +256,7 @@ end
     base = BS.CTProtocol(; mA = 200.0, views = 1000)
     # Half the views → double the mA per view to keep per-view noise constant.
     halved = BS.constant_noise_protocol(base, 500)
-    @test halved.mA == 100.0   # 200 × (500/1000)
+    @test halved.mA == 100.0 # 200 × (500/1000)
     @test halved.views == 500
     # Doubled views → halve mA.
     doubled = BS.constant_noise_protocol(base, 2000)
@@ -262,24 +271,28 @@ end
     @test BS.focal_spot_medium().width == 0.8
     @test BS.focal_spot_large().width == 1.2
     @test BS.focal_spot_point().width == 0.0
-    @test BS.focal_spot_small().width < BS.focal_spot_medium().width < BS.focal_spot_large().width
+    @test BS.focal_spot_small().width <
+        BS.focal_spot_medium().width <
+        BS.focal_spot_large().width
     @test BS.focal_spot_medium().shape == :gaussian
 end
 
 @testset "compute_focal_spot_blur_fwhm — geometric magnification" begin
     s = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_col_size = 1.0, detector_row_size = 1.0
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_col_size = 1.0,
+        detector_row_size = 1.0,
     )
     g = BS.CTGeometry(s; n_angles = 8, fov_cm = 35.0, z_cm = 5.0)
-    fs = BS.focal_spot_medium()   # 0.8 × 0.8 mm
+    fs = BS.focal_spot_medium() # 0.8 × 0.8 mm
 
     @testset "at isocenter (SOD = SAD)" begin
         bw, bl = BS.compute_focal_spot_blur_fwhm(fs, g, g.SAD)
         # Expected: fs_size_cm × (SDD/SOD - 1) = 0.08 × (108/54 - 1) = 0.08 × 1 = 0.08 cm
         # Then / pixel_size_det (= 0.1 × SDD/SAD = 0.2 cm) → 0.4 pixels.
-        @test bw ≈ 0.4  atol = 1.0e-10
-        @test bl ≈ 0.4  atol = 1.0e-10
+        @test bw ≈ 0.4 atol = 1.0e-10
+        @test bl ≈ 0.4 atol = 1.0e-10
     end
 
     @testset "closer SOD → more blur" begin
@@ -308,13 +321,13 @@ end
         @test sum(kernel) ≈ 1.0
         n = size(kernel, 1)
         center = (n + 1) ÷ 2 + (n % 2 == 0 ? 0 : 0)
-        @test n == size(kernel, 2)   # square
+        @test n == size(kernel, 2) # square
         # Peak at center.
         @test kernel[center, center] == maximum(kernel)
         # Symmetric across both axes.
-        for i in 1:size(kernel, 1), j in 1:size(kernel, 2)
-            @test kernel[i, j] ≈ kernel[end + 1 - i, j]    atol = 1.0e-12
-            @test kernel[i, j] ≈ kernel[i, end + 1 - j]    atol = 1.0e-12
+        for i in axes(kernel, 1), j in axes(kernel, 2)
+            @test kernel[i, j] ≈ kernel[end + 1 - i, j] atol = 1.0e-12
+            @test kernel[i, j] ≈ kernel[i, end + 1 - j] atol = 1.0e-12
         end
     end
 
@@ -329,7 +342,7 @@ end
         kernel = BS.create_focal_spot_kernel_spatial(BS.focal_spot_point(), (0.0, 0.0))
         @test sum(kernel) ≈ 1.0
         center = (size(kernel, 1) + 1) ÷ 2
-        @test kernel[center, center] == 1.0   # all mass at center
+        @test kernel[center, center] == 1.0 # all mass at center
     end
 
     @testset "uniform shape produces flat-top kernel" begin
@@ -344,8 +357,10 @@ end
 
 @testset "apply_focal_spot_blur! — physical behavior" begin
     s = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_cols = 64, detector_rows = 4
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_cols = 64,
+        detector_rows = 4,
     )
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 35.0, z_cm = 1.0)
 
@@ -360,7 +375,7 @@ end
         sino = zeros(Float32, 64, 4, 4)
         sino[32, 2, 2] = 1.0f0
         BS.apply_focal_spot_blur!(sino, BS.focal_spot_large(), g)
-        @test sum(sino) ≈ 1.0  atol = 1.0e-4   # convolution preserves mass
+        @test sum(sino) ≈ 1.0 atol = 1.0e-4 # convolution preserves mass
         # Peak still near the original location (no shift).
         max_idx = argmax(sino[:, 2, 2])
         @test abs(max_idx - 32) ≤ 1
@@ -382,9 +397,9 @@ end
 
     sino_out = BS.apply_focal_spot_blur(sino, BS.focal_spot_large(), g)
 
-    @test sino == sino_orig          # input unchanged
+    @test sino == sino_orig # input unchanged
     @test size(sino_out) == size(sino)
-    @test sino_out !== sino           # fresh allocation
+    @test sino_out !== sino # fresh allocation
 
     # Bang vs alloc produce the same output.
     sino_bang = copy(sino)
@@ -398,13 +413,13 @@ end
         positions, weights = BS.generate_focal_spot_samples(fs)
         @test length(positions) == 5 * 5
         @test length(weights) == length(positions)
-        @test sum(weights) ≈ 1.0  atol = 1.0e-12
+        @test sum(weights) ≈ 1.0 atol = 1.0e-12
         for (x, y) in positions
             @test -0.5 - 1.0e-9 ≤ x ≤ 0.5 + 1.0e-9
             @test -0.5 - 1.0e-9 ≤ y ≤ 0.5 + 1.0e-9
         end
         # Gaussian weighting: center sample has highest weight.
-        @test maximum(weights) > 1 / length(weights)  # not uniform
+        @test maximum(weights) > 1 / length(weights) # not uniform
     end
 
     @testset "uniform shape: equal weights" begin
@@ -430,8 +445,9 @@ end
         h = BS.default_heel_effect()
         @test h.anode_angle_deg == 7.0
         @test h.target_material === :tungsten
-        @test h.effective_thickness_mm == 0.001        # the calibrated mean production depth (see default_heel_effect)
-        @test h.enabled == true
+        # the calibrated mean production depth (see default_heel_effect)
+        @test h.effective_thickness_mm == 0.001
+        @test h.enabled
     end
 
     @testset "default_heel_effect — kwarg override" begin
@@ -442,15 +458,17 @@ end
 
     @testset "heel_effect_none — disabled flag, zero thickness" begin
         h = BS.heel_effect_none()
-        @test h.enabled == false
+        @test !h.enabled
         @test h.effective_thickness_mm == 0.0
     end
 end
 
 @testset "compute_heel_spectral — LIVE pipeline path" begin
     s = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_cols = 64, detector_rows = 4
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_cols = 64,
+        detector_rows = 4,
     )
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 35.0, z_cm = 1.0)
 
@@ -505,9 +523,9 @@ end
         BS.apply_heel_effect!(intensity, h, g)
         # The gradient runs along the rows (the anode axis is z; anode on +z, the last row)
         # and is flat along the fan.
-        @test intensity[1, end, 2] < intensity[1, 1, 2]     # anode dimmer than cathode
+        @test intensity[1, end, 2] < intensity[1, 1, 2] # anode dimmer than cathode
         @test intensity[10, end, 2] < intensity[10, 1, 2]
-        @test intensity[1, 2, 2] == intensity[end, 2, 2]     # flat along the fan
+        @test intensity[1, 2, 2] == intensity[end, 2, 2] # flat along the fan
         # Sanity bounds: every entry stays finite, non-negative.
         @test all(>(0), intensity)
         @test all(isfinite, intensity)
@@ -541,14 +559,23 @@ end
     @test p_ax.pitch === nothing
 
     p_h = BS.CTProtocol(
-        mA = 200.0, kVp = 120.0, views = 200,
-        collimation_mm = 40.0, pitch = 1.2, n_rotations = 6
+        mA = 200.0,
+        kVp = 120.0,
+        views = 200,
+        collimation_mm = 40.0,
+        pitch = 1.2,
+        n_rotations = 6,
     )
     @test p_h.pitch == 1.2
     @test p_h.n_rotations == 6.0
 
     @test_throws ArgumentError BS.CTProtocol(mA = 200.0, kVp = 120.0, pitch = -0.5)
-    @test_throws ArgumentError BS.CTProtocol(mA = 200.0, kVp = 120.0, pitch = 1.0, n_rotations = 0.5)
+    @test_throws ArgumentError BS.CTProtocol(
+        mA = 200.0,
+        kVp = 120.0,
+        pitch = 1.0,
+        n_rotations = 0.5,
+    )
 
     # derived protocols carry pitch through
     @test BS.constant_dose_protocol(p_h, 400).pitch == 1.2

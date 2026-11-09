@@ -49,35 +49,36 @@ end
 
 # In-place monochromatic forward projection.  :dd_fast has no mono variant —
 # mono has no energy loop, so it is the dd.jl kernel.
-@inline _project_mono!(proj::Symbol, args...; kw...) =
-    proj === :siddon ? siddon_forward_project!(args...; kw...) :
-                       dd_forward_project!(args...; kw...)
+@inline _project_mono!(proj::Symbol, args...; kw...) = proj === :siddon ?
+    siddon_forward_project!(args...; kw...) :
+    dd_forward_project!(args...; kw...)
 
 # HIR subset projections use a row-tiled arc kernel.  It is algebraically
 # identical to DD and falls back to the generic path for flat/Siddon geometry.
-@inline _project_mono_hir!(proj::Symbol, output, volume, geom; kw...) =
-    proj === :siddon ? siddon_forward_project!(output, volume, geom; kw...) :
-    is_arc(geom) ? _dd_forward_project_arc_rowtile4!(output, volume, geom; kw...) :
-                   dd_forward_project!(output, volume, geom; kw...)
+@inline _project_mono_hir!(proj::Symbol, output, volume, geom; kw...) = proj === :siddon ?
+    siddon_forward_project!(output, volume, geom; kw...) :
+    is_arc(geom) ?
+        _dd_forward_project_arc_rowtile4!(output, volume, geom; kw...) :
+        dd_forward_project!(output, volume, geom; kw...)
 
 # Allocating monochromatic forward projection.
-@inline _project_mono(proj::Symbol, args...; kw...) =
-    proj === :siddon ? siddon_forward_project(args...; kw...) :
-                       dd_forward_project(args...; kw...)
+@inline _project_mono(proj::Symbol, args...; kw...) = proj === :siddon ?
+    siddon_forward_project(args...; kw...) :
+    dd_forward_project(args...; kw...)
 
 # In-place algebraic transpose of the distance-driven mono operator (dd_transpose.jl).
 # Siddon retains the legacy voxel-driven approximation until its own exact
 # transpose is implemented.
-@inline _backproject_mono!(proj::Symbol, volume, sinogram, geom; kw...) =
-    proj === :siddon ? backproject!(volume, sinogram, geom; weighted = false, kw...) :
-                       dd_backproject!(volume, sinogram, geom; kw...)
+@inline _backproject_mono!(proj::Symbol, volume, sinogram, geom; kw...) = proj === :siddon ?
+    backproject!(volume, sinogram, geom; weighted = false, kw...) :
+    dd_backproject!(volume, sinogram, geom; kw...)
 
 # Fused polychromatic (energy-integrating EI).
-@inline _project_fused_poly!(proj::Symbol, args...; kw...) =
-    proj === :siddon ? siddon_fused_poly_project!(args...; kw...) :
-                       dd_fast_fused_poly_project!(args...; kw...)
+@inline _project_fused_poly!(proj::Symbol, args...; kw...) = proj === :siddon ?
+    siddon_fused_poly_project!(args...; kw...) :
+    dd_fast_fused_poly_project!(args...; kw...)
 
 # Fused spectral (photon-counting PCCT, tiled).
-@inline _project_fused_spectral!(proj::Symbol, args...; kw...) =
-    proj === :siddon ? siddon_fused_spectral_project!(args...; kw...) :
-                       dd_fast_fused_spectral_project!(args...; kw...)
+@inline _project_fused_spectral!(proj::Symbol, args...; kw...) = proj === :siddon ?
+    siddon_fused_spectral_project!(args...; kw...) :
+    dd_fast_fused_spectral_project!(args...; kw...)

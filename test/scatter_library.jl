@@ -25,7 +25,12 @@ function _write_scatter_library(path, entries, elements; axes, fields)
             write(io, htol.(vec(Float32.(A))))
             push!(
                 arrays,
-                Dict{String, Any}("scanner" => owner, "kind" => kind, "shape" => collect(size(A)), "offset_bytes" => offset),
+                Dict{String, Any}(
+                    "scanner" => owner,
+                    "kind" => kind,
+                    "shape" => collect(size(A)),
+                    "offset_bytes" => offset,
+                ),
             )
             offset += sizeof(Float32) * length(A)
         end
@@ -56,9 +61,18 @@ end
 # Water's attenuation (per mm) on the 1-keV grid, in all (`nothing`) or by one process, from
 # BasisSimulator's tables
 _water_per_mm(process) = [
-    process === nothing ? BS.compute_μ_at_energy(BS.XA.Materials.water, Float64(E)) / 10 :
-        _U.ustrip(_U.@u_str("cm^-1"), BS.XA.linear_attenuation_coeff(BS.XA.Materials.water, E * _U.@u_str("keV"), process)) / 10
-        for E in 1:150
+    process === nothing ?
+        BS.compute_μ_at_energy(BS.XA.Materials.water, Float64(E)) / 10 :
+        _U.ustrip(
+            _U.@u_str("cm^-1"),
+            BS.XA.linear_attenuation_coeff(
+                BS.XA.Materials.water,
+                E * _U.@u_str("keV"),
+                process,
+            ),
+        ) /
+            10
+    for E in 1:150
 ]
 
 # Water's angular tables, per steradian, in `cells` equal cells of the cosine from −1: Klein–Nishina
@@ -69,8 +83,8 @@ function _synthetic_water_pdf(cells)
     pdf = zeros(cells, 150, 2)
     for E in 1:150
         ratio = 1 ./ (1 .+ E / 511 .* (1 .- μ))
-        pdf[:, E, 1] .= ratio .^ 2 .* (ratio .+ 1 ./ ratio .- (1 .- μ .^ 2)) ./ 2
-        pdf[:, E, 2] .= (1 .+ μ .^ 2) ./ 2 .* exp.(-(1 .- μ) .* (E / 12)^2)
+        pdf[:, E, 1] .= ratio.^2 .* (ratio .+ 1 ./ ratio .- (1 .- μ.^2)) ./ 2
+        pdf[:, E, 2] .= (1 .+ μ.^2) ./ 2 .* exp.(-(1 .- μ) .* (E / 12)^2)
         for p in 1:2
             pdf[:, E, p] ./= 2π * (2 / cells) * sum(pdf[:, E, p])
         end
@@ -86,13 +100,13 @@ end
 # Monte Carlo's kernels hold both). `scatters = false` writes the same kernels with a water that does
 # not scatter, so that loading them takes nothing out and no ray adds its own.
 function _synthetic_scatter_library(
-        dir;
-        name = "BS test scanner",
-        energy_weighted = true,
-        sid = 595.0,
-        sdd = 1085.6,
-        scatters = true,
-    )
+    dir;
+    name = "BS test scanner",
+    energy_weighted = true,
+    sid = 595.0,
+    sdd = 1085.6,
+    scatters = true,
+)
     # the library's own spacing of impacts (a ray's single scatter is far from linear in it: an edge
     # ray's is twenty times the axis ray's), coarser thicknesses, aspects and energies
     axes = Dict{String, Any}(
@@ -105,10 +119,17 @@ function _synthetic_scatter_library(
     rows = collect(-55.0:10.0:55.0)
     centres(e) = (e[1:(end - 1)] .+ e[2:end]) ./ 2
     γ, z = centres(cols), centres(rows)
-    T, r, u, E = axes["thickness_mm"], axes["aspect"], axes["impact_fraction"], axes["energy_keV"]
+    T, r, u, E = axes["thickness_mm"],
+        axes["aspect"],
+        axes["impact_fraction"],
+        axes["energy_keV"]
     bump = [
-        1.0e-4 * (t / 300) * sqrt(e / 70) * (1 + 0.2 * (a - 1)) * exp(-((g - 3 * v - 5 * max(0, 1 - a)) / 12)^2 - (y / 40)^2)
-            for g in γ, y in z, v in u, a in r, t in T, e in E
+        1.0e-4 *
+            (t / 300) *
+            sqrt(e / 70) *
+            (1 + 0.2 * (a - 1)) *
+            exp(-((g - 3 * v - 5 * max(0, 1 - a)) / 12)^2 - (y / 40)^2)
+        for g in γ, y in z, v in u, a in r, t in T, e in E
     ]
     detector_mu = [5.0 * (60 / k)^2.7 + 0.3 for k in 1:150]
     scanner = Dict{String, Any}(
@@ -127,7 +148,12 @@ function _synthetic_scatter_library(
         "grid_height_mm" => 10.0,
         "grid_opening_mm" => [0.94, 1.01],
     )
-    quadrature = Dict{String, Any}("depths" => 32, "points_per_column" => 4, "points_per_row" => 2, "columns_each_side" => 8)
+    quadrature = Dict{String, Any}(
+        "depths" => 32,
+        "points_per_column" => 4,
+        "points_per_row" => 2,
+        "columns_each_side" => 8,
+    )
     water = (
         mu = _water_per_mm(nothing),
         compton = _water_per_mm(BS.XA.IncoherentScattering()),
@@ -149,7 +175,12 @@ function _synthetic_scatter_library(
         grid = :both,
         grid_height = 10.0,
         grid_opening = (0.94, 1.01),
-        single = (depths = 32, points_per_column = 4, points_per_row = 2, columns_each_side = 8),
+        single = (
+            depths = 32,
+            points_per_column = 4,
+            points_per_row = 2,
+            columns_each_side = 8,
+        ),
         forward_deg = 10.0,
     )
     nc, nr, nu, na, nT, nE = size(bump)
@@ -168,13 +199,19 @@ function _synthetic_scatter_library(
         "forward" => 0.1 .* bump .+ forward,
         "primary" => ones(nu, na, nT, nE),
         # half the thickness, spread over the 5-keV bands from 20 to 140 keV, where the photons are
-        "paths" => [5 <= band <= 28 ? t / 48 : 0.0 for _ in 1:2, band in 1:30, _ in u, _ in r, t in T, _ in E],
+        "paths" => [
+            5 <= band <= 28 ? t / 48 : 0.0
+            for _ in 1:2, band in 1:30, _ in u, _ in r, t in T, _ in E
+        ],
         "offsets" => zeros(nc, nu, na, nT, nE),
         "spreads" => fill(2 / sqrt(12), nc, nu, na, nT, nE),
         "angles" => ones(2, 7, nE),
     )
     elements = Dict(
-        "scattering" => [1.0 + 0.01 * Z + 0.1 * b for Z in 1:92, _ in 1:2, b in 1:7, _ in 1:150],
+        "scattering" => [
+            1.0 + 0.01 * Z + 0.1 * b
+            for Z in 1:92, _ in 1:2, b in 1:7, _ in 1:150
+        ],
         "water_pdf" => water_pdf,
     )
     fields = Dict{String, Any}(
@@ -186,7 +223,13 @@ function _synthetic_scatter_library(
     )
     mkpath(dir)
     stem = joinpath(dir, replace(lowercase(name), r"[^a-z0-9]+" => "_"))
-    return (; header = _write_scatter_library(stem, [(scanner, data)], elements; axes, fields), bump, single)
+    return (; header = _write_scatter_library(
+        stem,
+        [(scanner, data)],
+        elements;
+        axes,
+        fields,
+    ), bump, single)
 end
 
 const _SCATTER_DIR = mktempdir()
@@ -194,8 +237,18 @@ const _SCATTER_TEST_ENTRY = "BS test scanner"
 const _SCATTER_AS_MADE_ENTRY = "BS test scanner, kernels as made"
 const _SCATTER_TEST_LIBRARY = _synthetic_scatter_library(_SCATTER_DIR)
 const _SCATTER_TEST_HEADER = _SCATTER_TEST_LIBRARY.header
-const _SCATTER_TEST_COUNTING = _synthetic_scatter_library(_SCATTER_DIR; name = "BS test counter", energy_weighted = false, sid = 610.0, sdd = 1113.0).header
-const _SCATTER_AS_MADE_HEADER = _synthetic_scatter_library(_SCATTER_DIR; name = _SCATTER_AS_MADE_ENTRY, scatters = false).header
+const _SCATTER_TEST_COUNTING = _synthetic_scatter_library(
+    _SCATTER_DIR;
+    name = "BS test counter",
+    energy_weighted = false,
+    sid = 610.0,
+    sdd = 1113.0,
+).header
+const _SCATTER_AS_MADE_HEADER = _synthetic_scatter_library(
+    _SCATTER_DIR;
+    name = _SCATTER_AS_MADE_ENTRY,
+    scatters = false,
+).header
 BS.scatter_kernels(_SCATTER_TEST_ENTRY; path = _SCATTER_TEST_HEADER)
 BS.scatter_kernels("BS test counter"; path = _SCATTER_TEST_COUNTING)
 BS.scatter_kernels(_SCATTER_AS_MADE_ENTRY; path = _SCATTER_AS_MADE_HEADER)

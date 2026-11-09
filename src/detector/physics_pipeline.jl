@@ -55,15 +55,15 @@ By default, all effects are disabled. Use keyword arguments to enable
 specific effects with their models.
 """
 function default_physics_config(;
-    fill_factor::Union{Nothing, FillFactorModel}=nothing,
-    scatter::Union{Nothing, ScatterKernels}=nothing,
-    optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}=nothing,
-    focal_spot::Union{Nothing, FocalSpot}=nothing,
-    detector_efficiency::Union{Nothing, DetectorEfficiency}=nothing,
-    lag::Union{Nothing, LagModel}=nothing,
-    noise_seed::Union{Nothing, Int}=nothing,
-    energy_keV::Float64=60.0,
-    heel_effect::Union{Nothing, HeelEffect}=nothing
+    fill_factor::Union{Nothing, FillFactorModel} = nothing,
+    scatter::Union{Nothing, ScatterKernels} = nothing,
+    optical_crosstalk::Union{Nothing, OpticalCrosstalkModel} = nothing,
+    focal_spot::Union{Nothing, FocalSpot} = nothing,
+    detector_efficiency::Union{Nothing, DetectorEfficiency} = nothing,
+    lag::Union{Nothing, LagModel} = nothing,
+    noise_seed::Union{Nothing, Int} = nothing,
+    energy_keV::Float64 = 60.0,
+    heel_effect::Union{Nothing, HeelEffect} = nothing,
 )
     return PhysicsConfig(
         fill_factor,
@@ -74,7 +74,7 @@ function default_physics_config(;
         lag,
         noise_seed,
         energy_keV,
-        heel_effect
+        heel_effect,
     )
 end
 

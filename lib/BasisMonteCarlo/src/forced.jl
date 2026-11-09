@@ -61,7 +61,10 @@ primary.
 """
 struct ForcedScatterReadout
     scanners::Vector{ScatterScanner}
-    attenuation::Dict{String, NamedTuple{(:total, :compton, :rayleigh), NTuple{3, Vector{Float64}}}}
+    attenuation::Dict{
+        String,
+        NamedTuple{(:total, :compton, :rayleigh), NTuple{3, Vector{Float64}}},
+    }
     points::Int
     directions::Int
     roulette_below::Float64
@@ -70,38 +73,44 @@ struct ForcedScatterReadout
 end
 
 function ForcedScatterReadout(
-        scanners;
-        attenuation = nothing,
-        water_mu_per_mm = nothing,
-        water_compton_per_mm = Float64[],
-        water_rayleigh_per_mm = Float64[],
-        points = 4,
-        directions = 4,
-        roulette_below = 0.01,
-        depths = 256,
-        seed = 0,
-    )
+    scanners;
+    attenuation = nothing,
+    water_mu_per_mm = nothing,
+    water_compton_per_mm = Float64[],
+    water_rayleigh_per_mm = Float64[],
+    points = 4,
+    directions = 4,
+    roulette_below = 0.01,
+    depths = 256,
+    seed = 0,
+)
     (attenuation === nothing) == (water_mu_per_mm === nothing) &&
         throw(ArgumentError("give exactly one of `attenuation` or `water_mu_per_mm`"))
     tables = if attenuation === nothing
-        Dict(
-            DETECTOR_MATERIALS[:Water].name => (
-                total = collect(Float64, water_mu_per_mm),
-                compton = collect(Float64, water_compton_per_mm),
-                rayleigh = collect(Float64, water_rayleigh_per_mm),
-            ),
-        )
+        Dict(DETECTOR_MATERIALS[:Water].name => (
+            total = collect(Float64, water_mu_per_mm),
+            compton = collect(Float64, water_compton_per_mm),
+            rayleigh = collect(Float64, water_rayleigh_per_mm),
+        ))
     else
         Dict(
             String(name) => (
-                    total = collect(Float64, a.total),
-                    compton = collect(Float64, a.compton),
-                    rayleigh = collect(Float64, a.rayleigh),
-                )
-                for (name, a) in attenuation
+                total = collect(Float64, a.total),
+                compton = collect(Float64, a.compton),
+                rayleigh = collect(Float64, a.rayleigh),
+            )
+            for (name, a) in attenuation
         )
     end
-    return ForcedScatterReadout(scanners, tables, points, directions, roulette_below, depths, seed)
+    return ForcedScatterReadout(
+        scanners,
+        tables,
+        points,
+        directions,
+        roulette_below,
+        depths,
+        seed,
+    )
 end
 
 """
@@ -113,11 +122,17 @@ needs.
 """
 forced_attenuation(materials; physics::PhysicsSettings = PhysicsSettings()) = Dict(
     m.name => (
-            total = [geant4_attenuation(m, Float64(E); kind = :total, physics) for E in 1:150],
-            compton = [geant4_attenuation(m, Float64(E); kind = :compton, physics) for E in 1:150],
-            rayleigh = [geant4_attenuation(m, Float64(E); kind = :rayleigh, physics) for E in 1:150],
-        )
-        for m in unique(m -> m.name, materials)
+        total = [geant4_attenuation(m, Float64(E); kind = :total, physics) for E in 1:150],
+        compton = [
+            geant4_attenuation(m, Float64(E); kind = :compton, physics)
+            for E in 1:150
+        ],
+        rayleigh = [
+            geant4_attenuation(m, Float64(E); kind = :rayleigh, physics)
+            for E in 1:150
+        ],
+    )
+    for m in unique(m -> m.name, materials)
 )
 
 needs_deposits(::ForcedScatterReadout) = false
@@ -128,7 +143,7 @@ needs_vertices(::ForcedScatterReadout) = true
 # -----------------------------------------------------------------------------
 
 const ELECTRON_REST_KEV = 510.99895
-const HC_KEV_CM = 1.239841984e-7   # h c: the wavelength of a 1-keV photon in cm
+const HC_KEV_CM = 1.239841984e-7 # h c: the wavelength of a 1-keV photon in cm
 
 """Two-column data (x, y) from a Geant4 data file, until its `-1` terminator."""
 function read_g4_pairs(path)
@@ -181,11 +196,21 @@ function S(x) (Compton), Thomson times the squared form factor F(x)² (Rayleigh)
 material's elements by their atoms per gram (mass fraction over atomic mass), x = sin(θ/2)/λ in
 cm⁻¹ as in the files; each cell takes the mean of its two ends.
 """
-function scattering_tables(material::DetectorMaterial; data = ENV["G4LEDATA"], cells::Integer = 4000)
+function scattering_tables(
+    material::DetectorMaterial;
+    data = ENV["G4LEDATA"],
+    cells::Integer = 4000,
+)
     Zs = sort!(collect(keys(material.mass_fractions)))
-    atoms = Dict(Z => material.mass_fractions[Z] / XA.ATOMIC_MASS[element_symbol(Z)] for Z in Zs)
+    atoms = Dict(
+        Z => material.mass_fractions[Z] / XA.ATOMIC_MASS[element_symbol(Z)]
+        for Z in Zs
+    )
     S = Dict(Z => read_g4_pairs(joinpath(data, "comp", "ce-sf-$Z.dat")) for Z in Zs)
-    F = Dict(Z => read_g4_pairs(joinpath(data, "livermore", "rayl", "re-ff-$Z.dat")) for Z in Zs)
+    F = Dict(
+        Z => read_g4_pairs(joinpath(data, "livermore", "rayl", "re-ff-$Z.dat"))
+        for Z in Zs
+    )
     μs = range(-1.0, 1.0; length = cells + 1)
     Δμ = step(μs)
     ends = zeros(cells + 1, 2)
@@ -196,8 +221,11 @@ function scattering_tables(material::DetectorMaterial; data = ENV["G4LEDATA"], c
             x = sqrt((1 - μ) / 2) * E / HC_KEV_CM
             ratio = 1 / (1 + E / ELECTRON_REST_KEV * (1 - μ))
             klein_nishina = ratio^2 * (ratio + 1 / ratio - (1 - μ^2)) / 2
-            ends[j, VERTEX_COMPTON] = klein_nishina * sum(atoms[Z] * loglog(S[Z]..., x) for Z in Zs)
-            ends[j, VERTEX_RAYLEIGH] = (1 + μ^2) / 2 * sum(atoms[Z] * loglog(F[Z]..., x)^2 for Z in Zs)
+            ends[j, VERTEX_COMPTON] = klein_nishina *
+                sum(atoms[Z] * loglog(S[Z]..., x) for Z in Zs)
+            ends[j, VERTEX_RAYLEIGH] = (1 + μ^2) /
+                2 *
+                sum(atoms[Z] * loglog(F[Z]..., x)^2 for Z in Zs)
         end
         for p in (VERTEX_COMPTON, VERTEX_RAYLEIGH)
             cell = (ends[1:(end - 1), p] .+ ends[2:end, p]) ./ 2
@@ -208,7 +236,7 @@ function scattering_tables(material::DetectorMaterial; data = ENV["G4LEDATA"], c
     end
     guide = Int32[
         min(searchsortedfirst(view(cdf, :, E, p), (m - 1) / cells), cells)
-            for m in 1:cells, E in 1:150, p in 1:2
+        for m in 1:cells, E in 1:150, p in 1:2
     ]
     return ScatteringTables(Int(cells), pdf, cdf, guide)
 end
@@ -216,7 +244,11 @@ end
 const SCATTERING_TABLES = Dict{String, ScatteringTables}()
 
 """A material's scattering tables, built on first use in this process."""
-cached_scattering_tables(m::DetectorMaterial) = get!(() -> scattering_tables(m), SCATTERING_TABLES, m.name)
+cached_scattering_tables(m::DetectorMaterial) = get!(
+    () -> scattering_tables(m),
+    SCATTERING_TABLES,
+    m.name,
+)
 
 """The energy bins either side of `E` keV and the weight of the upper one."""
 function energy_bracket(E)
@@ -255,7 +287,11 @@ function rotate_by(d, μ, rng)
     a = abs(d[3]) < 0.9 ? (0.0, 0.0, 1.0) : (1.0, 0.0, 0.0)
     e1 = (a[2] * d[3] - a[3] * d[2], a[3] * d[1] - a[1] * d[3], a[1] * d[2] - a[2] * d[1])
     e1 = e1 ./ sqrt(e1[1]^2 + e1[2]^2 + e1[3]^2)
-    e2 = (d[2] * e1[3] - d[3] * e1[2], d[3] * e1[1] - d[1] * e1[3], d[1] * e1[2] - d[2] * e1[1])
+    e2 = (
+        d[2] * e1[3] - d[3] * e1[2],
+        d[3] * e1[1] - d[1] * e1[3],
+        d[1] * e1[2] - d[2] * e1[1],
+    )
     return (
         μ * d[1] + sinθ * (cφ * e1[1] + sφ * e2[1]),
         μ * d[2] + sinθ * (cφ * e1[2] + sφ * e2[2]),
@@ -300,9 +336,14 @@ function phantom_media(p::CylinderPhantom, readout::ForcedScatterReadout)
     materials = vcat(p.material, [insert.material for insert in p.inserts])
     for m in materials
         haskey(readout.attenuation, m.name) ||
-            throw(ArgumentError("forced detection needs the attenuation of $(m.name) (forced_attenuation)"))
+            throw(ArgumentError(
+                "forced detection needs the attenuation of $(m.name) (forced_attenuation)",
+            ))
     end
-    return [(tables = cached_scattering_tables(m), attenuation = readout.attenuation[m.name]) for m in materials]
+    return [
+        (tables = cached_scattering_tables(m), attenuation = readout.attenuation[m.name])
+        for m in materials
+    ]
 end
 
 """Which medium of `p` the point `r` is in: 1 for the body, 1 + k inside its k-th insert."""
@@ -333,7 +374,14 @@ end
 The fraction of photons of `E` keV that get out of `p` from `r` along the unit vector `ω` without
 interacting: through the body, and through each insert on the way (`t_exit` mm in all).
 """
-function escape_attenuation(p::CylinderPhantom, media, r, ω, E; t_exit = exit_length(p, r, ω))
+function escape_attenuation(
+    p::CylinderPhantom,
+    media,
+    r,
+    ω,
+    E;
+    t_exit = exit_length(p, r, ω),
+)
     isempty(p.inserts) && return exp(-on_kev_grid(media[1].attenuation.total, E) * t_exit)
     μL = 0.0
     body = t_exit
@@ -395,43 +443,59 @@ photon-by-photon count of the same and the primary alongside.
 """
 function forced_scatter_tally(run::MonoenergeticRun, readout::ForcedScatterReadout)
     phantom = run.detector
-    phantom isa CylinderPhantom || throw(ArgumentError("forced detection needs a run on a CylinderPhantom"))
+    phantom isa CylinderPhantom ||
+        throw(ArgumentError("forced detection needs a run on a CylinderPhantom"))
     run.vertices === nothing && throw(ArgumentError("simulate with record_vertices = true"))
 
     analog = scatter_tally(run, ScatterReadout(readout.scanners))
     rng = Xoshiro(hash((run.seed, run.energy_keV, readout.seed, :forced)))
     media = phantom_media(phantom, readout)
-    frames = [detector_frame(s, run, phantom, analog[k]) for (k, s) in enumerate(readout.scanners)]
+    frames = [
+        detector_frame(s, run, phantom, analog[k])
+        for (k, s) in enumerate(readout.scanners)
+    ]
 
     # One ray at one energy through one material: its first scatterings integrated along it, the
     # sampled ones left out
-    integrate_first = run.beam isa RayBeam && run.photon_energy_keV === nothing && isempty(phantom.inserts) &&
-        !isempty(media[1].attenuation.compton) && !isempty(media[1].attenuation.rayleigh)
+    integrate_first = run.beam isa RayBeam &&
+        run.photon_energy_keV === nothing &&
+        isempty(phantom.inserts) &&
+        !isempty(media[1].attenuation.compton) &&
+        !isempty(media[1].attenuation.rayleigh)
     history = vertex_history(run.vertices, phantom)
     if integrate_first
-        forced_detection!(frames, run.vertices, phantom, media, readout, rng; history, keep = .!run.vertices.first)
+        forced_detection!(
+            frames,
+            run.vertices,
+            phantom,
+            media,
+            readout,
+            rng;
+            history,
+            keep = .!run.vertices.first,
+        )
         first_scatter!(frames, run, phantom, media, readout, rng)
     else
         forced_detection!(frames, run.vertices, phantom, media, readout, rng; history)
     end
     return [
         ScatterTally(
-                s.name,
-                run.n,
-                analog[k].photon_keV,
-                frames[k].cols,
-                frames[k].rows,
-                frames[k].scatter,
-                analog[k].primary,
-                frames[k].spectrum,
-                analog[k].scatter,
-                frames[k].rayleigh,
-                frames[k].angles,
-                frames[k].forward,
-                frames[k].paths,
-                frames[k].column_moments,
-            )
-            for (k, s) in enumerate(readout.scanners)
+            s.name,
+            run.n,
+            analog[k].photon_keV,
+            frames[k].cols,
+            frames[k].rows,
+            frames[k].scatter,
+            analog[k].primary,
+            frames[k].spectrum,
+            analog[k].scatter,
+            frames[k].rayleigh,
+            frames[k].angles,
+            frames[k].forward,
+            frames[k].paths,
+            frames[k].column_moments,
+        )
+        for (k, s) in enumerate(readout.scanners)
     ]
 end
 
@@ -443,10 +507,13 @@ ends of the fan), and the tally being built.
 """
 function detector_frame(s::ScatterScanner, run, phantom, analog::ScatterTally)
     f, c = focal_spot_of(run.beam, phantom, s)
-    across = (c[2], -c[1])   # +γ, toward +x when the central ray is +y
+    across = (c[2], -c[1]) # +γ, toward +x when the central ray is +y
     cols, rows = analog.column_edges_deg, analog.row_edges_mm
     R = s.source_to_detector_mm
-    on_arc(γ) = (f[1] + R * (cosd(γ) * c[1] + sind(γ) * across[1]), f[2] + R * (cosd(γ) * c[2] + sind(γ) * across[2]))
+    on_arc(γ) = (
+        f[1] + R * (cosd(γ) * c[1] + sind(γ) * across[1]),
+        f[2] + R * (cosd(γ) * c[2] + sind(γ) * across[2]),
+    )
     return (
         scanner = s,
         f = f,
@@ -480,13 +547,29 @@ away: the integrand (the scattering's chance per steradian `p_scatter` toward `�
 `escape`, the grid and the detector) over the density of the draws: `K` points uniform over the
 detector and `L` directions from the scattering. `t_exit` is the way out (mm).
 """
-function score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boost, process = VERTEX_COMPTON, cosθ = 1.0, t_exit = 0.0)
+function score!(
+    frame,
+    ω,
+    h,
+    dist2,
+    E′,
+    p_scatter,
+    escape,
+    K,
+    L,
+    boost,
+    process = VERTEX_COMPTON,
+    cosθ = 1.0,
+    t_exit = 0.0,
+)
     n_xy = ((h[1] - frame.f[1]) / frame.R, (h[2] - frame.f[2]) / frame.R)
     c = frame.c
     γ = rad2deg(atan(n_xy[1] * c[2] - n_xy[2] * c[1], c[1] * n_xy[1] + c[2] * n_xy[2]))
     ci = floor(Int, (γ - frame.γ_lo) / frame.γ_step) + 1
     ri = floor(Int, (h[3] - frame.z_lo) / frame.z_step) + 1
-    (1 <= ci <= size(frame.scatter, 1) && 1 <= ri <= size(frame.scatter, 2)) || return nothing
+    (
+        1 <= ci <= size(frame.scatter, 1) && 1 <= ri <= size(frame.scatter, 2)
+    ) || return nothing
     s = frame.scanner
     gη, k = detection_weight(s, n_xy, h[3], ω, E′)
     gη > 0 || return nothing
@@ -503,7 +586,10 @@ function score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boost, proce
         θ < FORWARD_RAYLEIGH_DEG && (frame.forward[ci, ri] += signal)
     end
     slot = process == VERTEX_RAYLEIGH ? 2 : 1
-    frame.angles[slot, clamp(searchsortedlast(SCATTER_ANGLE_EDGES_DEG, θ), 1, size(frame.angles, 2))] += signal
+    frame.angles[
+        slot,
+        clamp(searchsortedlast(SCATTER_ANGLE_EDGES_DEG, θ), 1, size(frame.angles, 2)),
+    ] += signal
     frame.vertex_signal[slot] += signal
     frame.vertex_escape[slot, path_band(E′)] += signal * t_exit
     frame.spectrum[k] += reach * gη
@@ -544,7 +630,10 @@ function first_scatter!(frames, run, phantom, media, readout, rng)
     μ = on_kev_grid(attenuation.total, E)
     M = readout.depths
     K = max(16, cld(readout.points * run.n, 8 * M))
-    for (process, table) in ((VERTEX_COMPTON, attenuation.compton), (VERTEX_RAYLEIGH, attenuation.rayleigh))
+    for (process, table) in (
+            (VERTEX_COMPTON, attenuation.compton),
+            (VERTEX_RAYLEIGH, attenuation.rayleigh),
+        )
         μ_process = on_kev_grid(table, E)
         depths = [(m - 1 + rand(rng)) * chord / M for m in 1:M]
         virtual = VertexLog(
@@ -556,8 +645,23 @@ function first_scatter!(frames, run, phantom, media, readout, rng)
             fill(Float32.(d), M),
         )
         weights = [run.n * μ_process * exp(-μ * t) * chord / M for t in depths]
-        history = (leg_mm = Float32.(depths), band = fill(Int8(path_band(E)), M), previous = zeros(Int32, M))
-        forced_detection!(frames, virtual, phantom, media, readout, rng; weights, points = K, directions = K, history)
+        history = (
+            leg_mm = Float32.(depths),
+            band = fill(Int8(path_band(E)), M),
+            previous = zeros(Int32, M),
+        )
+        forced_detection!(
+            frames,
+            virtual,
+            phantom,
+            media,
+            readout,
+            rng;
+            weights,
+            points = K,
+            directions = K,
+            history,
+        )
     end
     return frames
 end
@@ -571,18 +675,18 @@ Only the scatterings where `keep` is true, if given. `history` ([`vertex_history
 each scattering's way in, for the frames' `paths`.
 """
 function forced_detection!(
-        frames,
-        vertices::VertexLog,
-        phantom,
-        media,
-        readout,
-        rng;
-        weights = nothing,
-        points = readout.points,
-        directions = readout.directions,
-        history = vertex_history(vertices, phantom),
-        keep = nothing,
-    )
+    frames,
+    vertices::VertexLog,
+    phantom,
+    media,
+    readout,
+    rng;
+    weights = nothing,
+    points = readout.points,
+    directions = readout.directions,
+    history = vertex_history(vertices, phantom),
+    keep = nothing,
+)
     K = points
     μ_body = media[1].attenuation.total
     boosts = zeros(length(frames))
@@ -600,11 +704,16 @@ function forced_detection!(
         μE = on_kev_grid(μ_body, E)
         weight = weights === nothing ? 1.0 : weights[i]
         for (j, frame) in enumerate(frames)
-            worth = weight * maximum(exp(-μE * path_toward(phantom, r, l)) for l in frame.landmarks)
-            boosts[j] = weight * (
-                worth >= readout.roulette_below ? 1.0 :
-                    rand(rng) < worth / readout.roulette_below ? readout.roulette_below / worth : 0.0
-            )
+            worth = weight *
+                maximum(exp(-μE * path_toward(phantom, r, l)) for l in frame.landmarks)
+            boosts[j] = weight *
+                (
+                    worth >= readout.roulette_below ?
+                        1.0 :
+                        rand(rng) < worth / readout.roulette_below ?
+                            readout.roulette_below / worth :
+                            0.0
+                )
         end
         any(>(0), boosts) || continue
 
@@ -637,7 +746,21 @@ function forced_detection!(
                 b = q[1] * ω[1] + q[2] * ω[2]
                 t = (-b + sqrt(b^2 - a * (q[1]^2 + q[2]^2 - frame.R^2))) / a
                 h = (r[1] + t * ω[1], r[2] + t * ω[2], r[3] + t * ω[3])
-                score!(frame, ω, h, t^2, E′, p_scatter, escape, K, L, boosts[j], process, μ, t_exit)
+                score!(
+                    frame,
+                    ω,
+                    h,
+                    t^2,
+                    E′,
+                    p_scatter,
+                    escape,
+                    K,
+                    L,
+                    boosts[j],
+                    process,
+                    μ,
+                    t_exit,
+                )
             end
         end
 
@@ -657,17 +780,34 @@ function forced_detection!(
                 dist2 = w[1]^2 + w[2]^2 + w[3]^2
                 ω = w ./ sqrt(dist2)
                 μ = d0[1] * ω[1] + d0[2] * ω[2] + d0[3] * ω[3]
-                E′ = process == VERTEX_COMPTON ? E / (1 + E / ELECTRON_REST_KEV * (1 - μ)) : E
+                E′ = process == VERTEX_COMPTON ?
+                    E / (1 + E / ELECTRON_REST_KEV * (1 - μ)) :
+                    E
                 p_scatter = scattering_pdf(tables, process, E, μ)
                 t_exit = exit_length(phantom, r, ω)
                 escape = escape_attenuation(phantom, media, r, ω, E′; t_exit)
-                score!(frame, ω, h, dist2, E′, p_scatter, escape, K, L, boosts[j], process, μ, t_exit)
+                score!(
+                    frame,
+                    ω,
+                    h,
+                    dist2,
+                    E′,
+                    p_scatter,
+                    escape,
+                    K,
+                    L,
+                    boosts[j],
+                    process,
+                    μ,
+                    t_exit,
+                )
             end
         end
 
         # This scattering's detected signal times the lengths it travelled, in and out
         for frame in frames, p in 1:2, b in eachindex(way_in)
-            frame.paths[p, b] += frame.vertex_signal[p] * way_in[b] + frame.vertex_escape[p, b]
+            frame.paths[p, b] += frame.vertex_signal[p] * way_in[b] +
+                frame.vertex_escape[p, b]
         end
     end
     return frames

@@ -26,8 +26,16 @@ as `XA`. It supplies every material the simulator attenuates with: `XA.Material`
     try
         multidoc = get!(Base.Docs.meta(@__MODULE__), b, Base.Docs.MultiDoc())
         haskey(multidoc.docs, Union{}) || push!(multidoc.order, Union{})
-        multidoc.docs[Union{}] = Base.Docs.docstr(text, Dict{Symbol, Any}(:path => @__FILE__,
-            :linenumber => @__LINE__, :module => @__MODULE__, :binding => b, :typesig => Union{}))
+        multidoc.docs[Union{}] = Base.Docs.docstr(
+            text,
+            Dict{Symbol, Any}(
+                :path => @__FILE__,
+                :linenumber => @__LINE__,
+                :module => @__MODULE__,
+                :binding => b,
+                :typesig => Union{},
+            ),
+        )
     catch err
         @debug "could not attach the XA docstring" err
     end
@@ -70,10 +78,20 @@ const solid_water = XA.Materials.gammex_472_solidwater
 
 const MATERIALS_REGISTRY = Dict{Symbol, XA.Material}(
     # Gammex 472 inserts
-    :Ca_50 => Ca_50, :Ca_100 => Ca_100, :Ca_200 => Ca_200, :Ca_300 => Ca_300,
-    :Ca_400 => Ca_400, :Ca_500 => Ca_500, :Ca_600 => Ca_600,
-    :I_2_0 => I_2_0, :I_2_5 => I_2_5, :I_5_0 => I_5_0, :I_7_5 => I_7_5,
-    :I_10_0 => I_10_0, :I_15_0 => I_15_0, :I_20_0 => I_20_0,
+    :Ca_50 => Ca_50,
+    :Ca_100 => Ca_100,
+    :Ca_200 => Ca_200,
+    :Ca_300 => Ca_300,
+    :Ca_400 => Ca_400,
+    :Ca_500 => Ca_500,
+    :Ca_600 => Ca_600,
+    :I_2_0 => I_2_0,
+    :I_2_5 => I_2_5,
+    :I_5_0 => I_5_0,
+    :I_7_5 => I_7_5,
+    :I_10_0 => I_10_0,
+    :I_15_0 => I_15_0,
+    :I_20_0 => I_20_0,
     :solid_water => solid_water,
     # Common materials
     :water => XA.Materials.water,
@@ -126,32 +144,31 @@ function get_region_materials()
     materials = fill(XA.Materials.air, 27)
 
     # Map region indices to materials
-    materials[1] = XA.Materials.air       # REGION_BACKGROUND = 0
-    materials[2] = XA.Materials.air       # REGION_AIR = 1
-    materials[3] = XA.Materials.water     # REGION_WATER = 2
-    materials[4] = solid_water            # REGION_SOLID_WATER = 3
+    materials[1] = XA.Materials.air   # REGION_BACKGROUND = 0
+    materials[2] = XA.Materials.air   # REGION_AIR = 1
+    materials[3] = XA.Materials.water # REGION_WATER = 2
+    materials[4] = solid_water        # REGION_SOLID_WATER = 3
 
     # Calcium inserts (REGION 10-16 -> indices 11-17)
-    materials[11] = Ca_50   # REGION_CA_50 = 10
-    materials[12] = Ca_100  # REGION_CA_100 = 11
-    materials[13] = Ca_200  # REGION_CA_200 = 12
-    materials[14] = Ca_300  # REGION_CA_300 = 13
-    materials[15] = Ca_400  # REGION_CA_400 = 14
-    materials[16] = Ca_500  # REGION_CA_500 = 15
-    materials[17] = Ca_600  # REGION_CA_600 = 16
+    materials[11] = Ca_50  # REGION_CA_50 = 10
+    materials[12] = Ca_100 # REGION_CA_100 = 11
+    materials[13] = Ca_200 # REGION_CA_200 = 12
+    materials[14] = Ca_300 # REGION_CA_300 = 13
+    materials[15] = Ca_400 # REGION_CA_400 = 14
+    materials[16] = Ca_500 # REGION_CA_500 = 15
+    materials[17] = Ca_600 # REGION_CA_600 = 16
 
     # Iodine inserts (REGION 20-26 -> indices 21-27)
-    materials[21] = I_2_0   # REGION_I_2_0 = 20
-    materials[22] = I_2_5   # REGION_I_2_5 = 21
-    materials[23] = I_5_0   # REGION_I_5_0 = 22
-    materials[24] = I_7_5   # REGION_I_7_5 = 23
-    materials[25] = I_10_0  # REGION_I_10_0 = 24
-    materials[26] = I_15_0  # REGION_I_15_0 = 25
-    materials[27] = I_20_0  # REGION_I_20_0 = 26
+    materials[21] = I_2_0  # REGION_I_2_0 = 20
+    materials[22] = I_2_5  # REGION_I_2_5 = 21
+    materials[23] = I_5_0  # REGION_I_5_0 = 22
+    materials[24] = I_7_5  # REGION_I_7_5 = 23
+    materials[25] = I_10_0 # REGION_I_10_0 = 24
+    materials[26] = I_15_0 # REGION_I_15_0 = 25
+    materials[27] = I_20_0 # REGION_I_20_0 = 26
 
     return materials
 end
-
 
 # =============================================================================
 # Exports

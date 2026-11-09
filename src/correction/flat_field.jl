@@ -43,9 +43,12 @@ function _pcct_defect_factors(s::PCCTScanner, nc, nr, energies, weights)
     thr = Float64.(s.energy_thresholds)
     nb = length(thr)
     w = _table_weights(t.energies, energies, weights)
-    cell = dropdims(sum(t.mean[t.type_index[:], :, :]; dims = 1); dims = 1) ./ length(t.type_index)
-    C = transpose(w) * cell                                     # spectrum-weighted cumulative, per table threshold
-    cum(x) = begin                                              # linear in threshold, extrapolated at the ends
+    cell = dropdims(sum(t.mean[t.type_index[:], :, :]; dims = 1); dims = 1) ./
+        length(t.type_index)
+    # spectrum-weighted cumulative, per table threshold
+    C = transpose(w) * cell
+    # linear in threshold, extrapolated at the ends
+    cum(x) = begin
         i = clamp(searchsortedlast(t.thresholds, x), 1, length(t.thresholds) - 1)
         f = (x - t.thresholds[i]) / (t.thresholds[i + 1] - t.thresholds[i])
         max((1 - f) * C[i] + f * C[i + 1], 0.0)
@@ -54,10 +57,14 @@ function _pcct_defect_factors(s::PCCTScanner, nc, nr, energies, weights)
     nominal = [cum(x) for x in thr]
     z = _dexel_pattern(s.defect_seed, nb + 1, nc, nr)
     out = ones(nc, nr, nb)
-    Threads.@threads for r in 1:nr              # rows in parallel, each its own slice of `out`
+    # rows in parallel, each its own slice of `out`
+    Threads.@threads for r in 1:nr
         for c in 1:nc
             g = 1 + s.gain_spread * z[c, r, nb + 1]
-            shifted = [cum((thr[k] + s.threshold_spread_keV * z[c, r, k]) / g) for k in 1:nb]
+            shifted = [
+                cum((thr[k] + s.threshold_spread_keV * z[c, r, k]) / g)
+                for k in 1:nb
+            ]
             for b in 1:nb
                 n0 = bin(nominal, b)
                 out[c, r, b] = n0 > 0 ? bin(shifted, b) / n0 : 1.0
@@ -84,13 +91,25 @@ const _PCCT_DEFECTS_LOCK = ReentrantLock()
 function _pcct_dexel_defects(s::PCCTScanner, nc, nr, energies, weights)
     _has_defects(s) || return nothing
     w = Float64.(weights)
-    key = hash((s.energy_thresholds, s.gain_spread, s.threshold_spread_keV, s.defect_seed, nc, nr, Float64.(energies), w ./ sum(w)))
+    key = hash((
+        s.energy_thresholds,
+        s.gain_spread,
+        s.threshold_spread_keV,
+        s.defect_seed,
+        nc,
+        nr,
+        Float64.(energies),
+        w ./ sum(w),
+    ))
     cached = lock(() -> get(_PCCT_DEFECTS_CACHE, key, nothing), _PCCT_DEFECTS_LOCK)
     cached === nothing || return cached
     μ = [compute_μ_at_energy(XA.Materials.water, Float64(E)) for E in energies]
     spectra = [w .* exp.(-t .* μ) for t in _PCCT_DEFECT_WATER_CM]
     d = (
-        factors = cat((_pcct_defect_factors(s, nc, nr, energies, x) for x in spectra)...; dims = 4),
+        factors = cat(
+            (_pcct_defect_factors(s, nc, nr, energies, x) for x in spectra)...;
+            dims = 4,
+        ),
         p = [-log(sum(x) / sum(w)) for x in spectra],
     )
     lock(() -> (_PCCT_DEFECTS_CACHE[key] = d), _PCCT_DEFECTS_LOCK)
@@ -118,7 +137,8 @@ function _apply_pcct_defects!(λ::NTuple{NB}, I0, F, pn, M) where {NB}
         end
         g = @inbounds clamp((p - pn[m]) / (pn[m + 1] - pn[m]), zero(p), one(p))
         for b in 1:NB
-            @inbounds λ[b][c, r, v] = e[b] * ((1 - g) * F[c, r, b, m] + g * F[c, r, b, m + 1])
+            @inbounds λ[b][c, r, v] = e[b] *
+                ((1 - g) * F[c, r, b, m] + g * F[c, r, b, m + 1])
         end
     end
     return λ
@@ -132,7 +152,11 @@ _air_phantom(phantom::Phantom) = Phantom(
     (0.05, 0.05, 0.05),
 )
 # The mean over the views of a sinogram, `[cols, rows]`, on the host in Float64.
-_view_mean(x::AbstractArray{<:Real, 3}) = Float64.(Array(dropdims(sum(x; dims = 3); dims = 3))) ./ size(x, 3)
+_view_mean(x::AbstractArray{<:Real, 3}) = Float64.(Array(dropdims(
+    sum(x; dims = 3);
+    dims = 3,
+))) ./
+    size(x, 3)
 
 # A calibration scan of air or of a centred cylinder does not change as the gantry turns, so the
 # calibrations scan a few views, each read at one angle (`view_samples = 1`), noise-free and without
@@ -205,12 +229,12 @@ phantom on the GPU calibrates on the GPU, one on the CPU on the CPU. They scan a
 never the phantom itself; the calibration's arrays are on the host, in Float64.
 """
 function _calibrate_flat_field(
-        scanner::Scanner,
-        protocol::CTProtocol,
-        recon_opts,
-        phantom::Phantom;
-        sim_opts::SimOptions = SimOptions(),
-    )
+    scanner::Scanner,
+    protocol::CTProtocol,
+    recon_opts,
+    phantom::Phantom;
+    sim_opts::SimOptions = SimOptions(),
+)
     return _flat_field(
         scanner,
         _calibration_protocol(protocol),
@@ -222,12 +246,12 @@ end
 
 # The flat field from air scans of exactly `protocol` and `opts`.
 function _flat_field(
-        scanner::EICTScanner,
-        protocol::CTProtocol,
-        recon_opts,
-        opts::SimOptions,
-        phantom::Phantom,
-    )
+    scanner::EICTScanner,
+    protocol::CTProtocol,
+    recon_opts,
+    opts::SimOptions,
+    phantom::Phantom,
+)
     air = _air_phantom(phantom)
     y = map((protocol, CTProtocol(protocol; mA = protocol.mA / 4))) do p
         ws = create_workspace(scanner, p, opts, recon_opts, air)
@@ -262,19 +286,26 @@ function _water_slab(phantom::Phantom, t_cm::Real)
 end
 
 function _flat_field(
-        scanner::PCCTScanner,
-        protocol::CTProtocol,
-        recon_opts,
-        opts::SimOptions,
-        phantom::Phantom,
-    )
+    scanner::PCCTScanner,
+    protocol::CTProtocol,
+    recon_opts,
+    opts::SimOptions,
+    phantom::Phantom,
+)
     unit = PCCTScanner(scanner; pileup = false)
     nominal = PCCTScanner(unit; gain_spread = 0.0, threshold_spread_keV = 0.0)
     # each bin's counts over its air counts, view-averaged, and the air counts of every pixel
     function transmission(s, obj)
         ws = create_workspace(s, protocol, opts, recon_opts, obj)
         try
-            bins = simulate!(ws, obj, protocol, opts; report_dose = false, capture_raw_counts = false).pcct_sino.bins
+            bins = simulate!(
+                ws,
+                obj,
+                protocol,
+                opts;
+                report_dose = false,
+                capture_raw_counts = false,
+            ).pcct_sino.bins
             return [_view_mean(exp.(.-b)) for b in bins], copy(ws.I0_cpu)
         finally
             release_backend!(ws)
@@ -288,17 +319,20 @@ function _flat_field(
     K = length(_FLAT_FIELD_SLABS_CM)
     P = fill(Inf, nc, nr, K)
     R = ones(nc, nr, nb, K)
-    lit = dropdims(sum(I0; dims = 3); dims = 3) .> 0           # the pixels the beam reaches
+    lit = dropdims(sum(I0; dims = 3); dims = 3) .> 0 # the pixels the beam reaches
     for (k, d) in pairs(_FLAT_FIELD_SLABS_CM)
         slab = _water_slab(phantom, d)
         t, _ = transmission(unit, slab)
         t0, _ = transmission(nominal, slab)
-        p = -log.(max.(sum(w[:, :, b] .* t0[b] for b in 1:nb), 1.0e-300))  # the slab's line integral
+        # the slab's line integral
+        p = -log.(max.(sum(w[:, :, b] .* t0[b] for b in 1:nb), 1.0e-300))
         for r in 1:nr, c in 1:nc
             lit[c, r] || continue
             P[c, r, k] = p[c, r]
             for b in 1:nb
-                R[c, r, b, k] = t0[b][c, r] > 0 ? t[b][c, r] / gain[c, r, b] / t0[b][c, r] : 1.0
+                R[c, r, b, k] = t0[b][c, r] > 0 ?
+                    t[b][c, r] / gain[c, r, b] / t0[b][c, r] :
+                    1.0
             end
         end
     end
@@ -309,14 +343,20 @@ end
 # integrator's air-normalised signal `y = e^{−p}` becomes `(y − offset) / gain`; a photon counter's
 # counts in each bin are divided by the bin's gain in air, then by its gain at the ray's own line
 # integral (from its bins), linear between the calibration's water slabs. On the device of the bins.
-function _correct_flat_field!(sinogram::AbstractArray{T, 3}, cal::FlatFieldCalibration{<:AbstractMatrix}) where {T}
+function _correct_flat_field!(
+    sinogram::AbstractArray{T, 3},
+    cal::FlatFieldCalibration{<:AbstractMatrix},
+) where {T}
     g = copyto!(similar(sinogram, T, size(cal.gain)), T.(cal.gain))
     o = copyto!(similar(sinogram, T, size(cal.offset)), T.(cal.offset))
     sinogram .= .-log.(max.((exp.(.-sinogram) .- o) ./ g, T(1.0e-10)))
     return sinogram
 end
 
-function _correct_flat_field!(bins::AbstractVector, cal::FlatFieldCalibration{<:AbstractArray{<:Real, 3}, Nothing})
+function _correct_flat_field!(
+    bins::AbstractVector,
+    cal::FlatFieldCalibration{<:AbstractArray{<:Real, 3}, Nothing},
+)
     length(bins) == size(cal.gain, 3) || throw(DimensionMismatch("one gain plane per bin"))
     for (b, bin) in enumerate(bins)
         T = eltype(bin)
@@ -326,7 +366,13 @@ function _correct_flat_field!(bins::AbstractVector, cal::FlatFieldCalibration{<:
     T = eltype(bins[1])
     device(x) = copyto!(similar(bins[1], T, size(x)), T.(x))
     h = cal.hardening
-    _apply_hardening!(Tuple(bins), device(h.p), device(h.r), device(h.w), Int32(size(h.p, 3)))
+    _apply_hardening!(
+        Tuple(bins),
+        device(h.p),
+        device(h.r),
+        device(h.w),
+        Int32(size(h.p, 3)),
+    )
     return bins
 end
 
@@ -384,10 +430,11 @@ const _PILEUP_CYLINDERS_CM = (20.0, 35.0)
 
 # A centred water cylinder of diameter `d_cm` (10 cm long) on the device of `phantom`.
 function _water_cylinder(phantom::Phantom, d_cm::Real)
-    n, voxel = 192, 0.25                                   # a 48 cm grid of 2.5 mm voxels
+    n, voxel = 192, 0.25 # a 48 cm grid of 2.5 mm voxels
     mask = zeros(UInt8, n, n, 2)
     for j in 1:n, i in 1:n
-        hypot((i - 0.5 - n / 2) * voxel, (j - 0.5 - n / 2) * voxel) <= d_cm / 2 && (mask[i, j, :] .= 0x01)
+        hypot((i - 0.5 - n / 2) * voxel, (j - 0.5 - n / 2) * voxel) <= d_cm / 2 &&
+            (mask[i, j, :] .= 0x01)
     end
     return Phantom(
         copyto!(similar(phantom.mask, UInt8, size(mask)), mask),
@@ -419,13 +466,13 @@ device of `phantom`, the scan's own, as for [`calibrate`](@ref); the scans are o
 water, never the phantom. [`calibrate`](@ref) makes it for a photon counter that piles up.
 """
 function _calibrate_pileup(
-        scanner::PCCTScanner,
-        protocol::CTProtocol,
-        recon_opts,
-        phantom::Phantom;
-        sim_opts::SimOptions = SimOptions(),
-        currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1 / sqrt(2), 1, sqrt(2)],
-    )
+    scanner::PCCTScanner,
+    protocol::CTProtocol,
+    recon_opts,
+    phantom::Phantom;
+    sim_opts::SimOptions = SimOptions(),
+    currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1 / sqrt(2), 1, sqrt(2)],
+)
     return _pileup(
         scanner,
         _calibration_protocol(protocol),
@@ -438,28 +485,39 @@ end
 
 # The pile-up correction from scans of exactly `protocol` and `opts`.
 function _pileup(
-        scanner::PCCTScanner,
-        protocol::CTProtocol,
-        recon_opts,
-        opts::SimOptions,
-        phantom::Phantom,
-        currents;
-        n_rates::Integer = 65,
-        n_hardness::Integer = 12,
-    )
+    scanner::PCCTScanner,
+    protocol::CTProtocol,
+    recon_opts,
+    opts::SimOptions,
+    phantom::Phantom,
+    currents;
+    n_rates::Integer = 65,
+    n_hardness::Integer = 12,
+)
     levels = sort(Float64.(collect(currents)))
-    length(levels) >= 3 || throw(ArgumentError("_calibrate_pileup needs at least three currents"))
+    length(levels) >= 3 ||
+        throw(ArgumentError("_calibrate_pileup needs at least three currents"))
     sc = PCCTScanner(scanner; pileup = true)
     bf = sc.binning_factor
     tpv = protocol.rotation_time / protocol.views
-    objects = vcat([_air_phantom(phantom)], [_water_cylinder(phantom, d) for d in _PILEUP_CYLINDERS_CM])
+    objects = vcat(
+        [_air_phantom(phantom)],
+        [_water_cylinder(phantom, d) for d in _PILEUP_CYLINDERS_CM],
+    )
     # the recorded counts of every scan, [object][level][bin] → [col, row]
     recorded = map(objects) do obj
         map(levels) do x
             p = CTProtocol(protocol; mA = protocol.mA * x)
             ws = create_workspace(sc, p, opts, recon_opts, obj)
             try
-                r = simulate!(ws, obj, p, opts; report_dose = false, capture_raw_counts = true)
+                r = simulate!(
+                    ws,
+                    obj,
+                    p,
+                    opts;
+                    report_dose = false,
+                    capture_raw_counts = true,
+                )
                 [_view_mean(c) for c in r.raw_counts]
             finally
                 release_backend!(ws)
@@ -469,15 +527,24 @@ function _pileup(
     nb = length(recorded[1][1])
     # the pile-up-free counts per unit current: r(x) = recorded / x, quadratic to x = 0
     x1, x2, x3 = levels[1], levels[2], levels[3]
-    L = (x2 * x3 / ((x1 - x2) * (x1 - x3)), x1 * x3 / ((x2 - x1) * (x2 - x3)), x1 * x2 / ((x3 - x1) * (x3 - x2)))
-    Rs, Ns = Vector{Float64}[], Vector{Float64}[]        # each sample's recorded and free counts, per bin
+    L = (
+        x2 * x3 / ((x1 - x2) * (x1 - x3)),
+        x1 * x3 / ((x2 - x1) * (x2 - x3)),
+        x1 * x2 / ((x3 - x1) * (x3 - x2)),
+    )
+    # each sample's recorded and free counts, per bin
+    Rs, Ns = Vector{Float64}[], Vector{Float64}[]
     for (o, rec) in pairs(recorded)
-        free = [L[1] .* rec[1][b] ./ x1 .+ L[2] .* rec[2][b] ./ x2 .+ L[3] .* rec[3][b] ./ x3 for b in 1:nb]
+        free = [
+            L[1] .* rec[1][b] ./ x1 .+ L[2] .* rec[2][b] ./ x2 .+ L[3] .* rec[3][b] ./ x3
+            for b in 1:nb
+        ]
         total = sum(free)
         nc, nr = size(total)
         for r in 1:nr, c in 1:nc
             all(b -> free[b][c, r] > 0, 1:nb) || continue
-            if o > 1 && 1 < c < nc      # a cylinder's edge: the pixel's dexels see different rates
+            # a cylinder's edge: the pixel's dexels see different rates
+            if o > 1 && 1 < c < nc
                 abs(total[c + 1, r] - total[c - 1, r]) <= 0.05 * total[c, r] || continue
             end
             for (k, x) in pairs(levels)
@@ -489,19 +556,28 @@ function _pileup(
         end
     end
     isempty(Rs) && throw(ArgumentError("_calibrate_pileup: the scans recorded no counts"))
-    R, N = reduce(hcat, Rs), reduce(hcat, Ns)              # [bin, sample]
-    ρs = vec(sum(R; dims = 1)) ./ (bf * bf * tpv)          # recorded counts per second per dexel
+    R, N = reduce(hcat, Rs), reduce(hcat, Ns) # [bin, sample]
+    # recorded counts per second per dexel
+    ρs = vec(sum(R; dims = 1)) ./ (bf * bf * tpv)
     qs = vec(sum((1:nb) .* R; dims = 1)) ./ vec(sum(R; dims = 1))
     rates = collect(range(0.0, maximum(ρs) * (1 + 1.0e-9); length = n_rates))
     hardness = nb > 1 && maximum(qs) > minimum(qs) ?
-        collect(range(minimum(qs), maximum(qs); length = n_hardness)) : [1.0, 2.0]
+        collect(range(minimum(qs), maximum(qs); length = n_hardness)) :
+        [1.0, 2.0]
     C = _fit_inverse_migration(R, N, ρs, qs, rates, hardness)
     return PileupCalibration(rates, hardness, C, bf)
 end
 
 # The matrices `C[:, :, k, m]` (bilinear in rate and hardness) with `N ≈ C(ρ, q) · R`, sample by sample:
 # least squares in relative counts, `C = I` at zero rate, smooth (second differences) in both.
-function _fit_inverse_migration(R::Matrix{Float64}, N::Matrix{Float64}, ρs, qs, rates, hardness)
+function _fit_inverse_migration(
+    R::Matrix{Float64},
+    N::Matrix{Float64},
+    ρs,
+    qs,
+    rates,
+    hardness,
+)
     nb, ns = size(R)
     K, M = length(rates), length(hardness)
     P = nb * K * M
@@ -509,7 +585,12 @@ function _fit_inverse_migration(R::Matrix{Float64}, N::Matrix{Float64}, ρs, qs,
     corners = map(1:ns) do t
         k, f = _node(rates, ρs[t])
         m, g = _node(hardness, qs[t])
-        ((k, m, (1 - f) * (1 - g)), (k + 1, m, f * (1 - g)), (k, m + 1, (1 - f) * g), (k + 1, m + 1, f * g))
+        (
+            (k, m, (1 - f) * (1 - g)),
+            (k + 1, m, f * (1 - g)),
+            (k, m + 1, (1 - f) * g),
+            (k + 1, m + 1, f * g),
+        )
     end
     C = zeros(nb, nb, K, M)
     Threads.@threads for i in 1:nb
@@ -518,7 +599,7 @@ function _fit_inverse_migration(R::Matrix{Float64}, N::Matrix{Float64}, ρs, qs,
         cols = zeros(Int, 4nb)
         vals = zeros(4nb)
         for t in 1:ns
-            s = 1 / N[i, t]                                  # relative counts
+            s = 1 / N[i, t] # relative counts
             q = 0
             for (kk, mm, w) in corners[t], j in 1:nb
                 q += 1
@@ -575,15 +656,26 @@ end
 # recorded counts in every bin (`I0[col, row, b]·e^{−bin_b}`), its recorded count rate per dexel over
 # the scan's time per view and the mean bin of its counts pick the matrix that takes them to
 # pile-up-free counts, which replace them: `bin_b = −log(n_b / I0[col, row, b])`. On the device of `bins`.
-function _correct_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::PileupCalibration, protocol::CTProtocol)
+function _correct_pileup!(
+    bins::AbstractVector,
+    I0::AbstractArray{<:Real, 3},
+    cal::PileupCalibration,
+    protocol::CTProtocol,
+)
     nb = length(bins)
-    size(cal.C, 1) == size(cal.C, 2) == nb == size(I0, 3) || throw(DimensionMismatch("one correction row and I0 plane per bin"))
+    size(cal.C, 1) == size(cal.C, 2) == nb == size(I0, 3) ||
+        throw(DimensionMismatch("one correction row and I0 plane per bin"))
     T = eltype(bins[1])
     device(x) = copyto!(similar(bins[1], T, size(x)), T.(Array(x)))
     time_per_view = protocol.rotation_time / protocol.views
     _apply_pileup!(
-        Tuple(bins), device(I0), device(cal.C), device(cal.hardness), Int32(length(cal.rates)),
-        T(cal.rates[2] - cal.rates[1]), T(1 / (cal.binning^2 * time_per_view)),
+        Tuple(bins),
+        device(I0),
+        device(cal.C),
+        device(cal.hardness),
+        Int32(length(cal.rates)),
+        T(cal.rates[2] - cal.rates[1]),
+        T(1 / (cal.binning^2 * time_per_view)),
     )
     return bins
 end
@@ -602,7 +694,11 @@ function _apply_pileup!(h::NTuple{NB}, I0, C, hardness, K, dr, scale) where {NB}
         while m < M - Int32(1) && q >= @inbounds(hardness[m + 1])
             m += Int32(1)
         end
-        g = @inbounds clamp((q - hardness[m]) / (hardness[m + 1] - hardness[m]), zero(dr), one(dr))
+        g = @inbounds clamp(
+            (q - hardness[m]) / (hardness[m + 1] - hardness[m]),
+            zero(dr),
+            one(dr),
+        )
         n = _migrate(C, y, k, m, f, g)
         for b in 1:NB
             @inbounds h[b][c, r, v] = -log(max(n[b], oftype(dr, 1.0e-30)) / I0[c, r, b])
@@ -657,13 +753,31 @@ views). On notebook 04's NAEOTOM Alpha (Gammex 472, noise-free) the corrected im
 The calibration depends on the scanner and the beam (kVp, filtration, collimation), not on the
 phantom or the tube current's exact value: calibrate once and reuse it across phantoms and scans.
 """
-function calibrate(scanner::PCCTScanner, protocol::CTProtocol, recon_opts, phantom::Phantom; sim_opts::SimOptions = SimOptions())
-    pileup = _piles_up(scanner) ? _calibrate_pileup(scanner, protocol, recon_opts, phantom; sim_opts) : nothing
-    flat_field = _has_defects(scanner) ? _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts) : nothing
+function calibrate(
+    scanner::PCCTScanner,
+    protocol::CTProtocol,
+    recon_opts,
+    phantom::Phantom;
+    sim_opts::SimOptions = SimOptions(),
+)
+    pileup = _piles_up(scanner) ?
+        _calibrate_pileup(scanner, protocol, recon_opts, phantom; sim_opts) :
+        nothing
+    flat_field = _has_defects(scanner) ?
+        _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts) :
+        nothing
     return Calibration(scanner, protocol, pileup, flat_field)
 end
-function calibrate(scanner::EICTScanner, protocol::CTProtocol, recon_opts, phantom::Phantom; sim_opts::SimOptions = SimOptions())
-    flat_field = _has_defects(scanner) ? _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts) : nothing
+function calibrate(
+    scanner::EICTScanner,
+    protocol::CTProtocol,
+    recon_opts,
+    phantom::Phantom;
+    sim_opts::SimOptions = SimOptions(),
+)
+    flat_field = _has_defects(scanner) ?
+        _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts) :
+        nothing
     return Calibration(scanner, protocol, nothing, flat_field)
 end
 
@@ -672,33 +786,57 @@ _piles_up(::EICTScanner) = false
 
 # A scanner's detector, for matching a calibration: every field but the scatter's, which the
 # calibration (scanned without scatter) does not depend on.
-_detector_fields(s::Scanner) = [getfield(s, f) for f in fieldnames(typeof(s)) if f ∉ (:scatter_kernels, :scatter_correction)]
+_detector_fields(s::Scanner) = [
+    getfield(s, f)
+    for f in fieldnames(typeof(s))
+    if f ∉ (:scatter_kernels, :scatter_correction)
+]
 
 # The calibration a workspace for `scanner`, `protocol` and `sim_opts` takes: checked against the
 # scanner and the beam it was made for, and required whenever the scatter correction is on and the
 # detector piles up or has defects (the scatter estimate is a nominal dexel's: subtracted from
 # uncorrected counts it leaves each dexel S·(1 − 1/g) of its scatter, as rings).
-function _check_calibration(scanner::Scanner, protocol::CTProtocol, sim_opts::SimOptions, cal)
-    needs = (_piles_up(scanner) || _has_defects(scanner)) && scanner.scatter_correction && sim_opts.use_scatter
+function _check_calibration(
+    scanner::Scanner,
+    protocol::CTProtocol,
+    sim_opts::SimOptions,
+    cal,
+)
+    needs = (_piles_up(scanner) || _has_defects(scanner)) &&
+        scanner.scatter_correction &&
+        sim_opts.use_scatter
     if cal === nothing
-        needs && throw(
-            ArgumentError(
+        needs &&
+            throw(ArgumentError(
                 "this detector $(_piles_up(scanner) ? "piles up" : "has dexel defects"), and the scatter correction " *
                     "subtracts its estimate from corrected counts, as a scanner does: pass " *
                     "`calibration = calibrate(scanner, protocol, recon_opts, phantom)` to create_workspace " *
-                    "(or turn the scatter correction off on the scanner)"
-            )
-        )
+                    "(or turn the scatter correction off on the scanner)",
+            ))
         return nothing
     end
-    cal isa Calibration || throw(ArgumentError("calibration must come from calibrate(scanner, protocol, recon_opts, phantom)"))
-    typeof(cal.scanner) == typeof(scanner) && _detector_fields(cal.scanner) == _detector_fields(scanner) ||
-        throw(ArgumentError("the calibration was made for another detector: calibrate this scanner"))
+    cal isa Calibration ||
+        throw(ArgumentError(
+            "calibration must come from calibrate(scanner, protocol, recon_opts, phantom)",
+        ))
+    typeof(cal.scanner) == typeof(scanner) &&
+        _detector_fields(cal.scanner) == _detector_fields(scanner) ||
+        throw(ArgumentError(
+            "the calibration was made for another detector: calibrate this scanner",
+        ))
     p, q = cal.protocol, protocol
-    (p.kVp == q.kVp && p.additional_filters == q.additional_filters && p.collimation_mm == q.collimation_mm) ||
-        throw(ArgumentError("the calibration was made for another beam (kVp, filtration or collimation): calibrate this protocol"))
-    (_piles_up(scanner) && cal.pileup === nothing) && throw(ArgumentError("the calibration has no pile-up correction"))
-    (_has_defects(scanner) && cal.flat_field === nothing) && throw(ArgumentError("the calibration has no flat field"))
+    (
+        p.kVp == q.kVp &&
+            p.additional_filters == q.additional_filters &&
+            p.collimation_mm == q.collimation_mm
+    ) ||
+        throw(ArgumentError(
+            "the calibration was made for another beam (kVp, filtration or collimation): calibrate this protocol",
+        ))
+    (_piles_up(scanner) && cal.pileup === nothing) &&
+        throw(ArgumentError("the calibration has no pile-up correction"))
+    (_has_defects(scanner) && cal.flat_field === nothing) &&
+        throw(ArgumentError("the calibration has no flat field"))
     return cal
 end
 

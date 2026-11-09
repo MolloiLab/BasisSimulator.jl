@@ -34,10 +34,7 @@ positive `prep` array before the downstream `-log` transform.
 Simplification of CatSim's `LowSignalCorr.py` — see the module header for
 the full reasoning.
 """
-function low_signal_correction_gpu!(
-        prep::AbstractArray{T, 3},
-    ) where {T <: AbstractFloat}
-
+function low_signal_correction_gpu!(prep::AbstractArray{T, 3}) where {T <: AbstractFloat}
     eps = T(1.0e-10)
 
     AK.foreachindex(prep) do idx

@@ -28,15 +28,20 @@ end
 # Copy the view geometry of `g` into the workspace's backend arrays.
 function _load_view_geometry!(sp, dc, du, dv, g::CTGeometry)
     T = eltype(sp)
-    copyto!(sp, T.(g.source_positions)); copyto!(dc, T.(g.detector_centers))
-    copyto!(du, T.(g.detector_u)); copyto!(dv, T.(g.detector_v))
+    copyto!(sp, T.(g.source_positions))
+    copyto!(dc, T.(g.detector_centers))
+    copyto!(du, T.(g.detector_u))
+    copyto!(dv, T.(g.detector_v))
     return nothing
 end
 
 # A path cache is of point views; sub-views are geometries of their own.
 function _view_paths(paths, n::Integer)
-    paths === nothing || n == 1 || throw(ArgumentError(
-        "a path cache is of point views; with view_samples = $(n) pass paths = nothing, and share a projection between noise draws instead (keep_projection, projection)"))
+    paths === nothing ||
+        n == 1 ||
+        throw(ArgumentError(
+            "a path cache is of point views; with view_samples = $(n) pass paths = nothing, and share a projection between noise draws instead (keep_projection, projection)",
+        ))
     return paths
 end
 

@@ -63,6 +63,17 @@ lib/BasisMonteCarlo/    BasisMonteCarlo.jl, the Geant4 detector and scatter Mont
 - **Never bump `version`** in a feature pull request, and add every user-visible change under
   `## [Unreleased]` in `CHANGELOG.md`. Releases are one pull request: see `RELEASING.md`. CI's
   `version` job fails if `version` is not the last registered version or a valid next one.
+- **Formatting and lint: Fatou** ([jolars/fatou](https://github.com/jolars/fatou), its defaults;
+  `fatou.toml` only lists what it skips). Before every pull request: `fatou format .`,
+  `julia docs/fatou.jl --write`, then `fatou lint .` (must report "clean"). `docs/fatou.jl` formats
+  the Julia Fatou's walk cannot see as code: the Pluto notebooks cell by cell (Pluto rewrites a
+  notebook's header, markers and Cell order on every save, so `fatou.toml` excludes those folders),
+  the docs pages' `julia(raw"""…""")` listings, and the ```julia examples in `README.md`,
+  `AGENTS.md` and docstrings. Without `--write` it checks. Lint the notebooks by name:
+  `fatou lint docs/notebooks/*.jl`. Fix lint findings in the code; don't use `fatou lint --fix`.
+  The BasisMonteCarlo notebooks are not formatted yet: re-rendering one re-runs Geant4 and
+  rewrites its table in `lib/BasisMonteCarlo/tables/`, so they wait for a render mode that
+  reads its stored results and writes data only when asked to.
 - **Backend-agnostic always:** kernels are `AK.foreachindex` / broadcasts over `AbstractArray`; no
   CUDA- or Metal-only code, no scalar indexing of device arrays, no `Array(...)` round trips in
   hot paths.
@@ -191,7 +202,8 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 
 ## CI and deployment (`.github/workflows/`)
 
-- `CI.yml`: the `version` check, the test suite on Linux, Windows and macOS (Julia 1.12), and
+- `CI.yml`: the `version` check, `fatou` (format check and lint of every Julia file, plus `docs/fatou.jl` for
+  the notebook cells and code snippets, Fatou v0.26.1), the test suite on Linux, Windows and macOS (Julia 1.12), and
   `lib/BasisMonteCarlo`'s test suite on Linux (`basismontecarlo`; Geant4.jl, plus `g++` for its
   cross-section shim).
 - `TagBot.yml`: tags `v<version>` and writes the GitHub Release after the General registry merges a

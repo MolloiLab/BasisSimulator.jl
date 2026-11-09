@@ -27,12 +27,22 @@ function check_relative(name, value, reference, tolerance; source = "")
 end
 
 """`value` at most `limit`."""
-check_below(name, value, limit; source = "") =
-    Check(name, value, "≤ $(round(limit; sigdigits = 4))", value <= limit, source)
+check_below(name, value, limit; source = "") = Check(
+    name,
+    value,
+    "≤ $(round(limit; sigdigits = 4))",
+    value <= limit,
+    source,
+)
 
 """`value` between `low` and `high`."""
-check_range(name, value, low, high; source = "") =
-    Check(name, value, "$(round(low; sigdigits = 4)) – $(round(high; sigdigits = 4))", low <= value <= high, source)
+check_range(name, value, low, high; source = "") = Check(
+    name,
+    value,
+    "$(round(low; sigdigits = 4)) – $(round(high; sigdigits = 4))",
+    low <= value <= high,
+    source,
+)
 
 """
     scorecard(checks) -> String
@@ -42,7 +52,7 @@ The checks as a Markdown table, with the count that pass.
 function scorecard(checks::AbstractVector{Check})
     rows = [
         "| $(c.passed ? "✓" : "✗ **fail**") | $(c.name) | $(round(c.value; sigdigits = 4)) | $(c.target) | $(c.source) |"
-            for c in checks
+        for c in checks
     ]
     passed = count(c -> c.passed, checks)
     return """

@@ -93,20 +93,28 @@ for the full algorithm description and inspiration.
 `out` — same vector that was passed in.
 """
 function apply_sino_svd_denoise!(
-        out::AbstractVector{<:AbstractArray{Float32, 3}},
-        channels::AbstractVector{<:AbstractArray{Float32, 3}};
-        σ_px::Real = 1.5,
-    )
+    out::AbstractVector{<:AbstractArray{Float32, 3}},
+    channels::AbstractVector{<:AbstractArray{Float32, 3}};
+    σ_px::Real = 1.5,
+)
     n_ch = length(channels)
     n_ch ≥ 2 || error("apply_sino_svd_denoise!: requires ≥ 2 channels (got $(n_ch)).")
     length(out) == n_ch ||
-        error("apply_sino_svd_denoise!: length(out) = $(length(out)) ≠ length(channels) = $(n_ch).")
+        error(
+            "apply_sino_svd_denoise!: length(out) = $(length(out)) ≠ length(channels) = $(n_ch).",
+        )
     sz = size(channels[1])
     for (k, c) in enumerate(channels)
-        size(c) == sz || error("apply_sino_svd_denoise!: channels[$(k)] shape $(size(c)) ≠ channels[1] shape $(sz).")
+        size(c) == sz ||
+            error(
+                "apply_sino_svd_denoise!: channels[$(k)] shape $(size(c)) ≠ channels[1] shape $(sz).",
+            )
     end
     for (k, o) in enumerate(out)
-        size(o) == sz || error("apply_sino_svd_denoise!: out[$(k)] shape $(size(o)) ≠ channels[1] shape $(sz).")
+        size(o) == sz ||
+            error(
+                "apply_sino_svd_denoise!: out[$(k)] shape $(size(o)) ≠ channels[1] shape $(sz).",
+            )
     end
 
     n_col, n_row, n_view = sz
@@ -131,13 +139,19 @@ function apply_sino_svd_denoise!(
 
         # Per-row SVD — matrix is (n_col·n_view) × N (tall-skinny, fast).
         F = LinearAlgebra.svd(M; full = false)
-        U = F.U; Σ = F.S; V = F.V
+        U = F.U
+        Σ = F.S
+        V = F.V
 
         # Smooth U[:, 2..N] in (col, view) space; keep U[:, 1] untouched.
         U_d = similar(U)
         U_d[:, 1] .= U[:, 1]
         for k in 2:n_ch
-            U_d[:, k] .= vec(_separable_gauss_2d(reshape(copy(U[:, k]), n_col, n_view), ks, radius))
+            U_d[:, k] .= vec(_separable_gauss_2d(
+                reshape(copy(U[:, k]), n_col, n_view),
+                ks,
+                radius,
+            ))
         end
 
         # Reconstitute denoised channels: M_d = U_d · diag(Σ) · V'.
@@ -172,47 +186,49 @@ out = BS.apply_sino_svd_denoise(sim_bins.bins; σ_px = 1.5)
 ```
 """
 function apply_sino_svd_denoise(
-        channels::AbstractVector{<:AbstractArray{Float32, 3}};
-        σ_px::Real = 1.5,
-    )
+    channels::AbstractVector{<:AbstractArray{Float32, 3}};
+    σ_px::Real = 1.5,
+)
     out = [Array{Float32}(undef, size(channels[1])) for _ in eachindex(channels)]
     return apply_sino_svd_denoise!(out, channels; σ_px = σ_px)
 end
-
 
 # =============================================================================
 #  Internal — separable 1D Gaussian on a 2D slice (col-pass then view-pass)
 # =============================================================================
 
 function _separable_gauss_2d(
-        slice2d::AbstractMatrix{Float32},
-        ks::AbstractVector{Float32},
-        radius::Int
-    )
+    slice2d::AbstractMatrix{Float32},
+    ks::AbstractVector{Float32},
+    radius::Int,
+)
     nc, nv = size(slice2d)
     tmp = Matrix{Float32}(undef, nc, nv)
     out = Matrix{Float32}(undef, nc, nv)
     @inbounds for v in 1:nv, c in 1:nc
-        s = 0.0f0; w = 0.0f0
+        s = 0.0f0
+        w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             c2 = c + dk
             (1 <= c2 <= nc) || continue
-            s += ks[i] * slice2d[c2, v]; w += ks[i]
+            s += ks[i] * slice2d[c2, v]
+            w += ks[i]
         end
         tmp[c, v] = s / w
     end
     @inbounds for v in 1:nv, c in 1:nc
-        s = 0.0f0; w = 0.0f0
+        s = 0.0f0
+        w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             v2 = v + dk
             (1 <= v2 <= nv) || continue
-            s += ks[i] * tmp[c, v2]; w += ks[i]
+            s += ks[i] * tmp[c, v2]
+            w += ks[i]
         end
         out[c, v] = s / w
     end
     return out
 end
-
 
 # =============================================================================
 #  Resolution-preserving variant — edge-aware joint bilateral on U[:,2..N]
@@ -261,22 +277,31 @@ low-pass.
 `out` — same vector that was passed in.
 """
 function apply_sino_svd_denoise_bilateral!(
-        out::AbstractVector{<:AbstractArray{Float32, 3}},
-        channels::AbstractVector{<:AbstractArray{Float32, 3}};
-        bilat_radius::Integer = 3,
-        bilat_sigma_s::Real   = 2.0,
-        bilat_range_k::Real   = 2.0,
-    )
+    out::AbstractVector{<:AbstractArray{Float32, 3}},
+    channels::AbstractVector{<:AbstractArray{Float32, 3}};
+    bilat_radius::Integer = 3,
+    bilat_sigma_s::Real = 2.0,
+    bilat_range_k::Real = 2.0,
+)
     n_ch = length(channels)
-    n_ch ≥ 2 || error("apply_sino_svd_denoise_bilateral!: requires ≥ 2 channels (got $(n_ch)).")
+    n_ch ≥ 2 ||
+        error("apply_sino_svd_denoise_bilateral!: requires ≥ 2 channels (got $(n_ch)).")
     length(out) == n_ch ||
-        error("apply_sino_svd_denoise_bilateral!: length(out) = $(length(out)) ≠ length(channels) = $(n_ch).")
+        error(
+            "apply_sino_svd_denoise_bilateral!: length(out) = $(length(out)) ≠ length(channels) = $(n_ch).",
+        )
     sz = size(channels[1])
     for (k, c) in enumerate(channels)
-        size(c) == sz || error("apply_sino_svd_denoise_bilateral!: channels[$(k)] shape $(size(c)) ≠ channels[1] shape $(sz).")
+        size(c) == sz ||
+            error(
+                "apply_sino_svd_denoise_bilateral!: channels[$(k)] shape $(size(c)) ≠ channels[1] shape $(sz).",
+            )
     end
     for (k, o) in enumerate(out)
-        size(o) == sz || error("apply_sino_svd_denoise_bilateral!: out[$(k)] shape $(size(o)) ≠ channels[1] shape $(sz).")
+        size(o) == sz ||
+            error(
+                "apply_sino_svd_denoise_bilateral!: out[$(k)] shape $(size(o)) ≠ channels[1] shape $(sz).",
+            )
     end
 
     n_col, n_row, n_view = sz
@@ -288,25 +313,27 @@ function apply_sino_svd_denoise_bilateral!(
         return out
     end
 
-    r    = Int(bilat_radius)
-    σs2  = Float32(2 * bilat_sigma_s^2)
-    kf   = Float32(bilat_range_k)
+    r = Int(bilat_radius)
+    σs2 = Float32(2 * bilat_sigma_s^2)
+    kf = Float32(bilat_range_k)
 
     Threads.@threads for row in 1:n_row
         slices = [Float32.(@view channels[b][:, row, :]) for b in 1:n_ch]
         M = hcat([vec(s) for s in slices]...)
 
         F = LinearAlgebra.svd(M; full = false)
-        U = F.U; Σ = F.S; V = F.V
+        U = F.U
+        Σ = F.S
+        V = F.V
 
         U_d = similar(U)
-        U_d[:, 1] .= U[:, 1]                                # anatomy — untouched
+        U_d[:, 1] .= U[:, 1] # anatomy — untouched
 
         guide = reshape(copy(U[:, 1]), n_col, n_view)
         σg = kf * _mad_scale_2d(guide)
         for k in 2:n_ch
             tgt = reshape(copy(U[:, k]), n_col, n_view)
-            σt  = kf * _mad_scale_2d(tgt)
+            σt = kf * _mad_scale_2d(tgt)
             U_d[:, k] .= vec(_joint_bilateral_2d(tgt, guide, r, σs2, σg, σt))
         end
 
@@ -328,13 +355,12 @@ end
 Allocating wrapper around [`apply_sino_svd_denoise_bilateral!`].
 """
 function apply_sino_svd_denoise_bilateral(
-        channels::AbstractVector{<:AbstractArray{Float32, 3}};
-        kwargs...,
-    )
+    channels::AbstractVector{<:AbstractArray{Float32, 3}};
+    kwargs...,
+)
     out = [Array{Float32}(undef, size(channels[1])) for _ in eachindex(channels)]
     return apply_sino_svd_denoise_bilateral!(out, channels; kwargs...)
 end
-
 
 # =============================================================================
 #  Internal — robust MAD scale + edge-aware joint bilateral on a 2D slice
@@ -353,22 +379,26 @@ end
 # (σ_g) and `tgt` itself (σ_t).  Averaging happens only where both are locally
 # flat; any edge in either collapses the range weight → pixel preserved.
 function _joint_bilateral_2d(
-        tgt::AbstractMatrix{Float32},
-        guide::AbstractMatrix{Float32},
-        r::Int,
-        σs2::Float32,
-        σg::Float32,
-        σt::Float32,
-    )
+    tgt::AbstractMatrix{Float32},
+    guide::AbstractMatrix{Float32},
+    r::Int,
+    σs2::Float32,
+    σg::Float32,
+    σt::Float32,
+)
     nc, nv = size(tgt)
     out = Matrix{Float32}(undef, nc, nv)
     @inbounds for v in 1:nv, c in 1:nc
-        gc = guide[c, v]; tc = tgt[c, v]
-        acc = 0.0f0; wsum = 0.0f0
+        gc = guide[c, v]
+        tc = tgt[c, v]
+        acc = 0.0f0
+        wsum = 0.0f0
         for dv in -r:r
-            v2 = v + dv; (1 <= v2 <= nv) || continue
+            v2 = v + dv
+            (1 <= v2 <= nv) || continue
             for dc in -r:r
-                c2 = c + dc; (1 <= c2 <= nc) || continue
+                c2 = c + dc
+                (1 <= c2 <= nc) || continue
                 dg = guide[c2, v2] - gc
                 dt = tgt[c2, v2] - tc
                 # Use normalized differences instead of `difference² / scale²`.
@@ -377,19 +407,15 @@ function _joint_bilateral_2d(
                 # in Float32 and turn the self-weight into NaN.
                 zg = dg / σg
                 zt = dt / σt
-                w = exp(
-                    -(dc * dc + dv * dv) / σs2 -
-                    0.5f0 * zg * zg -
-                    0.5f0 * zt * zt
-                )
-                acc += w * tgt[c2, v2]; wsum += w
+                w = exp(-(dc * dc + dv * dv) / σs2 - 0.5f0 * zg * zg - 0.5f0 * zt * zt)
+                acc += w * tgt[c2, v2]
+                wsum += w
             end
         end
         out[c, v] = acc / wsum
     end
     return out
 end
-
 
 export apply_sino_svd_denoise, apply_sino_svd_denoise!
 export apply_sino_svd_denoise_bilateral, apply_sino_svd_denoise_bilateral!

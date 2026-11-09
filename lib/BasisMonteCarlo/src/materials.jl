@@ -20,14 +20,16 @@ The presets live in [`DETECTOR_MATERIALS`](@ref).
 """
 struct DetectorMaterial
     name::String
-    density::Float64                      # g/cm³
-    mass_fractions::Dict{Int, Float64}     # Z => mass fraction (sums to 1)
+    density::Float64                   # g/cm³
+    mass_fractions::Dict{Int, Float64} # Z => mass fraction (sums to 1)
 end
 
 function DetectorMaterial(
-        name::AbstractString; density::Real, formula = nothing,
-        mass_fractions = nothing
-    )
+    name::AbstractString;
+    density::Real,
+    formula = nothing,
+    mass_fractions = nothing,
+)
     (formula === nothing) == (mass_fractions === nothing) &&
         throw(ArgumentError("give exactly one of `formula` or `mass_fractions`"))
     fractions = if formula !== nothing
@@ -41,8 +43,14 @@ function DetectorMaterial(
 end
 
 Base.show(io::IO, m::DetectorMaterial) = print(
-    io, "DetectorMaterial(\"", m.name, "\", ",
-    m.density, " g/cm³, ", composition_string(m), ")"
+    io,
+    "DetectorMaterial(\"",
+    m.name,
+    "\", ",
+    m.density,
+    " g/cm³, ",
+    composition_string(m),
+    ")",
 )
 
 element_z(symbol::String) = XA.get_element_by_symbol(symbol).Z
@@ -89,30 +97,54 @@ const DETECTOR_MATERIALS = Dict{Symbol, DetectorMaterial}(
     :aSe => DetectorMaterial("a-Se"; density = 4.27, formula = "Se"),
     :Gd2O2S => DetectorMaterial("Gd2O2S"; density = 7.44, formula = "Gd2O2S"),
     :Gemstone => DetectorMaterial(
-        "Gemstone"; density = 7.0, mass_fractions = Dict(
-            "Tb" => 0.287, "Lu" => 0.316, "Al" => 0.163, "O" => 0.231, "Ce" => 0.002
-        )
+        "Gemstone";
+        density = 7.0,
+        mass_fractions = Dict(
+            "Tb" => 0.287,
+            "Lu" => 0.316,
+            "Al" => 0.163,
+            "O" => 0.231,
+            "Ce" => 0.002,
+        ),
     ),
     :UFC => DetectorMaterial("UFC"; density = 7.31, formula = "Gd2O2S"),
     :TiO2_epoxy => DetectorMaterial(
-        "TiO2-epoxy"; density = 1.8, mass_fractions = Dict(
-            "Ti" => 0.24, "O" => 0.286, "C" => 0.432, "H" => 0.042
-        )
+        "TiO2-epoxy";
+        density = 1.8,
+        mass_fractions = Dict("Ti" => 0.24, "O" => 0.286, "C" => 0.432, "H" => 0.042),
     ),
     :Al => DetectorMaterial("Al"; density = 2.699, formula = "Al"),
     :Water => DetectorMaterial("Water"; density = 1.0, formula = "H2O"),
     :PMMA => DetectorMaterial("PMMA"; density = 1.19, formula = "C5H8O2"),
     :Lung => DetectorMaterial(
-        "Lung ICRP"; density = 0.26, mass_fractions = Dict(
-            "H" => 0.103, "C" => 0.105, "N" => 0.031, "O" => 0.749, "Na" => 0.002,
-            "P" => 0.002, "S" => 0.003, "Cl" => 0.003, "K" => 0.002,
-        )
+        "Lung ICRP";
+        density = 0.26,
+        mass_fractions = Dict(
+            "H" => 0.103,
+            "C" => 0.105,
+            "N" => 0.031,
+            "O" => 0.749,
+            "Na" => 0.002,
+            "P" => 0.002,
+            "S" => 0.003,
+            "Cl" => 0.003,
+            "K" => 0.002,
+        ),
     ),
     :CorticalBone => DetectorMaterial(
-        "Cortical bone ICRP"; density = 1.92, mass_fractions = Dict(
-            "H" => 0.034, "C" => 0.155, "N" => 0.042, "O" => 0.435, "Na" => 0.001,
-            "Mg" => 0.002, "P" => 0.103, "S" => 0.003, "Ca" => 0.225,
-        )
+        "Cortical bone ICRP";
+        density = 1.92,
+        mass_fractions = Dict(
+            "H" => 0.034,
+            "C" => 0.155,
+            "N" => 0.042,
+            "O" => 0.435,
+            "Na" => 0.001,
+            "Mg" => 0.002,
+            "P" => 0.103,
+            "S" => 0.003,
+            "Ca" => 0.225,
+        ),
     ),
     :Si => DetectorMaterial("Si"; density = 2.33, formula = "Si"),
     :W => DetectorMaterial("W"; density = 19.3, formula = "W"),
@@ -121,8 +153,13 @@ const DETECTOR_MATERIALS = Dict{Symbol, DetectorMaterial}(
 DetectorMaterial(key::Symbol) = DETECTOR_MATERIALS[key]
 
 """XrayAttenuation's view of a [`DetectorMaterial`](@ref) (same density and mass fractions)."""
-xa_material(m::DetectorMaterial) =
-    XA.Material(m.name, 0.5, 0.0u"eV", m.density * u"g/cm^3", copy(m.mass_fractions))
+xa_material(m::DetectorMaterial) = XA.Material(
+    m.name,
+    0.5,
+    0.0u"eV",
+    m.density * u"g/cm^3",
+    copy(m.mass_fractions),
+)
 
 """
     linear_attenuation(material, energy_keV; kind = :total) -> μ in 1/mm
@@ -132,21 +169,27 @@ NIST XCOM linear attenuation coefficient of a [`DetectorMaterial`](@ref) at `ene
 `:photoelectric`, `:compton` or `:rayleigh`.
 """
 function linear_attenuation(m::DetectorMaterial, energy_keV::Real; kind::Symbol = :total)
-    process = kind === :total ? XA.TotalWithCoherent() :
-        kind === :photoelectric ? XA.PhotoelectricAbsorption() :
-        kind === :compton ? XA.IncoherentScattering() :
-        kind === :rayleigh ? XA.CoherentScattering() :
-        throw(ArgumentError("kind must be :total, :photoelectric, :compton or :rayleigh"))
+    process = kind === :total ?
+        XA.TotalWithCoherent() :
+        kind === :photoelectric ?
+            XA.PhotoelectricAbsorption() :
+            kind === :compton ?
+                XA.IncoherentScattering() :
+                kind === :rayleigh ?
+                    XA.CoherentScattering() :
+                    throw(ArgumentError(
+                        "kind must be :total, :photoelectric, :compton or :rayleigh",
+                    ))
     μρ = sum(
-        w * ustrip(
-                XA.mass_attenuation_coeff(
-                    XA.get_element_by_Z(z), energy_keV * u"keV",
-                    process
-                )
-            )
-            for (z, w) in m.mass_fractions
-    )              # cm²/g
-    return μρ * m.density / 10                           # 1/mm
+        w *
+            ustrip(XA.mass_attenuation_coeff(
+                XA.get_element_by_Z(z),
+                energy_keV * u"keV",
+                process,
+            ))
+        for (z, w) in m.mass_fractions
+    )                          # cm²/g
+    return μρ * m.density / 10 # 1/mm
 end
 
 """
@@ -163,12 +206,16 @@ K-fluorescence back out counts as fully detected here. The Monte Carlo
 statistics; [`energy_absorption_efficiency`](@ref) shows what it leaves out.
 """
 function beer_lambert_efficiency(
-        m::DetectorMaterial, thickness_mm::Real, energy_keV::Real;
-        cross_sections::Symbol = :xcom
-    )
-    μ = cross_sections === :xcom ? linear_attenuation(m, energy_keV) :
-        cross_sections === :geant4 ? geant4_attenuation(m, energy_keV) :
-        throw(ArgumentError("cross_sections must be :xcom or :geant4"))
+    m::DetectorMaterial,
+    thickness_mm::Real,
+    energy_keV::Real;
+    cross_sections::Symbol = :xcom,
+)
+    μ = cross_sections === :xcom ?
+        linear_attenuation(m, energy_keV) :
+        cross_sections === :geant4 ?
+            geant4_attenuation(m, energy_keV) :
+            throw(ArgumentError("cross_sections must be :xcom or :geant4"))
     return 1 - exp(-μ * thickness_mm)
 end
 
@@ -182,16 +229,22 @@ Carlo efficiency departs from Beer-Lambert: just above an edge the photoelectric
 a Kα photon in a fraction `yield` of the absorptions, and that photon can leave.
 """
 function k_edges(m::DetectorMaterial; min_fraction::Real = 0.01)
-    edges = NamedTuple{(:element, :edge_keV, :kalpha_keV, :yield), Tuple{String, Float64, Float64, Float64}}[]
+    edges = NamedTuple{
+        (:element, :edge_keV, :kalpha_keV, :yield),
+        Tuple{String, Float64, Float64, Float64},
+    }[]
     for z in sort!(collect(keys(m.mass_fractions)))
         m.mass_fractions[z] >= min_fraction || continue
         edge = XA.k_binding_energy(z)
         5 <= edge <= 150 || continue
         push!(
-            edges, (
-                element = element_symbol(z), edge_keV = edge,
-                kalpha_keV = XA.k_alpha_energy(z), yield = XA.k_fluorescence_yield(z),
-            )
+            edges,
+            (
+                element = element_symbol(z),
+                edge_keV = edge,
+                kalpha_keV = XA.k_alpha_energy(z),
+                yield = XA.k_fluorescence_yield(z),
+            ),
         )
     end
     return edges
@@ -207,8 +260,9 @@ function g4_material(m::DetectorMaterial)
     existing != C_NULL && return existing
     nist = G4NistManager!Instance()
     mat = G4Material(
-        "BasisMonteCarlo_" * m.name; density = m.density * g / cm3,
-        ncomponents = length(m.mass_fractions)
+        "BasisMonteCarlo_" * m.name;
+        density = m.density * g / cm3,
+        ncomponents = length(m.mass_fractions),
     )
     for (z, w) in sort!(collect(m.mass_fractions))
         AddElement(mat, FindOrBuildElement(nist, z); fractionmass = w)
@@ -225,5 +279,5 @@ mass fractions. A phantom built from BasisSimulator's materials is then the same
 DetectorMaterial(m::XA.Material) = DetectorMaterial(
     m.name;
     density = ustrip(u"g/cm^3", m.density),
-    mass_fractions = Dict(element_symbol(z) => Float64(w) for (z, w) in m.composition),
+    mass_fractions = Dict(element_symbol(z) => Float64(w) for (z, w) in m.composition)
 )

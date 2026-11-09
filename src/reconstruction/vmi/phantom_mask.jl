@@ -25,7 +25,8 @@ partially outside) get rejected.
 function erode_mask_2d(mask2d::AbstractMatrix{Bool}; erode_px::Real)
     erode_px > 0 || return copy(mask2d)
     nx, ny = size(mask2d)
-    σ = Float64(erode_px); σ² = σ^2
+    σ = Float64(erode_px)
+    σ² = σ^2
     fx = [min(i - 1, nx - (i - 1)) / nx for i in 1:nx]
     fy = [min(j - 1, ny - (j - 1)) / ny for j in 1:ny]
     kernel = [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
@@ -46,10 +47,10 @@ replicate (correct for z-invariant masks). Faster.
 mask varies in z.
 """
 function erode_mask_3d(
-        mask3d::AbstractArray{Bool, 3};
-        erode_px::Real,
-        broadcast_in_z::Bool = true,
-    )
+    mask3d::AbstractArray{Bool, 3};
+    erode_px::Real,
+    broadcast_in_z::Bool = true,
+)
     nx, ny, nz = size(mask3d)
     out = falses(nx, ny, nz)
     if broadcast_in_z
@@ -65,6 +66,4 @@ function erode_mask_3d(
     out
 end
 
-
-export erode_mask_2d,
-       erode_mask_3d
+export erode_mask_2d, erode_mask_3d

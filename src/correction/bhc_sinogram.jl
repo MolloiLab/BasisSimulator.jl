@@ -150,7 +150,7 @@ for the bone-segmentation second stage.
 struct TwoMaterialBHCPerColumn
     water_bhc_per_col::Vector{BeamHardeningCorrection}
     energies::Vector{Float64}
-    w_norm_per_col::Matrix{Float64}      # [n_E, n_col]
+    w_norm_per_col::Matrix{Float64} # [n_E, n_col]
     μ_water_E::Vector{Float64}
     μ_bone_E::Vector{Float64}
     μ_water_ref::Float64
@@ -182,12 +182,12 @@ For each path `d` in `range(0, max_path_cm; length=n_points)`:
 (NIST XCOM).
 """
 function generate_water_calibration_curve(
-        energies::Vector,
-        weights::Vector;
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-        reference_energy_keV::Real = 70.0,
-    )
+    energies::Vector,
+    weights::Vector;
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Real = 70.0,
+)
     # The per-column calibration calls this once per detector column with the same energy grid;
     # the water attenuation table (a Unitful / XCOM lookup per energy) is the same every time.
     μ_water = _water_μ_table(energies)
@@ -260,15 +260,16 @@ per detector column. Notebooks should use the high-level
 handles the bowtie + per-column dispatch.
 """
 function calibrate_bhc(
-        energies::Vector,
-        weights::Vector;
-        order::Int = 3,
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-        reference_energy_keV::Real = 70.0,
-    )
+    energies::Vector,
+    weights::Vector;
+    order::Int = 3,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Real = 70.0,
+)
     paths, measured, true_values = generate_water_calibration_curve(
-        energies, weights;
+        energies,
+        weights;
         max_path_cm = max_path_cm,
         n_points = n_points,
         reference_energy_keV = reference_energy_keV,
@@ -297,10 +298,10 @@ Per-column (bowtie-aware) sinogram BHC. Convenience wrapper that unwraps the
 method below.
 """
 function apply_bhc!(
-        sinogram::AbstractArray{T, 3},
-        bhcs_per_col::AbstractVector{BeamHardeningCorrection};
-        ws_coeffs_gpu = nothing,
-    ) where {T <: AbstractFloat}
+    sinogram::AbstractArray{T, 3},
+    bhcs_per_col::AbstractVector{BeamHardeningCorrection};
+    ws_coeffs_gpu = nothing,
+) where {T <: AbstractFloat}
     polys = [b.polynomial for b in bhcs_per_col]
     return apply_bhc!(sinogram, polys; ws_coeffs_gpu = ws_coeffs_gpu)
 end
@@ -313,18 +314,19 @@ detector column, indexed off the sinogram's BS storage `[n_col, n_row, n_view]`
 layout. All polynomials must share the same `order`.
 """
 function apply_bhc!(
-        sinogram::AbstractArray{T, 3},
-        polys_per_col::AbstractVector{BHCPolynomial};
-        ws_coeffs_gpu = nothing,
-    ) where {T <: AbstractFloat}
-
+    sinogram::AbstractArray{T, 3},
+    polys_per_col::AbstractVector{BHCPolynomial};
+    ws_coeffs_gpu = nothing,
+) where {T <: AbstractFloat}
     n_col = size(sinogram, 1)
     length(polys_per_col) == n_col ||
         error("apply_bhc!: polys_per_col length $(length(polys_per_col)) ≠ n_col $n_col")
     order = polys_per_col[1].order
     for c in 2:n_col
         polys_per_col[c].order == order ||
-            error("apply_bhc!: polynomial orders must match across columns (col $c has order $(polys_per_col[c].order), expected $order)")
+            error(
+                "apply_bhc!: polynomial orders must match across columns (col $c has order $(polys_per_col[c].order), expected $order)",
+            )
     end
 
     coeffs_cpu = zeros(T, order + 1, n_col)
@@ -382,10 +384,12 @@ spectrum's mean energy so all columns share a single mono-equivalent target.
 # Example
 ```julia
 bhc = calibrate_bhc_two_material(
-    sim_opts, protocol;
-    scanner = scanner, geom = ws.geom,
-    order   = 2,
-    hu_low  = 450.0,
+    sim_opts,
+    protocol;
+    scanner = scanner,
+    geom = ws.geom,
+    order = 2,
+    hu_low = 450.0,
     hu_high = 600.0,
 )
 ```
@@ -397,26 +401,27 @@ Lower-level variant when you already have a `[n_E, n_col]` per-column spectrum
 matrix — same path the high-level method dispatches into.
 """
 function calibrate_bhc_two_material(
-        sim_opts,
-        protocol;
-        scanner,
-        geom,
-        order::Int = 5,
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-        reference_energy_keV::Union{Nothing, Real} = nothing,
-        hu_low::Real = 100.0,
-        hu_high::Real = 500.0,
+    sim_opts,
+    protocol;
+    scanner,
+    geom,
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Union{Nothing, Real} = nothing,
+    hu_low::Real = 100.0,
+    hu_high::Real = 500.0,
+)
+    Base.depwarn(
+        "The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.",
+        :calibrate_bhc_two_material,
     )
-    Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :calibrate_bhc_two_material)
     # AUDIT FIX: calibrate against the spectrum the detector ACTUALLY saw —
     # tube × filters × bowtie × heel × η(E), each gated on sim_opts.use_* —
     # not just tube × filters × bowtie.  (resolve_source_spectrum_full exists
     # for exactly this: "the inversion's forward model matches the forward
     # model simulate! actually applied.")
-    e, ŵ = resolve_source_spectrum_full(
-        sim_opts, protocol; scanner = scanner, geom = geom,
-    )
+    e, ŵ = resolve_source_spectrum_full(sim_opts, protocol; scanner = scanner, geom = geom)
     e, w_col = bhc_spectrum_per_column(e, ŵ)
 
     ref_E = if reference_energy_keV === nothing
@@ -427,7 +432,8 @@ function calibrate_bhc_two_material(
     end
 
     return calibrate_bhc_two_material(
-        e, w_col;
+        e,
+        w_col;
         order = order,
         max_path_cm = max_path_cm,
         n_points = n_points,
@@ -439,20 +445,25 @@ function calibrate_bhc_two_material(
 end
 
 function calibrate_bhc_two_material(
-        energies::Vector,
-        weights_per_col::AbstractMatrix;
-        order::Int = 5,
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-        reference_energy_keV::Real = 70.0,
-        hu_low::Real = 100.0,
-        hu_high::Real = 500.0,
-        projector::Symbol = :dd_fast,
+    energies::Vector,
+    weights_per_col::AbstractMatrix;
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Real = 70.0,
+    hu_low::Real = 100.0,
+    hu_high::Real = 500.0,
+    projector::Symbol = :dd_fast,
+)
+    Base.depwarn(
+        "The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.",
+        :calibrate_bhc_two_material,
     )
-    Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :calibrate_bhc_two_material)
     n_E, n_col = size(weights_per_col)
     length(energies) == n_E ||
-        error("calibrate_bhc_two_material: energies length $(length(energies)) ≠ weights_per_col n_E $n_E")
+        error(
+            "calibrate_bhc_two_material: energies length $(length(energies)) ≠ weights_per_col n_E $n_E",
+        )
 
     water_bhc_per_col = Vector{BeamHardeningCorrection}(undef, n_col)
     w_norm_per_col = zeros(Float64, n_E, n_col)
@@ -460,27 +471,47 @@ function calibrate_bhc_two_material(
         w_c = Float64.(@view weights_per_col[:, c])
         w_norm_per_col[:, c] .= w_c ./ sum(w_c)
         water_bhc_per_col[c] = calibrate_bhc(
-            energies, w_c;
-            order = order, max_path_cm = max_path_cm,
-            n_points = n_points, reference_energy_keV = reference_energy_keV,
+            energies,
+            w_c;
+            order = order,
+            max_path_cm = max_path_cm,
+            n_points = n_points,
+            reference_energy_keV = reference_energy_keV,
         )
     end
 
     water_mat = XA.Materials.water
     bone_mat = XA.Materials.corticalbone
     E_vec = Float64.(energies)
-    μ_water_E = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, E * u"keV")) for E in E_vec]
-    μ_bone_E = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, E * u"keV")) for E in E_vec]
-    μ_water_ref = ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, reference_energy_keV * u"keV"))
-    μ_bone_ref = ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, reference_energy_keV * u"keV"))
+    μ_water_E = [
+        ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, E * u"keV"))
+        for E in E_vec
+    ]
+    μ_bone_E = [
+        ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, E * u"keV"))
+        for E in E_vec
+    ]
+    μ_water_ref = ustrip(
+        u"cm^-1",
+        XA.linear_attenuation_coeff(water_mat, reference_energy_keV * u"keV"),
+    )
+    μ_bone_ref = ustrip(
+        u"cm^-1",
+        XA.linear_attenuation_coeff(bone_mat, reference_energy_keV * u"keV"),
+    )
 
     @info "[calibrate_bhc_two_material] bowtie-aware: $n_col columns × order-$order polynomials, ref_E = $reference_energy_keV keV"
     return TwoMaterialBHCPerColumn(
-        water_bhc_per_col, E_vec, w_norm_per_col,
-        μ_water_E, μ_bone_E,
-        μ_water_ref, μ_bone_ref,
+        water_bhc_per_col,
+        E_vec,
+        w_norm_per_col,
+        μ_water_E,
+        μ_bone_E,
+        μ_water_ref,
+        μ_bone_ref,
         Float64(reference_energy_keV),
-        Float64(hu_low), Float64(hu_high),
+        Float64(hu_low),
+        Float64(hu_high),
         projector,
     )
 end
@@ -504,11 +535,15 @@ function bhc_spectrum_per_column(e::AbstractVector, w::AbstractArray)
     elseif ndims(w) == 2
         size(w, 1) == length(e) && return e, w
         size(w, 2) == length(e) && return e, permutedims(w)
-        error("bhc_spectrum_per_column: 2D spectrum shape $(size(w)) doesn't match energies length $(length(e))")
+        error(
+            "bhc_spectrum_per_column: 2D spectrum shape $(size(w)) doesn't match energies length $(length(e))",
+        )
     elseif ndims(w) == 3
         n_col, n_row, n_E = size(w)
         n_E == length(e) ||
-            error("bhc_spectrum_per_column: 3D spectrum last-dim $n_E ≠ energies length $(length(e))")
+            error(
+                "bhc_spectrum_per_column: 3D spectrum last-dim $n_E ≠ energies length $(length(e))",
+            )
         mid_r = n_row ÷ 2 + 1
         out = Array{Float64}(undef, n_E, n_col)
         @inbounds for c in 1:n_col, k in 1:n_E
@@ -549,19 +584,24 @@ Pipeline:
   the radius.
 """
 function compute_polychromatic_μ_water(
+    sim_opts,
+    protocol;
+    scanner,
+    geom,
+    water_path_cm::Real,
+)
+    scanner isa PCCTScanner &&
+        throw(ArgumentError(
+            "compute_polychromatic_μ_water is not valid for PCCT combined-bin data; " *
+                "build the workspace with create_workspace and use calibrate_pcct_poly_bhc(ws), " *
+                "apply_bhc_water, and the returned μ_water_ref",
+        ))
+    e, ŵ = resolve_source_spectrum_with_bowtie(
         sim_opts,
         protocol;
-        scanner,
-        geom,
-        water_path_cm::Real,
-    )
-    scanner isa PCCTScanner && throw(ArgumentError(
-        "compute_polychromatic_μ_water is not valid for PCCT combined-bin data; " *
-        "build the workspace with create_workspace and use calibrate_pcct_poly_bhc(ws), " *
-        "apply_bhc_water, and the returned μ_water_ref"))
-    e, ŵ = resolve_source_spectrum_with_bowtie(
-        sim_opts, protocol;
-        scanner = scanner, geom = geom, include_bowtie = true,
+        scanner = scanner,
+        geom = geom,
+        include_bowtie = true,
         label = "compute_polychromatic_μ_water $(Int(protocol.kVp)) kVp",
     )
     _, w_per_col = bhc_spectrum_per_column(e, ŵ)
@@ -571,7 +611,6 @@ function compute_polychromatic_μ_water(
     w_hard = w_entr .* exp.(-μ_per_E .* Float64(water_path_cm))
     return sum(w_hard .* μ_per_E) / sum(w_hard)
 end
-
 
 """
     WaterBHC
@@ -600,18 +639,16 @@ poly→mono water curve per column.  Nothing here touches the data being
 corrected and there are no segmentation thresholds.
 """
 function calibrate_bhc_water(
-        sim_opts,
-        protocol;
-        scanner,
-        geom,
-        order::Int = 5,
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-        reference_energy_keV::Union{Nothing, Real} = nothing,
-    )
-    e, ŵ = resolve_source_spectrum_full(
-        sim_opts, protocol; scanner = scanner, geom = geom,
-    )
+    sim_opts,
+    protocol;
+    scanner,
+    geom,
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Union{Nothing, Real} = nothing,
+)
+    e, ŵ = resolve_source_spectrum_full(sim_opts, protocol; scanner = scanner, geom = geom)
     e, w_col = bhc_spectrum_per_column(e, ŵ)
     if ndims(w_col) == 1
         w_col = repeat(reshape(w_col, :, 1), 1, geom.n_cols)
@@ -628,13 +665,18 @@ function calibrate_bhc_water(
     water_bhc_per_col = Vector{BeamHardeningCorrection}(undef, n_col)
     for c in 1:n_col
         water_bhc_per_col[c] = calibrate_bhc(
-            e, Float64.(@view w_col[:, c]);
-            order = order, max_path_cm = max_path_cm,
-            n_points = n_points, reference_energy_keV = ref_E,
+            e,
+            Float64.(@view w_col[:, c]);
+            order = order,
+            max_path_cm = max_path_cm,
+            n_points = n_points,
+            reference_energy_keV = ref_E,
         )
     end
-    μ_water_ref = ustrip(u"cm^-1",
-        XA.linear_attenuation_coeff(XA.Materials.water, ref_E * u"keV"))
+    μ_water_ref = ustrip(
+        u"cm^-1",
+        XA.linear_attenuation_coeff(XA.Materials.water, ref_E * u"keV"),
+    )
 
     @info "[calibrate_bhc_water] knobless full-spectrum BHC: $n_col columns × order-$order polynomials, ref_E = $(round(ref_E; digits = 2)) keV"
     return WaterBHC(water_bhc_per_col, μ_water_ref, ref_E)
@@ -649,26 +691,34 @@ response overrides): builds the same knobless per-column water poly→mono
 polynomials from an explicit `[n_E, n_col]` weight matrix.
 """
 function calibrate_bhc_water(
-        energies::Vector,
-        weights_per_col::AbstractMatrix;
-        order::Int = 5,
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-        reference_energy_keV::Real = 70.0,
-    )
+    energies::Vector,
+    weights_per_col::AbstractMatrix;
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Real = 70.0,
+)
     n_E, n_col = size(weights_per_col)
     length(energies) == n_E ||
         error("calibrate_bhc_water: energies length $(length(energies)) ≠ n_E $n_E")
     water_bhc_per_col = Vector{BeamHardeningCorrection}(undef, n_col)
     for c in 1:n_col
         water_bhc_per_col[c] = calibrate_bhc(
-            energies, Float64.(@view weights_per_col[:, c]);
-            order = order, max_path_cm = max_path_cm,
-            n_points = n_points, reference_energy_keV = reference_energy_keV,
+            energies,
+            Float64.(@view weights_per_col[:, c]);
+            order = order,
+            max_path_cm = max_path_cm,
+            n_points = n_points,
+            reference_energy_keV = reference_energy_keV,
         )
     end
-    μ_water_ref = ustrip(u"cm^-1",
-        XA.linear_attenuation_coeff(XA.Materials.water, Float64(reference_energy_keV) * u"keV"))
+    μ_water_ref = ustrip(
+        u"cm^-1",
+        XA.linear_attenuation_coeff(
+            XA.Materials.water,
+            Float64(reference_energy_keV) * u"keV",
+        ),
+    )
     @info "[calibrate_bhc_water] knobless custom-spectrum BHC: $n_col columns × order-$order polynomials, ref_E = $(round(Float64(reference_energy_keV); digits = 2)) keV"
     return WaterBHC(water_bhc_per_col, μ_water_ref, Float64(reference_energy_keV))
 end
@@ -679,10 +729,8 @@ end
 Water BHC: one sinogram-domain per-column polynomial pass.  Knobless, no
 reconstruction round-trip, no projector, helical-safe.
 """
-function apply_bhc_water(
-        sinogram_raw::AbstractArray{T, 3},
-        bhc::WaterBHC,
-    ) where {T <: AbstractFloat}
+function apply_bhc_water(sinogram_raw::AbstractArray{T, 3}, bhc::WaterBHC) where {T <:
+    AbstractFloat}
     n_col = size(sinogram_raw, 1)
     length(bhc.water_bhc_per_col) == n_col ||
         error("apply_bhc_water: polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col")
@@ -724,18 +772,23 @@ extents differed (e.g. nb02's XCAT body, where `phantom.extent` ≠ recon FOV).
 The kwarg has been removed.
 """
 function apply_bhc_two_material(
-        sinogram_raw::AbstractArray{T, 3},
-        bhc::TwoMaterialBHCPerColumn,
-        geom,
-        matrix_size::Tuple{Int, Int, Int};
-        projector::Symbol = bhc.projector,
-    ) where {T <: AbstractFloat}
-    Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :apply_bhc_two_material)
+    sinogram_raw::AbstractArray{T, 3},
+    bhc::TwoMaterialBHCPerColumn,
+    geom,
+    matrix_size::Tuple{Int, Int, Int};
+    projector::Symbol = bhc.projector,
+) where {T <: AbstractFloat}
+    Base.depwarn(
+        "The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.",
+        :apply_bhc_two_material,
+    )
 
     _validate_projector(projector)
     n_col = size(sinogram_raw, 1)
     length(bhc.water_bhc_per_col) == n_col ||
-        error("apply_bhc_two_material(PerColumn): polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col")
+        error(
+            "apply_bhc_two_material(PerColumn): polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col",
+        )
 
     # Stage 1 — per-column polynomial water BHC.
     sino_water = similar(sinogram_raw)
@@ -752,8 +805,11 @@ function apply_bhc_two_material(
     # Smooth bone fraction via Elbakri/Fessler 2003 C1 smoothstep
     # (3t² - 2t³ on [hu_low, hu_high]); avoids hard-segmentation artifacts.
     bone_μ_gpu = similar(recon_gpu)
-    let recon_gpu = recon_gpu, bone_μ_gpu = bone_μ_gpu,
-            μ_w_ref = μ_w_ref, hu_low_T = hu_low_T, hu_high_T = hu_high_T
+    let recon_gpu = recon_gpu,
+        bone_μ_gpu = bone_μ_gpu,
+        μ_w_ref = μ_w_ref,
+        hu_low_T = hu_low_T,
+        hu_high_T = hu_high_T
         AK.foreachindex(recon_gpu) do idx
             μ_val = recon_gpu[idx]
             hu_val = T(1000) * (μ_val - μ_w_ref) / μ_w_ref
@@ -784,17 +840,27 @@ function apply_bhc_two_material(
     n_e = length(bhc.energies)
     μ_w_cpu = T.(bhc.μ_water_E)
     μ_b_cpu = T.(bhc.μ_bone_E)
-    w_norm_cpu = T.(bhc.w_norm_per_col)  # [n_E, n_col]
-    μ_w_gpu = similar(sinogram_raw, T, n_e);            copyto!(μ_w_gpu, μ_w_cpu)
-    μ_b_gpu = similar(sinogram_raw, T, n_e);            copyto!(μ_b_gpu, μ_b_cpu)
-    w_norm_gpu = similar(sinogram_raw, T, n_e, n_col);  copyto!(w_norm_gpu, w_norm_cpu)
+    w_norm_cpu = T.(bhc.w_norm_per_col) # [n_E, n_col]
+    μ_w_gpu = similar(sinogram_raw, T, n_e)
+    copyto!(μ_w_gpu, μ_w_cpu)
+    μ_b_gpu = similar(sinogram_raw, T, n_e)
+    copyto!(μ_b_gpu, μ_b_cpu)
+    w_norm_gpu = similar(sinogram_raw, T, n_e, n_col)
+    copyto!(w_norm_gpu, w_norm_cpu)
 
     sino_out = similar(sinogram_raw)
     copyto!(sino_out, sinogram_raw)
 
-    let sino_out = sino_out, p_s_gpu = p_s_gpu, p_b_gpu = p_b_gpu,
-            w_norm_gpu = w_norm_gpu, μ_w_gpu = μ_w_gpu, μ_b_gpu = μ_b_gpu,
-            μ_w_ref = μ_w_ref, μ_b_ref = μ_b_ref, n_e = n_e, n_col = n_col
+    let sino_out = sino_out,
+        p_s_gpu = p_s_gpu,
+        p_b_gpu = p_b_gpu,
+        w_norm_gpu = w_norm_gpu,
+        μ_w_gpu = μ_w_gpu,
+        μ_b_gpu = μ_b_gpu,
+        μ_w_ref = μ_w_ref,
+        μ_b_ref = μ_b_ref,
+        n_e = n_e,
+        n_col = n_col
         AK.foreachindex(sino_out) do idx
             col = ((idx - 1) % n_col) + 1
             Lw = max(p_s_gpu[idx] / μ_w_ref, zero(T))

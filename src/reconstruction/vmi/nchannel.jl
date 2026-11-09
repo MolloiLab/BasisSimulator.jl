@@ -78,30 +78,45 @@ function spectral_basis(; energies, response, I0, tolerance::Real = 5.0e-5)
     E = Float32.(collect(energies))
     Φ = Float32.(response)
     I0f = Float32.(I0)
-    ndims(Φ) == 4 || throw(DimensionMismatch("response must be (nc, nr, nE, K), got $(size(Φ))"))
+    ndims(Φ) == 4 ||
+        throw(DimensionMismatch("response must be (nc, nr, nE, K), got $(size(Φ))"))
     size(Φ, 3) == length(E) ||
-        throw(DimensionMismatch("response energy axis ($(size(Φ, 3))) ≠ energies ($(length(E)))"))
+        throw(DimensionMismatch(
+            "response energy axis ($(size(Φ, 3))) ≠ energies ($(length(E)))",
+        ))
     size(Φ)[[1, 2, 4]] == size(I0f) ||
-        throw(DimensionMismatch("response ray/channel axes $(size(Φ)[[1, 2, 4]]) ≠ I0 $(size(I0f))"))
+        throw(DimensionMismatch(
+            "response ray/channel axes $(size(Φ)[[1, 2, 4]]) ≠ I0 $(size(I0f))",
+        ))
 
     μρ_I = Float32[compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in E]
     μρ_W = Float32[compute_mass_μ_at_energy(XA.Materials.water, Float64(e)) for e in E]
 
     I0_from_Φ = dropdims(sum(Float64.(Φ); dims = 3); dims = 3)
-    I0_relerr = maximum(abs.(I0_from_Φ .- Float64.(I0f)) ./ max.(Float64.(I0f), eps(Float64)))
-    I0_relerr < tolerance || error(
-        "Applied response and I0 disagree (max relative error = $(I0_relerr), " *
-            "tolerance = $(tolerance))."
+    I0_relerr = maximum(
+        abs.(I0_from_Φ .- Float64.(I0f)) ./ max.(Float64.(I0f), eps(Float64)),
     )
+    I0_relerr < tolerance ||
+        error(
+            "Applied response and I0 disagree (max relative error = $(I0_relerr), " *
+                "tolerance = $(tolerance)).",
+        )
 
     # Effective-energy linearisation: initialiser only, never the model.
     Φsum = max.(dropdims(sum(Φ; dims = 3); dims = 3), eps(Float32))
-    μI_eff = dropdims(sum(Φ .* reshape(μρ_I, 1, 1, length(E), 1); dims = 3); dims = 3) ./ Φsum
-    μW_eff = dropdims(sum(Φ .* reshape(μρ_W, 1, 1, length(E), 1); dims = 3); dims = 3) ./ Φsum
+    μI_eff = dropdims(sum(Φ .* reshape(μρ_I, 1, 1, length(E), 1); dims = 3); dims = 3) ./
+        Φsum
+    μW_eff = dropdims(sum(Φ .* reshape(μρ_W, 1, 1, length(E), 1); dims = 3); dims = 3) ./
+        Φsum
 
     return (
-        E = E, Φ = Φ, μρ_I = μρ_I, μρ_W = μρ_W, I0 = I0f,
-        μI_eff = μI_eff, μW_eff = μW_eff,
+        E = E,
+        Φ = Φ,
+        μρ_I = μρ_I,
+        μρ_W = μρ_W,
+        I0 = I0f,
+        μI_eff = μI_eff,
+        μW_eff = μW_eff,
         normal_II = dropdims(sum(abs2, μI_eff; dims = 3); dims = 3),
         normal_IW = dropdims(sum(μI_eff .* μW_eff; dims = 3); dims = 3),
         normal_WW = dropdims(sum(abs2, μW_eff; dims = 3); dims = 3),
@@ -121,15 +136,24 @@ source transmission (bowtie × heel) the simulation applied per ray — the resp
 ray-resolved, `W_applied[e, k]·transmission[col, row, e]`, which is exactly what each ray saw;
 without it one response serves every ray and `I0` must then be constant across the fan.
 """
-function spectral_basis_from_bins(; energies, W_applied, I0, transmission = nothing, tolerance::Real = 5.0e-5)
+function spectral_basis_from_bins(;
+    energies,
+    W_applied,
+    I0,
+    transmission = nothing,
+    tolerance::Real = 5.0e-5,
+)
     nE, K = size(W_applied)
     I0a = Float32.(Array(I0))
-    ndims(I0a) == 3 || throw(DimensionMismatch("I0 is per ray, [n_cols, n_rows, K]; got $(size(I0a))"))
+    ndims(I0a) == 3 ||
+        throw(DimensionMismatch("I0 is per ray, [n_cols, n_rows, K]; got $(size(I0a))"))
     response = if transmission === nothing
         # one response for every ray: I0 must not vary across the fan
         flat = maximum(I0a; dims = (1, 2)) .- minimum(I0a; dims = (1, 2))
         all(flat .<= tolerance .* maximum(I0a; dims = (1, 2))) ||
-            error("I0 varies across the fan (a bowtie) but no per-ray transmission was given")
+            error(
+                "I0 varies across the fan (a bowtie) but no per-ray transmission was given",
+            )
         reshape(Float32.(W_applied), 1, 1, nE, K), reshape(I0a[1, 1, :], 1, 1, K)
     else
         tr = Float32.(Array(transmission))[:, :, 1:nE]
@@ -139,7 +163,12 @@ function spectral_basis_from_bins(; energies, W_applied, I0, transmission = noth
         end
         Φ, I0a
     end
-    return spectral_basis(energies = energies, response = response[1], I0 = response[2], tolerance = tolerance)
+    return spectral_basis(
+        energies = energies,
+        response = response[1],
+        I0 = response[2],
+        tolerance = tolerance,
+    )
 end
 
 """
@@ -157,7 +186,13 @@ function spectral_basis(ws::PCCTWorkspace; I0 = ws.I0, tolerance::Real = 5.0e-5)
     bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
     # the kernel's matrix is per native dexel on the binned path; the binned pixel's is bf² of it
     W_applied = Float64.(Array(ws.W_matrix_gpu))[1:nE, :] .* (bf * bf)
-    return spectral_basis_from_bins(; energies, W_applied, I0, transmission = _binned_transmission(ws, nE, bf), tolerance)
+    return spectral_basis_from_bins(;
+        energies,
+        W_applied,
+        I0,
+        transmission = _binned_transmission(ws, nE, bf),
+        tolerance,
+    )
 end
 
 """
@@ -181,8 +216,10 @@ function spectral_basis(ws::EICTWorkspace, protocol::CTProtocol; tolerance::Real
     s1 = B .* reshape(w̄ .* ws.m1, 1, 1, nE)
     air1 = dropdims(sum(s1; dims = 3); dims = 3)
     air2 = dropdims(sum(B .* reshape(w̄ .* ws.m2, 1, 1, nE); dims = 3); dims = 3)
-    ff = ws.config.fill_factor === nothing ? 1.0 : effective_fill_factor(ws.config.fill_factor)
-    quanta = compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * ff .* air1 .^ 2 ./ air2
+    ff = ws.config.fill_factor === nothing ?
+        1.0 :
+        effective_fill_factor(ws.config.fill_factor)
+    quanta = compute_detector_I0(ws.geom, protocol, sum(ws.weights)) * ff .* air1.^2 ./ air2
     Φ = s1 ./ air1 .* quanta
     return spectral_basis(;
         energies = ws.energies,
@@ -196,13 +233,18 @@ end
 # counts are their sum, each at the per-dexel response), exactly the binned native table when
 # there is one; `nothing` when there is no table (one response for every ray).
 function _binned_transmission(ws::PCCTWorkspace, nE, bf)
-    bf == 1 && return ws.bowtie_spectral === nothing ? nothing : Array(ws.bowtie_spectral)[:, :, 1:nE]
+    bf == 1 && return ws.bowtie_spectral === nothing ?
+        nothing :
+        Array(ws.bowtie_spectral)[:, :, 1:nE]
     ws.native_bowtie_spectral === nothing && return nothing
     nc, nr = ws.geom.n_cols, ws.geom.n_rows
     native = Array(ws.native_bowtie_spectral)
     out = zeros(Float32, nc, nr, nE)
     for e in 1:nE, r in 1:nr, c in 1:nc
-        out[c, r, e] = sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), e]) / (bf * bf)
+        out[c, r, e] = sum(
+            @view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), e]
+        ) /
+            (bf * bf)
     end
     return out
 end
@@ -234,11 +276,10 @@ function spectral_basis_from_acquisitions(; acquisitions, tolerance::Real = 5.0e
     Φ = zeros(Float32, nc, nr, length(E), K)
     I0 = zeros(Float32, nc, nr, K)
     for (k, acquisition) in pairs(acquisitions)
-        size(acquisition.response)[1:2] == (nc, nr) || throw(
-            DimensionMismatch(
-                "acquisition $(k) ray axes $(size(acquisition.response)[1:2]) ≠ $((nc, nr))"
-            )
-        )
+        size(acquisition.response)[1:2] == (nc, nr) ||
+            throw(DimensionMismatch(
+                "acquisition $(k) ray axes $(size(acquisition.response)[1:2]) ≠ $((nc, nr))",
+            ))
         weights = Float64.(acquisition.response)
         weights ./= max.(sum(weights; dims = 3), eps(Float64))
         air = Float64.(acquisition.I0_ray)
@@ -254,7 +295,10 @@ end
 # An acquisition as its grid, its per-ray spectrum and its air counts; a one-channel basis is one.
 function _acquisition(a)
     hasproperty(a, :Φ) || return a
-    a.n_channels == 1 || throw(ArgumentError("an acquisition is one channel; this basis has $(a.n_channels)"))
+    a.n_channels == 1 ||
+        throw(ArgumentError(
+            "an acquisition is one channel; this basis has $(a.n_channels)",
+        ))
     return (energies = a.E, response = a.Φ[:, :, :, 1], I0_ray = a.I0[:, :, 1])
 end
 
@@ -262,8 +306,9 @@ end
 # Channel preparation — always in counts
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 
-_channel_I0(I0, k, nc, nr) =
-    size(I0, 1) == 1 && size(I0, 2) == 1 ? fill(Float64(I0[1, 1, k]), nc, nr) : Float64.(I0[:, :, k])
+_channel_I0(I0, k, nc, nr) = size(I0, 1) == 1 && size(I0, 2) == 1 ?
+    fill(Float64(I0[1, 1, k]), nc, nr) :
+    Float64.(I0[:, :, k])
 
 """
     reduce_detector_rows(; channels, basis, rows = :, floor_counts = 1e-12)
@@ -292,13 +337,15 @@ function reduce_detector_rows(; channels, basis, rows = (:), floor_counts::Real 
 
     new_channels = map(1:K) do k
         I0_k = size(I0, 1) == 1 && size(I0, 2) == 1 ?
-            fill(I0[1, 1, k], nc, length(selected)) : Float32.(I0[:, selected, k])
+            fill(I0[1, 1, k], nc, length(selected)) :
+            Float32.(I0[:, selected, k])
         counts = dropdims(
             sum(
                 Float64.(reshape(I0_k, nc, length(selected), 1)) .*
                     exp.(-Float64.(view(channels[k], :, selected, :)));
                 dims = 2,
-            ); dims = 2
+            );
+            dims = 2,
         )
         air = dropdims(sum(Float64.(I0_k); dims = 2); dims = 2)
         h = Float32.(-log.(max.(counts, floor_counts) ./ reshape(air, nc, 1)))
@@ -306,9 +353,11 @@ function reduce_detector_rows(; channels, basis, rows = (:), floor_counts::Real 
     end
 
     summed_Φ = ray_resolved ?
-        sum(Float64.(view(Φ, :, selected, :, :)); dims = 2) : Float64.(Φ) .* length(selected)
+        sum(Float64.(view(Φ, :, selected, :, :)); dims = 2) :
+        Float64.(Φ) .* length(selected)
     summed_I0 = ray_resolved ?
-        sum(Float64.(view(I0, :, selected, :)); dims = 2) : Float64.(I0) .* length(selected)
+        sum(Float64.(view(I0, :, selected, :)); dims = 2) :
+        Float64.(I0) .* length(selected)
 
     new_basis = spectral_basis(
         energies = basis.E,
@@ -316,8 +365,10 @@ function reduce_detector_rows(; channels, basis, rows = (:), floor_counts::Real 
         I0 = reshape(summed_I0, size(summed_I0, 1), 1, K),
     )
     return (
-        channels = new_channels, basis = new_basis,
-        n_rows = length(selected), selected_rows = selected,
+        channels = new_channels,
+        basis = new_basis,
+        n_rows = length(selected),
+        selected_rows = selected,
     )
 end
 
@@ -342,11 +393,10 @@ function merge_channels(; channels, basis, groups, floor_counts::Real = 1.0e-12)
     # Every channel exactly once. An overlapping group would enter the likelihood twice as if it
     # were an independent measurement; a missing one would be dropped without a word.
     flat = reduce(vcat, [collect(g) for g in groups]; init = Int[])
-    sort(flat) == collect(1:K) || throw(
-        ArgumentError(
-            "groups must partition the $(K) channels, each exactly once; got $(groups)"
-        )
-    )
+    sort(flat) == collect(1:K) ||
+        throw(ArgumentError(
+            "groups must partition the $(K) channels, each exactly once; got $(groups)",
+        ))
     Φ = Float64.(basis.Φ)
     I0 = Float64.(basis.I0)
     nc, nr = size(first(channels))[1:2]
@@ -362,7 +412,10 @@ function merge_channels(; channels, basis, groups, floor_counts::Real = 1.0e-12)
         Float32.(-log.(max.(counts, floor_counts) ./ reshape(air, nc, nr, 1)))
     end
 
-    merged_Φ = cat([sum(view(Φ, :, :, :, group); dims = 4) for group in groups]...; dims = 4)
+    merged_Φ = cat(
+        [sum(view(Φ, :, :, :, group); dims = 4) for group in groups]...;
+        dims = 4,
+    )
     merged_I0 = cat([sum(view(I0, :, :, group); dims = 3) for group in groups]...; dims = 3)
     new_basis = spectral_basis(energies = basis.E, response = merged_Φ, I0 = merged_I0)
     return (channels = new_channels, basis = new_basis, groups = groups)
@@ -376,24 +429,32 @@ detector rows. Both reductions add counts and rebuild the response so that `sum(
 still equals that channel's `I0`. Returns `(channels, basis, n_rows)`.
 """
 function prepare_channels(;
-        channels, basis, merge_groups = nothing, reduce_rows::Bool = false, rows = (:),
-    )
-    !reduce_rows && rows !== (:) && throw(
-        ArgumentError(
-            "rows selects the detector rows to sum, and does nothing without reduce_rows = true"
-        )
-    )
+    channels,
+    basis,
+    merge_groups = nothing,
+    reduce_rows::Bool = false,
+    rows = (:),
+)
+    !reduce_rows &&
+        rows !== (:) &&
+        throw(ArgumentError(
+            "rows selects the detector rows to sum, and does nothing without reduce_rows = true",
+        ))
     working_channels, working_basis = channels, basis
     if merge_groups !== nothing
         merged = merge_channels(
-            channels = working_channels, basis = working_basis, groups = merge_groups,
+            channels = working_channels,
+            basis = working_basis,
+            groups = merge_groups,
         )
         working_channels, working_basis = merged.channels, merged.basis
     end
     n_rows = nothing
     if reduce_rows
         reduced = reduce_detector_rows(
-            channels = working_channels, basis = working_basis, rows = rows,
+            channels = working_channels,
+            basis = working_basis,
+            rows = rows,
         )
         working_channels, working_basis = reduced.channels, reduced.basis
         n_rows = reduced.n_rows
@@ -421,12 +482,27 @@ attainable anywhere inside the bounds, `32` a non-finite result.
 Counts may be fractional after detector corrections, so nothing here assumes integers.
 """
 function nchannel_profile_tile!(
-        sino_I, sino_W, fisher_AA, fisher_AC, fisher_CC,
-        quality_flag, score_norm, outer_count, inner_count,
-        hs::NTuple{K, Any},
-        Φ, μρ_I, μρ_W, I0, μI_eff, μW_eff,
-        normal_II, normal_IW, normal_WW, controls::NChannelControls,
-    ) where {K}
+    sino_I,
+    sino_W,
+    fisher_AA,
+    fisher_AC,
+    fisher_CC,
+    quality_flag,
+    score_norm,
+    outer_count,
+    inner_count,
+    hs::NTuple{K, Any},
+    Φ,
+    μρ_I,
+    μρ_W,
+    I0,
+    μI_eff,
+    μW_eff,
+    normal_II,
+    normal_IW,
+    normal_WW,
+    controls::NChannelControls,
+) where {K}
     nE = length(μρ_I)
     A_lo, A_hi = controls.iodine_bounds
     C_lo, C_hi = controls.water_bounds
@@ -480,9 +556,11 @@ function nchannel_profile_tile!(
         initializer_valid = isfinite(det0_raw) && det0_raw > 1.0f-12
         det0 = initializer_valid ? det0_raw : 1.0f0
         A = initializer_valid ?
-            clamp((nWW * rhs_I - nIW * rhs_W) / det0, A_lo, A_hi) : clamp(0.0f0, A_lo, A_hi)
+            clamp((nWW * rhs_I - nIW * rhs_W) / det0, A_lo, A_hi) :
+            clamp(0.0f0, A_lo, A_hi)
         C = initializer_valid ?
-            clamp((nII * rhs_W - nIW * rhs_I) / det0, C_lo, C_hi) : clamp(20.0f0, C_lo, C_hi)
+            clamp((nII * rhs_W - nIW * rhs_I) / det0, C_lo, C_hi) :
+            clamp(20.0f0, C_lo, C_hi)
 
         # The aggregate count equation is monotone in water, so a bisection on it stabilises the
         # fast solver's initial water value at its current iodine value.
@@ -646,11 +724,14 @@ function nchannel_profile_tile!(
         hit_A = A <= A_lo + tol || A >= A_hi - tol
         hit_C = C <= C_lo + tol || C >= C_hi - tol
         invalid_model = !(
-            isfinite(A) && isfinite(C) && isfinite(score) &&
-                isfinite(FAA) && isfinite(FAC) && isfinite(FCC)
+            isfinite(A) &&
+                isfinite(C) &&
+                isfinite(score) &&
+                isfinite(FAA) &&
+                isfinite(FAC) &&
+                isfinite(FCC)
         )
-        quality_flag[idx] =
-            UInt8(hit_A ? 1 : 0) |
+        quality_flag[idx] = UInt8(hit_A ? 1 : 0) |
             UInt8(hit_C ? 2 : 0) |
             UInt8(converged ? 0 : 4) |
             UInt8(ill_conditioned || !initializer_valid ? 8 : 0) |
@@ -701,18 +782,20 @@ Returns `(sino_iodine, sino_water, quality, elapsed_s, method = :nchannel, n_cha
 both sinograms in g/cm². `keep_diagnostics = true` adds the per-ray maps.
 """
 function decompose_nchannel(;
-        channels, basis, controls::NChannelControls = NChannelControls(),
-        to_backend = identity, tile_views::Integer = controls.tile_views,
-        keep_diagnostics::Bool = false,
-    )
+    channels,
+    basis,
+    controls::NChannelControls = NChannelControls(),
+    to_backend = identity,
+    tile_views::Integer = controls.tile_views,
+    keep_diagnostics::Bool = false,
+)
     K = length(channels)
     K == basis.n_channels ||
         throw(DimensionMismatch("channels ($(K)) ≠ basis channels ($(basis.n_channels))"))
-    K >= 2 || throw(
-        ArgumentError(
-            "the estimator solves for two materials and needs at least two channels, got $(K)"
-        )
-    )
+    K >= 2 ||
+        throw(ArgumentError(
+            "the estimator solves for two materials and needs at least two channels, got $(K)",
+        ))
     shape = size(first(channels))
     all(size(h) == shape for h in channels) ||
         throw(DimensionMismatch("every channel must share one sinogram shape"))
@@ -730,8 +813,15 @@ function decompose_nchannel(;
     constants = map(
         to_backend,
         (
-            basis.Φ, basis.μρ_I, basis.μρ_W, basis.I0, basis.μI_eff, basis.μW_eff,
-            basis.normal_II, basis.normal_IW, basis.normal_WW,
+            basis.Φ,
+            basis.μρ_I,
+            basis.μρ_W,
+            basis.I0,
+            basis.μI_eff,
+            basis.μW_eff,
+            basis.normal_II,
+            basis.normal_IW,
+            basis.normal_WW,
         ),
     )
 
@@ -748,9 +838,18 @@ function decompose_nchannel(;
             inner_dev = similar(hs[1], UInt8)
             try
                 nchannel_profile_tile!(
-                    I_dev, W_dev, AA_dev, AC_dev, CC_dev,
-                    flag_dev, score_dev, outer_dev, inner_dev, hs,
-                    constants..., controls,
+                    I_dev,
+                    W_dev,
+                    AA_dev,
+                    AC_dev,
+                    CC_dev,
+                    flag_dev,
+                    score_dev,
+                    outer_dev,
+                    inner_dev,
+                    hs,
+                    constants...,
+                    controls,
                 )
                 sino_I[:, :, vrange] .= Array(I_dev)
                 sino_W[:, :, vrange] .= Array(W_dev)
@@ -766,9 +865,18 @@ function decompose_nchannel(;
                 # per tile costs more than the tile does.
                 release_backend!(
                     (
-                        hs..., I_dev, W_dev, flag_dev, score_dev,
-                        AA_dev, AC_dev, CC_dev, outer_dev, inner_dev,
-                    ); collect = false
+                        hs...,
+                        I_dev,
+                        W_dev,
+                        flag_dev,
+                        score_dev,
+                        AA_dev,
+                        AC_dev,
+                        CC_dev,
+                        outer_dev,
+                        inner_dev,
+                    );
+                    collect = false,
                 )
             end
         end
@@ -777,19 +885,25 @@ function decompose_nchannel(;
     end
 
     base = (
-        sino_iodine = sino_I, sino_water = sino_W,
+        sino_iodine = sino_I,
+        sino_water = sino_W,
         quality = _nchannel_flag_summary(flags, score, outer, inner),
-        elapsed_s = elapsed, method = :nchannel, n_channels = K,
+        elapsed_s = elapsed,
+        method = :nchannel,
+        n_channels = K,
     )
-    return keep_diagnostics ? merge(
-            base, (
-                diagnostics = (
-                    quality_flag = flags, score_norm = score,
-                    fisher = (AA = fisher_AA, AC = fisher_AC, CC = fisher_CC),
-                    outer_iterations = outer, inner_iterations = inner,
-                ),
-            )
-        ) : base
+    return keep_diagnostics ?
+        merge(
+            base,
+            (diagnostics = (
+                quality_flag = flags,
+                score_norm = score,
+                fisher = (AA = fisher_AA, AC = fisher_AC, CC = fisher_CC),
+                outer_iterations = outer,
+                inner_iterations = inner,
+            ),),
+        ) :
+        base
 end
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -831,16 +945,19 @@ Exactly two channels are required; pass `merge_groups` to [`prepare_channels`](@
 photon-counting acquisition into two.
 """
 function decompose_cong(;
-        channels, basis, to_backend = identity,
-        newton_max_iter::Integer = 12, newton_tol::Real = eps(Float32),
-        y_max_factor::Real = 0.99, y_max_cap::Real = 1.0f7,
-    )
-    length(channels) == 2 || throw(
-        ArgumentError(
+    channels,
+    basis,
+    to_backend = identity,
+    newton_max_iter::Integer = 12,
+    newton_tol::Real = eps(Float32),
+    y_max_factor::Real = 0.99,
+    y_max_cap::Real = 1.0f7,
+)
+    length(channels) == 2 ||
+        throw(ArgumentError(
             "the Cong estimator is defined for two measurements, got $(length(channels)); " *
-                "pass merge_groups to sum channels into two"
-        )
-    )
+                "pass merge_groups to sum channels into two",
+        ))
     material = cong_material_basis(basis)
     low = to_backend(Float32.(channels[1]))
     high = to_backend(Float32.(channels[2]))
@@ -851,9 +968,16 @@ function decompose_cong(;
     iodine, water, elapsed = try
         cong_ws = create_cong_workspace(low, material)
         t = @elapsed apply_cong!(
-            cong_ws, sino_y, sino_c, low, high;
+            cong_ws,
+            sino_y,
+            sino_c,
+            low,
+            high;
             water_basis = (a = 0.0f0, c = 1.0f0),
-            newton_max_iter, newton_tol, y_max_factor, y_max_cap,
+            newton_max_iter,
+            newton_tol,
+            y_max_factor,
+            y_max_cap,
         )
         Array(sino_y), Array(sino_c), t
     finally
@@ -862,13 +986,16 @@ function decompose_cong(;
         cong_ws === nothing || release_backend!(cong_ws; collect = false)
     end
     return (
-        sino_iodine = iodine, sino_water = water,
+        sino_iodine = iodine,
+        sino_water = water,
         quality = (
             n_rays = length(iodine),
             frac_invalid = count(!isfinite, iodine) / length(iodine),
             frac_nonfinite_water = count(!isfinite, water) / length(water),
         ),
-        elapsed_s = elapsed, method = :cong, n_channels = 2,
+        elapsed_s = elapsed,
+        method = :cong,
+        n_channels = 2,
     )
 end
 
@@ -891,9 +1018,9 @@ function angular_antialias_response(; n_views::Integer, matrix_nx::Integer)
     margin <= 0 && return ones(Float64, n_views)
     return [
         let mode = min(j - 1, n_views - (j - 1))
-                mode <= pass_mode ? 1.0 : 0.5 * (1 + cos(π * (mode - pass_mode) / margin))
+            mode <= pass_mode ? 1.0 : 0.5 * (1 + cos(π * (mode - pass_mode) / margin))
         end
-            for j in 1:n_views
+        for j in 1:n_views
     ]
 end
 
@@ -932,26 +1059,34 @@ needs:
 `hir_weights` and `scale` are ignored by `:fbp`.
 """
 function reconstruct_basis_slice(
-        sino::AbstractArray{<:Real, 3}, geom, matrix_size;
-        to_backend = identity, filter = SoftFilter(), n_rows::Integer = geom.n_rows,
-        antialias::Bool = true, method::Symbol = :fbp, hir_strength::Integer = 60,
-        projector::Symbol = :dd_fast, hir_weights::Union{Symbol, AbstractArray} = :uniform,
-        scale::Real = 1,
-    )
+    sino::AbstractArray{<:Real, 3},
+    geom,
+    matrix_size;
+    to_backend = identity,
+    filter = SoftFilter(),
+    n_rows::Integer = geom.n_rows,
+    antialias::Bool = true,
+    method::Symbol = :fbp,
+    hir_strength::Integer = 60,
+    projector::Symbol = :dd_fast,
+    hir_weights::Union{Symbol, AbstractArray} = :uniform,
+    scale::Real = 1,
+)
     method in (:fbp, :hir) ||
         throw(ArgumentError("method must be :fbp or :hir, got :$(method)"))
-    size(sino, 2) in (1, n_rows) || throw(
-        DimensionMismatch(
-            "the sinogram has $(size(sino, 2)) rows; the geometry has $(n_rows) — pass every row, or one"
-        )
-    )
+    size(sino, 2) in (1, n_rows) ||
+        throw(DimensionMismatch(
+            "the sinogram has $(size(sino, 2)) rows; the geometry has $(n_rows) — pass every row, or one",
+        ))
     n_views = size(sino, 3)
     working = Float32.(sino)
     if antialias
         response = angular_antialias_response(n_views = n_views, matrix_nx = matrix_size[1])
         if !all(==(1.0), response)
             spectrum = FFTW.fft(Float64.(sino), 3)
-            working = Float32.(real.(FFTW.ifft(spectrum .* reshape(response, 1, 1, n_views), 3)))
+            working = Float32.(
+                real.(FFTW.ifft(spectrum .* reshape(response, 1, 1, n_views), 3)),
+            )
         end
     end
 
@@ -968,23 +1103,29 @@ function reconstruct_basis_slice(
     end
 
     single_row = size(working, 2) == 1 && geom.n_rows != 1
-    single_row && matrix_size[3] != 1 && throw(
-        ArgumentError(
-            "a single-row sinogram reconstructs one slice; matrix_size has $(matrix_size[3])"
-        )
-    )
+    single_row &&
+        matrix_size[3] != 1 &&
+        throw(ArgumentError(
+            "a single-row sinogram reconstructs one slice; matrix_size has $(matrix_size[3])",
+        ))
     recon_geom = single_row ? _single_row_geometry(geom) : geom
-    hir_weights isa AbstractArray && size(hir_weights) != size(working) && throw(
-        DimensionMismatch(
-            "hir_weights has size $(size(hir_weights)); the sinogram is $(size(working))"
-        )
-    )
+    hir_weights isa AbstractArray &&
+        size(hir_weights) != size(working) &&
+        throw(DimensionMismatch(
+            "hir_weights has size $(size(hir_weights)); the sinogram is $(size(working))",
+        ))
     s = Float32(scale)
     sino_dev = to_backend(working .* s)
-    weights_dev = hir_weights isa AbstractArray ? to_backend(Float32.(hir_weights)) : hir_weights
+    weights_dev = hir_weights isa AbstractArray ?
+        to_backend(Float32.(hir_weights)) :
+        hir_weights
     ws = create_hir_recon_workspace(
-        sino_dev, recon_geom, matrix_size;
-        filter = filter, strength = hir_strength, projector = projector,
+        sino_dev,
+        recon_geom,
+        matrix_size;
+        filter = filter,
+        strength = hir_strength,
+        projector = projector,
     )
     try
         image = reconstruct!(ws, sino_dev, recon_geom; weights = weights_dev)
@@ -1000,11 +1141,23 @@ end
 # one row thick. What a reduced-row sinogram actually measured.
 function _single_row_geometry(geom::CTGeometry)
     return CTGeometry(
-        geom.SAD, geom.SDD, geom.n_angles, 1, geom.n_cols,
-        geom.pixel_size, geom.pixel_row_size,
-        geom.angles, geom.source_positions, geom.detector_centers,
-        geom.detector_u, geom.detector_v, (geom.fov[1], geom.fov[2], geom.pixel_row_size),
-        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
+        geom.SAD,
+        geom.SDD,
+        geom.n_angles,
+        1,
+        geom.n_cols,
+        geom.pixel_size,
+        geom.pixel_row_size,
+        geom.angles,
+        geom.source_positions,
+        geom.detector_centers,
+        geom.detector_u,
+        geom.detector_v,
+        (geom.fov[1], geom.fov[2], geom.pixel_row_size),
+        geom.pitch,
+        geom.table_feed,
+        geom.detector_shape,
+        geom.column_offset,
     )
 end
 
@@ -1029,14 +1182,22 @@ Virtual monoenergetic images in HU from a reconstructed basis pair: `(nx, ny, nz
 every slice of the pair at every energy. `water` is a density in g/mL and `iodine` a mass density
 in g/cm³; the latter is converted to mg/mL for [`synth_vmi_2basis`](@ref).
 """
-function synthesize_vmi_stack(water::AbstractArray{<:Real, 3}, iodine::AbstractArray{<:Real, 3}, energies)
+function synthesize_vmi_stack(
+    water::AbstractArray{<:Real, 3},
+    iodine::AbstractArray{<:Real, 3},
+    energies,
+)
     size(water) == size(iodine) ||
         throw(DimensionMismatch("water $(size(water)) and iodine $(size(iodine)) differ"))
     stack = Array{Float32}(undef, size(water)..., length(energies))
     water32 = Float32.(water)
     iodine_mg_mL = Float32.(iodine) .* 1000.0f0
     for (index, energy) in pairs(collect(energies))
-        stack[:, :, :, index] .= synth_vmi_2basis(water32, iodine_mg_mL; energy_keV = Float64(energy))
+        stack[:, :, :, index] .= synth_vmi_2basis(
+            water32,
+            iodine_mg_mL;
+            energy_keV = Float64(energy),
+        )
     end
     return stack
 end
@@ -1109,33 +1270,40 @@ Returns `(vmis, energies, images = (water, iodine), quality, elapsed_s, settings
 `(nx, ny, nz, n_energies)` in HU.
 """
 function vmi_pipeline(;
-        channels, basis, geom, to_backend = identity,
-        denoiser::Union{Nothing, SpectralHYPR} = nothing,
-        method::Symbol = :nchannel,
-        controls::NChannelControls = NChannelControls(),
-        merge_groups = nothing,
-        reduce_rows::Bool = false, rows = (:),
-        use_tlbf::Bool = false,
-        tlbf_alpha1::Real = 0.9, tlbf_alpha2::Real = 24.635648571666497,
-        tlbf_radius::Integer = 2,
-        use_acnr::Bool = true,
-        acnr_passes::Integer = 4, acnr_beta_max::Real = 20.0,
-        acnr_hp_sigma_px::Real = 1.5, acnr_window::Integer = 4,
-        matrix_size,
-        fbp_filter = SoftFilter(),
-        pair_basis = nothing,
-        composite_energy = nothing,
-        antialias::Bool = true,
-        recon_rows::Integer = geom.n_rows,
-        recon_method::Symbol = :fbp,
-        hir_strength::Integer = 60,
-        recon_projector::Symbol = :dd_fast,
-        hir_reference_kev::Real = 70.0,
-        vmi_energies = (40, 70, 100, 140),
-        tile_views::Integer = controls.tile_views,
-        keep_sinograms::Bool = false,
-        keep_diagnostics::Bool = false,
-    )
+    channels,
+    basis,
+    geom,
+    to_backend = identity,
+    denoiser::Union{Nothing, SpectralHYPR} = nothing,
+    method::Symbol = :nchannel,
+    controls::NChannelControls = NChannelControls(),
+    merge_groups = nothing,
+    reduce_rows::Bool = false,
+    rows = (:),
+    use_tlbf::Bool = false,
+    tlbf_alpha1::Real = 0.9,
+    tlbf_alpha2::Real = 24.635648571666497,
+    tlbf_radius::Integer = 2,
+    use_acnr::Bool = true,
+    acnr_passes::Integer = 4,
+    acnr_beta_max::Real = 20.0,
+    acnr_hp_sigma_px::Real = 1.5,
+    acnr_window::Integer = 4,
+    matrix_size,
+    fbp_filter = SoftFilter(),
+    pair_basis = nothing,
+    composite_energy = nothing,
+    antialias::Bool = true,
+    recon_rows::Integer = geom.n_rows,
+    recon_method::Symbol = :fbp,
+    hir_strength::Integer = 60,
+    recon_projector::Symbol = :dd_fast,
+    hir_reference_kev::Real = 70.0,
+    vmi_energies = (40, 70, 100, 140),
+    tile_views::Integer = controls.tile_views,
+    keep_sinograms::Bool = false,
+    keep_diagnostics::Bool = false,
+)
     method in (:nchannel, :cong) ||
         throw(ArgumentError("method must be :nchannel or :cong, got $(method)"))
     recon_method in (:fbp, :hir) ||
@@ -1144,20 +1312,25 @@ function vmi_pipeline(;
     projection_hypr = denoiser === nothing ? nothing : denoiser.projection
     image_instance = denoiser === nothing ? nothing : denoiser.image
     spectral = fbp_filter isa PairFilter || image_instance !== nothing
-    hir && spectral && throw(
-        ArgumentError(
+    hir &&
+        spectral &&
+        throw(ArgumentError(
             "the spectral pair and the image-domain HYPR instance measure their noise from FDK of the " *
-                "half-view pair; use recon_method = :fbp, one window and SpectralHYPR(image = nothing)"
-        )
-    )
+                "half-view pair; use recon_method = :fbp, one window and SpectralHYPR(image = nothing)",
+        ))
 
     dispersion = nothing
     if projection_hypr !== nothing
         dispersion = projection_hypr.dispersion === :measured ?
-            estimate_dispersion(channels, basis.I0) : collect(Float64, projection_hypr.dispersion)
+            estimate_dispersion(channels, basis.I0) :
+            collect(Float64, projection_hypr.dispersion)
         channels = hypr_lr(
-            channels, basis.I0; kernel = projection_hypr.kernel,
-            dispersion = dispersion, view_stride = projection_hypr.view_stride, to_backend = to_backend
+            channels,
+            basis.I0;
+            kernel = projection_hypr.kernel,
+            dispersion = dispersion,
+            view_stride = projection_hypr.view_stride,
+            to_backend = to_backend,
         )
     end
 
@@ -1166,25 +1339,39 @@ function vmi_pipeline(;
 
     decomposition = if method === :nchannel
         decompose_nchannel(
-            channels = working_channels, basis = working_basis, controls = controls,
-            to_backend = to_backend, tile_views = tile_views,
+            channels = working_channels,
+            basis = working_basis,
+            controls = controls,
+            to_backend = to_backend,
+            tile_views = tile_views,
             # the Fisher information is the variance HIR weights the basis pair by
             keep_diagnostics = keep_diagnostics || hir,
         )
     else
-        decompose_cong(channels = working_channels, basis = working_basis, to_backend = to_backend)
+        decompose_cong(
+            channels = working_channels,
+            basis = working_basis,
+            to_backend = to_backend,
+        )
     end
 
     sino_iodine, sino_water = decomposition.sino_iodine, decomposition.sino_water
     if use_tlbf
         filtered = tlbf_denoise(
-            sino_iodine, sino_water,
+            sino_iodine,
+            sino_water,
             total_expected_counts(
-                sino_iodine, sino_water, working_basis.Φ, working_basis.μρ_I,
-                working_basis.μρ_W; to_backend = to_backend,
+                sino_iodine,
+                sino_water,
+                working_basis.Φ,
+                working_basis.μρ_I,
+                working_basis.μρ_W;
+                to_backend = to_backend,
             ),
             total_measured_counts(working_channels, working_basis.I0);
-            alpha1 = tlbf_alpha1, alpha2 = tlbf_alpha2, radius = tlbf_radius,
+            alpha1 = tlbf_alpha1,
+            alpha2 = tlbf_alpha2,
+            radius = tlbf_radius,
             to_backend = to_backend,
         )
         sino_iodine, sino_water = filtered.sino_iodine, filtered.sino_water
@@ -1192,32 +1379,52 @@ function vmi_pipeline(;
 
     # HIR runs each material in μ-equivalent units at the reference energy, weighted by that
     # material's inverse variance; FDK is linear and takes the sinograms as they are.
-    scale_water = hir ? compute_mass_μ_at_energy(XA.Materials.water, Float64(hir_reference_kev)) : 1.0
-    scale_iodine = hir ? compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(hir_reference_kev)) : 1.0
+    scale_water = hir ?
+        compute_mass_μ_at_energy(XA.Materials.water, Float64(hir_reference_kev)) :
+        1.0
+    scale_iodine = hir ?
+        compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(hir_reference_kev)) :
+        1.0
     weights_iodine, weights_water = if hir && method === :nchannel
         _basis_weights(decomposition.diagnostics.fisher, scale_iodine, scale_water)
     else
         (:uniform, :uniform)
     end
     reconstruct(one_sino, weights, scale) = reconstruct_basis_slice(
-        one_sino, geom, matrix_size;
-        to_backend = to_backend, filter = fbp_filter, n_rows = recon_rows,
+        one_sino,
+        geom,
+        matrix_size;
+        to_backend = to_backend,
+        filter = fbp_filter,
+        n_rows = recon_rows,
         antialias = antialias,
-        method = recon_method, hir_strength = hir_strength, projector = recon_projector,
-        hir_weights = weights, scale = scale,
+        method = recon_method,
+        hir_strength = hir_strength,
+        projector = recon_projector,
+        hir_weights = weights,
+        scale = scale,
     )
     acnr_kwargs = (
-        hp_sigma_px = acnr_hp_sigma_px, window = acnr_window,
-        passes = acnr_passes, beta_max = acnr_beta_max,
+        hp_sigma_px = acnr_hp_sigma_px,
+        window = acnr_window,
+        passes = acnr_passes,
+        beta_max = acnr_beta_max,
     )
     image_settings = nothing
     pair_settings = nothing
     acnr_settings = nothing
     water_image, iodine_image = if spectral
         pair = spectral_pair(
-            sino_water, sino_iodine, geom, matrix_size; filter = fbp_filter,
-            basis = pair_basis, composite_energy = composite_energy, antialias = antialias,
-            n_rows = recon_rows, to_backend = to_backend
+            sino_water,
+            sino_iodine,
+            geom,
+            matrix_size;
+            filter = fbp_filter,
+            basis = pair_basis,
+            composite_energy = composite_energy,
+            antialias = antialias,
+            n_rows = recon_rows,
+            to_backend = to_backend,
         )
         pair_settings = (Estar = pair.Estar, β = pair.β, Σ = pair.Σ, basis = pair.basis)
         if use_acnr && acnr_passes > 0
@@ -1228,7 +1435,12 @@ function vmi_pipeline(;
             pair.water, pair.iodine
         else
             pooled = image_hypr(pair; image = image_instance, to_backend = to_backend)
-            image_settings = (Estar = pooled.Estar, β = pooled.β, window = pooled.window, risks = pooled.risks)
+            image_settings = (
+                Estar = pooled.Estar,
+                β = pooled.β,
+                window = pooled.window,
+                risks = pooled.risks,
+            )
             pooled.water, pooled.iodine
         end
     else
@@ -1248,34 +1460,50 @@ function vmi_pipeline(;
         quality = decomposition.quality,
         elapsed_s = decomposition.elapsed_s,
         settings = (
-            method = method, n_channels = working_basis.n_channels,
-            denoiser = denoiser === nothing ? nothing : (;
+            method = method,
+            n_channels = working_basis.n_channels,
+            denoiser = denoiser === nothing ?
+                nothing :
+                (;
                     projection = projection_hypr, dispersion = dispersion,
                     image = image_instance, image_estimates = image_settings,
                 ),
             pair = pair_settings,
-            merge_groups = merge_groups, reduce_rows = reduce_rows, n_rows = prepared.n_rows,
+            merge_groups = merge_groups,
+            reduce_rows = reduce_rows,
+            n_rows = prepared.n_rows,
             tlbf = use_tlbf ?
-                (alpha1 = tlbf_alpha1, alpha2 = tlbf_alpha2, radius = tlbf_radius) : nothing,
+                (alpha1 = tlbf_alpha1, alpha2 = tlbf_alpha2, radius = tlbf_radius) :
+                nothing,
             acnr = acnr_settings,
             recon = (;
                 method = recon_method, matrix_size, antialias, recon_rows, filter = fbp_filter, pair_basis,
-                hir = hir ? (;
+                hir = hir ?
+                    (;
                         strength = hir_strength, projector = recon_projector,
                         reference_kev = hir_reference_kev,
                         weights = method === :nchannel ? :fisher : :uniform,
-                    ) : nothing,
+                    ) :
+                    nothing,
             ),
             controls = controls,
         ),
     )
-    keep_sinograms && (result = merge(result, (sinograms = (iodine = sino_iodine, water = sino_water),)))
-    keep_diagnostics && method === :nchannel &&
+    keep_sinograms &&
+        (result = merge(result, (sinograms = (iodine = sino_iodine, water = sino_water),)))
+    keep_diagnostics &&
+        method === :nchannel &&
         (result = merge(result, (diagnostics = decomposition.diagnostics,)))
     return result
 end
 
-export NChannelControls, spectral_basis, spectral_basis_from_bins, spectral_basis_from_acquisitions
+export NChannelControls,
+    spectral_basis,
+    spectral_basis_from_bins,
+    spectral_basis_from_acquisitions
 export reduce_detector_rows, merge_channels, prepare_channels
 export nchannel_profile_tile!, decompose_nchannel, cong_material_basis, decompose_cong
-export angular_antialias_response, reconstruct_basis_slice, synthesize_vmi_stack, vmi_pipeline
+export angular_antialias_response,
+    reconstruct_basis_slice,
+    synthesize_vmi_stack,
+    vmi_pipeline
