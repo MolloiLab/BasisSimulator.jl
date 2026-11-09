@@ -21,6 +21,19 @@ onward they are written by hand, and releases are cut by hand — see
   locals and the internal `R_energies` workspace field and `ws_R_energies` keyword, which
   nothing read; no results change.
 
+### Docs
+
+- The documentation site takes Vasculature.jl's floating-island layout (glass navigation
+  pills, "← Examples" and "View Source" pills, the notebook in a glass island beside an "On
+  This Page" rail, previous/next tiles) in BasisSimulator's own calligraphic style: EB
+  Garamond, warm paper and warm black, violet and cyan accents.
+- The 12 example notebooks are refinished in one visual family: a dark locator band under every
+  title, drawn flow charts in place of the Unicode diagrams, an illustration above every data
+  plot, Title Case figures, numbered sections, collapsible asides and a computed summary.
+  Every simulation, number and check is unchanged; notebook 05 gains six checks (grid audit and
+  registration), notebook 06 runs CatSim again, and notebook 01's residuals are computed, not
+  typed.
+
 ## [0.16.6](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.5...v0.16.6) (2026-11-09)
 
 Fixes projections that came out wrong on the GPU with CUDA.jl 5 (AcceleratedKernels 0.4) since v0.16.4,
