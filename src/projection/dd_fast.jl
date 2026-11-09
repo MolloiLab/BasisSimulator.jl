@@ -235,6 +235,7 @@ end
         vmx::T, vmy::T, vmz::T, vsx::T, vsy::T, vsz::T,
         nx::Int32, ny::Int32, nz::Int32,
         mag::T, ps::T, prs::T, cc::T, rc::T, arc_det::Bool, dγ::T,
+        n_seg::Int32 = Int32(1), seg::Int32 = Int32(0),
     ) where {M, T <: AbstractFloat}
 
     sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
@@ -252,8 +253,11 @@ end
     plens = ntuple(_ -> zero(T), Val(M))
     valid || return plens
 
-    il = Int32(1)
-    while il <= n_long
+    # segment `seg` of `n_seg` along the integration axis (the whole walk by default)
+    per_seg = cld(n_long, n_seg)
+    il = seg * per_seg + Int32(1)
+    il_end = min(n_long, (seg + Int32(1)) * per_seg)
+    while il <= il_end
         lp = fma(T(il) - T(0.5), v_long, vmin_long)
         mag_fac = s_long / (s_long - lp)
         inv_mf = one(T) / mag_fac
@@ -638,6 +642,52 @@ function _dd_material_paths!(
     return paths
 end
 
+# The walk of `_dd_material_paths!` with each detector element's integration axis split into
+# `n_seg` segments, one thread each: `partial[m, col, row, view, seg]`. For a few large detector
+# elements (the scatter's coarse rays: thousands of rays, each a long walk over a wide footprint),
+# which leave a GPU mostly idle one walk per thread.
+function _dd_lane_sums_split!(
+        ::Val{M}, lanes, partial::AbstractArray{T, 5}, mask,
+        sp, dc, du, dv,
+        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
+        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32,
+        mag::T, ps::T, prs::T, col_center::T, row_center::T,
+        arc_det::Bool, dγ::T,
+    ) where {M, T <: AbstractFloat}
+    domain = @view partial[1, :, :, :, :]
+    n_seg = Int32(size(partial, 5))
+    n_views = Int32(size(partial, 4))
+    let mask = mask, partial = partial, domain = domain, arc_det = arc_det, dγ = dγ, lanes = lanes,
+            sp = sp, dc = dc, du = du, dv = dv,
+            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
+            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows, nv = n_views, n_seg = n_seg,
+            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center
+
+        AK.foreachindex(domain) do idx
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % nc) + Int32(1)
+            idx_0 = idx_0 ÷ nc
+            row = (idx_0 % nr) + Int32(1)
+            idx_0 = idx_0 ÷ nr
+            angle = (idx_0 % nv) + Int32(1)
+            seg = idx_0 ÷ nv
+
+            plens = _dd_plen_walk(
+                Val(M), lanes, mask, col, row, angle, sp, dc, du, dv,
+                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
+                mag, ps, prs, cc, rc, arc_det, dγ, n_seg, seg
+            )
+
+            m = Int32(1)
+            while m <= Int32(M)
+                @inbounds partial[m, col, row, angle, seg + Int32(1)] = plens[m]
+                m += Int32(1)
+            end
+        end
+    end
+    return partial
+end
+
 # Pass 2: the spectral conversion. Reads the cached path lengths; never touches the volume.
 # A cached ray's lanes: its per-material paths (`nothing`), or their sums on the basis `Ct` (R × M),
 # a runtime loop over the materials.
@@ -776,20 +826,40 @@ function dd_fast_lane_sums!(
         T, size(mask), (size(sums, 2), size(sums, 3)), geom, volume_extent, sums,
         nothing, nothing, nothing, nothing,
     )
+    # few detector elements (a coarse geometry): each walk split along its integration axis into
+    # enough segments for about 2^20 threads, the segments' sums added afterwards
+    n_rays = size(sums, 2) * size(sums, 3) * size(sums, 4)
+    n_seg = clamp(cld(_LANE_SUM_THREADS, n_rays), 1, _LANE_SUM_MAX_SEGMENTS)
     for k0 in 0:_PLEN_MAX_MATERIALS:(R - 1)
         n = min(_PLEN_MAX_MATERIALS, R - k0)
         lanes = n == R ? Ct : Ct[(k0 + 1):(k0 + n), :]
-        _dd_material_paths!(
-            Val(n), lanes, Int32(k0), sums, mask,
-            g.sp, g.dc, g.du, g.dv,
-            g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-            g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
-            g.mag, g.ps, g.prs, g.col_center, g.row_center,
-            g.arc_det, g.dγ
-        )
+        if n_seg == 1
+            _dd_material_paths!(
+                Val(n), lanes, Int32(k0), sums, mask,
+                g.sp, g.dc, g.du, g.dv,
+                g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
+                g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
+                g.mag, g.ps, g.prs, g.col_center, g.row_center,
+                g.arc_det, g.dγ
+            )
+        else
+            part = similar(sums, T, n, size(sums, 2), size(sums, 3), size(sums, 4), n_seg)
+            _dd_lane_sums_split!(
+                Val(n), lanes, part, mask,
+                g.sp, g.dc, g.du, g.dv,
+                g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
+                g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
+                g.mag, g.ps, g.prs, g.col_center, g.row_center,
+                g.arc_det, g.dγ
+            )
+            view(sums, (k0 + 1):(k0 + n), :, :, :) .= dropdims(sum(part; dims = 5); dims = 5)
+        end
     end
     return sums
 end
+
+const _LANE_SUM_THREADS = 1 << 20
+const _LANE_SUM_MAX_SEGMENTS = 64
 
 """
     dd_fast_poly_from_paths!(sinogram, paths, μ_table_gpu, wη_gpu; ws_bowtie_spectral=nothing,

@@ -498,16 +498,20 @@ end
 The walk's lanes for the scatter's rays. The features, per material (gases zero): its water-equivalent
 length per mm (1), its outline (2), whether it is other than water (3), its attenuation against
 water's in each band (`dmu`, 3 + b) and its Compton and wide/forward Rayleigh scattering against
-water's at each spectral energy (`ratio`, 3 + nbands + (process − 1)·nE + e). Every ray's feature is
-the sum of its materials' path lengths times their features, computed exactly either way:
+water's at each spectral energy (`ratio`, 3 + nbands + (process − 1)·nE + e). A ray's feature is the
+sum of its materials' path lengths times their features; the walk accumulates `Ct · L` (lanes ×
+materials) and `G` (lanes × features) gives every feature from those sums, or `G = nothing` when
+the sums are the features:
 
-- no more materials than features: one lane per material (`Ct = I`), and each feature the sum of
-  the lanes times `G`, the features (`materials × features`) — v0.16.3's arithmetic;
-- more materials than features: one lane per feature (`Ct` the features, transposed), and
-  `G = nothing`: the lane sums are the features.
-
-No basis is fitted: a basis's map back from a few lanes mixes them with large coefficients of both
-signs, and in Float32 that cancellation moved the scatter by up to a percent.
+- up to 16 materials: one lane per material (`Ct = I`, `G` the features) — v0.16.3's arithmetic;
+- more: features 1–3 as lanes of their own (exact: the water test reads feature 3's zero), and the
+  others on an orthonormal basis: the singular vectors of the feature matrix, each feature scaled
+  to its largest entry, down to 1e-8 of the largest singular value (below Float32's precision;
+  1024 mixtures of 8 tissues: 25 lanes). The lanes' coefficients `U·S` and the map back `V` are
+  orthonormal, so the map back amplifies no rounding (a basis of the features' own columns did,
+  moving the scatter by up to a percent). It is used when it reproduces every feature to 1e-7 of
+  its scale in at most `_PLEN_MAX_MATERIALS` lanes;
+- otherwise one lane per material (no more materials than features) or per feature (`G = nothing`).
 """
 function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
     n_m = length(kind)
@@ -516,8 +520,28 @@ function _scatter_feature_lanes(kind, wet_per_mm, dmu, ratio)
         wet_per_mm .* solid, Float64.(solid), Float64.(kind .== 2), dmu .* solid,
         reshape(ratio, n_m, :) .* solid,
     )
-    return n_m <= size(F, 2) ? (Ct = Matrix{Float64}(I, n_m, n_m), G = F) : (Ct = permutedims(F), G = nothing)
+    Q = size(F, 2)
+    n_m <= _DIRECT_MAX_MATERIALS[] && return (Ct = Matrix{Float64}(I, n_m, n_m), G = F)
+    rest = F[:, 4:Q]
+    scale = [max(maximum(abs, c), floatmin(Float64)) for c in eachcol(rest)]
+    restn = rest ./ scale'
+    f = svd(restn)
+    residual(r) = maximum(abs, f.U[:, 1:r] * Diagonal(f.S[1:r]) * f.V[:, 1:r]' .- restn; init = 0.0)
+    r = min(count(>(_SCATTER_SVD_TOL * f.S[1]), f.S), length(f.S))
+    while r < min(length(f.S), _PLEN_MAX_MATERIALS - 3) && residual(r) > 1.0e-7
+        r += 1
+    end
+    if 3 + r <= _PLEN_MAX_MATERIALS && residual(r) <= 1.0e-7
+        Ct = vcat(permutedims(F[:, 1:3]), permutedims(f.U[:, 1:r] .* f.S[1:r]'))
+        G = zeros(3 + r, Q)
+        G[1:3, 1:3] = Matrix{Float64}(I, 3, 3)
+        G[4:(3 + r), 4:Q] = permutedims(f.V[:, 1:r] .* scale)
+        return (; Ct, G)
+    end
+    return n_m <= Q ? (Ct = Matrix{Float64}(I, n_m, n_m), G = F) : (Ct = permutedims(F), G = nothing)
 end
+
+const _SCATTER_SVD_TOL = 1.0e-8
 
 # Every ray's features (`_scatter_feature_lanes`) from the walk's lane sums: the sums themselves
 # (a lane per feature), or one matrix product (a lane per material).
