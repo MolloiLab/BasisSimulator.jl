@@ -75,13 +75,34 @@ end
 # R lanes of an attenuation basis, voxel material `m` adding `w · Ct[:, m]` (see
 # `_attenuation_basis`): R products per voxel however many materials there are.
 @inline _lane_add(plens::NTuple, ::Nothing, mat::Int32, a, b) = _plen_accum(plens, mat, a, b)
-@inline function _lane_add(plens::NTuple{R, T}, Ct::AbstractMatrix, mat::Int32, a::T, b::T) where {R, T}
-    w = a * b
-    return ntuple(k -> plens[k] + w * @inbounds(Ct[k, mat]), Val(R))
+# Written out lane by lane, as every per-lane helper here: a closure capturing the device array
+# (`ntuple(k -> … Ct[k, mat] …)`) is not reliably inlined into a GPU kernel, and with
+# AcceleratedKernels 0.4 / CUDA.jl 5 it compiled to wrong sums (72 % off at rank 6, 288 energies).
+@generated function _lane_add(plens::NTuple{R, T}, Ct::AbstractMatrix, mat::Int32, a::T, b::T) where {R, T}
+    sums = [:(plens[$k] + w * @inbounds(Ct[$k, mat])) for k in 1:R]
+    return quote
+        Base.@_inline_meta
+        w = a * b
+        tuple($(sums...))
+    end
 end
 
 # Max n_materials for the path-length kernels (NTuple stays in registers).
 const _PLEN_MAX_MATERIALS = 64
+
+# A lane-coefficient matrix (lanes × materials) has a multiple of 4 rows, the extra lanes zero, as does
+# the table its lanes multiply: each material's column then starts 16-byte aligned, so the vector loads
+# a compiler may make of `Ct[1:R, mat]` are aligned. With CUDA.jl 5 (GPUCompiler 1.x) a 6-lane column
+# (a 24-byte stride) was read misaligned and the projection came out 90 % wrong; 4, 8 and 12 lanes
+# were right. Zero lanes add nothing to any sum.
+_lane_rows(R::Integer) = 4 * cld(R, 4)
+function _pad_lanes(A::AbstractMatrix)
+    R = _lane_rows(size(A, 1))
+    R == size(A, 1) && return A
+    P = zeros(eltype(A), R, size(A, 2))
+    P[1:size(A, 1), :] .= A
+    return P
+end
 
 # -----------------------------------------------------------------------------
 # An attenuation basis: any number of materials in a few lanes
@@ -161,7 +182,7 @@ function _attenuation_basis(μ_table::AbstractMatrix{T}, weight::AbstractVector{
                 G = zeros(R, E)
                 G[:, on] = Ga
                 device(x) = copyto!(similar(μ_table, T, size(x)), T.(x))
-                basis = (Ct = device(permutedims(μa[:, J])), G = device(G), J = on[J])
+                basis = (Ct = device(_pad_lanes(permutedims(μa[:, J]))), G = device(_pad_lanes(G)), J = on[J])
                 break
             end
         end
@@ -178,12 +199,15 @@ function _plen_lanes(μ_table::AbstractMatrix, weight::AbstractVector{<:Real})
     M = size(μ_table, 1)
     M <= _DIRECT_MAX_MATERIALS[] && return (lanes = nothing, table = μ_table, n = M)
     b = _attenuation_basis(μ_table, weight)
-    b === nothing || return (lanes = b.Ct, table = b.G, n = length(b.J))
+    b === nothing || return (lanes = b.Ct, table = b.G, n = size(b.Ct, 1))
     # no basis: one lane per material, each added with a product (identity coefficients), not
     # selected (64 materials: 3.7 s against 210 s per 120 views)
     M <= _PLEN_MAX_MATERIALS || return nothing
-    eye = copyto!(similar(μ_table, M, M), Matrix{eltype(μ_table)}(I, M, M))
-    return (lanes = eye, table = μ_table, n = M)
+    R = _lane_rows(M)
+    eye = copyto!(similar(μ_table, R, M), _pad_lanes(Matrix{eltype(μ_table)}(I, M, M)))
+    table = fill!(similar(μ_table, R, size(μ_table, 2)), zero(eltype(μ_table)))
+    view(table, 1:M, :) .= μ_table
+    return (lanes = eye, table, n = R)
 end
 
 # The projection's weight of each energy: the fused polychromatic sums' (|wη| + |w2|), the
@@ -374,9 +398,14 @@ end
 
 # Path-length kernel launch (spectral): one walk accumulating per-material P,
 # then per output bin a runtime loop over the K tile energies at cell level.
-# Every bin's sum gains `W[e, b] · trans` (a function, so the GPU closure captures no reassigned tuple).
-@inline _bin_sums(acc::NTuple{NB, T}, W, e::Int32, trans::T) where {NB, T} =
-    ntuple(b -> @inbounds(acc[b] + W[e, b] * trans), Val(NB))
+# Every bin's sum gains `W[e, b] · trans`, written out bin by bin (no closure in the GPU kernel).
+@generated function _bin_sums(acc::NTuple{NB, T}, W, e::Int32, trans::T) where {NB, T}
+    sums = [:(@inbounds(acc[$b] + W[e, $b] * trans)) for b in 1:NB]
+    return quote
+        Base.@_inline_meta
+        tuple($(sums...))
+    end
+end
 
 function _dd_fused_spectral_plen!(
         ::Val{M}, ::Val{NB}, lanes, K::Int32, ts::Int32,
@@ -691,8 +720,13 @@ end
 # Pass 2: the spectral conversion. Reads the cached path lengths; never touches the volume.
 # A cached ray's lanes: its per-material paths (`nothing`), or their sums on the basis `Ct` (R × M),
 # a runtime loop over the materials.
-@inline _path_lanes(::Val{M}, ::Nothing, paths, col, row, angle) where {M} =
-    ntuple(m -> @inbounds(paths[m, col, row, angle]), Val(M))
+@generated function _path_lanes(::Val{M}, ::Nothing, paths, col, row, angle) where {M}
+    lanes = [:(@inbounds(paths[$m, col, row, angle])) for m in 1:M]
+    return quote
+        Base.@_inline_meta
+        tuple($(lanes...))
+    end
+end
 @inline function _path_lanes(::Val{R}, Ct::AbstractMatrix, paths, col, row, angle) where {R}
     T = eltype(paths)
     acc = ntuple(_ -> zero(T), Val(R))

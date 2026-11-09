@@ -342,7 +342,7 @@ end
         big = _eict_scatter_scan(_SCATTER_EICT, copies(n))
         lanes = big.ws.scatter.rays
         # one lane per material up to 16 (air is one), else water and lung: rank 2 beyond the exact three
-        @test n < 16 ? lanes.lanes_Ct === nothing : size(lanes.lanes_Ct, 1) == 3 + 2
+        @test n < 16 ? lanes.lanes_Ct === nothing : size(lanes.lanes_Ct, 1) == 8   # 3 + 2, padded to 4k
         # to rounding, but for the few rays whose rounding tips a discrete choice (a kernel's
         # nearest grid node): 3e-4 there, inside the library's own Monte Carlo precision
         @test isapprox(Array(big.ws.scatter.field), Array(ref.ws.scatter.field); rtol = 1.0e-3)
