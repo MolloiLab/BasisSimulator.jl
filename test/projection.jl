@@ -471,6 +471,41 @@ end
 end
 
 # -----------------------------------------------------------------------------
+# Every basis rank on the device, against the CPU: lane-coefficient matrices are padded to a multiple
+# of 4 rows, so a column's vector loads are aligned (with CUDA.jl 5 a rank-6 basis, a 24-byte
+# stride, projected 90 % wrong while ranks 4, 8 and 12 were right).
+# -----------------------------------------------------------------------------
+@testset "attenuation-basis lanes of every rank on the device" begin
+    if !HAS_GPU
+        @info "Skipping the device basis-rank test: no GPU backend"
+    else
+        sc = BS.EICTScanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 4, detector_cols = 32, detector_row_size = 1.0, detector_col_size = 1.0,
+        )
+        geom = BS.CTGeometry(sc; n_angles = 8, fov_cm = 20.0, z_cm = 1.0)
+        K, nb, M = 32, 2, 27
+        for rank in 1:12
+            rng = MersenneTwister(rank)
+            w = rand(rng, Float32, M, rank)
+            w ./= sum(w; dims = 2)
+            μ = w * (0.02f0 .+ 0.3f0 .* rand(rng, Float32, rank, K))
+            μ[1, :] .= 0
+            mask = UInt8.(rand(rng, 0:(M - 1), 32, 32, 8))
+            W = rand(rng, Float32, K, nb)
+            run(arr) = let pilot = arr(zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)),
+                    out = arr(zeros(Float32, nb * length(pilot)))
+                BS.dd_fast_fused_spectral_project!(pilot, out, Int32(nb), arr(mask), geom, arr(μ), arr(W), Val(K), Int32(1))
+                Array(out)
+            end
+            lanes = BS._plen_lanes(μ, ones(K))
+            @test lanes.n % 4 == 0 && size(lanes.table, 1) == lanes.n
+            @test isapprox(run(to_gpu), run(identity); rtol = 1.0e-5)
+        end
+    end
+end
+
+# -----------------------------------------------------------------------------
 # The fused spectral projectors write bin b at idx + (b − 1)·n_elem of one flat buffer. The
 # NAEOTOM Alpha's full detector at native resolution (2752 × 288 dexels, four bins) passes
 # typemax(Int32) in the fourth bin's offset from 904 views on: an Int32 offset wrapped negative

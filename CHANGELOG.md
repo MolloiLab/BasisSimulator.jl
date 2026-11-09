@@ -12,6 +12,29 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.6](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.5...v0.16.6) (2026-11-09)
+
+Fixes projections that came out wrong on the GPU with CUDA.jl 5 (AcceleratedKernels 0.4) since v0.16.4,
+for phantoms of more than 16 materials whose attenuation basis has 6 lanes.
+
+### Fixed
+- **Lane-coefficient matrices are padded to a multiple of 4 rows** (the extra lanes zero, in the table
+  they multiply too). A basis of 6 lanes put each material's coefficients at a 24-byte stride; the
+  compiler of CUDA.jl 5 (GPUCompiler 1.x) read them with vector loads that assume 16-byte alignment,
+  and the projection came out up to 90 % wrong. Ranks 4, 8 and 12 were right, and CUDA.jl 6 compiled
+  every rank right. On notebook 04's Gammex 472 (27 materials, a rank-6 basis) the docs, rendered with
+  CUDA.jl 5, read solid water 956 HU off theory (v0.16.3: 0.6 HU); its photon-counting line integrals
+  were half the true ones. Every result of v0.16.4 and v0.16.5 on CUDA.jl 5 with more than 16
+  materials is affected; on CUDA.jl 6 none is. A test now checks every basis rank from 1 to 12 on the
+  device against the CPU.
+- The per-lane and per-bin sums in the fast projector's kernels are written out element by element
+  (`@generated`), as its other helpers are, instead of closures over device arrays.
+
+### Docs
+- The 12 BasisSimulator notebooks re-rendered (Julia 1.12, CUDA.jl 5.11, RTX PRO 6000): every check
+  passes again.
+
+
 ## [0.16.5](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.4...v0.16.5) (2026-11-09)
 
 Removes the rings the scatter correction left on a detector with dexel defects, makes a scanner's
