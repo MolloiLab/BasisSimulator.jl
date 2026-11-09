@@ -28,6 +28,37 @@ function _toy_proj_geom(; n_cols = 16, n_rows = 4, n_angles = 4, fov_cm = 5.0)
     return BS.CTGeometry(scanner; n_angles = n_angles, fov_cm = fov_cm, z_cm = 1.0)
 end
 
+# -----------------------------------------------------------------------------
+# The reference the single-pass `:dd_fast` projections must reproduce: each energy's attenuation
+# volume `μ[mask + 1, e]` through the mono distance-driven projector (`dd_forward_project`), then
+# Beer–Lambert, with the arguments of `dd_fast_fused_poly_project!` / `…_spectral_project!`.
+# -----------------------------------------------------------------------------
+function _dd_line_integrals(mask, geom, μ, energies; volume_extent = nothing)
+    m = Array(mask)
+    μh = Array(μ)
+    return Dict(e => BS.dd_forward_project(map(x -> μh[Int(x) + 1, e], m), geom; volume_extent) for e in energies)
+end
+function _dd_poly_reference!(sino, mask, geom, μ, w, ::Val{N_E}; volume_extent = nothing, ws_bowtie_spectral = nothing) where {N_E}
+    L = _dd_line_integrals(mask, geom, μ, 1:N_E; volume_extent)
+    wh = Array(w)
+    I = sum(wh[e] .* (ws_bowtie_spectral === nothing ? 1 : ws_bowtie_spectral[:, :, e]) .* exp.(-L[e]) for e in 1:N_E)
+    sino .= -log.(max.(I, 1.0f-10))
+    return sino
+end
+function _dd_spectral_reference!(
+        pilot, out, n_bins, mask, geom, μ, W, ::Val{K}, tile_start;
+        volume_extent = nothing, ws_bowtie_spectral = nothing,
+    ) where {K}
+    energies = Int(tile_start):min(Int(tile_start) + K - 1, size(W, 1))
+    L = _dd_line_integrals(mask, geom, μ, energies; volume_extent)
+    ne = length(pilot)
+    for b in 1:n_bins, e in energies
+        t = W[e, b] .* (ws_bowtie_spectral === nothing ? 1 : ws_bowtie_spectral[:, :, e]) .* exp.(-L[e])
+        out[((b - 1) * ne + 1):(b * ne)] .+= vec(t)
+    end
+    return out
+end
+
 @testset "distance-driven exact transpose" begin
     for shape in (:flat, :arc)
         scanner = BS.EICTScanner(
@@ -203,12 +234,12 @@ end
 end
 
 # -----------------------------------------------------------------------------
-# dd_fused_poly_project! / dd_fused_spectral_project! — must agree with the
+# dd_fast_fused_poly_project! / dd_fast_fused_spectral_project! — must agree with the
 # Siddon fused kernels (same mask / μ-table / weights) within the DD-vs-Siddon
 # discretisation tolerance.  These are the kernels the EI (polychromatic) and
 # PCCT (photon-counting) pipelines call.
 # -----------------------------------------------------------------------------
-@testset "dd fused projectors vs Siddon fused" begin
+@testset "dd_fast fused projectors vs Siddon fused" begin
     geom = _toy_proj_geom(n_cols = 64, n_rows = 8, n_angles = 8, fov_cm = 20.0)
     nx = ny = 64
     nz = 8
@@ -231,7 +262,7 @@ end
         sino_s = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.siddon_fused_poly_project!(sino_s, mask, geom, μ_table, wη, Val(N_E))
-        BS.dd_fused_poly_project!(sino_d, mask, geom, μ_table, wη, Val(N_E))
+        BS.dd_fast_fused_poly_project!(sino_d, mask, geom, μ_table, wη, Val(N_E))
         m = sino_s .> 1.0f-4
         relΔ = abs.(sino_d[m] .- sino_s[m]) ./ sino_s[m]
         @test count(m) > 1000
@@ -252,7 +283,7 @@ end
         out_s = zeros(Float32, ne * 2)
         out_d = zeros(Float32, ne * 2)
         BS.siddon_fused_spectral_project!(pilot, out_s, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
-        BS.dd_fused_spectral_project!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
+        BS.dd_fast_fused_spectral_project!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
         for b in 1:2
             seg = ((b - 1) * ne + 1):(b * ne)
             bs = out_s[seg]
@@ -265,12 +296,13 @@ end
 end
 
 # -----------------------------------------------------------------------------
-# dd_fast fused projectors — per-material path-length variant of the DD fused
-# kernels.  The contract is EQUIVALENCE to the dd.jl kernels (same footprint/overlap
-# weights, accumulation reassociated by linearity → floating-point-ordering
-# differences only), plus agreement with Siddon within the usual DD tolerance.
+# dd_fast fused projectors — per-material path-length (or attenuation-basis) walks.
+# The contract is EQUIVALENCE to the per-energy mono DD projections (same
+# footprint/overlap weights, accumulation reassociated by linearity →
+# floating-point-ordering differences only), plus agreement with Siddon within the
+# usual DD tolerance.
 # -----------------------------------------------------------------------------
-@testset "dd_fast fused projectors ≡ dd fused (path-length reassociation)" begin
+@testset "dd_fast fused projectors ≡ per-energy mono DD (path-length reassociation)" begin
     geom = _toy_proj_geom(n_cols = 64, n_rows = 8, n_angles = 8, fov_cm = 20.0)
     nx = ny = 64
     nz = 8
@@ -296,20 +328,20 @@ end
     @testset "fused poly: dd_fast ≡ dd (float-ordering only)" begin
         sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-        BS.dd_fused_poly_project!(sino_d, mask, geom, μ_table, wη, Val(N_E))
+        _dd_poly_reference!(sino_d, mask, geom, μ_table, wη, Val(N_E))
         BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_table, wη, Val(N_E))
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4        # reassociation noise only
     end
 
-    @testset "fused poly: dd_fast tracks Siddon exactly as legacy dd does" begin
+    @testset "fused poly: dd_fast tracks Siddon exactly as per-energy DD does" begin
         # On this hard-edged rod phantom Siddon-vs-DD legitimately disagree on
         # grazing rays (the aliasing DD exists to fix), so the invariant is:
-        # dd_fast deviates from Siddon NO MORE than legacy dd does.
+        # dd_fast deviates from Siddon NO MORE than per-energy DD does.
         sino_s = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.siddon_fused_poly_project!(sino_s, mask, geom, μ_table, wη, Val(N_E))
-        BS.dd_fused_poly_project!(sino_d, mask, geom, μ_table, wη, Val(N_E))
+        _dd_poly_reference!(sino_d, mask, geom, μ_table, wη, Val(N_E))
         BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_table, wη, Val(N_E))
         m = sino_s .> 1.0f-4
         relΔ_f = abs.(sino_f[m] .- sino_s[m]) ./ sino_s[m]
@@ -331,7 +363,7 @@ end
         ne = length(pilot)
         out_d = zeros(Float32, ne * 2)
         out_f = zeros(Float32, ne * 2)
-        BS.dd_fused_spectral_project!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
+        _dd_spectral_reference!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
         BS.dd_fast_fused_spectral_project!(pilot, out_f, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
         @test maximum(abs.(out_f .- out_d)) < 1.0f-4          # reassociation noise only
     end
@@ -356,7 +388,7 @@ end
 
         sino_d = zeros(Float32, geom_h.n_cols, geom_h.n_rows, geom_h.n_angles)
         sino_f = similar(sino_d)
-        BS.dd_fused_poly_project!(
+        _dd_poly_reference!(
             sino_d, mask_h, geom_h, μ_table, wη, Val(N_E);
             volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie
         )
@@ -367,17 +399,74 @@ end
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 
-    @testset "M > 64 materials warns and falls back to the legacy dd kernel" begin
+    @testset "a table no basis reproduces is an error, up to 64 materials one pass" begin
+        rng = MersenneTwister(70)
+        μ_rand = rand(rng, Float32, 70, 80) .+ 0.1f0           # full rank: no 64-energy basis
+        @test BS._plen_lanes(μ_rand, ones(80)) === nothing
+        @test BS._plen_lanes(μ_rand[1:10, :], ones(80)).lanes === nothing   # few materials: their own lanes
+        @test BS._plen_lanes(μ_rand[1:64, :], ones(80)) !== nothing         # up to 64: always one pass
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        @test_throws ArgumentError BS.dd_fast_fused_poly_project!(sino, mask, geom, μ_rand, fill(1.0f0 / 80, 80), Val(80))
+    end
+
+    @testset "40 random materials: one pass, as per-energy DD" begin
+        rng = MersenneTwister(40)
+        μ40 = 0.3f0 .* rand(rng, Float32, 40, N_E)
+        μ40[1, :] .= 0
+        mask40 = UInt16.(rand(rng, 0:39, size(mask)))
+        sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        sino_f = similar(sino_d)
+        _dd_poly_reference!(sino_d, mask40, geom, μ40, wη, Val(N_E))
+        @test_logs BS.dd_fast_fused_poly_project!(sino_f, mask40, geom, μ40, wη, Val(N_E))
+        @test isapprox(sino_f, sino_d; rtol = 1.0e-5)
+        n_bins = 2
+        W = Float32[(e + b) / (2N_E) for e in 1:N_E, b in 1:n_bins]
+        ne = geom.n_cols * geom.n_rows * geom.n_angles
+        out_d = zeros(Float32, n_bins * ne)
+        out_f = zeros(Float32, n_bins * ne)
+        pilot_d = reshape(view(out_d, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
+        pilot_f = reshape(view(out_f, 1:ne), geom.n_cols, geom.n_rows, geom.n_angles)
+        _dd_spectral_reference!(pilot_d, out_d, Int32(n_bins), mask40, geom, μ40, W, Val(N_E), Int32(1))
+        @test_logs BS.dd_fast_fused_spectral_project!(pilot_f, out_f, Int32(n_bins), mask40, geom, μ40, W, Val(N_E), Int32(1))
+        @test isapprox(out_f, out_d; rtol = 1.0e-5)
+    end
+
+    @testset "material paths for any number of materials" begin
+        rng = MersenneTwister(100)
+        mask100 = rand(rng, UInt8(0):UInt8(99), size(mask))
+        paths100 = zeros(Float32, 100, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fast_material_paths!(paths100, mask100, geom)
+        mask3 = UInt8.(mask100 .% 3)
+        paths3 = zeros(Float32, 3, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fast_material_paths!(paths3, mask3, geom)
+        grouped = cat((sum(paths100[(k + 1):3:end, :, :, :]; dims = 1) for k in 0:2)...; dims = 1)
+        @test count(>(0), paths3) > 0
+        @test isapprox(grouped, paths3; rtol = 1.0e-5)
+    end
+
+    @testset "lane sums for any number of lanes" begin
+        rng = MersenneTwister(130)
+        mask100 = rand(rng, UInt8(0):UInt8(99), size(mask))
+        paths100 = zeros(Float32, 100, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fast_material_paths!(paths100, mask100, geom)
+        Ct = rand(rng, Float32, 130, 100)                     # 130 lanes: three walks
+        sums = zeros(Float32, 130, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_fast_lane_sums!(sums, mask100, geom, Ct)
+        expected = reshape(Ct * reshape(paths100, 100, :), size(sums))
+        @test isapprox(sums, expected; rtol = 1.0e-5)
+    end
+
+    @testset "M > 64 materials: one pass on an attenuation basis, as per-energy DD" begin
         μ_big = zeros(Float32, 65, N_E)
         μ_big[2, :] .= μ_table[2, :]
         μ_big[3, :] .= μ_table[3, :]
         sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-        BS.dd_fused_poly_project!(sino_d, mask, geom, μ_big, wη, Val(N_E))
-        @test_logs (:warn, r"DD_FAST SINGLE-PASS DISABLED.*65"s) BS.dd_fast_fused_poly_project!(
-            sino_f, mask, geom, μ_big, wη, Val(N_E)
-        )
-        @test sino_f == sino_d                                # same code path, bit-identical
+        _dd_poly_reference!(sino_d, mask, geom, μ_big, wη, Val(N_E))
+        @test_logs BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_big, wη, Val(N_E))
+        b = BS._attenuation_basis(μ_big, abs.(Float64.(wη)))
+        @test b !== nothing && length(b.J) == 2                # two distinct materials: rank 2
+        @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 end
 
@@ -414,7 +503,6 @@ end
         )
         for project! in (
                 BS.dd_fast_fused_spectral_project!,
-                BS.dd_fused_spectral_project!,
                 BS.siddon_fused_spectral_project!,
             )
             fill!(out, 0.0f0)
@@ -608,20 +696,20 @@ end
         wη = fill(Float32(1 / N_E), N_E)
         sd = zeros(Float32, ga.n_cols, ga.n_rows, ga.n_angles)
         sf = zeros(Float32, ga.n_cols, ga.n_rows, ga.n_angles)
-        BS.dd_fused_poly_project!(sd, mask8, ga, μt, wη, Val(N_E))
+        _dd_poly_reference!(sd, mask8, ga, μt, wη, Val(N_E))
         BS.dd_fast_fused_poly_project!(sf, mask8, ga, μt, wη, Val(N_E))
-        @test maximum(abs.(sf .- sd)) < 1.0f-4     # path-length ≡ legacy, on arc
+        @test maximum(abs.(sf .- sd)) < 1.0f-4     # path-length ≡ per-energy DD, on arc
     end
 end
 
 # -----------------------------------------------------------------------------
-# The distance-driven walk's arithmetic is one rounding everywhere (explicit `fma`s, `_dd_sincos`),
-# so the CPU and a device give its path lengths and forward projection bit for bit alike. The
-# scatter's impact, inverted from each ray's water length, amplifies any ulp the two differ by.
+# The distance-driven walk on the CPU and on a device agrees to floating-point rounding (a GPU
+# fuses multiply-adds the CPU rounds twice; bitwise agreement is not required and cost the GPU walk
+# 20×), and a device repeats itself exactly.
 # -----------------------------------------------------------------------------
-@testset "distance-driven walk: CPU and GPU bit for bit" begin
+@testset "distance-driven walk: CPU and GPU agree to rounding" begin
     if !HAS_GPU
-        @info "Skipping the CPU/GPU bit-for-bit walk test: no GPU backend"
+        @info "Skipping the CPU/GPU walk test: no GPU backend"
     else
         rng = MersenneTwister(0x0DDF)
         mask = rand(rng, UInt8(0):UInt8(2), 24, 24, 4)
@@ -651,14 +739,17 @@ end
             paths_gpu = to_gpu(zero(paths_cpu))
             BS.dd_fast_material_paths!(paths_gpu, to_gpu(mask), geom)
             @test count(>(0), paths_cpu) > 0
-            @test Array(paths_gpu) == paths_cpu
+            @test isapprox(Array(paths_gpu), paths_cpu; rtol = 1.0e-5)
+            again = to_gpu(zero(paths_cpu))
+            BS.dd_fast_material_paths!(again, to_gpu(mask), geom)
+            @test again == paths_gpu                          # deterministic on the device
 
             # the :dd forward projection of a volume
             sino_cpu = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
             BS.dd_forward_project!(sino_cpu, volume, geom)
             sino_gpu = to_gpu(zero(sino_cpu))
             BS.dd_forward_project!(sino_gpu, to_gpu(volume), geom)
-            @test Array(sino_gpu) == sino_cpu
+            @test isapprox(Array(sino_gpu), sino_cpu; rtol = 1.0e-5)
         end
     end
 end

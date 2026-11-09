@@ -319,6 +319,69 @@ end
     @test after < before / 4
 end
 
+@testset "any number of materials: copies of a material scatter as the material" begin
+    # water and lung, each split across many labels of the same material: the walk carries one lane
+    # per material (fewer materials than features) or one per feature (more), and either way the
+    # scatter is the two-material phantom's
+    small = _scatter_phantom(; a_cm = 30.0, lungs = true)
+    m = Array(small.mask)
+    function copies(n)
+        mask = zeros(UInt16, size(m))
+        for k in eachindex(m)
+            m[k] == 0 && continue
+            mask[k] = UInt16(m[k] == 1 ? 1 + 2 * (k % (n ÷ 2)) : 2 + 2 * (k % (n ÷ 2)))
+        end
+        materials = Dict{Int, Any}(0 => BS.XA.Materials.air)
+        for l in 1:n
+            materials[l] = isodd(l) ? BS.XA.Materials.water : BS.XA.Materials.lung
+        end
+        return BS.Phantom(mask, materials, small.voxel_size)
+    end
+    ref = _eict_scatter_scan(_SCATTER_EICT, small)
+    for n in (8, 300)                                          # one lane per material; the orthonormal lanes
+        big = _eict_scatter_scan(_SCATTER_EICT, copies(n))
+        lanes = big.ws.scatter.rays
+        @test size(lanes.lanes_Ct, 1) == (n < 16 ? n + 1 : 3 + 2)   # water and lung: rank 2 beyond the exact three
+        # to rounding, but for the few rays whose rounding tips a discrete choice (a kernel's
+        # nearest grid node): 3e-4 there, inside the library's own Monte Carlo precision
+        @test isapprox(Array(big.ws.scatter.field), Array(ref.ws.scatter.field); rtol = 1.0e-3)
+        @test isapprox(big.sinogram, ref.sinogram; rtol = 1.0e-5)
+    end
+end
+
+@testset "the scatter's lanes reproduce every feature" begin
+    rng = MersenneTwister(855)
+    nb, nE = 4, 10
+    features(kind, wet, dmu, ratio) = (s = kind .!= 0; hcat(wet .* s, Float64.(s), Float64.(kind .== 2), dmu .* s, reshape(ratio, length(kind), :) .* s))
+    function check(kind, wet, dmu, ratio)
+        l = BS._scatter_feature_lanes(kind, wet, dmu, ratio)
+        F = features(kind, wet, dmu, ratio)
+        rebuilt = l.G === nothing ? permutedims(l.Ct) : permutedims(l.Ct) * l.G
+        scale = [max(maximum(abs, c), 1.0e-300) for c in eachcol(F)]
+        @test maximum(abs.(rebuilt .- F) ./ scale') <= 1.0e-7
+        @test rebuilt[:, 3] == F[:, 3]                         # the water test's lane is exact
+        return l
+    end
+    kinds(n) = Int32[k == 1 ? 0 : (isodd(k) ? 1 : 2) for k in 1:n]
+    # mixtures of four materials: few lanes whatever their number
+    base = (rand(rng, 4), rand(rng, 4, nb), 1 .+ rand(rng, 4, nE, 3))
+    for n in (10, 300)
+        w = rand(rng, n, 4)
+        w ./= sum(w; dims = 2)
+        l = check(kinds(n), w * base[1], w * base[2], reshape(w * reshape(base[3], 4, :), n, nE, 3))
+        @test size(l.Ct, 1) == (n <= 16 ? n : 3 + 4)
+    end
+    # features of a rank no 64 lanes hold: a lane per material (no more materials than features)
+    # or per feature
+    nE = 30
+    Q = 3 + nb + 3nE
+    for n in (80, 200)
+        l = check(kinds(n), rand(rng, n), rand(rng, n, nb), rand(rng, n, nE, 3))
+        @test size(l.Ct, 1) == min(n, Q)
+        @test (l.G === nothing) == (n > Q)
+    end
+end
+
 @testset "an empty field gets no scatter" begin
     air = _scatter_phantom(; a_cm = 0.0, n = 8)
     on = _eict_scatter_scan(_SCATTER_EICT, air)

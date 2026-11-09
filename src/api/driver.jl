@@ -1666,7 +1666,8 @@ end
     The cache belongs to the phantom and geometry it was walked for, and nothing downstream can
     tell that it does not: reusing it with a different phantom silently projects the old one.
     Its size is also the cost — `n_materials × n_cols × n_rows × n_views` floats, 1.7 GiB for
-    16 materials on an 834 × 34 × 1000 sinogram — so `compact_materials(phantom)` first.
+    16 materials on an 834 × 34 × 1000 sinogram — so `compact_materials(phantom)` first. (The
+    projection itself takes any number of materials.)
 
 The cache is of point views: with view integration (`SimOptions(; view_samples > 1)`) every
 sub-view is a geometry of its own, and the noise draws of one acquisition share their projection

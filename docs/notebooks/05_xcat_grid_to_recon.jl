@@ -415,8 +415,8 @@ look.
 
 Two phantoms are built from the same crop. `phantom_cpu` keeps the XCAT labels, for the
 resampling. The simulation phantom is `compact_materials(phantom_cpu)` on the device: the same
-attenuation with the labels renumbered densely, because the single-pass `:dd_fast` projector
-handles at most 64 materials and the sheet's label IDs run to $(materials_full === nothing ? "—" : maximum(keys(materials_full))).
+attenuation with the labels renumbered densely. The sheet's label IDs run to $(materials_full === nothing ? "—" : maximum(keys(materials_full))), and a table
+of every ID would carry hundreds of materials no voxel holds (`:dd_fast` itself takes any number).
 """)
 
 # ╔═╡ 05000008-0000-4000-8000-000000000011

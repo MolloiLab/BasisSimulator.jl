@@ -250,7 +250,7 @@ cylinder = BS.Phantom(device(labels), materials, (voxel_cm, voxel_cm, voxel_cm))
                 ["The phantom is centred on the rotation axis.", "The volume is always placed at the isocentre. Crop or pad the array to move anatomy; origin does not move it."],
                 ["Keep the whole body in the volume.", "Photons cross everything in the volume. A phantom cut to the heart scans as if the rest of the chest were air."],
                 ["Leave a margin in z beyond the slices you want.", "The cone beam reaches past the reconstructed slab; anatomy that stops at the volume's edge spoils the end slices."],
-                ["Use 64 materials or fewer.", "The fast projector holds 64 materials in one pass. More falls back to a path tens of times slower, with a warning."],
+                ["Use as many materials as you need.", "The fast projector's cost is set by the elements in the phantom, not the number of materials."],
             ]),
 
             H3(:class => h3_cls, "Contrast and Anatomy"),
@@ -583,12 +583,11 @@ julia --project=docs -t auto -e 'using Pluto; Pluto.run()'"""),
                 edge("Dotted rings or streaks around small objects",
                     ("Phantom voxels larger than the image's turn every round edge into a staircase."),
                     ("Use phantom voxels no larger than the reconstruction voxel, and a phantom field wider than the image's.")),
-                edge("\"DD_FAST SINGLE-PASS DISABLED\", and the scan is much slower",
-                    ("The fast projector holds 64 materials in one pass. A phantom with many iodine levels quickly has more."),
-                    ("Run ", c("BS.compact_materials(phantom)"), " and merge labels with the same material. To quantize ",
-                     "iodine to 64 levels, round each voxel up or down at random in proportion to its distance from each level, ",
-                     "which keeps every region's mean exact; plain rounding biases region means by several percent. Never ",
-                     "merge labels across regions you will measure.")),
+                edge("\"no attenuation basis of at most 64 energies reproduces it\"",
+                    ("The material table has more than 64 materials, and no 64 energies reproduce their attenuation. ",
+                     "Mixtures of real elements never do this: their attenuation has at most as many shapes as elements."),
+                    ("Check the materials for a made-up attenuation table. Run ", c("BS.compact_materials(phantom)"),
+                     " to drop unused materials, and merge labels with the same material, never across regions you will measure.")),
                 edge("A coarser copy of the phantom has different material volumes",
                     ("Resampling labels by nearest neighbour drops and duplicates voxels."),
                     ("Keep one high-resolution phantom as the source and derive coarser ones from it, never from each other.")),
@@ -814,7 +813,7 @@ RULES
 - Every independent acquisition (tube, kVp, time point, repeat) gets its own seed; simulate! reseeds from seed every call.
 - Physics switches are fixed at create_workspace; rebuild the workspace to change them.
 - BHC uses the scan's own sim_opts, scanner and ws.geom; to_hounsfield always gets μ_water = bhc.μ_water_ref; HIR projector equals SimOptions projector.
-- Every label needs a material (missing -> air silently). Phantom voxel <= recon voxel. Whole body cross-section in the volume, z margin beyond the recon slab; the volume is centred at the isocentre (origin does not move it). <= 64 materials for the fast projector (compact_materials; dithered iodine quantization; never merge across measured regions).
+- Every label needs a material (missing -> air silently). Phantom voxel <= recon voxel. Whole body cross-section in the volume, z margin beyond the recon slab; the volume is centred at the isocentre (origin does not move it). Any number of materials (the fast projector's cost follows the elements present; compact_materials drops unused ones; never merge across measured regions).
 - Detector must cover the body: detector_cols * detector_col_size (mm) > body width. Even views per rotation for helical. Measure inside the inscribed FOV circle.
 - Water on a Gammex centre ROI reads about +20 HU (calcium hardening); judge water on a water phantom. HU per mg/mL iodine depends on body size; calibrate on the scanned body.
 - PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, protocol, recon, phantom; sim_opts), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
