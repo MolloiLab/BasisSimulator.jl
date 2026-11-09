@@ -14,17 +14,32 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [0.16.4](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.3...v0.16.4) (2026-11-09)
 
-Brings the photon-counting projection back to v0.15 speed and past it, and lets `:dd_fast` take any
-number of materials. On an NVIDIA RTX PRO 6000 Blackwell, demmd-bayesian's `NAEOTOM_ALPHA` scan of
-a 4 cm XCAT window (1600 × 1400 × 200 voxels, 16 materials, 140 kVp, 120 views):
+Brings the projection and the scatter back to v0.15 speed and well past it, for both detector
+families, and lets `:dd_fast` and the scatter take any number of materials. Seconds per 120 views on
+an NVIDIA RTX PRO 6000 Blackwell, demmd-bayesian's 4 cm XCAT window (1600 × 1400 × 200 voxels of
+0.2 mm, 140 kVp; "16" the bench's 16 classes, more materials random mixtures of 8 tissues), one
+sub-view unless noted:
 
-| | v0.15.0 | v0.16.3 | v0.16.4 |
-|---|---|---|---|
-| 1 sub-view, scatter off | 3.2 s | 23.7 s | **0.70 s** |
-| 5 sub-views, scatter on | 8.2 s (no scatter) | 121 s | **5.6 s** |
+| materials | scatter | `NAEOTOM_ALPHA` v0.16.3 | v0.16.4 | `SOMATOM_FORCE` v0.16.3 | v0.16.4 |
+|---|---|---|---|---|---|
+| 16 | off | 23.8 | **0.74** | 6.76 | **0.34** |
+| 16 | on | 26.6 | **1.17** | 9.58 | **0.65** |
+| 16 | on, 5 sub-views | 121.2 | **3.87** | 34.6 | **2.06** |
+| 64 | off | 175.7 | **0.68** | 41.5 | **0.67** |
+| 64 | on | 202.5 | **1.17** | 65.9 | **1.05** |
+| 256 | off | 431.9 | **0.69** | 232.4 | **0.67** |
+| 256 | on | (an error: at most 64) | **1.22** | (an error) | **1.08** |
+| 1024 | off | — | **0.83** | — | **0.98** |
+| 1024 | on | (an error) | **1.55** | (an error) | **1.53** |
 
-Results agree with v0.16.3 to Float32 rounding; up to 16 materials the GPU projection is the same to
-the bit.
+v0.15.0 took 3.2 s for the Alpha's 16 materials at one sub-view and 8.2 s at five, without scatter.
+demmd-bayesian's full acquisition of the Alpha (1200 views, five sub-views, scatter, pile-up and
+flat-field corrections on) takes 43–61 s per contrast state: v0.15.0 65 s, v0.16.3 1213 s.
+
+Against v0.16.3, noise-free: up to 16 materials without scatter the same to the bit; more materials
+(the attenuation basis) agree to a relative RMS of 1e-6 (Alpha) and 1.6e-5 (Force), at most 1.7e-4;
+with scatter, to a relative RMS of 1e-5–2e-5, at most 0.6 % on the Alpha's most attenuated rays,
+where v0.16.3's own scatter walk was off by up to 4.5e-3 in Float32 (see below).
 
 ### Performance
 - **The path-length walk adds the product once, then selects per material lane** (no fused
@@ -37,21 +52,13 @@ the bit.
   pivot energies, chosen by a pivoted QR among the energies that carry at least 1 % of the
   spectrum's peak weight, and every energy's line integral follows from them. The basis is fitted to
   the workspace's exact Float64 table and reproduces every material at every weighted energy to
-  1e-6 of itself. The same XCAT window with N random mixtures of 8 tissues (1 sub-view, scatter
-  off, 120 views):
-
-  | materials | basis rank | v0.16.4 | the per-energy tiled kernels (removed) | relative difference (RMS, max) |
-  |---|---|---|---|---|
-  | 16 | (one lane each) | 0.70 s | — | — |
-  | 64 | 9 | 0.72 s | — | — |
-  | 256 | 9 | 0.73 s | 58 s | 5e-7, 4e-5 |
-  | 1024 | 9 | 0.86 s | 60 s | 5e-7, 5e-5 |
-
-  One lane per material, as earlier versions walk, took 210 s at 64 materials even with this
-  release's faster lanes; more than 64 fell back to the per-energy tiled kernels.
+  1e-6 of itself: 64 to 1024 mixtures of 8 tissues in 9 lanes. With one lane per material, as
+  earlier versions walk, 64 materials took 210 s per 120 views on the Alpha even with this
+  release's faster lanes; more than 64 fell back to the per-energy tiled kernels (1024 materials:
+  60 s, against 0.86 s now, agreeing to a relative RMS of 5e-7).
 - **Scatter is fast, and takes any number of materials** (was at most 64). On the Alpha (1 sub-view,
-  120 views, the XCAT window) scatter adds 0.35 s for 16 materials (v0.16.3: 13 s), 0.45 s for
-  256 and 0.7 s for 1024; its cost no longer grows with the materials:
+  120 views, the XCAT window) scatter adds 0.43 s for 16 materials (v0.16.3: 2.8 s; 27 s for 64),
+  0.53 s for 256 and 0.72 s for 1024: its cost no longer grows with the materials.
   - the coarse rays' walk is split along each ray into up to 64 segments, one GPU thread each
     (the scatter's ~8,000 coarse rays, each a long walk over a wide footprint, left the GPU idle):
     16× faster, and 50× more accurate — a whole coarse walk summed in Float32 was off by up to
