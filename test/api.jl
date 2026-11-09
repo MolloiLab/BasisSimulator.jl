@@ -616,7 +616,7 @@ function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
         phantom_cpu.origin,
         phantom_cpu.extent,
     )
-    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     return (; scanner, protocol, sim_opts, recon_opts, phantom, ws)
 end
 
@@ -636,7 +636,7 @@ _ts("entering simulate!(EICTWorkspace) — return contract testset")
         ret = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")
         # Contract: returns the acquisition's dose; ws.sinogram populated and finite.
-        @test propertynames(ret) == (:dose,)
+        @test propertynames(ret) == (:sinogram, :dose)
         @test ret.dose isa BS.DoseReport && ret.dose.ctdi_vol_mGy > 0
         @test BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts; report_dose = false).dose ===
             nothing
@@ -932,7 +932,7 @@ end
 # Original BasisSim glue (not a CatSim port).  CatSim's equivalent is the
 # per-effect callback registry on `cfg.physics.*Callback`.  Every notebook
 # reaches this function indirectly through `create_workspace` /
-# `create_eict_workspace`, so its toggle resolution is on the hot path.
+# `create_workspace`, so its toggle resolution is on the hot path.
 # -----------------------------------------------------------------------------
 _ts("entering build_physics_config testset")
 @testset "build_physics_config" begin
@@ -1571,7 +1571,7 @@ _ts("entering Workspace ctors — PCCT pile-up off testset")
 end
 
 _ts("entering Workspace ctors — EICT field invariants testset")
-@testset "create_eict_workspace — field invariants" begin
+@testset "create_workspace (EICT) — field invariants" begin
     if !HAS_GPU
         @warn "Skipping EICT workspace ctor test: no GPU backend."
     else
@@ -1603,7 +1603,7 @@ _ts("entering Workspace ctors — EICT field invariants testset")
 end
 
 _ts("entering Workspace ctors — EICT spectrum_override testset")
-@testset "create_eict_workspace — spectrum_override path" begin
+@testset "create_workspace (EICT) — spectrum_override path" begin
     if !HAS_GPU
         @warn "Skipping EICT workspace ctor test: no GPU backend."
     else
@@ -1624,7 +1624,7 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
             phantom_cpu.voxel_size, phantom_cpu.origin, phantom_cpu.extent,
         )
 
-        ws = BS.create_eict_workspace(
+        ws = BS.create_workspace(
             scanner, protocol, sim_opts, recon_opts, phantom;
             spectrum_override = ([70.0], [1.0e6])
         )
@@ -1634,7 +1634,7 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
         @test ws.weights[1] == 1.0e6
 
         # Mismatched lengths must throw.
-        @test_throws ArgumentError BS.create_eict_workspace(
+        @test_throws ArgumentError BS.create_workspace(
             scanner, protocol, sim_opts, recon_opts, phantom;
             spectrum_override = ([70.0, 100.0], [1.0e6])
         )
@@ -1865,8 +1865,8 @@ _ts("entering EICT quantum noise dose-sweep testset")
                 use_noise = false, use_scatter = false,
                 use_focal_spot = false,
             )
-            ws_noisy = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-            ws_clean = BS.create_eict_workspace(scanner, protocol, clean_opts, recon_opts, phantom)
+            ws_noisy = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+            ws_clean = BS.create_workspace(scanner, protocol, clean_opts, recon_opts, phantom)
             BS.simulate!(ws_noisy, phantom, protocol, sim_opts)
             BS.simulate!(ws_clean, phantom, protocol, clean_opts)
             resid = Array(ws_noisy.sinogram) .- Array(ws_clean.sinogram)

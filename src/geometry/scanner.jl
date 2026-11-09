@@ -266,8 +266,8 @@ whole), `detector_efficiency_mode = :mc_lut` (that response: `:mc_lut`, the mate
 table, or `:beer_lambert`, analytic absorption at `detector_depth`), `use_optical_crosstalk = false`
 (light spread to the neighbouring dexels), `use_lag = true` (the scintillator's afterglow from
 view to view) and `scatter_correction = true`; and the dexels' defects, `gain_spread = 0.0`
-(relative σ), `offset_spread_keV = 0.0` and `defect_seed = 1` (corrected by
-[`calibrate_flat_field`](@ref)). The ideal detector is a copy with the spreads at zero.
+(relative σ), `offset_spread_keV = 0.0` and `defect_seed = 1` (corrected with the flat field of
+[`calibrate`](@ref)). The ideal detector is a copy with the spreads at zero.
 A photon-counting detector has none of the scintillator toggles: its response, fill factor and
 crosstalk are its response table's, and it has no afterglow.
 
@@ -314,8 +314,8 @@ direct-conversion detector model: `detector_material = :CdTe`, `detector_depth =
 `energy_thresholds` (keV, ascending; required, among the response table's), `dead_time_ns = 0.0`,
 `binning_factor = 1`; the detector-model toggles `pileup = true`, `scatter_correction = true`,
 `noise_reduction = 0.0`; and the native dexels' defects, `gain_spread = 0.0` (relative σ),
-`threshold_spread_keV = 0.0` and `defect_seed = 1` (corrected by [`calibrate_flat_field`](@ref);
-pile-up by [`calibrate_pileup`](@ref)). The ideal detector is a copy with the spreads at zero.
+`threshold_spread_keV = 0.0` and `defect_seed = 1` (corrected, with the pile-up, by
+[`calibrate`](@ref)). The ideal detector is a copy with the spreads at zero.
 `scatter_kernels = ""` names its entry of the Geant4 scatter library, as for
 [`EICTScanner`](@ref) (with `use_scatter = true`, the default, `""` throws); `scatter_correction`
 subtracts the scatter the library estimates from the measured counts alone, as

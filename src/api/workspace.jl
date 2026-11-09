@@ -9,7 +9,7 @@
 # Never references Metal.jl, CUDA.jl, or any specific GPU backend.
 
 export PCCTWorkspace, create_workspace
-export EICTWorkspace, create_eict_workspace
+export EICTWorkspace
 export FDKReconWorkspace, create_fdk_recon_workspace
 export HIRReconWorkspace, create_hir_recon_workspace
 
@@ -112,12 +112,25 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     mats::Vector{XA.Material}                # resolved materials
     kVp::Float64                             # max energy (kVp)
     dose_source::DoseSource                  # the beam, for `dose_report` / `result.dose`
+    calibration::Union{Nothing, Calibration} # the scanner's (`calibrate`): simulate! corrects with it
 end
 
 """
-    create_workspace(scanner, protocol, sim_opts, recon_opts, phantom; T=Float32)
+    create_workspace(scanner::PCCTScanner, protocol, sim_opts, recon_opts, phantom;
+                     calibration = nothing, T = Float32)
 
 Create a pre-allocated workspace for zero-allocation `simulate!()` calls.
+
+`calibration` is the scanner's [`calibrate`](@ref) for this protocol: `simulate!` corrects the
+recorded counts with it in a scanner's order, the pile-up, the dexels' flat field, then the scatter
+(whose estimate is a nominal dexel's, so it goes last, on corrected counts). A detector that piles up
+or has dexel defects needs it while the scatter correction is on (`NAEOTOM_ALPHA` does both):
+
+```julia
+calibration = calibrate(NAEOTOM_ALPHA, protocol, recon_opts, phantom)   # once per scanner and protocol
+ws = create_workspace(NAEOTOM_ALPHA, protocol, sim_opts, recon_opts, phantom; calibration)
+result = simulate!(ws, phantom, protocol, sim_opts)                      # corrected, every scan
+```
 
 Uses `similar(phantom.mask, T, shape)` for GPU-side buffers, which auto-detects
 the correct GPU backend (Metal, CUDA, ROCm, or CPU).
@@ -146,9 +159,11 @@ result2 = simulate!(ws, phantom, protocol, sim_opts)
 """
 function create_workspace(
         scanner::PCCTScanner, protocol, sim_opts, recon_opts, phantom;
+        calibration = nothing,
         T::Type{<:AbstractFloat} = Float32,
         extended_collimation::Bool = false,
     )
+    calibration = _check_calibration(scanner, protocol, sim_opts, calibration)
     # --- Pre-compute geometry first (collimation derives n_rows) ---
     geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
 
@@ -476,7 +491,7 @@ function create_workspace(
             pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec), _pileup_S,
             _pileup_rates, _pileup_hardness, _count_rate_air,
             geom, energies, weights_vec, config, pcct_detector, mats,
-            kVp, dose_source(scanner, protocol)
+            kVp, dose_source(scanner, protocol), calibration
         )
     catch
         release_backend!(owned_backend)
@@ -568,40 +583,13 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     # the beam, for `dose_report` / the `dose` of every `simulate!` result; `nothing` when
     # the spectrum was overridden, because dose needs absolute units
     dose_source::Union{Nothing, DoseSource}
+    calibration::Union{Nothing, Calibration}    # the scanner's (`calibrate`): simulate! corrects with it
 end
 
-"""
-    create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                          T=Float32, spectrum_override=nothing)
-
-Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!()`.
-
-# Keyword arguments
-- `spectrum_override::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}} = nothing` —
-  bypass the polychromatic IPEM lookup and use a custom `(energies, weights)` pair
-  for the source spectrum.  When `nothing` (default), the spectrum is loaded from
-  the IPEM tables via `resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)`.
-
-  **Important — `weights` is ABSOLUTE photon flux** (photons / mAs / mm² at 750 mm),
-  matching what `load_spectrum_unfiltered` returns.  `compute_detector_I0` reads
-  `sum(weights)` to size the per-pixel I0 budget, so passing `[1.0]` yields ~1
-  photon / mAs / mm² total — far below the noise clamp, leading to a uniform
-  saturated recon.
-
-  For a monoenergetic injection at `E_mono` with the same flux budget as a
-  polychromatic protocol at the same kVp, fetch the polychromatic flux total and
-  put it all at the mono bin:
-
-  ```julia
-  _, w_poly = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)
-  spectrum_override = ([E_mono], [sum(Float64.(w_poly))])
-  ```
-
-  Bowtie + heel + detector response evaluate at the override's actual energy
-  grid, so per-ray spectral physics still runs.
-"""
-function create_eict_workspace(
+# The energy-integrating workspace behind `create_workspace(::EICTScanner, …)`.
+function _create_eict_workspace(
         scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom;
+        calibration = nothing,
         T::Type{<:AbstractFloat} = Float32,
         spectrum_override::Union{
             Nothing,
@@ -609,6 +597,7 @@ function create_eict_workspace(
         } = nothing,
         extended_collimation::Bool = false,
     )
+    calibration = _check_calibration(scanner, protocol, sim_opts, calibration)
     # Geometry
     geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
 
@@ -826,7 +815,8 @@ function create_eict_workspace(
         # A spectrum override carries relative weights (its own docstring's example is
         # `([E_mono], [sum(weights)])`), and dose needs absolute photons/mAs/mm². Reporting one
         # anyway was wrong by seven orders of magnitude, so this workspace reports no dose.
-        spectrum_override === nothing ? dose_source(scanner, protocol) : nothing
+        spectrum_override === nothing ? dose_source(scanner, protocol) : nothing,
+        calibration,
     )
 end
 
@@ -840,13 +830,41 @@ function _padded_device_vector(ref, ::Type{T}, v::AbstractVector, n_padded::Inte
 end
 
 """
-    create_workspace(scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
+    create_workspace(scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom;
+                     calibration = nothing, T = Float32, spectrum_override = nothing)
 
-The energy-integrating workspace, [`create_eict_workspace`](@ref): one constructor for every
-detector family, so a caller builds and simulates any scanner the same way.
+The energy-integrating workspace, for zero-allocation single-kVp [`simulate!`](@ref) calls: the same
+constructor as a photon counter's, so a caller builds and simulates any scanner the same way.
+
+# Keyword arguments
+- `calibration` — the scanner's [`calibrate`](@ref) for this protocol: the dexels' flat field, which
+  `simulate!` applies on the air-normalised signal before the scatter correction. Needed when the
+  scanner has dexel defects (`gain_spread`, `offset_spread_keV`) and the scatter correction is on.
+- `spectrum_override::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}} = nothing` —
+  bypass the polychromatic IPEM lookup and use a custom `(energies, weights)` pair
+  for the source spectrum.  When `nothing` (default), the spectrum is loaded from
+  the IPEM tables via `resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)`.
+
+  **Important — `weights` is ABSOLUTE photon flux** (photons / mAs / mm² at 750 mm),
+  matching what `load_spectrum_unfiltered` returns.  `compute_detector_I0` reads
+  `sum(weights)` to size the per-pixel I0 budget, so passing `[1.0]` yields ~1
+  photon / mAs / mm² total — far below the noise clamp, leading to a uniform
+  saturated recon.
+
+  For a monoenergetic injection at `E_mono` with the same flux budget as a
+  polychromatic protocol at the same kVp, fetch the polychromatic flux total and
+  put it all at the mono bin:
+
+  ```julia
+  _, w_poly = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)
+  spectrum_override = ([E_mono], [sum(Float64.(w_poly))])
+  ```
+
+  Bowtie + heel + detector response evaluate at the override's actual energy
+  grid, so per-ray spectral physics still runs.
 """
 create_workspace(scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom; kwargs...) =
-    create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
+    _create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
 
 # =============================================================================
 # FDKReconWorkspace — Pre-allocated workspace for zero-allocation reconstruct!()

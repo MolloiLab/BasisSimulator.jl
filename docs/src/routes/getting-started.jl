@@ -428,7 +428,7 @@ end"""),
             p("A photon-counting detector sorts every photon by its energy into bins. ", c("PCCTScanner"), " adds that ",
               "detector: its energy thresholds and dead time, with the scatter correction applied inside ",
               c("simulate!"), " (the Geant4 kernels of the scanner's entry, as for the energy integrator) and the pile-up ",
-              "and the dexels' flat field corrected after it, each from a calibration of simulated air scans. This one is the NAEOTOM Alpha's detector, ",
+              "and the dexels' flat field corrected in it, from one calibration of simulated scans, before the scatter correction. This one is the NAEOTOM Alpha's detector, ",
               "four bins and 27 ns of dead time, read one native dexel per pixel and narrowed to the phantom to save memory:"),
             julia(raw"""scanner_pc = BS.PCCTScanner(
     BS.NAEOTOM_ALPHA; # its geometry, thresholds 20/35/55/70 keV, dead time and scatter kernels
@@ -438,17 +438,14 @@ end"""),
     detector_col_size = 0.3,
     binning_factor = 1, # one native dexel per pixel (the Alpha sums 2 × 2)
 ) # a realistic unit, like the Alpha: its dexels' gains and thresholds spread
-ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom)
-res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)
+# the scanner's calibration, as a scanner is calibrated, on the phantom's device: the pile-up from air
+# and water scans at rising currents; the flat field from low-flux scans of air and water slabs
+# (every pixel's gain in every bin, as the patient hardens the beam)
+calibration = BS.calibrate(scanner_pc, protocol, recon, phantom; sim_opts)
 
-# pile-up, calibrated as a scanner does it: air and water scans at rising currents, on the phantom's device
-pileup = BS.calibrate_pileup(scanner_pc, protocol, recon, phantom; sim_opts)
-BS.apply_pileup!(res_pc.pcct_sino.bins, res_pc.I0_bins, pileup, protocol)
-
-# then the flat field: low-flux scans of air and water slabs give every pixel's gain in every bin,
-# as the patient hardens the beam
-flat = BS.calibrate_flat_field(scanner_pc, protocol, recon, phantom; sim_opts)
-BS.apply_flat_field!(res_pc.pcct_sino.bins, flat)"""),
+# simulate! corrects with it in a scanner's order: pile-up, flat field, then the scatter
+ws_pc = BS.create_workspace(scanner_pc, protocol, sim_opts, recon, phantom; calibration)
+res_pc = BS.simulate!(ws_pc, phantom, protocol, sim_opts)"""),
             p("The pile-up model simulates shaped pulses on the CPU at the count rates this scan will see; it takes ",
               "seconds and is memoised for the session. Set ", c("dead_time_ns = 0"), " to skip pile-up while you iterate."),
             p("The decomposition needs the detector's response, and the workspace has it: it is the model that made ",
@@ -816,7 +813,7 @@ RULES
 - Every label needs a material (missing -> air silently). Phantom voxel <= recon voxel. Whole body cross-section in the volume, z margin beyond the recon slab; the volume is centred at the isocentre (origin does not move it). Any number of materials (the fast projector's cost follows the elements present; compact_materials drops unused ones; never merge across measured regions).
 - Detector must cover the body: detector_cols * detector_col_size (mm) > body width. Even views per rotation for helical. Measure inside the inscribed FOV circle.
 - Water on a Gammex centre ROI reads about +20 HU (calcium hardening); judge water on a water phantom. HU per mg/mL iodine depends on body size; calibrate on the scanned body.
-- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); pile-up corrected by apply_pileup!(bins, res.I0_bins, BS.calibrate_pileup(scanner, protocol, recon, phantom; sim_opts), protocol); flat field by calibrate_flat_field/apply_flat_field!; noise_reduction stays 0.
+- PCCT: GPU only in practice; thresholds among the response table's 16 (20-90 keV); calibration = BS.calibrate(scanner, protocol, recon, phantom; sim_opts) once, then create_workspace(...; calibration); simulate! corrects pile-up, flat field, then scatter, in that order (a realistic Alpha with the scatter correction on throws without it); noise_reduction stays 0.
 - reconstruct! returns the workspace's buffer: copy before the next call. vmi_pipeline(recon_method = :hir) cannot use PairFilter or image HYPR.
 - Pluto: simulate! mutates in place (return values from cells); restart after package updates; one heavy scan at a time (a full chest/head scan peaks at 10-11 GB).
 - Record seed, scanner, protocol, options and pkgversion(BasisSimulator) with every output. Never present a downscaled run (fewer views, coarser phantom) as the real scan.

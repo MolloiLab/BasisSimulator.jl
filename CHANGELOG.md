@@ -12,6 +12,64 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.5](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.4...v0.16.5) (2026-11-09)
+
+Removes the rings the scatter correction left on a detector with dexel defects, makes a scanner's
+calibration part of its workspace, and calibrates twice as fast. On Gammex 472 (1200 views,
+noise-free, scatter and every correction on, against the ideal detector) the realistic NAEOTOM
+Alpha's images rang by up to 2.2, 6.4, 6.4 and 7.6 HU in bins 1–4; now, with 5 sub-views, the
+focal spot and the heel effect on too, by at most 0.42, 0.57, 0.21 and 0.36 HU, as with scatter off.
+A SOMATOM Force with 2 % gain and offset spreads: 0.63 HU. With noise on, the realistic detectors'
+water noise matches the ideal ones' within 3 %. Every result of a detector with defects or pile-up,
+with the scatter correction on, changes; an ideal detector's do not.
+
+A full acquisition (1200 views × 5 sub-views, noise, Monte Carlo scatter and every correction; the
+4 cm XCAT window of 1600 × 1400 × 200 voxels; NVIDIA RTX PRO 6000):
+
+| | v0.15.0 (analytic scatter) | v0.16.5 |
+|---|---|---|
+| NAEOTOM Alpha (realistic, pile-up) | 81.5 s | **34.8 s** |
+| SOMATOM Force | 15.9 s | 20.0 s (its Monte Carlo single scatter: ~3 s) |
+| `calibrate(NAEOTOM_ALPHA, …)`, once per scanner and protocol | — | 104 s (was 207 s) |
+
+### Breaking
+- **A scanner's calibration lives on its workspace.** `calibrate(scanner, protocol, recon_opts,
+  phantom)` returns a `Calibration` with whatever the scanner's corrections need (the pile-up
+  correction of a photon counter that piles up, the flat field of a detector with dexel defects,
+  `nothing` otherwise); pass it to `create_workspace(...; calibration)`, and `simulate!` corrects with
+  it in a scanner's order: the pile-up, the flat field, then the scatter. A detector that piles up or
+  has defects needs it while the scatter correction is on (`create_workspace` throws without it); a
+  calibration made for another detector or another beam (kVp, filtration, collimation) is refused.
+  ```julia
+  calibration = calibrate(NAEOTOM_ALPHA, protocol, recon_opts, phantom)   # once
+  ws = create_workspace(NAEOTOM_ALPHA, protocol, sim_opts, recon_opts, phantom; calibration)
+  result = simulate!(ws, phantom, protocol, sim_opts)                      # corrected
+  ```
+- `calibrate_flat_field`, `calibrate_pileup`, `apply_flat_field!` and `apply_pileup!` are removed from
+  the API: `calibrate` and the workspace supersede them (applied after `simulate!`, the corrections
+  came after the scatter correction, the wrong order).
+- `create_eict_workspace` is removed from the API: `create_workspace` builds both families' workspaces.
+
+### Fixed
+- **The scatter correction runs on corrected counts.** Its estimate is a nominal dexel's; subtracted
+  before the pile-up and flat-field corrections, it left each dexel S·(1 − 1/g) of its scatter, a
+  fixed per-dexel pattern: rings, and offsets of a few HU around the inserts. In place since v0.16.0
+  (v0.16.3 gives the same numbers). The energy integrator subtracts its estimate from the
+  air-normalised, flat-fielded signal for the same reason.
+
+### Added
+- `simulate!` of an energy integrator returns its sinogram, `(; sinogram, dose)`, as a photon counter's
+  returns its bins.
+
+### Performance
+- Calibration twice as fast: a photon counter's dexel defect factors are memoised per detector, grid
+  and spectral shape (the tube current cancels in them), and computed, like the bowtie's transmission
+  table, a row per thread (the same arithmetic): `create_workspace` of the NAEOTOM Alpha no longer
+  spends seconds of every calibration scan on them.
+- The scatter's coarse walk selects each voxel's length into its material's lane up to 16 materials,
+  as the projection does, instead of multiplying by an identity matrix.
+
+
 ## [0.16.4](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.3...v0.16.4) (2026-11-09)
 
 Brings the projection and the scatter back to v0.15 speed and well past it, for both detector

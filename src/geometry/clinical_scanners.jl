@@ -85,8 +85,8 @@ electrode plus its share of the anti-scatter grid's gaps), magnified 1113/610.
 It is a realistic unit, defects included: its native dexels' gains spread by 2 % and their
 thresholds by 0.35 keV (BasisMonteCarlo notebook 03's assumption; the vendor's values are
 unpublished), a fixed pattern drawn from its `defect_seed`. Correct them as the scanner does, from
-simulated calibration scans: [`calibrate_flat_field`](@ref) → [`apply_flat_field!`](@ref), and
-pile-up with [`calibrate_pileup`](@ref) → [`apply_pileup!`](@ref).
+simulated calibration scans: [`calibrate`](@ref), passed to [`create_workspace`](@ref), with which
+[`simulate!`](@ref) corrects the pile-up, the flat field, then the scatter, in a scanner's order.
 
 Its ultra-high-resolution mode is [`NAEOTOM_ALPHA_UHR`](@ref). A different scan is a variant:
 `PCCTScanner(NAEOTOM_ALPHA; pileup = false)`.

@@ -1,6 +1,6 @@
 # Dexel-to-dexel defects and the corrections calibrated for them from simulated calibration
 # scans: the energy integrator's gain and offset, the photon counter's gain and threshold offsets
-# (calibrate_flat_field → apply_flat_field!), and pile-up (calibrate_pileup → apply_pileup!). The
+# (the flat field of `calibrate`), and pile-up (its pile-up correction), the workspace's calibration. The
 # residuals are measured against the ideal detector, a copy with the spreads at zero. The scans and
 # the calibrations run where `to_gpu` puts the phantom (api.jl: a GPU when the test environment has
 # one); uses `_eict_cylinder`, `_EICT_TEST_SCANNER` and `_EICT_RECON` from eict_signal.jl.
@@ -13,8 +13,8 @@ _noise_free(; kw...) = BS.SimOptions(;
 
 _on_backend(p) = BS.Phantom(to_gpu(p.mask), p.materials, p.voxel_size, p.origin, p.extent)
 
-function _scan(scanner, phantom, protocol, opts)
-    ws = BS.create_workspace(scanner, protocol, opts, _EICT_RECON, phantom)
+function _scan(scanner, phantom, protocol, opts; calibration = nothing)
+    ws = BS.create_workspace(scanner, protocol, opts, _EICT_RECON, phantom; calibration)
     r = BS.simulate!(ws, phantom, protocol, opts; report_dose = false)
     return scanner isa BS.EICTScanner ? Array(ws.sinogram) : (bins = [Array(b) for b in r.pcct_sino.bins], ws = ws)
 end
@@ -28,8 +28,8 @@ end
     @test BS.EICTScanner(ideal; defect_seed = 1) == _EICT_TEST_SCANNER
     truth = _scan(ideal, phantom, protocol, opts)
     raw = _scan(defective, phantom, protocol, opts)
-    cal = BS.calibrate_flat_field(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
-    corrected = BS.apply_flat_field!(copy(raw), cal)
+    cal = BS._calibrate_flat_field(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
+    corrected = _scan(defective, phantom, protocol, opts; calibration = BS.Calibration(defective, protocol, nothing, cal))
     @test _rms(raw .- truth) > 0.01                           # a 2 % gain spread rings
     @test _rms(corrected .- truth) < 1.0e-4                   # gain and offset are energy-blind: exact
     @test cal.gain ≈ 1 .+ 0.02 .* BS._dexel_pattern(7, 2, size(cal.gain)...)[:, :, 1] rtol = 1.0e-4
@@ -47,12 +47,15 @@ end
     defective = BS.PCCTScanner(base; gain_spread = 0.02, threshold_spread_keV = 0.35, defect_seed = 3)
     truth = _scan(base, phantom, protocol, opts).bins
     raw = _scan(defective, phantom, protocol, opts).bins
-    cal = BS.calibrate_flat_field(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
-    corrected = BS.apply_flat_field!([copy(b) for b in raw], cal)
+    cal = BS._calibrate_flat_field(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
+    corrected = _scan(defective, phantom, protocol, opts; calibration = BS.Calibration(defective, protocol, nothing, cal)).bins
     before = _rms(reduce(vcat, vec.(raw .- truth)))
     after = _rms(reduce(vcat, vec.(corrected .- truth)))
     # the air gains alone leave the hardened part: the offsets weigh a hardened beam differently
-    air_only = BS.apply_flat_field!([copy(b) for b in raw], BS.FlatFieldCalibration(cal.gain, nothing))
+    air_only = _scan(
+        defective, phantom, protocol, opts;
+        calibration = BS.Calibration(defective, protocol, nothing, BS.FlatFieldCalibration(cal.gain, nothing)),
+    ).bins
     residual_air = _rms(reduce(vcat, vec.(air_only .- truth)))
     @test before > 5.0e-3
     # the slabs take the gains through the hardening; what is left is at the cylinder's edges, where
@@ -64,7 +67,7 @@ end
     @test all(isfinite, cal.gain) && size(cal.gain, 3) == 4
     @test size(cal.hardening.r) == (size(cal.gain)..., length(BS._FLAT_FIELD_SLABS_CM))
     # the ideal detector has no hardening to calibrate
-    @test BS.calibrate_flat_field(base, protocol, _EICT_RECON, phantom; sim_opts = opts).hardening === nothing
+    @test BS._calibrate_flat_field(base, protocol, _EICT_RECON, phantom; sim_opts = opts).hardening === nothing
 end
 
 @testset "pile-up: calibrated from air and water scans at rising currents" begin
@@ -78,8 +81,8 @@ end
     )
     free = _scan(BS.PCCTScanner(base; pileup = false), phantom, protocol, opts).bins
     piled = _scan(base, phantom, protocol, opts)
-    cal = BS.calibrate_pileup(base, protocol, _EICT_RECON, phantom; sim_opts = opts)
-    corrected = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
+    cal = BS._calibrate_pileup(base, protocol, _EICT_RECON, phantom; sim_opts = opts)
+    corrected = _scan(base, phantom, protocol, opts; calibration = BS.Calibration(base, protocol, cal, nothing)).bins
     before = _rms(reduce(vcat, vec.(piled.bins .- free)))
     after = _rms(reduce(vcat, vec.(corrected .- free)))
     @test 0.01 < before < 0.3                                 # the loss is visible, the regime clinical
@@ -104,7 +107,7 @@ end
         use_lag = true,
     )
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 120)
-    few = BS.calibrate_flat_field(eict, protocol, _EICT_RECON, phantom; sim_opts = full)
+    few = BS._calibrate_flat_field(eict, protocol, _EICT_RECON, phantom; sim_opts = full)
     ref = BS._flat_field(eict, protocol, _EICT_RECON, full, phantom)
     @test maximum(abs.(few.gain .- ref.gain)) < 2.0e-5
     @test maximum(abs.(few.offset .- ref.offset)) < 2.0e-5
@@ -118,15 +121,14 @@ end
         scatter_correction = false,
     )
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 2.0, views = 120)
-    few = BS.calibrate_flat_field(pcct, protocol, _EICT_RECON, phantom; sim_opts = full)
+    few = BS._calibrate_flat_field(pcct, protocol, _EICT_RECON, phantom; sim_opts = full)
     ref = BS._flat_field(pcct, protocol, _EICT_RECON, full, phantom)
     @test maximum(abs.(few.gain .- ref.gain)) < 2.0e-5
 
     # pile-up: the corrections the two calibrations make to one scan
-    piled = _scan(pcct, phantom, protocol, full)
     currents = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1 / sqrt(2), 1, sqrt(2)]   # calibrate_pileup's own
-    corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, protocol)
-    a = corrected(BS.calibrate_pileup(pcct, protocol, _EICT_RECON, phantom; sim_opts = full))
+    corrected(cal) = _scan(pcct, phantom, protocol, full; calibration = BS.Calibration(pcct, protocol, cal, few)).bins
+    a = corrected(BS._calibrate_pileup(pcct, protocol, _EICT_RECON, phantom; sim_opts = full))
     b = corrected(BS._pileup(pcct, protocol, _EICT_RECON, full, phantom, currents))
     # the calibration's water cylinders are voxelised, so two angles see them a little differently
     # from 120 × 5 sub-views: 2e-5, a twentieth of what the correction leaves against the truth
@@ -151,9 +153,9 @@ end
     p_eict = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 60)
     p_pcct = BS.CTProtocol(; kVp = 120.0, mAs = 2.0, views = 30)
     calibrations(phantom) = (
-        eict = BS.calibrate_flat_field(eict, p_eict, _EICT_RECON, phantom; sim_opts = opts),
-        pcct = BS.calibrate_flat_field(pcct, p_pcct, _EICT_RECON, phantom; sim_opts = opts),
-        pileup = BS.calibrate_pileup(pcct, p_pcct, _EICT_RECON, phantom; sim_opts = opts),
+        eict = BS._calibrate_flat_field(eict, p_eict, _EICT_RECON, phantom; sim_opts = opts),
+        pcct = BS._calibrate_flat_field(pcct, p_pcct, _EICT_RECON, phantom; sim_opts = opts),
+        pileup = BS._calibrate_pileup(pcct, p_pcct, _EICT_RECON, phantom; sim_opts = opts),
     )
     on_cpu = calibrations(cpu)
     @test on_cpu.eict.gain isa Matrix{Float64} && on_cpu.pcct.gain isa Array{Float64, 3}
@@ -168,10 +170,57 @@ end
         @test maximum(abs.(on_gpu.eict.offset .- on_cpu.eict.offset)) < 2.0e-5
         @test maximum(abs.(on_gpu.pcct.gain .- on_cpu.pcct.gain)) < 2.0e-5
         # the pile-up curves, as the correction they make to one scan
-        piled = _scan(pcct, cpu, p_pcct, opts)
-        corrected(cal) = BS.apply_pileup!([copy(b) for b in piled.bins], piled.ws.I0_cpu, cal, p_pcct)
+        corrected(cal) = _scan(pcct, cpu, p_pcct, opts; calibration = BS.Calibration(pcct, p_pcct, cal, on_cpu.pcct)).bins
         a, b = corrected(on_gpu.pileup), corrected(on_cpu.pileup)
         # the fit takes the scans' Float32 rounding on the GPU through a least-squares solve
         @test maximum(maximum(abs.(x .- y)) for (x, y) in zip(a, b)) < 3.0e-5
+    end
+end
+
+# With scatter, the corrections run in a scanner's order inside simulate!: pile-up, the flat field, then
+# the scatter correction on the corrected counts (its estimate is a nominal dexel's; subtracted
+# first, it left each dexel S·(1 − 1/g) of its scatter, rings of up to 8 HU on the NAEOTOM Alpha).
+@testset "scatter on: the corrections in a scanner's order" begin
+    phantom = _on_backend(_eict_cylinder(; diameter_cm = 20.0))
+    opts = _noise_free(; use_scatter = true)
+    run(sc, p; calibration = nothing) = let ws = BS.create_workspace(sc, p, opts, _EICT_RECON, phantom; calibration)
+        r = BS.simulate!(ws, phantom, p, opts; report_dose = false)
+        sc isa BS.EICTScanner ? Array(ws.sinogram) : [Array(b) for b in r.pcct_sino.bins]
+    end
+    flat(x) = x isa AbstractVector ? reduce(vcat, vec.(x)) : vec(x)
+
+    @testset "photon counter" begin
+        protocol = BS.CTProtocol(; kVp = 120.0, mAs = 50.0, views = 60)
+        ideal = BS.PCCTScanner(
+            BS.NAEOTOM_ALPHA; detector_rows = 2, detector_cols = 96, detector_col_size = 3.0, detector_row_size = 1.0,
+            bowtie_filter = :none, pileup = false, scatter_kernels = "BS test counter",
+            gain_spread = 0.0, threshold_spread_keV = 0.0,
+        )
+        defective = BS.PCCTScanner(ideal; gain_spread = 0.02, threshold_spread_keV = 0.35, defect_seed = 3)
+        @test_throws ArgumentError run(defective, protocol)                 # the flat field is needed
+        @test_throws ArgumentError run(BS.PCCTScanner(ideal; pileup = true), protocol)   # and the pile-up's
+        cal = BS.calibrate(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
+        @test cal.pileup === nothing && cal.flat_field !== nothing          # what this detector needs
+        on = _rms(flat(run(defective, protocol; calibration = cal)) .- flat(run(ideal, protocol)))
+        sc_off(s) = BS.PCCTScanner(s; scatter_correction = false)
+        off = _rms(flat(run(sc_off(defective), protocol; calibration = cal)) .- flat(run(sc_off(ideal), protocol)))
+        # a calibration of another detector, or of another beam, is refused
+        @test_throws ArgumentError run(BS.PCCTScanner(defective; defect_seed = 4), protocol; calibration = cal)
+        @test_throws ArgumentError run(defective, BS.CTProtocol(protocol; kVp = 140.0); calibration = cal)
+        @test on < 1.5 * off + 1.0e-4                    # the scatter correction adds no dexel pattern
+    end
+
+    @testset "energy integrator" begin
+        protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 60)
+        ideal = BS.EICTScanner(_EICT_TEST_SCANNER; scatter_kernels = _SCATTER_TEST_ENTRY)
+        defective = BS.EICTScanner(ideal; gain_spread = 0.02, offset_spread_keV = 2.0e4, defect_seed = 7)
+        @test_throws ArgumentError run(defective, protocol)
+        cal = BS.calibrate(defective, protocol, _EICT_RECON, phantom; sim_opts = opts)
+        @test BS.calibrate(ideal, protocol, _EICT_RECON, phantom; sim_opts = opts).flat_field === nothing
+        truth = run(ideal, protocol)
+        @test _rms(run(defective, protocol; calibration = cal) .- truth) < 1.0e-4   # gain and offset: exact
+        # without the scatter correction the flat field is applied to the final sinogram, as before
+        sc_off(s) = BS.EICTScanner(s; scatter_correction = false)
+        @test _rms(run(sc_off(defective), protocol; calibration = cal) .- run(sc_off(ideal), protocol)) < 1.0e-4
     end
 end

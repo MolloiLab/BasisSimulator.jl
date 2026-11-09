@@ -8,12 +8,16 @@
 # (`defect_seed`); the ideal detector is a copy with the spreads at zero. Every defect has its
 # correction, calibrated from simulated calibration scans, never from the truth:
 #
-# - `calibrate_flat_field` → `apply_flat_field!`: air scans (two currents for an energy
+# - `_calibrate_flat_field`: air scans (two currents for an energy
 #   integrator, so its offset separates from its gain); for a photon counter also water slabs,
 #   each pixel's scan of them against the nominal detector's, since its threshold offsets weigh a
 #   hardened beam differently;
-# - `calibrate_pileup` → `apply_pileup!`: scans of air and water cylinders at rising tube
+# - `_calibrate_pileup`: scans of air and water cylinders at rising tube
 #   currents, the pile-up-free counts extrapolated to zero current.
+#
+# `calibrate` makes both (what a scanner needs of them), the workspace holds the `Calibration`, and
+# `simulate!` applies it in a scanner's order: pile-up, flat field, then the scatter correction on the
+# corrected signal (`_correct_pileup!`, `_correct_flat_field!`).
 # =============================================================================
 
 # A detector's fixed pattern: `n` independent standard-normal maps of `nc × nr` dexels, the same
@@ -50,12 +54,14 @@ function _pcct_defect_factors(s::PCCTScanner, nc, nr, energies, weights)
     nominal = [cum(x) for x in thr]
     z = _dexel_pattern(s.defect_seed, nb + 1, nc, nr)
     out = ones(nc, nr, nb)
-    for r in 1:nr, c in 1:nc
-        g = 1 + s.gain_spread * z[c, r, nb + 1]
-        shifted = [cum((thr[k] + s.threshold_spread_keV * z[c, r, k]) / g) for k in 1:nb]
-        for b in 1:nb
-            n0 = bin(nominal, b)
-            out[c, r, b] = n0 > 0 ? bin(shifted, b) / n0 : 1.0
+    Threads.@threads for r in 1:nr              # rows in parallel, each its own slice of `out`
+        for c in 1:nc
+            g = 1 + s.gain_spread * z[c, r, nb + 1]
+            shifted = [cum((thr[k] + s.threshold_spread_keV * z[c, r, k]) / g) for k in 1:nb]
+            for b in 1:nb
+                n0 = bin(nominal, b)
+                out[c, r, b] = n0 > 0 ? bin(shifted, b) / n0 : 1.0
+            end
         end
     end
     return out
@@ -69,15 +75,26 @@ const _PCCT_DEFECT_WATER_CM = (0.0, 10.0, 20.0, 30.0, 40.0, 50.0)
 # The photon-counting defects at the projection's resolution: each dexel's factors in every bin for
 # the beam through each of `_PCCT_DEFECT_WATER_CM` of water (`factors[col, row, bin, m]`), and each
 # beam's line integral (`p[m]`); a ray takes the factors linear in its own line integral between them.
+# Memoised: a detector's factors depend on its defects, its grid and the spectrum's shape (they are
+# ratios of counts, so the tube current cancels), the same for every workspace of a scanner and beam
+# — a calibration's dozens of scans, every scan of a cohort.
+const _PCCT_DEFECTS_CACHE = Dict{UInt64, Any}()
+const _PCCT_DEFECTS_LOCK = ReentrantLock()
+
 function _pcct_dexel_defects(s::PCCTScanner, nc, nr, energies, weights)
     _has_defects(s) || return nothing
-    μ = [compute_μ_at_energy(XA.Materials.water, Float64(E)) for E in energies]
     w = Float64.(weights)
+    key = hash((s.energy_thresholds, s.gain_spread, s.threshold_spread_keV, s.defect_seed, nc, nr, Float64.(energies), w ./ sum(w)))
+    cached = lock(() -> get(_PCCT_DEFECTS_CACHE, key, nothing), _PCCT_DEFECTS_LOCK)
+    cached === nothing || return cached
+    μ = [compute_μ_at_energy(XA.Materials.water, Float64(E)) for E in energies]
     spectra = [w .* exp.(-t .* μ) for t in _PCCT_DEFECT_WATER_CM]
-    return (
+    d = (
         factors = cat((_pcct_defect_factors(s, nc, nr, energies, x) for x in spectra)...; dims = 4),
         p = [-log(sum(x) / sum(w)) for x in spectra],
     )
+    lock(() -> (_PCCT_DEFECTS_CACHE[key] = d), _PCCT_DEFECTS_LOCK)
+    return d
 end
 
 # Apply them to expected counts `[b][c, r, v]` against the air counts `I0[c, r, b]`, in one kernel
@@ -158,7 +175,7 @@ end
 FlatFieldCalibration(gain, offset) = FlatFieldCalibration(gain, offset, nothing)
 
 """
-    calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts = SimOptions())
+    _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts = SimOptions())
         -> FlatFieldCalibration
 
 Calibrate the flat field of `scanner` the way a scanner does it, from simulated air scans
@@ -170,8 +187,7 @@ every 5 cm from 5 to 50 cm thick. Its dexels' threshold offsets weigh a hardened
 a pixel's gain in a bin changes with the patient's hardening; each pixel's scan of a slab is divided
 by the nominal detector's scan of it (the scanner's design response to its own calibration
 phantom, as a scanner's per-pixel spectral calibration does), which gives its gain at that line
-integral with no smoothing across pixels. Use it with [`apply_flat_field!`](@ref) on scans of the
-same scanner and protocol. A detector without defects needs no slabs (`hardening` is `nothing`).
+integral with no smoothing across pixels. [`calibrate`](@ref) makes it for a detector with defects. A detector without defects needs no slabs (`hardening` is `nothing`).
 
 On notebook 04's NAEOTOM Alpha (Gammex 472, noise-free, pile-up corrected), the corrected images of
 every bin are within 0.6 HU of the ideal detector's in their rings (ring RMS 0.09 HU); with the air
@@ -188,7 +204,7 @@ The scans run on the device of `phantom`, the scan's own (as for [`create_worksp
 phantom on the GPU calibrates on the GPU, one on the CPU on the CPU. They scan air and water,
 never the phantom itself; the calibration's arrays are on the host, in Float64.
 """
-function calibrate_flat_field(
+function _calibrate_flat_field(
         scanner::Scanner,
         protocol::CTProtocol,
         recon_opts,
@@ -214,7 +230,7 @@ function _flat_field(
     )
     air = _air_phantom(phantom)
     y = map((protocol, CTProtocol(protocol; mA = protocol.mA / 4))) do p
-        ws = create_eict_workspace(scanner, p, opts, recon_opts, air)
+        ws = create_workspace(scanner, p, opts, recon_opts, air)
         try
             simulate!(ws, air, p, opts; report_dose = false)
             _view_mean(exp.(.-ws.sinogram))
@@ -289,23 +305,18 @@ function _flat_field(
     return FlatFieldCalibration(gain, nothing, (p = P, r = R, w = w))
 end
 
-"""
-    apply_flat_field!(sinogram, cal::FlatFieldCalibration) -> sinogram
-    apply_flat_field!(bins::Vector, cal::FlatFieldCalibration) -> bins
-
-Correct a scan with the flat field [`calibrate_flat_field`](@ref) measured: an energy
-integrator's air-normalised signal `y = e^{−p}` becomes `(y − offset) / gain`; a photon counter's
-counts in each bin are divided by the bin's gain in air, then by its gain at the ray's own line
-integral (from its bins), linear between the calibration's water slabs. On the device of the bins.
-"""
-function apply_flat_field!(sinogram::AbstractArray{T, 3}, cal::FlatFieldCalibration{<:AbstractMatrix}) where {T}
+# A scan corrected with the flat field `_calibrate_flat_field` measured (`simulate!`'s step): an energy
+# integrator's air-normalised signal `y = e^{−p}` becomes `(y − offset) / gain`; a photon counter's
+# counts in each bin are divided by the bin's gain in air, then by its gain at the ray's own line
+# integral (from its bins), linear between the calibration's water slabs. On the device of the bins.
+function _correct_flat_field!(sinogram::AbstractArray{T, 3}, cal::FlatFieldCalibration{<:AbstractMatrix}) where {T}
     g = copyto!(similar(sinogram, T, size(cal.gain)), T.(cal.gain))
     o = copyto!(similar(sinogram, T, size(cal.offset)), T.(cal.offset))
     sinogram .= .-log.(max.((exp.(.-sinogram) .- o) ./ g, T(1.0e-10)))
     return sinogram
 end
 
-function apply_flat_field!(bins::AbstractVector, cal::FlatFieldCalibration{<:AbstractArray{<:Real, 3}, Nothing})
+function _correct_flat_field!(bins::AbstractVector, cal::FlatFieldCalibration{<:AbstractArray{<:Real, 3}, Nothing})
     length(bins) == size(cal.gain, 3) || throw(DimensionMismatch("one gain plane per bin"))
     for (b, bin) in enumerate(bins)
         T = eltype(bin)
@@ -353,7 +364,7 @@ end
 """
     PileupCalibration
 
-A photon counter's pile-up correction, from simulated calibration scans ([`calibrate_pileup`](@ref)):
+A photon counter's pile-up correction, from simulated calibration scans ([`calibrate`](@ref)):
 the matrices `C[:, :, k, m]` that take a pixel's recorded counts in every bin to its pile-up-free
 counts, `n = C · r`, at recorded count rates `rates[k]` (counts per second per native dexel, all
 bins) and recorded mean bins `hardness[m]`; a ray takes the matrix bilinear in its own two
@@ -386,7 +397,7 @@ function _water_cylinder(phantom::Phantom, d_cm::Real)
 end
 
 """
-    calibrate_pileup(scanner::PCCTScanner, protocol, recon_opts, phantom; sim_opts = SimOptions(),
+    _calibrate_pileup(scanner::PCCTScanner, protocol, recon_opts, phantom; sim_opts = SimOptions(),
                      currents = [1/16, 1/8, 1/4, 1/2, 1/√2, 1, √2]) -> PileupCalibration
 
 Calibrate pile-up the way a scanner can, from simulated scans with pile-up as the detector has it:
@@ -404,10 +415,10 @@ air and two water cylinders (20 and 35 cm), each at the protocol's tube current 
   (least squares in relative counts, smooth in rate and hardness), on a 33 × 6 grid.
 
 Pixels at a cylinder's edge, whose dexels see different rates, are left out. The scans run on the
-device of `phantom`, the scan's own, as for [`calibrate_flat_field`](@ref); the scans are of air and
-water, never the phantom. Use it with [`apply_pileup!`](@ref).
+device of `phantom`, the scan's own, as for [`calibrate`](@ref); the scans are of air and
+water, never the phantom. [`calibrate`](@ref) makes it for a photon counter that piles up.
 """
-function calibrate_pileup(
+function _calibrate_pileup(
         scanner::PCCTScanner,
         protocol::CTProtocol,
         recon_opts,
@@ -437,7 +448,7 @@ function _pileup(
         n_hardness::Integer = 12,
     )
     levels = sort(Float64.(collect(currents)))
-    length(levels) >= 3 || throw(ArgumentError("calibrate_pileup needs at least three currents"))
+    length(levels) >= 3 || throw(ArgumentError("_calibrate_pileup needs at least three currents"))
     sc = PCCTScanner(scanner; pileup = true)
     bf = sc.binning_factor
     tpv = protocol.rotation_time / protocol.views
@@ -477,7 +488,7 @@ function _pileup(
             end
         end
     end
-    isempty(Rs) && throw(ArgumentError("calibrate_pileup: the scans recorded no counts"))
+    isempty(Rs) && throw(ArgumentError("_calibrate_pileup: the scans recorded no counts"))
     R, N = reduce(hcat, Rs), reduce(hcat, Ns)              # [bin, sample]
     ρs = vec(sum(R; dims = 1)) ./ (bf * bf * tpv)          # recorded counts per second per dexel
     qs = vec(sum((1:nb) .* R; dims = 1)) ./ vec(sum(R; dims = 1))
@@ -560,15 +571,11 @@ function _penalise!(A, (a, b, c), λ)
     return A
 end
 
-"""
-    apply_pileup!(bins, I0, cal::PileupCalibration, protocol) -> bins
-
-Undo pile-up with the correction [`calibrate_pileup`](@ref) measured: each ray's recorded counts in
-every bin (`I0[col, row, b]·e^{−bin_b}`), its recorded count rate per dexel over the scan's time per
-view and the mean bin of its counts pick the matrix that takes them to pile-up-free counts, which
-replace them: `bin_b = −log(n_b / I0[col, row, b])`. On the device of `bins`.
-"""
-function apply_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::PileupCalibration, protocol::CTProtocol)
+# Pile-up undone with the correction `_calibrate_pileup` measured (`simulate!`'s first step): each ray's
+# recorded counts in every bin (`I0[col, row, b]·e^{−bin_b}`), its recorded count rate per dexel over
+# the scan's time per view and the mean bin of its counts pick the matrix that takes them to
+# pile-up-free counts, which replace them: `bin_b = −log(n_b / I0[col, row, b])`. On the device of `bins`.
+function _correct_pileup!(bins::AbstractVector, I0::AbstractArray{<:Real, 3}, cal::PileupCalibration, protocol::CTProtocol)
     nb = length(bins)
     size(cal.C, 1) == size(cal.C, 2) == nb == size(I0, 3) || throw(DimensionMismatch("one correction row and I0 plane per bin"))
     T = eltype(bins[1])
@@ -604,4 +611,95 @@ function _apply_pileup!(h::NTuple{NB}, I0, C, hardness, K, dr, scale) where {NB}
     return h
 end
 
-export calibrate_flat_field, apply_flat_field!, calibrate_pileup, apply_pileup!
+# =============================================================================
+# A scanner's calibration: everything its corrections need, from one call
+# =============================================================================
+
+"""
+    Calibration
+
+A scanner's calibration for one protocol, from simulated calibration scans ([`calibrate`](@ref)):
+`pileup`, the pile-up correction (a `PileupCalibration`, or `nothing` for a detector that does not
+pile up), and `flat_field`, the dexels' gains (a `FlatFieldCalibration`, or `nothing` for a
+detector without defects); `scanner` and `protocol` are the ones it was made for. Pass it to
+[`create_workspace`](@ref) (`calibration`): [`simulate!`](@ref) then corrects in a scanner's order,
+pile-up, flat field, then the scatter.
+"""
+struct Calibration{S <: Scanner, P, F}
+    scanner::S
+    protocol::CTProtocol
+    pileup::P
+    flat_field::F
+end
+
+"""
+    calibrate(scanner, protocol, recon_opts, phantom; sim_opts = SimOptions()) -> Calibration
+
+Calibrate `scanner` for `protocol` the way a scanner is calibrated, from simulated scans of air and
+water (never of the phantom, never from the model's truth), on the device of `phantom`: whatever this
+scanner's corrections need, `nothing` where it needs none.
+
+- **Flat field**, for a detector whose dexels have defects (`gain_spread`, `offset_spread_keV`,
+  `threshold_spread_keV`). An energy integrator is scanned in air at the protocol's current and at a
+  quarter of it, which separates each dexel's gain from its offset. A photon counter is scanned
+  without pile-up in air and through water slabs every 5 cm from 5 to 50 cm, each pixel's scan of a
+  slab divided by the nominal detector's: its gain in every bin as the patient hardens the beam (its
+  threshold offsets weigh a hardened beam differently).
+- **Pile-up**, for a photon counter that piles up (`pileup` and a dead time): scans of air and of 20
+  and 35 cm water cylinders at 1/16 … √2 of the protocol's current; the pile-up-free counts,
+  extrapolated to zero current, fit the inverse migration as a function of a ray's recorded rate
+  and mean bin.
+
+Each calibration scan is two views at the protocol's time per view, noise-free and without scatter:
+an air or a centred scan does not change as the gantry turns (within 2e-5 of the protocol's full
+views). On notebook 04's NAEOTOM Alpha (Gammex 472, noise-free) the corrected images are within
+0.6 HU of the ideal detector's in their rings; with the air gains alone they ring by up to 170 HU.
+The calibration depends on the scanner and the beam (kVp, filtration, collimation), not on the
+phantom or the tube current's exact value: calibrate once and reuse it across phantoms and scans.
+"""
+function calibrate(scanner::PCCTScanner, protocol::CTProtocol, recon_opts, phantom::Phantom; sim_opts::SimOptions = SimOptions())
+    pileup = _piles_up(scanner) ? _calibrate_pileup(scanner, protocol, recon_opts, phantom; sim_opts) : nothing
+    flat_field = _has_defects(scanner) ? _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts) : nothing
+    return Calibration(scanner, protocol, pileup, flat_field)
+end
+function calibrate(scanner::EICTScanner, protocol::CTProtocol, recon_opts, phantom::Phantom; sim_opts::SimOptions = SimOptions())
+    flat_field = _has_defects(scanner) ? _calibrate_flat_field(scanner, protocol, recon_opts, phantom; sim_opts) : nothing
+    return Calibration(scanner, protocol, nothing, flat_field)
+end
+
+_piles_up(s::PCCTScanner) = s.pileup && s.dead_time_ns > 0
+_piles_up(::EICTScanner) = false
+
+# A scanner's detector, for matching a calibration: every field but the scatter's, which the
+# calibration (scanned without scatter) does not depend on.
+_detector_fields(s::Scanner) = [getfield(s, f) for f in fieldnames(typeof(s)) if f ∉ (:scatter_kernels, :scatter_correction)]
+
+# The calibration a workspace for `scanner`, `protocol` and `sim_opts` takes: checked against the
+# scanner and the beam it was made for, and required whenever the scatter correction is on and the
+# detector piles up or has defects (the scatter estimate is a nominal dexel's: subtracted from
+# uncorrected counts it leaves each dexel S·(1 − 1/g) of its scatter, as rings).
+function _check_calibration(scanner::Scanner, protocol::CTProtocol, sim_opts::SimOptions, cal)
+    needs = (_piles_up(scanner) || _has_defects(scanner)) && scanner.scatter_correction && sim_opts.use_scatter
+    if cal === nothing
+        needs && throw(
+            ArgumentError(
+                "this detector $(_piles_up(scanner) ? "piles up" : "has dexel defects"), and the scatter correction " *
+                    "subtracts its estimate from corrected counts, as a scanner does: pass " *
+                    "`calibration = calibrate(scanner, protocol, recon_opts, phantom)` to create_workspace " *
+                    "(or turn the scatter correction off on the scanner)"
+            )
+        )
+        return nothing
+    end
+    cal isa Calibration || throw(ArgumentError("calibration must come from calibrate(scanner, protocol, recon_opts, phantom)"))
+    typeof(cal.scanner) == typeof(scanner) && _detector_fields(cal.scanner) == _detector_fields(scanner) ||
+        throw(ArgumentError("the calibration was made for another detector: calibrate this scanner"))
+    p, q = cal.protocol, protocol
+    (p.kVp == q.kVp && p.additional_filters == q.additional_filters && p.collimation_mm == q.collimation_mm) ||
+        throw(ArgumentError("the calibration was made for another beam (kVp, filtration or collimation): calibrate this protocol"))
+    (_piles_up(scanner) && cal.pileup === nothing) && throw(ArgumentError("the calibration has no pile-up correction"))
+    (_has_defects(scanner) && cal.flat_field === nothing) && throw(ArgumentError("the calibration has no flat field"))
+    return cal
+end
+
+export Calibration, calibrate

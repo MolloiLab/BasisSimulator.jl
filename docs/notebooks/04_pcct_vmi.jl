@@ -277,14 +277,15 @@ md"""
 projection of every sub-view through the Monte Carlo detector response, the patient scatter
 (the Geant4 kernels superposed on the phantom's own rays),
 the counts of every native dexel (Poisson, neighbours covarying through the photons they share),
-its pile-up, the digital 2 × 2 sum, then the scatter correction (estimated from the counts, the
-patient taken as water). The pile-up is corrected after it
-with `apply_pileup!`, from a calibration `calibrate_pileup` made of simulated scans of air and
-two water cylinders at rising tube currents (never from the model's own matrices: each ray's
-recorded counts in every bin, its rate and its spectrum give its pile-up-free counts), then the dexels' gains with
-`apply_flat_field!`, from `calibrate_flat_field`: low-flux scans of air and of water slabs 5–50 cm
-thick, each pixel's against the nominal detector's (its gain in every bin as the patient hardens the
-beam). It returns
+its pile-up and the digital 2 × 2 sum. It then corrects the counts in a scanner's order, with the
+workspace's calibration (`calibrate(scanner, protocol, recon_opts, phantom)`, made once from
+simulated scans, never from the model's own matrices). First the pile-up: scans of air and two water
+cylinders at rising tube currents give each ray's pile-up-free counts from its recorded counts in
+every bin, its rate and its spectrum. Then the dexels' gains: low-flux scans of air and of water
+slabs 5–50 cm thick, each pixel's against the nominal detector's (its gain in every bin as the
+patient hardens the beam). Last the scatter, estimated from the corrected counts, the patient taken
+as water: the estimate is a nominal dexel's, and subtracted before the other two corrections it
+would leave each dexel's gain error on its scatter, as rings. It returns
 
 - `pcct_sino.bins`: four corrected sinograms ``h_k = -\log(y_k / I_{0,k})``, `[col, row, view]`;
 - `I0_bins`: the air count of every ray in every bin, `[col, row, bin]`;
@@ -304,25 +305,22 @@ acquisition = let
     model = nothing
     channels = Dict{Symbol, Vector{Array{Float32, 3}}}()
     seconds = Dict{Symbol, Float64}()
-    # pile-up, calibrated as a scanner does: air and water scans at rising currents
-    pileup = BS.calibrate_pileup(scanner, protocol, recon_opts, phantom;
-        sim_opts = draw_options(; DRAWS[:reference]...))
-    # the flat field, as a scanner does it: low-flux scans of air and water slabs give each pixel's
-    # gain per bin, and how it changes as the patient hardens the beam
-    flat = BS.calibrate_flat_field(scanner, protocol, recon_opts, phantom;
+    # the scanner's calibration, as a scanner is calibrated: the pile-up from air and water scans at
+    # rising currents; the flat field from low-flux scans of air and water slabs (each pixel's gain
+    # per bin, and how it changes as the patient hardens the beam)
+    calibration = BS.calibrate(scanner, protocol, recon_opts, phantom;
         sim_opts = draw_options(; DRAWS[:reference]...))
     for name in (:reference, :calibration, :measured)     # the noise-free draw first: it projects
         opts = draw_options(; DRAWS[name]...)
         t0 = time()
-        ws = BS.create_workspace(scanner, protocol, opts, recon_opts, phantom)
+        ws = BS.create_workspace(scanner, protocol, opts, recon_opts, phantom; calibration)
         try
-            # the dose and the projection do not depend on the noise: both come from the first draw
+            # the dose and the projection do not depend on the noise: both come from the first draw;
+            # simulate! corrects in a scanner's order: pile-up, flat field, then the scatter
             sim = BS.simulate!(ws, phantom, protocol, opts; capture_raw_counts = false,
                 report_dose = projection === nothing,
                 keep_projection = projection === nothing, projection = projection)
             projection === nothing && (projection = sim.projection)
-            BS.apply_pileup!(sim.pcct_sino.bins, sim.I0_bins, pileup, protocol)
-            BS.apply_flat_field!(sim.pcct_sino.bins, flat)
             channels[name] = [Array(b) for b in sim.pcct_sino.bins]   # the four corrected bins
             if model === nothing
                 I0 = Float32.(Array(sim.I0_bins))                     # [n_cols, n_rows, n_bins]
@@ -935,7 +933,8 @@ let
     ## Summary
 
     ```julia
-    ws    = BS.create_workspace(scanner, protocol, opts, recon_opts, phantom)
+    calibration = BS.calibrate(scanner, protocol, recon_opts, phantom)  # once per scanner and protocol
+    ws    = BS.create_workspace(scanner, protocol, opts, recon_opts, phantom; calibration)
     sim   = BS.simulate!(ws, phantom, protocol, opts; keep_projection = true)  # then (…; projection)
     basis = BS.spectral_basis(ws; I0 = sim.I0_bins)          # ray-resolved, no calibration scan
     vmi   = BS.vmi_pipeline(; channels = sim.pcct_sino.bins, basis, geom = ws.geom,
