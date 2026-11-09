@@ -52,17 +52,16 @@ export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
 # Used when n_materials ≤ 64 (validated register budget); larger tables fall back to
 # the legacy per-energy kernels.
 
-# Branchless scatter of `a · b` into `plens[mat]` (select chains, no divergence): material `mat`'s
-# sum selected, one `fma` (`_dd_edge`: a GPU compiler fuses `p + a · b` on its own, the CPU's does
-# not), and selected back. An `fma` in every lane instead costs the walk 8×.
+# Branchless scatter of `a · b` into `plens[mat]`: the product once, then a select per lane (no
+# divergence). Keep the multiply out of the lanes: v0.16.0–0.16.3 read the lane by a select chain,
+# `fma`-ed and wrote it back (and an `fma` or `muladd` in every lane is the same), which made the
+# spectral GPU kernel 30× slower (24 s against 0.8 s per 120 Alpha views). A GPU fuses `p + w` into
+# the same `fma` either way, so its sums are unchanged; the CPU rounds the product separately, so
+# CPU and GPU agree to rounding, not to the bit.
 @generated function _plen_accum(plens::NTuple{M, T}, mat::Int32, a::T, b::T) where {M, T}
-    current = :(plens[$M])
-    for m in (M - 1):-1:1
-        current = :(ifelse(mat == Int32($m), plens[$m], $current))
-    end
-    exprs = [:(ifelse(mat == Int32($m), sum, plens[$m])) for m in 1:M]
+    exprs = [:(ifelse(mat == Int32($m), plens[$m] + w, plens[$m])) for m in 1:M]
     return quote
-        sum = fma(a, b, $current)
+        w = a * b
         tuple($(exprs...))
     end
 end

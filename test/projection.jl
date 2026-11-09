@@ -615,13 +615,13 @@ end
 end
 
 # -----------------------------------------------------------------------------
-# The distance-driven walk's arithmetic is one rounding everywhere (explicit `fma`s, `_dd_sincos`),
-# so the CPU and a device give its path lengths and forward projection bit for bit alike. The
-# scatter's impact, inverted from each ray's water length, amplifies any ulp the two differ by.
+# The distance-driven walk on the CPU and on a device agrees to floating-point rounding (a GPU
+# fuses multiply-adds the CPU rounds twice; bitwise agreement is not required and cost the GPU walk
+# 20×), and a device repeats itself exactly.
 # -----------------------------------------------------------------------------
-@testset "distance-driven walk: CPU and GPU bit for bit" begin
+@testset "distance-driven walk: CPU and GPU agree to rounding" begin
     if !HAS_GPU
-        @info "Skipping the CPU/GPU bit-for-bit walk test: no GPU backend"
+        @info "Skipping the CPU/GPU walk test: no GPU backend"
     else
         rng = MersenneTwister(0x0DDF)
         mask = rand(rng, UInt8(0):UInt8(2), 24, 24, 4)
@@ -651,14 +651,17 @@ end
             paths_gpu = to_gpu(zero(paths_cpu))
             BS.dd_fast_material_paths!(paths_gpu, to_gpu(mask), geom)
             @test count(>(0), paths_cpu) > 0
-            @test Array(paths_gpu) == paths_cpu
+            @test isapprox(Array(paths_gpu), paths_cpu; rtol = 1.0e-5)
+            again = to_gpu(zero(paths_cpu))
+            BS.dd_fast_material_paths!(again, to_gpu(mask), geom)
+            @test again == paths_gpu                          # deterministic on the device
 
             # the :dd forward projection of a volume
             sino_cpu = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
             BS.dd_forward_project!(sino_cpu, volume, geom)
             sino_gpu = to_gpu(zero(sino_cpu))
             BS.dd_forward_project!(sino_gpu, to_gpu(volume), geom)
-            @test Array(sino_gpu) == sino_cpu
+            @test isapprox(Array(sino_gpu), sino_cpu; rtol = 1.0e-5)
         end
     end
 end

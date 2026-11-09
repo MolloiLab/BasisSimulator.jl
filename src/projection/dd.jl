@@ -75,9 +75,10 @@ export dd_forward_project!, dd_forward_project,
 # expected to be deleted and these become the sole projector.
 
 # -----------------------------------------------------------------------------
-# Every multiply-add of the walk is an explicit `fma`: a GPU compiler fuses `a * b + c` on its own
-# and the CPU's does not, and the two roundings would differ by ulps. One rounding everywhere keeps
-# the CPU and the device bit for bit alike (the scatter's impact amplifies path lengths' ulps).
+# Every multiply-add of the walk's geometry is an explicit `fma`: a GPU compiler fuses `a * b + c`
+# on its own and the CPU's does not, so one rounding everywhere keeps the CPU's and the device's
+# footprints alike. (The `:dd_fast` path-length sums are agreed to rounding, not to the bit: see
+# `_plen_accum`.)
 #
 # The iso-plane position of voxel boundary `b` (0-based) along an axis starting at `vmin` in steps
 # of `vstep`, seen from the source at `s0` with magnification `mag_fac` (`_dd_bounds` inverts it).
