@@ -28,7 +28,10 @@ using Random: Xoshiro
     @testset "energy is conserved" begin
         r = simulate_monoenergetic(det, 60.0; n = 20_000)
         @test energy_budget(r).total ≈ 1 atol = 1.0e-4
-        @test 0 < energy_absorption_efficiency(r) < quantum_efficiency(r) <= interaction_probability(r)
+        @test 0 <
+            energy_absorption_efficiency(r) <
+            quantum_efficiency(r) <=
+            interaction_probability(r)
         @test 0 < swank_factor(r) <= 1
     end
 
@@ -96,17 +99,35 @@ using Random: Xoshiro
         plain = simulate_sweep(jobs; n = 2_000, seed = 5)
         dir = mktempdir()
 
-        first = simulate_sweep(jobs; n = 2_000, seed = 5, checkpoint = dir, checkpoint_batch = 2)
+        first = simulate_sweep(
+            jobs;
+            n = 2_000,
+            seed = 5,
+            checkpoint = dir,
+            checkpoint_batch = 2,
+        )
         @test length(filter(endswith(".jls"), readdir(dir))) == 2
         @test all(a.edep_keV == b.edep_keV for (a, b) in zip(plain, first))
 
         # a sweep that died after its first batch: only the second is rerun
         rm(joinpath(dir, last(sort(readdir(dir)))))
-        resumed = simulate_sweep(jobs; n = 2_000, seed = 5, checkpoint = dir, checkpoint_batch = 2)
+        resumed = simulate_sweep(
+            jobs;
+            n = 2_000,
+            seed = 5,
+            checkpoint = dir,
+            checkpoint_batch = 2,
+        )
         @test all(a.edep_keV == b.edep_keV for (a, b) in zip(plain, resumed))
 
         # other photons are other batches
-        other = simulate_sweep(jobs; n = 1_000, seed = 5, checkpoint = dir, checkpoint_batch = 2)
+        other = simulate_sweep(
+            jobs;
+            n = 1_000,
+            seed = 5,
+            checkpoint = dir,
+            checkpoint_batch = 2,
+        )
         @test length(filter(endswith(".jls"), readdir(dir))) == 4
         @test sum(other[1].edep_keV) != sum(plain[1].edep_keV)
         @test !any(endswith(".partial"), readdir(dir))
@@ -132,14 +153,12 @@ using Random: Xoshiro
             cells = 9,
         )
         slab = SlabDetector(:UFC, 1.4; width_mm = 12.0, septa)
-        readout = DexelEnergyReadout(
-            DexelReadout(;
-                pitch_x_mm = pitch[1],
-                pitch_y_mm = pitch[2],
-                cloud_sigma_um = 0.01,
-                transport = nothing,
-            )
-        )
+        readout = DexelEnergyReadout(DexelReadout(;
+            pitch_x_mm = pitch[1],
+            pitch_y_mm = pitch[2],
+            cloud_sigma_um = 0.01,
+            transport = nothing,
+        ))
         beam = AreaBeam(; width_mm = 0.9, height_mm = 1.0)
         d = only(simulate_sweep([(slab, 60.0)]; n = 5_000, beam, readout))
         @test d isa DexelEnergy
@@ -183,7 +202,8 @@ using Random: Xoshiro
     @testset "half-value layer" begin
         # One energy: the HVL is ln 2 / μ of aluminium
         al = DetectorMaterial(:Al)
-        @test half_value_layer([60.0], [1.0]) ≈ log(2) / linear_attenuation(al, 60.0) rtol = 1.0e-6
+        @test half_value_layer([60.0], [1.0]) ≈
+            log(2) / linear_attenuation(al, 60.0) rtol = 1.0e-6
         @test air_mu_en(30.0) ≈ 0.1537
     end
 
@@ -193,7 +213,12 @@ using Random: Xoshiro
         @test water_equivalent_diameter(water) ≈ 300.0 rtol = 0.01
 
         # A ray through an insert: the lengths add up to the chord through the body
-        rod = PhantomInsert(; material = DetectorMaterial(:CorticalBone), x_mm = 0.0, y_mm = 0.0, semi_axes_mm = (20.0, 20.0))
+        rod = PhantomInsert(;
+            material = DetectorMaterial(:CorticalBone),
+            x_mm = 0.0,
+            y_mm = 0.0,
+            semi_axes_mm = (20.0, 20.0),
+        )
         p = CylinderPhantom(300.0; centre_mm = (0.0, 600.0), inserts = [rod])
         lengths = material_lengths(p, (0.0, 0.0), (0.0, 1.0))
         @test sum(last, lengths) ≈ 300.0
@@ -216,13 +241,21 @@ using Random: Xoshiro
             row_bin_mm = 10.0,
         )
         D, u, E = 100.0, 0.5, 60.0
-        run = simulate_monoenergetic(CylinderPhantom(D), E; n = 20_000, beam = kernel_ray(D, u), seed = 4)
+        run = simulate_monoenergetic(
+            CylinderPhantom(D),
+            E;
+            n = 20_000,
+            beam = kernel_ray(D, u),
+            seed = 4,
+        )
         tally = only(scatter_tally(run, ScatterReadout([s])))
 
         # The primary lands in the column of the ray's angle, seen from the scanner's focal spot
         columns = vec(sum(tally.primary; dims = 2))
         expected_angle = rad2deg(asin(u * D / 2 / 600.0))
-        @test tally.column_edges_deg[argmax(columns)] <= expected_angle < tally.column_edges_deg[argmax(columns) + 1]
+        @test tally.column_edges_deg[argmax(columns)] <=
+            expected_angle <
+            tally.column_edges_deg[argmax(columns) + 1]
 
         # ... and as often as Beer–Lambert says (energy-weighted, efficiency 1)
         chord = D * sqrt(1 - u^2)
@@ -236,10 +269,16 @@ using Random: Xoshiro
 
         # The way out of a cylinder, and the angular distributions normalised over the sphere
         @test exit_length(CylinderPhantom(100.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)) ≈ 50.0
-        @test exit_length(CylinderPhantom(100.0; length_mm = 20.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)) ≈ 10.0
+        @test exit_length(
+            CylinderPhantom(100.0; length_mm = 20.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ) ≈
+            10.0
         tables = scattering_tables(water)
         for process in (1, 2), E in (20, 70, 140)
-            @test 2π * (2 / tables.cells) * sum(tables.pdf[:, E, process]) ≈ 1.0 rtol = 1.0e-9
+            @test 2π * (2 / tables.cells) * sum(tables.pdf[:, E, process]) ≈
+                1.0 rtol = 1.0e-9
         end
 
         s = ScatterScanner(;
@@ -250,7 +289,12 @@ using Random: Xoshiro
             z_half_mm = 100.0,
         )
         readout = ForcedScatterReadout([s]; attenuation = forced_attenuation([water, bone]))
-        rod = PhantomInsert(; material = bone, x_mm = 15.0, y_mm = 0.0, semi_axes_mm = (15.0, 15.0))
+        rod = PhantomInsert(;
+            material = bone,
+            x_mm = 15.0,
+            y_mm = 0.0,
+            semi_axes_mm = (15.0, 15.0),
+        )
 
         # A kernel (its first scatterings integrated) and a phantom with an insert (all sampled):
         # the same photons counted one by one and by forced detection
@@ -258,7 +302,14 @@ using Random: Xoshiro
                 (CylinderPhantom(150.0), kernel_ray(150.0, 0.3)),
                 (CylinderPhantom(150.0; inserts = [rod]), kernel_ray(150.0, 0.1)),
             )
-            run = simulate_monoenergetic(phantom, 60.0; n = 100_000, beam, seed = 5, record_vertices = true)
+            run = simulate_monoenergetic(
+                phantom,
+                60.0;
+                n = 100_000,
+                beam,
+                seed = 5,
+                record_vertices = true,
+            )
             tally = only(BasisMonteCarlo.reduce_run(run, readout))
             @test sum(tally.scatter) ≈ sum(tally.analog_scatter) rtol = 0.05
             @test tally.primary == only(scatter_tally(run, ScatterReadout([s]))).primary
@@ -378,7 +429,9 @@ using Random: Xoshiro
             row_bin_mm = 10.0,
         )
         nc, nr = length(column_edges(s)) - 1, length(row_edges(s)) - 1
-        diameters, impacts, energies = [200.0, 300.0, 400.0, 500.0], [0.0, 0.5, 0.95], [60.0, 80.0]
+        diameters, impacts, energies = [200.0, 300.0, 400.0, 500.0],
+            [0.0, 0.5, 0.95],
+            [60.0, 80.0]
         S = zeros(Float32, nc, nr, length(impacts), length(diameters), length(energies))
         for (a, D) in enumerate(diameters)
             S[(nc + 1) ÷ 2, (nr + 1) ÷ 2, :, a, :] .= D
@@ -389,18 +442,31 @@ using Random: Xoshiro
             impacts,
             energies,
             Dict("test" => S),
-            Dict("test" => ones(Float32, length(impacts), length(diameters), length(energies))),
+            Dict("test" => ones(
+                Float32,
+                length(impacts),
+                length(diameters),
+                length(energies),
+            )),
             fill(0.02, 150),
             Dict{String, Any}(),
         )
-        scan(wed, rays) = library_scan(lib, "test", wed, rays; collimation_mm = 20.0, spectrum = ([70.0], [1.0]))
+        scan(wed, rays) = library_scan(
+            lib,
+            "test",
+            wed,
+            rays;
+            collimation_mm = 20.0,
+            spectrum = ([70.0], [1.0]),
+        )
         ray(γ, wet) = (angle_deg = γ, wet_mm = wet, weight = 0.1)
 
         # A cylinder: no ray is longer than its diameter, so every ray keeps the WED's cylinder
         R = 150.0
         chord(γ) = 2sqrt(R^2 - (600.0 * sind(γ))^2)
         cylinder = [ray(γ, chord(γ)) for γ in (-12.0, -5.0, 0.0, 3.0, 11.0)]
-        @test sum(scan(2R, cylinder).scatter) ≈ 2R * sum(r.weight for r in cylinder) rtol = 1.0e-5
+        @test sum(scan(2R, cylinder).scatter) ≈
+            2R * sum(r.weight for r in cylinder) rtol = 1.0e-5
 
         # A ray through 400 mm of a patient whose WED is 300 mm gets a 400 mm cylinder, not a
         # 300 mm one with its length cut short
@@ -410,10 +476,21 @@ using Random: Xoshiro
 
     @testset "scatter library v2: water ellipses, Compton and Rayleigh apart" begin
         # A view's water ellipse from its rays' chords: an ellipse of water gives itself back
-        ellipse = CylinderPhantom(; semi_axes_mm = (130.0, 180.0), centre_mm = (20.0, 600.0))
+        ellipse = CylinderPhantom(;
+            semi_axes_mm = (130.0, 180.0),
+            centre_mm = (20.0, 600.0),
+        )
         rays = [
-            (angle_deg = γ, wet_mm = BasisMonteCarlo.ellipse_chord((0.0, 0.0), (sind(γ), cosd(γ)), ellipse.centre_mm, ellipse.semi_axes_mm))
-                for γ in -25:0.02:25
+            (
+                angle_deg = γ,
+                wet_mm = BasisMonteCarlo.ellipse_chord(
+                    (0.0, 0.0),
+                    (sind(γ), cosd(γ)),
+                    ellipse.centre_mm,
+                    ellipse.semi_axes_mm,
+                ),
+            )
+            for γ in -25:0.02:25
         ]
         e = view_ellipse(rays, 600.0)
         @test e.thickness_mm ≈ 360.0 rtol = 0.01
@@ -455,7 +532,14 @@ using Random: Xoshiro
             water_compton_per_mm = a.compton,
             water_rayleigh_per_mm = a.rayleigh,
         )
-        run = simulate_monoenergetic(kernel_phantom(150.0, 0.8), 60.0; n = 20_000, beam = kernel_ray(150.0, 0.8, 0.3), seed = 7, record_vertices = true)
+        run = simulate_monoenergetic(
+            kernel_phantom(150.0, 0.8),
+            60.0;
+            n = 20_000,
+            beam = kernel_ray(150.0, 0.8, 0.3),
+            seed = 7,
+            record_vertices = true,
+        )
         tally = only(BasisMonteCarlo.reduce_run(run, readout))
         @test 0 < sum(tally.rayleigh) < sum(tally.scatter)
         @test all(tally.rayleigh .<= tally.scatter .+ 1.0e-9)
@@ -488,7 +572,11 @@ using Random: Xoshiro
         # Bone attenuates far more than its water-equivalent length of water at 40 keV, as much at 70
         bone = DetectorMaterial(:CorticalBone)
         attenuation = forced_attenuation([water, bone])
-        p_bone = CylinderPhantom(; material = bone, semi_axes_mm = (50.0, 50.0), centre_mm = (0.0, 600.0))
+        p_bone = CylinderPhantom(;
+            material = bone,
+            semi_axes_mm = (50.0, 50.0),
+            centre_mm = (0.0, 600.0),
+        )
         wet = water_equivalent_length(p_bone, (0.0, 0.0), (0.0, 1.0))
         δ = process_ratios(p_bone, (0.0, 0.0), (0.0, 1.0), attenuation, wet).delta_mu_per_mm
         @test δ[BasisMonteCarlo.path_band(40.0)] > 0.005
@@ -497,14 +585,35 @@ using Random: Xoshiro
         # Blending the kernels around a ray: each moved so its own ray lies under this one. Synthetic
         # kernels, a bump centred on each kernel's own ray, give one bump on the ray, no wider (the bump
         # spans a few of the 2° columns, so moving it by part of a column hardly widens it)
-        thicknesses, aspects, impacts, energies = [200.0, 300.0], [1.0, 1.5], [0.0, 0.2, 0.4, 0.6, 0.8, 0.99], [50.0, 70.0]
+        thicknesses, aspects, impacts, energies = [200.0, 300.0],
+            [1.0, 1.5],
+            [0.0, 0.2, 0.4, 0.6, 0.8, 0.99],
+            [50.0, 70.0]
         cols, rows = column_edges(s), row_edges(s)
         γ = (cols[1:(end - 1)] .+ cols[2:end]) ./ 2
         width = 6.0
-        S = zeros(Float32, length(γ), length(rows) - 1, length(impacts), length(aspects), length(thicknesses), length(energies))
-        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
-            own = asind(BasisMonteCarlo.kernel_offset(T / 2, BasisMonteCarlo.kernel_half_width(T, ar), u) / s.source_to_isocenter_mm)
-            S[:, :, iu, ir, iT, :] .= exp.(-((γ .- own) ./ width) .^ 2)
+        S = zeros(
+            Float32,
+            length(γ),
+            length(rows) - 1,
+            length(impacts),
+            length(aspects),
+            length(thicknesses),
+            length(energies),
+        )
+        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (
+                iT,
+                T,
+            ) in enumerate(thicknesses)
+            own = asind(
+                BasisMonteCarlo.kernel_offset(
+                    T / 2,
+                    BasisMonteCarlo.kernel_half_width(T, ar),
+                    u,
+                ) /
+                    s.source_to_isocenter_mm,
+            )
+            S[:, :, iu, ir, iT, :] .= exp.(-((γ .- own) ./ width).^2)
         end
         nb = length(BasisMonteCarlo.PATH_ENERGY_EDGES_KEV) - 1
         lib = ShapeScatterLibrary(
@@ -516,11 +625,44 @@ using Random: Xoshiro
             Dict(s.name => S),
             Dict(s.name => zero(S)),
             Dict(s.name => zero(S)),
-            Dict(s.name => ones(Float32, length(impacts), length(aspects), length(thicknesses), length(energies))),
-            Dict(s.name => zeros(Float32, 2, nb, length(impacts), length(aspects), length(thicknesses), length(energies))),
-            Dict(s.name => zeros(Float32, length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))),
-            Dict(s.name => fill(Float32(s.column_bin_deg / sqrt(12)), length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))),
-            Dict(s.name => ones(Float32, 2, length(BasisMonteCarlo.SCATTER_ANGLE_EDGES_DEG) - 1, length(energies))),
+            Dict(s.name => ones(
+                Float32,
+                length(impacts),
+                length(aspects),
+                length(thicknesses),
+                length(energies),
+            )),
+            Dict(s.name => zeros(
+                Float32,
+                2,
+                nb,
+                length(impacts),
+                length(aspects),
+                length(thicknesses),
+                length(energies),
+            )),
+            Dict(s.name => zeros(
+                Float32,
+                length(γ),
+                length(impacts),
+                length(aspects),
+                length(thicknesses),
+                length(energies),
+            )),
+            Dict(s.name => fill(
+                Float32(s.column_bin_deg / sqrt(12)),
+                length(γ),
+                length(impacts),
+                length(aspects),
+                length(thicknesses),
+                length(energies),
+            )),
+            Dict(s.name => ones(
+                Float32,
+                2,
+                length(BasisMonteCarlo.SCATTER_ANGLE_EDGES_DEG) - 1,
+                length(energies),
+            )),
             a.total,
             # a water that does not scatter: these kernels are made up, with no single scatter of
             # their own to give up, so the scans below test the blending alone
@@ -539,7 +681,7 @@ using Random: Xoshiro
             )
             profile = vec(sum(out.scatter; dims = 2))
             centre = sum(profile .* γ) / sum(profile)
-            return centre, sqrt(sum(profile .* (γ .- centre) .^ 2) / sum(profile))
+            return centre, sqrt(sum(profile .* (γ .- centre).^2) / sum(profile))
         end
         # a ray on a kernel of the grid, nothing blended, against one among eight of them
         on_grid = bump(
@@ -548,13 +690,24 @@ using Random: Xoshiro
             (thickness_mm = 200.0, width_mm = 200.0, centre_mm = 0.0),
         )
         target = 8.0
-        blended = bump(target, 180.0, (thickness_mm = 250.0, width_mm = 300.0, centre_mm = 0.0))
+        blended = bump(
+            target,
+            180.0,
+            (thickness_mm = 250.0, width_mm = 300.0, centre_mm = 0.0),
+        )
         @test blended[1] ≈ target atol = 0.05
         @test blended[2] ≈ on_grid[2] rtol = 0.05
 
         # A kernel whose scatter landed at one point of its column (no spread) moves there whole: a ray
         # anywhere in a column puts it all in that column, none in its neighbours
-        O = zeros(Float32, length(γ), length(impacts), length(aspects), length(thicknesses), length(energies))
+        O = zeros(
+            Float32,
+            length(γ),
+            length(impacts),
+            length(aspects),
+            length(thicknesses),
+            length(energies),
+        )
         point = ShapeScatterLibrary(
             [s],
             thicknesses,
@@ -575,8 +728,18 @@ using Random: Xoshiro
             Dict{String, Any}(),
         )
         S .= 0
-        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
-            own = asind(BasisMonteCarlo.kernel_offset(T / 2, BasisMonteCarlo.kernel_half_width(T, ar), u) / s.source_to_isocenter_mm)
+        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (
+                iT,
+                T,
+            ) in enumerate(thicknesses)
+            own = asind(
+                BasisMonteCarlo.kernel_offset(
+                    T / 2,
+                    BasisMonteCarlo.kernel_half_width(T, ar),
+                    u,
+                ) /
+                    s.source_to_isocenter_mm,
+            )
             c = searchsortedlast(cols, own)
             S[c, :, iu, ir, iT, :] .= 1
             O[c, iu, ir, iT, :] .= own - γ[c]
@@ -598,11 +761,26 @@ using Random: Xoshiro
         # (impact 0): a kernel at impact 0 whose scatter lies 2° to one side of its ray lands 2°
         # farther out on either side
         S .= 0
-        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (iT, T) in enumerate(thicknesses)
-            own = asind(BasisMonteCarlo.kernel_offset(T / 2, BasisMonteCarlo.kernel_half_width(T, ar), u) / s.source_to_isocenter_mm)
-            S[:, :, iu, ir, iT, :] .= exp.(-((γ .- own .- 2.0) ./ width) .^ 2)
+        for (iu, u) in enumerate(impacts), (ir, ar) in enumerate(aspects), (
+                iT,
+                T,
+            ) in enumerate(thicknesses)
+            own = asind(
+                BasisMonteCarlo.kernel_offset(
+                    T / 2,
+                    BasisMonteCarlo.kernel_half_width(T, ar),
+                    u,
+                ) /
+                    s.source_to_isocenter_mm,
+            )
+            S[:, :, iu, ir, iT, :] .= exp.(-((γ .- own .- 2.0) ./ width).^2)
         end
-        @test BasisMonteCarlo.kernel_impact(150.0, 187.5, BasisMonteCarlo.kernel_chord(150.0, 187.5, 0.0)) == 0.0
+        @test BasisMonteCarlo.kernel_impact(
+            150.0,
+            187.5,
+            BasisMonteCarlo.kernel_chord(150.0, 187.5, 0.0),
+        ) ==
+            0.0
         for side in (1, -1)
             out = BasisMonteCarlo.library_scan(
                 lib,
@@ -620,25 +798,72 @@ using Random: Xoshiro
         # along the kernel's ray, and the same in that ellipse as its rays describe it
         T, ar, u, E = 260.0, 1.25, 0.4, 60.0
         phantom, beam = kernel_phantom(T, ar), kernel_ray(T, ar, u)
-        run = (beam = beam, energy_keV = E, n = 200_000, photon_energy_keV = nothing, seed = 1)
+        run = (
+            beam = beam,
+            energy_keV = E,
+            n = 200_000,
+            photon_energy_keV = nothing,
+            seed = 1,
+        )
         cols_s, rows_s = column_edges(s), row_edges(s)
         blank = zeros(length(cols_s) - 1, length(rows_s) - 1)
-        analog = ScatterTally(s.name, run.n, 0.0, cols_s, rows_s, blank, blank, zeros(150), blank, blank, zeros(2, 7), blank, zeros(2, 30), zeros(2, length(cols_s) - 1))
+        analog = ScatterTally(
+            s.name,
+            run.n,
+            0.0,
+            cols_s,
+            rows_s,
+            blank,
+            blank,
+            zeros(150),
+            blank,
+            blank,
+            zeros(2, 7),
+            blank,
+            zeros(2, 30),
+            zeros(2, length(cols_s) - 1),
+        )
         frames = [BasisMonteCarlo.detector_frame(s, run, phantom, analog)]
-        BasisMonteCarlo.first_scatter!(frames, run, phantom, BasisMonteCarlo.phantom_media(phantom, readout), readout, Xoshiro(3))
+        BasisMonteCarlo.first_scatter!(
+            frames,
+            run,
+            phantom,
+            BasisMonteCarlo.phantom_media(phantom, readout),
+            readout,
+            Xoshiro(3),
+        )
         forced = frames[1].scatter ./ run.n
-        water_parts = (total = a.total, compton = a.compton, rayleigh = a.rayleigh, tables = BasisMonteCarlo.cached_scattering_tables(water))
+        water_parts = (
+            total = a.total,
+            compton = a.compton,
+            rayleigh = a.rayleigh,
+            tables = BasisMonteCarlo.cached_scattering_tables(water),
+        )
         a_k, b_k = T / 2, BasisMonteCarlo.kernel_half_width(T, ar)
         node = asind(BasisMonteCarlo.kernel_offset(a_k, b_k, u) / s.source_to_isocenter_mm)
-        q = only(BasisMonteCarlo.single_scatter(BasisMonteCarlo.WaterEllipse(a_k, b_k, s.source_to_isocenter_mm), s, node, [E], water_parts))
+        q = only(BasisMonteCarlo.single_scatter(
+            BasisMonteCarlo.WaterEllipse(a_k, b_k, s.source_to_isocenter_mm),
+            s,
+            node,
+            [E],
+            water_parts,
+        ))
         quadrature = q.compton .+ q.wide .+ q.forward
         @test sum(quadrature) ≈ sum(forced) rtol = 0.03
         @test sum(q.forward) ≈ sum(frames[1].forward) / run.n rtol = 0.03
         centre = (0.0, s.source_to_isocenter_mm)
         strips = BasisMonteCarlo.RayStrips(
             [
-                (angle_deg = g, wet_mm = BasisMonteCarlo.ellipse_chord((0.0, 0.0), (sind(g), cosd(g)), centre, (b_k, a_k)))
-                    for g in -30:0.1:30
+                (
+                    angle_deg = g,
+                    wet_mm = BasisMonteCarlo.ellipse_chord(
+                        (0.0, 0.0),
+                        (sind(g), cosd(g)),
+                        centre,
+                        (b_k, a_k),
+                    ),
+                )
+                for g in -30:0.1:30
             ],
             s.source_to_isocenter_mm,
         )
@@ -686,7 +911,10 @@ using Random: Xoshiro
         wx, wy = 0.275, 0.322
         # The weighting potentials of all the pixels add up to a whole-face electrode's: z / L
         for z in (0.3, 1.2)
-            s = sum(weighting_potential(i * wx, j * wy, L - z, wx, wy, L) for i in -40:40, j in -40:40)
+            s = sum(
+                weighting_potential(i * wx, j * wy, L - z, wx, wy, L)
+                for i in -40:40, j in -40:40
+            )
             @test s ≈ z / L atol = 0.005
         end
         @test weighting_potential(0.0, 0.0, 1.0e-4, wx, wy, L) ≈ 1 atol = 0.01
@@ -695,17 +923,36 @@ using Random: Xoshiro
         # Narrower clouds than v0.15.1's 30 µm: more photons keep their full energy in one dexel
         crystal = SlabDetector(:CdTe, 1.6)
         beam = AreaBeam(; width_mm = wx, height_mm = wy)
-        run = simulate_monoenergetic(crystal, 60.0; n = 5_000, beam, seed = 2, record_deposits = true)
+        run = simulate_monoenergetic(
+            crystal,
+            60.0;
+            n = 5_000,
+            beam,
+            seed = 2,
+            record_deposits = true,
+        )
         # the charge is transported by default; the fixed cloud is asked for
-        @test DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy).transport == ChargeTransport()
-        fixed = dexel_response(run, DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy, transport = nothing))
+        @test DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy).transport ==
+            ChargeTransport()
+        fixed = dexel_response(
+            run,
+            DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy, transport = nothing),
+        )
         moved = dexel_response(run, DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy))
         full(r) = count(>(58.0f0), r.dexel_energy_keV[:, 2, 2])
         @test full(moved) > full(fixed)
 
         # Nothing is created and little is lost: over 9 × 9 dexels the recorded charge is the
         # deposited energy less trapping (a few %)
-        wide = dexel_response(run, DexelReadout(; pitch_x_mm = wx, pitch_y_mm = wy, neighborhood = 9, transport = ChargeTransport()))
+        wide = dexel_response(
+            run,
+            DexelReadout(;
+                pitch_x_mm = wx,
+                pitch_y_mm = wy,
+                neighborhood = 9,
+                transport = ChargeTransport(),
+            ),
+        )
         ratio = sum(Float64, wide.dexel_energy_keV) / sum(Float64, run.deposits.energy_keV)
         @test 0.95 < ratio <= 1.0
     end
@@ -718,40 +965,82 @@ using Random: Xoshiro
         # Pulses far apart: every pulse above a threshold counts, none below
         values, cdf = [50.0], [1.0]
         alone = PulseShaper(; fwhm_ns = 10.0, dead_ns = 20.0)
-        @test pulse_counts(Xoshiro(1), alone, 1.0e-6, 500, values, cdf, [20.0, 60.0]) == [500, 0]
+        @test pulse_counts(Xoshiro(1), alone, 1.0e-6, 500, values, cdf, [20.0, 60.0]) ==
+            [500, 0]
 
         # Narrow pulses and a long dead time: a non-paralysable counter, n / (1 + rate × dead)
         rate, dead = 0.01, 50.0
         narrow = PulseShaper(; fwhm_ns = 0.5, dead_ns = dead)
-        counted = pulse_counts(Xoshiro(2), narrow, rate, 20_000, values, cdf, [20.0]; dt_ns = 0.05)[1]
+        counted = pulse_counts(
+            Xoshiro(2),
+            narrow,
+            rate,
+            20_000,
+            values,
+            cdf,
+            [20.0];
+            dt_ns = 0.05,
+        )[1]
         @test counted / 20_000 ≈ 1 / (1 + rate * dead) rtol = 0.03
 
         # Two pulses that overlap count once with a plain comparator, twice when it retriggers
-        piled(retrigger) = pulse_counts(Xoshiro(3), PulseShaper(; fwhm_ns = 10.0, dead_ns = 0.0, retrigger), 0.2, 20_000, values, cdf, [20.0])[1]
+        piled(retrigger) = pulse_counts(
+            Xoshiro(3),
+            PulseShaper(; fwhm_ns = 10.0, dead_ns = 0.0, retrigger),
+            0.2,
+            20_000,
+            values,
+            cdf,
+            [20.0],
+        )[1]
         @test piled(false) < piled(true)
 
         # Without noise, a gain g at threshold T counts what the nominal dexel counts at T / g; a
         # threshold offset δ counts what it counts at T + δ
         heights, p = collect(10.0:1.0:100.0), fill(1 / 91, 91)
         quiet = (; electronic_noise_keV = 1.0e-6, fano = 0.0)
-        @test counts_above(heights, p, [40.5]; variation = DexelVariation(; gain = 1.1), quiet...) ≈
+        @test counts_above(
+            heights,
+            p,
+            [40.5];
+            variation = DexelVariation(; gain = 1.1),
+            quiet...,
+        ) ≈
             counts_above(heights, p, [40.5 / 1.1]; quiet...)
-        @test counts_above(heights, p, [40.5]; variation = DexelVariation(; threshold_offset_keV = 2.0), quiet...) ≈
+        @test counts_above(
+            heights,
+            p,
+            [40.5];
+            variation = DexelVariation(; threshold_offset_keV = 2.0),
+            quiet...,
+        ) ≈
             counts_above(heights, p, [42.5]; quiet...)
         @test counts_above(heights, p, [0.0])[1] ≈ 1 atol = 1.0e-6
 
         # A dexel's pulses per photon: at least one when the photon is absorbed (60 keV in 1.6 mm CdTe), at
         # most one in each dexel of the 3 × 3
         crystal = SlabDetector(:CdTe, 1.6)
-        run = simulate_monoenergetic(crystal, 60.0; n = 2_000, beam = AreaBeam(; width_mm = 0.275, height_mm = 0.322), seed = 4, record_deposits = true)
-        h = pulse_heights(dexel_response(run, DexelReadout(; pitch_x_mm = 0.275, pitch_y_mm = 0.322, transport = nothing)))
+        run = simulate_monoenergetic(
+            crystal,
+            60.0;
+            n = 2_000,
+            beam = AreaBeam(; width_mm = 0.275, height_mm = 0.322),
+            seed = 4,
+            record_deposits = true,
+        )
+        h = pulse_heights(dexel_response(
+            run,
+            DexelReadout(; pitch_x_mm = 0.275, pitch_y_mm = 0.322, transport = nothing),
+        ))
         @test interaction_probability(run) < sum(h) <= 9
     end
 
     @testset "physics is fixed per process" begin
         @test_throws ErrorException simulate_monoenergetic(
-            det, 60.0; n = 10,
-            physics = PhysicsSettings(fluorescence = false)
+            det,
+            60.0;
+            n = 10,
+            physics = PhysicsSettings(fluorescence = false),
         )
     end
 end

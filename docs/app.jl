@@ -45,7 +45,7 @@ ENV["BASISSIM_BASE"] = get(ENV, "SNAPSHOT_BASE_PATH", IS_BUILD ? "/BasisSimulato
 # =============================================================================
 
 let build_env = joinpath(@__DIR__, "build_env"),
-    extract   = joinpath(@__DIR__, "extract_all.jl")
+    extract = joinpath(@__DIR__, "extract_all.jl")
     if !haskey(ENV, "BASISSIM_SKIP_NB_EXPORT")
         Base.run(`$(Base.julia_cmd()) --project=$(build_env) $(extract)`)
     else
@@ -61,12 +61,16 @@ end
 const NOTEBOOK_SLUGS = let dir = joinpath(@__DIR__, "notebooks"),
     mc_dir = joinpath(@__DIR__, "..", "lib", "BasisMonteCarlo", "docs", "notebooks"),
     static = joinpath(@__DIR__, "notebooks-static"),
-    patterns = strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)),
+    patterns = strip.(split(
+        get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""),
+        ",";
+        keepempty = false,
+    )),
     skipped = s -> any(p -> endswith(p, "*") ? startswith(s, chop(p)) : s == p, patterns)
-
     all_slugs = isdir(dir) ?
         sort([
-            splitext(f)[1] for f in readdir(dir)
+            splitext(f)[1]
+            for f in readdir(dir)
             if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
         ]) :
         String[]
@@ -75,9 +79,14 @@ const NOTEBOOK_SLUGS = let dir = joinpath(@__DIR__, "notebooks"),
         String[]
     kept = filter(!skipped, vcat(all_slugs, mc_slugs))
     dropped = filter(skipped, vcat(all_slugs, mc_slugs))
-    isempty(dropped) || println("[app] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
-    unrendered = filter(s -> startswith(s, "mc-") && !isfile(joinpath(static, "$(s).fragment.html")), kept)
-    isempty(unrendered) || println("[app] not rendered yet, no page: $(join(unrendered, ", "))")
+    isempty(dropped) ||
+        println("[app] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
+    unrendered = filter(
+        s -> startswith(s, "mc-") && !isfile(joinpath(static, "$(s).fragment.html")),
+        kept,
+    )
+    isempty(unrendered) ||
+        println("[app] not rendered yet, no page: $(join(unrendered, ", "))")
     filter(!in(unrendered), kept)
 end
 
@@ -91,7 +100,7 @@ app = App(
     title = "BasisSimulator.jl",
     output_dir = "dist",
     base_path = ENV["BASISSIM_BASE"],
-    layout = :Layout
+    layout = :Layout,
 )
 
 # Load file-based routes + components first so per-slug route handlers
@@ -106,7 +115,7 @@ Therapy.load_app!(app)
 # live OUTSIDE dist/ because Therapy wipes its output_dir before build.
 
 let nb_static = joinpath(@__DIR__, "notebooks-static"),
-    assets    = joinpath(@__DIR__, "assets")
+    assets = joinpath(@__DIR__, "assets")
     if isdir(nb_static)
         Therapy.staticfiles(app, nb_static, "notebooks-static")
         println("  Mounted: /notebooks-static/  → $(nb_static)")
@@ -128,17 +137,20 @@ end
 # automatically — no other code changes required.
 
 let host = isdefined(Main, :TherapyApp) ? getfield(Main, :TherapyApp) : Main
-    NotebookPage = isdefined(host, :NotebookPage) ?
-        getfield(host, :NotebookPage) : nothing
+    NotebookPage = isdefined(host, :NotebookPage) ? getfield(host, :NotebookPage) : nothing
 
     if NotebookPage === nothing
         @warn "[docs] NotebookPage component not found — skipping per-notebook route registration"
     else
         for slug in NOTEBOOK_SLUGS
             route = "/examples/$(slug)/"
-            push!(app.routes, route => let s = slug, np = NotebookPage
-                () -> Base.invokelatest(np, s)
-            end)
+            push!(
+                app.routes,
+                route =>
+                    let s = slug, np = NotebookPage
+                        () -> Base.invokelatest(np, s)
+                    end,
+            )
             println("  Registered notebook route: $(route)")
         end
     end
@@ -154,11 +166,18 @@ end
 
 let favicon = joinpath(@__DIR__, "assets", "favicon.ico")
     if isfile(favicon)
-        hdrs = Pair{String,String}["Cache-Control" => "public, max-age=86400"]
-        push!(app.static_mounts, Therapy.StaticMount(
-            "/favicon.ico", favicon, hdrs, nothing, true,
-            Therapy.file(favicon; headers=hdrs)
-        ))
+        hdrs = Pair{String, String}["Cache-Control" => "public, max-age=86400"]
+        push!(
+            app.static_mounts,
+            Therapy.StaticMount(
+                "/favicon.ico",
+                favicon,
+                hdrs,
+                nothing,
+                true,
+                Therapy.file(favicon; headers = hdrs),
+            ),
+        )
         println("  Mounted: /favicon.ico  → $(favicon)")
     end
 end
@@ -190,11 +209,16 @@ if IS_BUILD && isdir(app.output_dir)
             content = read(path, String)
             occursin("</head>", content) || continue
             if !occursin(favicon_link, content)
-                content = replace(content, "</head>" => "    $(favicon_link)\n</head>"; count=1)
+                content = replace(
+                    content,
+                    "</head>" => "    $(favicon_link)\n</head>";
+                    count = 1,
+                )
             end
-            content = replace(content,
+            content = replace(
+                content,
                 "href=\"$(stylesheet_href)\"" => "href=\"$(versioned_stylesheet_href)\"";
-                count=1,
+                count = 1,
             )
             write(path, content)
         end

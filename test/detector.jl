@@ -23,7 +23,7 @@
 # polychromatic.jl pipeline are exercised through api.jl; here we test the
 # detector modules directly on CPU arrays.
 
-import AcceleratedKernels  # workspace kernels are AK-based; loading here for parity
+import AcceleratedKernels # workspace kernels are AK-based; loading here for parity
 
 # -----------------------------------------------------------------------------
 # physics_pipeline.jl
@@ -69,7 +69,9 @@ end
 # (the signal moments themselves: eict_signal.jl)
 # -----------------------------------------------------------------------------
 @testset "EICT detector tables: K-edge escape, 1–140 keV, one per scintillator" begin
-    g, u, f = BS.GEMSTONE_MC_EFFICIENCY_LUT, BS.UFC_MC_EFFICIENCY_LUT, BS.UFC_FLASH_MC_EFFICIENCY_LUT
+    g, u, f = BS.GEMSTONE_MC_EFFICIENCY_LUT,
+        BS.UFC_MC_EFFICIENCY_LUT,
+        BS.UFC_FLASH_MC_EFFICIENCY_LUT
     for t in (g, u, f)
         @test t.energies == collect(1.0:140.0)
         @test length(t.efficiency) == length(t.dqe0) == 140
@@ -98,21 +100,43 @@ end
     e = collect(20.0:10.0:140.0)
     w = ones(length(e))
     for s in (BS.SOMATOM_FORCE, BS.SOMATOM_DEFINITION_FLASH, BS.REVOLUTION_APEX)
-        model = BS.build_physics_config(s, BS.SimOptions(use_scatter = false), e, w).detector_efficiency
+        model = BS.build_physics_config(
+            s,
+            BS.SimOptions(use_scatter = false),
+            e,
+            w,
+        ).detector_efficiency
         @test model.material === s.detector_material
         @test model.thickness_mm == s.detector_depth
         @test model.mode == BS.MC_LUT
     end
     bl = BS.EICTScanner(BS.SOMATOM_FORCE; detector_efficiency_mode = :beer_lambert)
-    @test BS.build_physics_config(bl, BS.SimOptions(use_scatter = false), e, w).detector_efficiency.mode == BS.BEER_LAMBERT
-    off = BS.build_physics_config(BS.EICTScanner(BS.SOMATOM_FORCE; use_detector_efficiency = false), BS.SimOptions(use_scatter = false), e, w)
+    @test BS.build_physics_config(
+        bl,
+        BS.SimOptions(use_scatter = false),
+        e,
+        w,
+    ).detector_efficiency.mode ==
+        BS.BEER_LAMBERT
+    off = BS.build_physics_config(
+        BS.EICTScanner(BS.SOMATOM_FORCE; use_detector_efficiency = false),
+        BS.SimOptions(use_scatter = false),
+        e,
+        w,
+    )
     @test off.detector_efficiency === nothing
     # a depth the table was not made at, and a material with no model, are refused
     @test_throws ArgumentError BS.build_physics_config(
-        BS.EICTScanner(BS.SOMATOM_FORCE; detector_depth = 1.0), BS.SimOptions(use_scatter = false), e, w
+        BS.EICTScanner(BS.SOMATOM_FORCE; detector_depth = 1.0),
+        BS.SimOptions(use_scatter = false),
+        e,
+        w,
     )
     @test_throws ArgumentError BS.build_physics_config(
-        BS.EICTScanner(detector_material = :unobtainium), BS.SimOptions(use_scatter = false), e, w
+        BS.EICTScanner(detector_material = :unobtainium),
+        BS.SimOptions(use_scatter = false),
+        e,
+        w,
     )
 end
 
@@ -130,14 +154,14 @@ end
 @testset "FillFactorModel" begin
     @testset "effective_fill_factor multiplies row × col" begin
         m = BS.FillFactorModel(0.9, 0.8, true)
-        @test BS.effective_fill_factor(m) ≈ 0.72  atol = 1.0e-12
+        @test BS.effective_fill_factor(m) ≈ 0.72 atol = 1.0e-12
     end
 
     @testset "1-arg constructor splits as sqrt × sqrt" begin
         m = BS.FillFactorModel(0.81)
-        @test m.row_fill ≈ 0.9  atol = 1.0e-12
-        @test m.col_fill ≈ 0.9  atol = 1.0e-12
-        @test BS.effective_fill_factor(m) ≈ 0.81  atol = 1.0e-12
+        @test m.row_fill ≈ 0.9 atol = 1.0e-12
+        @test m.col_fill ≈ 0.9 atol = 1.0e-12
+        @test BS.effective_fill_factor(m) ≈ 0.81 atol = 1.0e-12
     end
 
     @testset "1-arg constructor rejects ff outside (0, 1]" begin
@@ -160,13 +184,13 @@ end
         m = BS.OpticalCrosstalkModel(0.05, 0.04)
         K = BS.create_optical_crosstalk_kernel(m)
         @test size(K) == (3, 3)
-        @test sum(K) ≈ 1.0  atol = 1.0e-12
-        @test K[2, 2] ≈ (1 - 2 * 0.04) * (1 - 2 * 0.05)  atol = 1.0e-12
+        @test sum(K) ≈ 1.0 atol = 1.0e-12
+        @test K[2, 2] ≈ (1 - 2 * 0.04) * (1 - 2 * 0.05) atol = 1.0e-12
     end
 
     @testset "apply_optical_crosstalk! preserves total intensity on uniform input" begin
         m = BS.optical_crosstalk_typical()
-        sino = fill(Float32(0.5), 16, 4, 4)   # uniform projection → uniform intensity
+        sino = fill(Float32(0.5), 16, 4, 4) # uniform projection → uniform intensity
         sino_save = copy(sino)
         BS.apply_optical_crosstalk!(sino, m)
         # 3×3 convolution of uniform input → unchanged (since kernel sums to 1)
@@ -190,14 +214,14 @@ end
         m = BS.lag_gadox()
         @test length(m.amplitudes) == 2
         @test length(m.time_constants) == 2
-        @test sum(m.amplitudes) ≈ 0.015  atol = 1.0e-12   # 1% fast + 0.5% slow
+        @test sum(m.amplitudes) ≈ 0.015 atol = 1.0e-12 # 1% fast + 0.5% slow
         @test m.time_constants == [1.0, 10.0]
     end
 
     @testset "compute_lag_coefficients — primary > tail, normalized" begin
         coeffs = BS.compute_lag_coefficients(BS.lag_gadox(), 10)
         @test length(coeffs) == 10
-        @test sum(coeffs) ≈ 1.0  atol = 1.0e-12
+        @test sum(coeffs) ≈ 1.0 atol = 1.0e-12
         @test coeffs[1] > coeffs[2]
         @test coeffs[2] > coeffs[end]
         @test all(>(0), coeffs)
@@ -222,7 +246,7 @@ end
         nc, nr, nv = 4, 1, 12
         sino = zeros(Float32, nc, nr, nv)
         for v in 4:nv, c in 1:nc
-            sino[c, 1, v] = 0.5f0   # low projection (so I = exp(-0.5) ≈ 0.61)
+            sino[c, 1, v] = 0.5f0 # low projection (so I = exp(-0.5) ≈ 0.61)
         end
         sino_lag = copy(sino)
         BS.apply_lag!(sino_lag, BS.lag_gadox(); n_history = 6)
@@ -248,7 +272,14 @@ end
     @test det.thickness_mm == 1.6
     @test det.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
     @test fieldnames(BS.PhotonCountingDetector) ==
-        (:material, :thickness_mm, :pixel_size_mm, :energy_thresholds_keV, :dead_time_ns, :binning_factor)
+        (
+            :material,
+            :thickness_mm,
+            :pixel_size_mm,
+            :energy_thresholds_keV,
+            :dead_time_ns,
+            :binning_factor,
+        )
 end
 
 @testset "EnergyResolvedSinogram contract" begin
@@ -270,14 +301,14 @@ end
     energies = [40.0, 60.0, 100.0]
     η_vec = BS.quantum_efficiency_vector(BS.CDTE_MATERIAL, 1.6, energies)
     for (i, E) in enumerate(energies)
-        @test η_vec[i] ≈ BS.quantum_efficiency(BS.CDTE_MATERIAL, 1.6, E)  atol = 1.0e-12
+        @test η_vec[i] ≈ BS.quantum_efficiency(BS.CDTE_MATERIAL, 1.6, E) atol = 1.0e-12
     end
 end
 
 @testset "get_detector_material_properties" begin
     cdte = BS.get_detector_material_properties(BS.CDTE_MATERIAL)
     @test cdte.density_g_cm3 ≈ 5.85
-    @test cdte.k_edges_keV ≈ [26.711, 31.814]    # Cd, Te K-edges
+    @test cdte.k_edges_keV ≈ [26.711, 31.814] # Cd, Te K-edges
     @test cdte.elements == [:Cd, :Te]
 
     czt = BS.get_detector_material_properties(BS.CZT_MATERIAL)
@@ -289,14 +320,14 @@ end
     @test si.density_g_cm3 ≈ 2.33
 
     μ_cdte = BS.get_detector_material_attenuation(BS.CDTE_MATERIAL, 60.0)
-    @test 25 < μ_cdte < 45        # NIST XCOM value ~33 cm⁻¹
+    @test 25 < μ_cdte < 45 # NIST XCOM value ~33 cm⁻¹
 end
 
 @testset "spatial_bin! — 2×2 sums to one binned pixel" begin
     src = ones(Float32, 8, 4, 2)
     dst = zeros(Float32, 4, 2, 2)
     BS.spatial_bin!(dst, src, 2)
-    @test all(dst .≈ 4.0f0)        # 2×2 = 4 dexels per binned pixel
+    @test all(dst .≈ 4.0f0) # 2×2 = 4 dexels per binned pixel
 end
 
 # -----------------------------------------------------------------------------
@@ -340,7 +371,11 @@ end
         # v0.15.1's response (test data): a shared photon counts in two dexels, so a row is not
         # capped at one — v0.15.1 renormalised it
         legacy = joinpath(pkgdir(BS), "test", "data", "cdte_response_v4.jls")
-        @test maximum(sum(BS.compute_mc_drm(det, 120.0; npz_path = legacy, n_energy_points = 100); dims = 2)) > 1.0
+        @test maximum(sum(
+            BS.compute_mc_drm(det, 120.0; npz_path = legacy, n_energy_points = 100);
+            dims = 2,
+        )) >
+            1.0
         # Below the lowest threshold (≤20 keV) → near-zero registration in all bins
         @test sum(D[1, :]) < 0.05
     end
@@ -369,10 +404,14 @@ end
         @test minimum(eigvals(Symmetric(moments.covariance))) >= -1.0e-10
 
         @test_throws DimensionMismatch BS.compute_mc_count_moments(
-            det, energies, weights[1:(end - 1)]
+            det,
+            energies,
+            weights[1:(end - 1)],
         )
         @test_throws ArgumentError BS.compute_mc_count_moments(
-            det, energies, zeros(length(energies))
+            det,
+            energies,
+            zeros(length(energies)),
         )
     end
 end
@@ -402,7 +441,7 @@ end
     # (the old sampler switched to a rounded Gaussian above λ = 30 — skewness 0)
     s = [BS._poisson_sample(rng, 50.0) for _ in 1:200_000]
     z = (s .- mean(s)) ./ std(s)
-    @test isapprox(mean(z .^ 3), 1 / sqrt(50.0); atol = 0.03)
+    @test isapprox(mean(z.^3), 1 / sqrt(50.0); atol = 0.03)
 
     # Determinism under an explicit seed
     draw(seed) = [BS._poisson_sample(MersenneTwister(seed), 123.4) for _ in 1:100]
@@ -412,60 +451,96 @@ end
 
 @testset "_poisson_draw — the device's Float32 sampler on counter-based streams" begin
     # the acceptance test's log-pmf keeps Float32 exact where the counts are large
-    for (k, λ) in ((15, 12.0), (21, 30.0), (1.0e4 + 37, 1.0e4), (1.0e5 - 410, 1.0e5), (1.0e6 + 900, 1.0e6))
+    for (k, λ) in (
+            (15, 12.0),
+            (21, 30.0),
+            (1.0e4 + 37, 1.0e4),
+            (1.0e5 - 410, 1.0e5),
+            (1.0e6 + 900, 1.0e6),
+        )
         exact = k * log(λ) - λ - BS._log_factorial(Int(k))
         @test BS._log_poisson_pmf(Float32(k), Float32(λ)) ≈ exact atol = 2.0e-3
     end
     for λ in (0.5f0, 9.9f0, 10.1f0, 50.0f0, 1.0f4, 2.0f5)
-        s = [first(BS._poisson_draw(BS._DrawStream(UInt64(3), 1, i, 1, 1), λ)) for i in 1:200_000]
+        s = [
+            first(BS._poisson_draw(BS._DrawStream(UInt64(3), 1, i, 1, 1), λ))
+            for i in 1:200_000
+        ]
         @test all(x -> x >= 0 && isinteger(x), s)
         @test mean(Float64.(s)) ≈ λ rtol = 0.01
         @test std(Float64.(s))^2 ≈ λ rtol = 0.02
         z = (s .- mean(s)) ./ std(s)
-        @test mean(Float64.(z) .^ 3) ≈ 1 / sqrt(λ) atol = 0.03
+        @test mean(Float64.(z).^3) ≈ 1 / sqrt(λ) atol = 0.03
     end
     # a stream is a pure function of its key
-    @test BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 77.0f0) == BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 77.0f0)
-    @test first(BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 1.0f4)) != first(BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 6), 1.0f4))
+    @test BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 77.0f0) ==
+        BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 77.0f0)
+    @test first(BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 5), 1.0f4)) !=
+        first(BS._poisson_draw(BS._DrawStream(UInt64(9), 2, 3, 4, 6), 1.0f4))
 end
 
 @testset "pcct_count!: Poisson dexels, shared photons covary, the digital sum is over-dispersed" begin
     e, w = BS.resolve_source_spectrum_without_bowtie(
-        BS.SimOptions(), BS.CTProtocol(kVp = 120.0, mAs = 100.0, views = 10); scanner = BS.NAEOTOM_ALPHA,
+        BS.SimOptions(),
+        BS.CTProtocol(kVp = 120.0, mAs = 100.0, views = 10);
+        scanner = BS.NAEOTOM_ALPHA,
     )
     classes = BS.pcct_event_classes([20.0], e, w)
-    @test 0.6 < classes.single[1] < 0.95                    # charge sharing: a fifth of the counts shared
+    # charge sharing: a fifth of the counts shared
+    @test 0.6 < classes.single[1] < 0.95
     @test all(p -> p.c1 > 0 && p.c2 > 0, classes.pairs)
     λ = 400.0
     expected = [fill(λ, 64, 64, 40)]
     a = BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 1)[1]
     b = BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 2)[1]
-    @test BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 1)[1] == a   # a seed fixes it
+    # a seed fixes it
+    @test BS.pcct_count!([zeros(64, 64, 40)], expected, classes; seed = 1)[1] == a
     @test all(isinteger, a)
     d = (a .- b) ./ sqrt(2)
-    @test sum(a) / length(a) ≈ λ rtol = 2.0e-3                # the mean is kept, edges included
-    @test sum(abs2, d) / length(d) / λ ≈ 1 atol = 0.02        # each dexel Poisson
+    # the mean is kept, edges included
+    @test sum(a) / length(a) ≈ λ rtol = 2.0e-3
+    @test sum(abs2, d) / length(d) / λ ≈ 1 atol = 0.02 # each dexel Poisson
     # neighbours across the fan covary by the photons they share
     shared_x = sum(p.c1 for p in classes.pairs if (p.dx, p.dy) == (1, 0))
     corr = sum(d[1:(end - 1), :, :] .* d[2:end, :, :]) / sum(abs2, d[1:(end - 1), :, :])
     @test corr ≈ shared_x atol = 0.01
     # 2 × 2 digital sum: the pairs inside the group count twice
-    inside = 2 * sum(
-        p.c1 for p in classes.pairs if (p.dx, p.dy) in ((1, 0), (0, 1), (1, 1), (1, -1)) &&
-            !(p.dx == 1 && p.dy == -1)
-    ) + 2 * sum(p.c1 for p in classes.pairs if (p.dx, p.dy) == (1, -1))
-    a2, b2 = (BS.pcct_count!([zeros(32, 32, 40)], expected, classes; seed, binning = 2)[1] for seed in (1, 2))
-    @test sum(a2) == sum(a)                                  # the same dexels, summed
+    inside = 2 *
+        sum(
+            p.c1
+            for p in classes.pairs
+            if (p.dx, p.dy) in ((1, 0), (0, 1), (1, 1), (1, -1)) &&
+                !(p.dx == 1 && p.dy == -1)
+        ) +
+        2 * sum(p.c1 for p in classes.pairs if (p.dx, p.dy) == (1, -1))
+    a2, b2 = (
+        BS.pcct_count!([zeros(32, 32, 40)], expected, classes; seed, binning = 2)[1]
+        for seed in (1, 2)
+    )
+    @test sum(a2) == sum(a) # the same dexels, summed
     binned = (a2 .- b2) ./ sqrt(2)
     @test sum(abs2, binned) / length(binned) / (4λ) ≈ 1 + inside / 2 atol = 0.03
     # in Float32 (the device's precision) the same statistics
-    a32 = BS.pcct_count!([zeros(Float32, 64, 64, 40)], [fill(Float32(λ), 64, 64, 40)], classes; seed = 1)[1]
-    b32 = BS.pcct_count!([zeros(Float32, 64, 64, 40)], [fill(Float32(λ), 64, 64, 40)], classes; seed = 2)[1]
+    a32 = BS.pcct_count!(
+        [zeros(Float32, 64, 64, 40)],
+        [fill(Float32(λ), 64, 64, 40)],
+        classes;
+        seed = 1,
+    )[1]
+    b32 = BS.pcct_count!(
+        [zeros(Float32, 64, 64, 40)],
+        [fill(Float32(λ), 64, 64, 40)],
+        classes;
+        seed = 2,
+    )[1]
     d32 = (a32 .- b32) ./ sqrt(2)
     @test sum(Float64, a32) / length(a32) ≈ λ rtol = 2.0e-3
     @test sum(abs2, d32) / length(d32) / λ ≈ 1 atol = 0.02
-    @test sum(d32[1:(end - 1), :, :] .* d32[2:end, :, :]) / sum(abs2, d32[1:(end - 1), :, :]) ≈ shared_x atol = 0.01
-    @test_throws ArgumentError BS.pcct_event_classes([22.0], e, w)    # not among the table's
+    @test sum(d32[1:(end - 1), :, :] .* d32[2:end, :, :]) /
+        sum(abs2, d32[1:(end - 1), :, :]) ≈
+        shared_x atol = 0.01
+    # not among the table's
+    @test_throws ArgumentError BS.pcct_event_classes([22.0], e, w)
 
     # every dexel's mean is its expected counts, bin by bin, whatever its spectrum and its
     # neighbours': four bins whose shares change from dexel to dexel (bright beside dark, hard beside
@@ -474,9 +549,14 @@ end
     pattern(c, r, b) = 0.3 + mod(c * (b + 2) + 3r, 7) / 3
     expected4 = [
         repeat([λ * s * pattern(c, r, b) for c in 1:32, r in 1:32], 1, 1, 200)
-            for (b, s) in enumerate((1.0, 0.8, 0.5, 0.35))
+        for (b, s) in enumerate((1.0, 0.8, 0.5, 0.35))
     ]
-    counts4 = BS.pcct_count!([zeros(32, 32, 200) for _ in 1:4], expected4, classes4; seed = 3)
+    counts4 = BS.pcct_count!(
+        [zeros(32, 32, 200) for _ in 1:4],
+        expected4,
+        classes4;
+        seed = 3,
+    )
     for (n, x) in zip(counts4, expected4)
         z = (sum(n; dims = 3) .- sum(x; dims = 3)) ./ sqrt.(sum(x; dims = 3))
         @test abs(sum(z) / length(z)) < 3 / sqrt(length(z))
@@ -491,19 +571,32 @@ end
     S0 = BS.compute_mc_pileup_matrix(thresholds, w, e, 0.0, 27.0)
     @test S0 == Matrix(1.0I, 4, 4)
     low = BS.compute_mc_pileup_matrix(thresholds, w, e, 1.0e4, 27.0; seed = 3)
-    @test low ≈ Matrix(1.0I, 4, 4) atol = 0.01                  # no overlap at low rate
+    @test low ≈ Matrix(1.0I, 4, 4) atol = 0.01 # no overlap at low rate
     S = BS.compute_mc_pileup_matrix(thresholds, w, e, 5.0e6, 27.0; seed = 3)
-    @test all(sum(S; dims = 1) .< 1)                            # counts are lost
+    @test all(sum(S; dims = 1) .< 1) # counts are lost
     @test all(sum(S; dims = 1) .> 0.5)
-    @test S[4, 1] > 0                                           # piled-up pulses rise into higher bins
-    @test BS.compute_mc_pileup_matrix(thresholds, w, e, 5.0e6, 27.0; seed = 3) == S   # memoised, exact
+    # piled-up pulses rise into higher bins
+    @test S[4, 1] > 0
+    # memoised, exact
+    @test BS.compute_mc_pileup_matrix(thresholds, w, e, 5.0e6, 27.0; seed = 3) == S
     # the loss grows with the rate × dead time
     S2 = BS.compute_mc_pileup_matrix(thresholds, w, e, 1.0e7, 27.0; seed = 3)
     @test sum(S2) < sum(S)
     # pcct_count!'s pile-up: a dexel at the family's top rate takes the top matrix, before the sum
     # (4000 counts per view in 8e-4 s: 5e6 counts per second)
     family = cat(Matrix(1.0I, 4, 4), S; dims = 3)
-    pileup = (S = cat(family, family; dims = 4), rates = [0.0, 5.0e6], hardness = [1.0, 4.0], time_per_view = 8.0e-4)
-    counts = BS.pcct_count!([zeros(1, 1, 1) for _ in 1:4], [fill(1000.0, 2, 2, 1) for _ in 1:4], nothing; binning = 2, pileup)
+    pileup = (
+        S = cat(family, family; dims = 4),
+        rates = [0.0, 5.0e6],
+        hardness = [1.0, 4.0],
+        time_per_view = 8.0e-4,
+    )
+    counts = BS.pcct_count!(
+        [zeros(1, 1, 1) for _ in 1:4],
+        [fill(1000.0, 2, 2, 1) for _ in 1:4],
+        nothing;
+        binning = 2,
+        pileup,
+    )
     @test [counts[i][1, 1, 1] for i in 1:4] ≈ 4 .* (S * fill(1000.0, 4))
 end

@@ -49,10 +49,14 @@ Base.@kwdef struct Collimator
 end
 
 function Base.:(==)(a::Collimator, b::Collimator)
-    same_material = a.material.name == b.material.name && a.material.density == b.material.density
-    return same_material && all(
-        getfield(a, f) == getfield(b, f) for f in fieldnames(Collimator) if f !== :material
-    )
+    same_material = a.material.name == b.material.name &&
+        a.material.density == b.material.density
+    return same_material &&
+        all(
+            getfield(a, f) == getfield(b, f)
+            for f in fieldnames(Collimator)
+            if f !== :material
+        )
 end
 
 """
@@ -74,8 +78,10 @@ Base.@kwdef struct Septa
 end
 
 function Base.:(==)(a::Septa, b::Septa)
-    same_material = a.material.name == b.material.name && a.material.density == b.material.density
-    return same_material && all(getfield(a, f) == getfield(b, f) for f in fieldnames(Septa) if f !== :material)
+    same_material = a.material.name == b.material.name &&
+        a.material.density == b.material.density
+    return same_material &&
+        all(getfield(a, f) == getfield(b, f) for f in fieldnames(Septa) if f !== :material)
 end
 
 """
@@ -102,13 +108,13 @@ struct SlabDetector <: AbstractDetector
 end
 
 function SlabDetector(
-        material::DetectorMaterial,
-        thickness_mm::Real;
-        width_mm::Real = 50.0,
-        shape::Symbol = :box,
-        collimator::Union{Nothing, Collimator} = nothing,
-        septa::Union{Nothing, Septa} = nothing,
-    )
+    material::DetectorMaterial,
+    thickness_mm::Real;
+    width_mm::Real = 50.0,
+    shape::Symbol = :box,
+    collimator::Union{Nothing, Collimator} = nothing,
+    septa::Union{Nothing, Septa} = nothing,
+)
     shape in (:box, :disc) || throw(ArgumentError("shape must be :box or :disc"))
     return SlabDetector(
         material,
@@ -120,8 +126,11 @@ function SlabDetector(
     )
 end
 
-SlabDetector(key::Symbol, thickness_mm::Real; kw...) =
-    SlabDetector(DetectorMaterial(key), thickness_mm; kw...)
+SlabDetector(key::Symbol, thickness_mm::Real; kw...) = SlabDetector(
+    DetectorMaterial(key),
+    thickness_mm;
+    kw...,
+)
 
 function Base.show(io::IO, d::SlabDetector)
     across = d.shape === :disc ? "$(d.width_mm) mm diameter" : "$(d.width_mm) mm wide"
@@ -298,7 +307,7 @@ rows. They are daughters of the crystal, so a step inside one is not in the crys
 function build_septa!(crystal, s::Septa, thickness_mm)
     reflector = g4_material(s.material)
     h = s.cells ÷ 2
-    span_x, span_y = s.cells * s.pitch_x_mm, s.cells * s.pitch_y_mm
+    span_y = s.cells * s.pitch_y_mm
     wall_x = G4LogicalVolume(
         G4Box("SeptumX", s.width_x_mm * mm / 2, span_y * mm / 2, thickness_mm * mm / 2),
         reflector,

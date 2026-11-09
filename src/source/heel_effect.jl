@@ -80,20 +80,20 @@ The anode angle must exceed the half-cone angle of the collimation (a 160 mm con
 an invalid geometry, not a clamp.
 """
 function default_heel_effect(;
-        anode_angle_deg::Real = 7.0,
-        target_material::Symbol = :tungsten,
-        # The mean depth in the target at which the x-rays are produced, the one free parameter
-        # of the model: 1 µm gives a 35 % anode-to-cathode fall across a ±7.5° cone (160 mm
-        # collimation) and 3 % across ±0.7° (15 mm) for a 7° anode, the order the literature
-        # reports for a 7–12° anode (30–45 % across ±11°). The former 0.01 mm gave 99 % and 28 %,
-        # which the old fan mapping hid behind its angle clamp.
-        effective_thickness_mm::Real = 0.001
-    )
+    anode_angle_deg::Real = 7.0,
+    target_material::Symbol = :tungsten,
+    # The mean depth in the target at which the x-rays are produced, the one free parameter
+    # of the model: 1 µm gives a 35 % anode-to-cathode fall across a ±7.5° cone (160 mm
+    # collimation) and 3 % across ±0.7° (15 mm) for a 7° anode, the order the literature
+    # reports for a 7–12° anode (30–45 % across ±11°). The former 0.01 mm gave 99 % and 28 %,
+    # which the old fan mapping hid behind its angle clamp.
+    effective_thickness_mm::Real = 0.001
+)
     return HeelEffect(
         Float64(anode_angle_deg),
         target_material,
         Float64(effective_thickness_mm),
-        true
+        true,
     )
 end
 
@@ -154,16 +154,15 @@ apply_heel_effect!(intensity, heel, geom)
 ```
 """
 function apply_heel_effect!(
-        intensity::AbstractArray{T, 3},
-        heel::HeelEffect,
-        geom::CTGeometry
-    ) where {T <: AbstractFloat}
-
+    intensity::AbstractArray{T, 3},
+    heel::HeelEffect,
+    geom::CTGeometry,
+) where {T <: AbstractFloat}
     if !heel.enabled || heel.effective_thickness_mm <= 0
         return intensity
     end
 
-    n_cols, n_rows, n_angles = size(intensity)
+    n_cols, n_rows, _ = size(intensity)
 
     # Get target material attenuation (approximate at mean energy ~60 keV)
     # Convert all to T for GPU compatibility
@@ -183,12 +182,15 @@ function apply_heel_effect!(
     row_center_T = (T(n_rows) + one(T)) / T(2)
     row_pitch_det = T(geom.pixel_row_size * (geom.SDD / geom.SAD))
     SDD_T = T(geom.SDD)
-    _heel_geometry_valid(Float64(θ_anode), atan((n_rows - Float64(row_center_T)) * Float64(row_pitch_det) / Float64(SDD_T)))
+    _heel_geometry_valid(
+        Float64(θ_anode),
+        atan((n_rows - Float64(row_center_T)) * Float64(row_pitch_det) / Float64(SDD_T)),
+    )
 
     # Precompute reference angle attenuation for normalization
     # We normalize to the central ray (θ = 0) so that center intensity = 1.0
-    sin_ref = sin(θ_anode)  # Reference at central ray
-    sin_ref = max(sin_ref, T(0.01))  # Prevent division by zero
+    sin_ref = sin(θ_anode)          # Reference at central ray
+    sin_ref = max(sin_ref, T(0.01)) # Prevent division by zero
     exp_ref = -μ_target * d * cos_θ_anode / sin_ref
     I_ref = exp(clamp(exp_ref, T(-700), T(700)))
 
@@ -198,10 +200,8 @@ function apply_heel_effect!(
 
     AK.foreachindex(intensity) do idx
         idx_0 = Int32(idx - 1)
-        col = (idx_0 % Int32(n_cols)) + Int32(1)
         idx_0 = idx_0 ÷ Int32(n_cols)
         row = (idx_0 % Int32(n_rows)) + Int32(1)
-        angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
         # Cone angle of this row (positive towards +z, the anode side: smaller takeoff angle,
         # more self-absorption)
@@ -210,7 +210,7 @@ function apply_heel_effect!(
 
         # CatSim-exact formula: exp(-μ × d × cos(θ_target) / sin(θ_target + θ))
         sin_effective = sin(θ_effective)
-        sin_effective = max(sin_effective, T(0.01))  # Prevent division by zero
+        sin_effective = max(sin_effective, T(0.01)) # Prevent division by zero
 
         exp_term = -μ_target * d * cos_θ_anode / sin_effective
         attenuation = exp(clamp(exp_term, T(-700), T(700)))
@@ -228,10 +228,10 @@ end
 Non-mutating version of apply_heel_effect!.
 """
 function apply_heel_effect(
-        intensity::AbstractArray{T, 3},
-        heel::HeelEffect,
-        geom::CTGeometry
-    ) where {T <: AbstractFloat}
+    intensity::AbstractArray{T, 3},
+    heel::HeelEffect,
+    geom::CTGeometry,
+) where {T <: AbstractFloat}
     result = similar(intensity)
     copyto!(result, intensity)
     return apply_heel_effect!(result, heel, geom)
@@ -249,19 +249,21 @@ Get approximate attenuation coefficient for target material at ~60 keV.
 function get_target_attenuation(material::Symbol)
     # Approximate μ values at 60 keV (cm⁻¹)
     μ_values = Dict(
-        :tungsten => 85.0,    # W, Z=74
-        :molybdenum => 20.0,  # Mo, Z=42
-        :rhodium => 25.0      # Rh, Z=45
+        :tungsten => 85.0,   # W, Z=74
+        :molybdenum => 20.0, # Mo, Z=42
+        :rhodium => 25.0,    # Rh, Z=45
     )
     return get(μ_values, material, 85.0)
 end
 
 "An anode-side ray that leaves below the target surface is not a tube geometry: the anode angle must exceed the half-cone."
 function _heel_geometry_valid(θ_anode, half_cone)
-    θ_anode > half_cone || throw(ArgumentError(
-        "heel effect: the anode angle ($(round(θ_anode * 180 / π; digits = 2))°) must exceed the half-cone angle " *
-        "($(round(half_cone * 180 / π; digits = 2))°) or anode-side rays would leave below the target surface — " *
-        "use a larger anode angle or a narrower collimation"))
+    θ_anode > half_cone ||
+        throw(ArgumentError(
+            "heel effect: the anode angle ($(round(θ_anode * 180 / π; digits = 2))°) must exceed the half-cone angle " *
+                "($(round(half_cone * 180 / π; digits = 2))°) or anode-side rays would leave below the target surface — " *
+                "use a larger anode angle or a narrower collimation",
+        ))
     return true
 end
 
@@ -282,10 +284,10 @@ This is the spectral-domain heel effect, analogous to bowtie spectral transmissi
 Applied during forward projection by multiplying into the spectral weight matrix.
 """
 function compute_heel_spectral(
-        heel::HeelEffect,
-        geom::CTGeometry,
-        energies_keV::Vector{Float64}
-    )
+    heel::HeelEffect,
+    geom::CTGeometry,
+    energies_keV::Vector{Float64},
+)
     if !heel.enabled || heel.effective_thickness_mm <= 0
         return ones(Float64, geom.n_cols, geom.n_rows, length(energies_keV))
     end
@@ -307,7 +309,9 @@ function compute_heel_spectral(
     # cross more of it and are attenuated more (the anode-side fall-off). Across the ±0.7° cone
     # of a 15 mm collimation this is a few percent; across a 160 mm cone (±7.5°) tens of percent.
     row_center = (n_rows + 1) / 2 + 0.0
-    cone(row) = atan((row - row_center) * geom.pixel_row_size * (geom.SDD / geom.SAD) / geom.SDD)
+    cone(row) = atan(
+        (row - row_center) * geom.pixel_row_size * (geom.SDD / geom.SAD) / geom.SDD,
+    )
     _heel_geometry_valid(θ_anode, cone(n_rows))
 
     # Get energy-dependent μ for target material

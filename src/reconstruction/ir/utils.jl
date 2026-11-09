@@ -19,7 +19,7 @@ export create_ordered_subsets, create_subset_geometry
 # Huber Penalty
 # =============================================================================
 
-@inline function _huber_deriv(t::T, δ::T) where T
+@inline function _huber_deriv(t::T, δ::T) where {T}
     abs_t = abs(t)
     if abs_t ≤ δ
         return t
@@ -48,9 +48,8 @@ For the surrounding OS-PWLS hot path that consumes this gradient see
 function compute_huber_gradient!(
     grad::AbstractArray{T, 3},
     x::AbstractArray{T, 3},
-    delta::Real
-) where T <: AbstractFloat
-
+    delta::Real,
+) where {T <: AbstractFloat}
     δ = T(delta)
     nx, ny, nz = size(x)
     backend = AK.get_backend(x)
@@ -64,28 +63,28 @@ function compute_huber_gradient!(
         g = zero(T)
 
         if i < nx
-            diff = x[i+1, j, k] - val
+            diff = x[i + 1, j, k] - val
             g -= _huber_deriv(diff, δ)
         end
         if j < ny
-            diff = x[i, j+1, k] - val
+            diff = x[i, j + 1, k] - val
             g -= _huber_deriv(diff, δ)
         end
         if k < nz
-            diff = x[i, j, k+1] - val
+            diff = x[i, j, k + 1] - val
             g -= _huber_deriv(diff, δ)
         end
 
         if i > 1
-            diff = val - x[i-1, j, k]
+            diff = val - x[i - 1, j, k]
             g += _huber_deriv(diff, δ)
         end
         if j > 1
-            diff = val - x[i, j-1, k]
+            diff = val - x[i, j - 1, k]
             g += _huber_deriv(diff, δ)
         end
         if k > 1
-            diff = val - x[i, j, k-1]
+            diff = val - x[i, j, k - 1]
             g += _huber_deriv(diff, δ)
         end
 
@@ -106,8 +105,10 @@ end
 # `similar(like, …)` keeps the projection on whatever backend owns the data.
 # The operators are unchanged — same kernels, same weights, just not on the CPU.
 @inline _ones_like(::Nothing, ::Type{T}, dims...) where {T} = ones(T, dims...)
-@inline _ones_like(like::AbstractArray, ::Type{T}, dims...) where {T} =
-    fill!(similar(like, T, dims...), one(T))
+@inline _ones_like(like::AbstractArray, ::Type{T}, dims...) where {T} = fill!(
+    similar(like, T, dims...),
+    one(T),
+)
 
 """
     compute_projection_weights(geom, volume_size, T; projector, like) -> sinogram-shaped weights
@@ -124,12 +125,12 @@ function compute_projection_weights(
     projector::Symbol = :dd_fast,
     like::Union{Nothing, AbstractArray} = nothing,
     circular_support::Bool = false,
-) where T <: AbstractFloat
+) where {T <: AbstractFloat}
     _validate_projector(projector)
     ones_volume = _ones_like(like, T, volume_size...)
     circular_support && apply_fov_mask!(ones_volume, geom; sentinel_μ = zero(T))
     ray_sums = _project_mono(projector, ones_volume, geom)
-    eps = T(1e-8)
+    eps = T(1.0e-8)
     _foreachindex(ray_sums, AK.get_backend(ray_sums)) do idx
         val = ray_sums[idx]
         ray_sums[idx] = val > eps ? one(T) / val : zero(T)
@@ -152,7 +153,7 @@ function compute_image_weights(
     projector::Symbol = :dd_fast,
     active_z::Union{Nothing, UnitRange{Int}} = nothing,
     circular_support::Bool = false,
-) where T <: AbstractFloat
+) where {T <: AbstractFloat}
     _validate_projector(projector)
     ones_sino = _ones_like(like, T, geom.n_cols, geom.n_rows, geom.n_angles)
     voxel_sums = similar(ones_sino, T, volume_size...)
@@ -160,10 +161,16 @@ function compute_image_weights(
     if projector === :siddon
         _backproject_mono!(projector, voxel_sums, ones_sino, geom)
     else
-        _backproject_mono!(projector, voxel_sums, ones_sino, geom;
-                           active_z, circular_support)
+        _backproject_mono!(
+            projector,
+            voxel_sums,
+            ones_sino,
+            geom;
+            active_z,
+            circular_support,
+        )
     end
-    eps = T(1e-8)
+    eps = T(1.0e-8)
     _foreachindex(voxel_sums, AK.get_backend(voxel_sums)) do idx
         val = voxel_sums[idx]
         voxel_sums[idx] = val > eps ? one(T) / val : zero(T)
@@ -197,13 +204,22 @@ Create geometry for a subset of projection angles.
 function create_subset_geometry(geom::CTGeometry, angle_indices::Vector{Int})
     n_subset = length(angle_indices)
     return CTGeometry(
-        geom.SAD, geom.SDD, n_subset, geom.n_rows, geom.n_cols,
-        geom.pixel_size, geom.pixel_row_size,
+        geom.SAD,
+        geom.SDD,
+        n_subset,
+        geom.n_rows,
+        geom.n_cols,
+        geom.pixel_size,
+        geom.pixel_row_size,
         geom.angles[angle_indices],
         geom.source_positions[:, angle_indices],
         geom.detector_centers[:, angle_indices],
         geom.detector_u[:, angle_indices],
         geom.detector_v[:, angle_indices],
-        geom.fov, geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
+        geom.fov,
+        geom.pitch,
+        geom.table_feed,
+        geom.detector_shape,
+        geom.column_offset,
     )
 end

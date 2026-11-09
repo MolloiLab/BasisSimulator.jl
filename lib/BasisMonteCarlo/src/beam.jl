@@ -25,8 +25,20 @@ const AIR_ENERGIES_KEV = [
     200.0,
 ]
 const AIR_MU_EN_CM2_G = [
-    39.31, 22.7, 9.446, 4.742, 1.334, 0.5389, 0.1537, 0.06833, 0.04098, 0.03041, 0.02407,
-    0.02325, 0.02496, 0.02672,
+    39.31,
+    22.7,
+    9.446,
+    4.742,
+    1.334,
+    0.5389,
+    0.1537,
+    0.06833,
+    0.04098,
+    0.03041,
+    0.02407,
+    0.02325,
+    0.02496,
+    0.02672,
 ]
 
 """
@@ -49,14 +61,15 @@ The air kerma of a beam with `weights` photons at `energies_keV` (arbitrary unit
 `filter_mm` of `material`.
 """
 function air_kerma(
-        energies_keV::AbstractVector,
-        weights::AbstractVector;
-        filter_mm::Real = 0.0,
-        material::DetectorMaterial = DetectorMaterial(:Al),
-    )
+    energies_keV::AbstractVector,
+    weights::AbstractVector;
+    filter_mm::Real = 0.0,
+    material::DetectorMaterial = DetectorMaterial(:Al),
+)
     return sum(
         w * E * air_mu_en(E) * exp(-linear_attenuation(material, E) * filter_mm)
-            for (E, w) in zip(energies_keV, weights) if w > 0 && E >= 1
+        for (E, w) in zip(energies_keV, weights)
+        if w > 0 && E >= 1
     )
 end
 
@@ -66,10 +79,10 @@ end
 The thickness of `material` (aluminium by default) that halves the beam's air kerma.
 """
 function half_value_layer(
-        energies_keV::AbstractVector,
-        weights::AbstractVector;
-        material::DetectorMaterial = DetectorMaterial(:Al),
-    )
+    energies_keV::AbstractVector,
+    weights::AbstractVector;
+    material::DetectorMaterial = DetectorMaterial(:Al),
+)
     target = air_kerma(energies_keV, weights; material) / 2
     low, high = 0.0, 50.0
     for _ in 1:60

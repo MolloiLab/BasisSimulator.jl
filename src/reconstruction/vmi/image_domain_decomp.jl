@@ -25,18 +25,18 @@ at `energy_keV`. `c_water` is in g/mL (≈ 1 for water) and `c_iodine` in mg/mL.
 is thrown otherwise); any array backend works.
 """
 function synth_vmi_2basis!(
-        HU_E::AbstractArray{Float32, 3},
-        c_water::AbstractArray{Float32, 3},
-        c_iodine::AbstractArray{Float32, 3};
-        energy_keV::Real,
-        water_material  = XA.Materials.water,
-        iodine_material = XA.Elements.Iodine,
-    )
+    HU_E::AbstractArray{Float32, 3},
+    c_water::AbstractArray{Float32, 3},
+    c_iodine::AbstractArray{Float32, 3};
+    energy_keV::Real,
+    water_material = XA.Materials.water,
+    iodine_material = XA.Elements.Iodine,
+)
     size(HU_E) == size(c_water) == size(c_iodine) ||
         error("synth_vmi_2basis!: shapes must match")
-    μρ_w = compute_mass_μ_at_energy(water_material,  Float64(energy_keV))
+    μρ_w = compute_mass_μ_at_energy(water_material, Float64(energy_keV))
     μρ_I = compute_mass_μ_at_energy(iodine_material, Float64(energy_keV))
-    α_E  = Float32(μρ_I / μρ_w)
+    α_E = Float32(μρ_I / μρ_w)
     @. HU_E = 1.0f3 * (c_water - 1.0f0) + c_iodine * α_E
     HU_E
 end
@@ -52,19 +52,21 @@ size and array backend) with the virtual monoenergetic HU at `energy_keV`,
 `c_iodine` in mg/mL (3-D `Float32` arrays of the same size).
 """
 function synth_vmi_2basis(
-        c_water::AbstractArray{Float32, 3},
-        c_iodine::AbstractArray{Float32, 3};
-        energy_keV::Real,
-        water_material  = XA.Materials.water,
-        iodine_material = XA.Elements.Iodine,
-    )
+    c_water::AbstractArray{Float32, 3},
+    c_iodine::AbstractArray{Float32, 3};
+    energy_keV::Real,
+    water_material = XA.Materials.water,
+    iodine_material = XA.Elements.Iodine,
+)
     out = similar(c_water)
-    synth_vmi_2basis!(out, c_water, c_iodine;
-        energy_keV      = energy_keV,
-        water_material  = water_material,
+    synth_vmi_2basis!(
+        out,
+        c_water,
+        c_iodine;
+        energy_keV = energy_keV,
+        water_material = water_material,
         iodine_material = iodine_material,
     )
 end
-
 
 export synth_vmi_2basis!, synth_vmi_2basis

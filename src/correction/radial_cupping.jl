@@ -15,7 +15,6 @@
 export apply_radial_cupping_correction!
 export measure_radial_cupping
 
-
 """
     measure_radial_cupping(hu_vol; fov_cm=35.0, half_window=90.0, poly_order=2) -> NamedTuple
 
@@ -30,11 +29,11 @@ Doctrine: after a correct full-spectrum BHC both numbers should be ≈ 0.
 A large value means the upstream chain is wrong — fix it there.
 """
 function measure_radial_cupping(
-        hu_vol::AbstractArray{<:Real, 3};
-        fov_cm::Float64 = 35.0,
-        half_window::Float64 = 90.0,
-        poly_order::Int = 2,
-    )
+    hu_vol::AbstractArray{<:Real, 3};
+    fov_cm::Float64 = 35.0,
+    half_window::Float64 = 90.0,
+    poly_order::Int = 2,
+)
     nx, ny, nz = size(hu_vol)
     pixel_cm = fov_cm / nx
     cx = (nx + 1) / 2.0
@@ -48,7 +47,8 @@ function measure_radial_cupping(
         rough = [Float64(v) for v in slice if -300 <= v <= 300]
         length(rough) < 100 && continue
         centre = sort!(rough)[(length(rough) + 1) ÷ 2]
-        radii = Float64[]; vals = Float64[]
+        radii = Float64[]
+        vals = Float64[]
         for j in 1:ny, i in 1:nx
             v = Float64(slice[i, j])
             if abs(v - centre) <= half_window
@@ -100,18 +100,18 @@ Operates slice-by-slice; modifies `hu_vol` in place.
 The modified `hu_vol` array.
 """
 function apply_radial_cupping_correction!(
-        hu_vol::Array{Float32, 3};
-        fov_cm::Float64 = 35.0,
-        hu_lo::Float64 = -100.0,
-        hu_hi::Float64 = 80.0,
-        poly_order::Int = 2,
-        target_hu::Float64 = 0.0,
-    )
+    hu_vol::Array{Float32, 3};
+    fov_cm::Float64 = 35.0,
+    hu_lo::Float64 = -100.0,
+    hu_hi::Float64 = 80.0,
+    poly_order::Int = 2,
+    target_hu::Float64 = 0.0,
+)
     Base.depwarn(
         "apply_radial_cupping_correction! is DEPRECATED as a correction: on noisy data its " *
-        "asymmetric fit window truncates noise asymmetrically and INJECTS a DC bias " *
-        "(measured +8 HU at σ≈83 HU) while re-anchoring away real calibration errors. " *
-        "Use measure_radial_cupping (non-mutating QA) and fix the upstream chain instead.",
+            "asymmetric fit window truncates noise asymmetrically and INJECTS a DC bias " *
+            "(measured +8 HU at σ≈83 HU) while re-anchoring away real calibration errors. " *
+            "Use measure_radial_cupping (non-mutating QA) and fix the upstream chain instead.",
         :apply_radial_cupping_correction!,
     )
     nx, ny, nz = size(hu_vol)
@@ -151,14 +151,14 @@ function apply_radial_cupping_correction!(
         # upstream is under-correcting — surface that loudly instead of
         # silently absorbing it.
         r_max = maximum(radii)
-        cup_mag = abs(sum(coeffs[p + 1] * r_max^(2p) for p in 1:poly_order))  # r-dependent part
+        # r-dependent part
+        cup_mag = abs(sum(coeffs[p + 1] * r_max^(2p) for p in 1:poly_order))
         dc_mag = abs(coeffs[1] - target_hu)
         if cup_mag > 5.0 || dc_mag > 5.0
             @warn "apply_radial_cupping_correction!: fitted residual cup = " *
-                  "$(round(cup_mag; digits=1)) HU, DC offset = $(round(dc_mag; digits=1)) HU " *
-                  "(slice $iz).  Values > ~5 HU mean the upstream BHC is under-correcting — " *
-                  "fix the BHC calibration rather than relying on this crutch." maxlog = 3
-
+                "$(round(cup_mag; digits = 1)) HU, DC offset = $(round(dc_mag; digits = 1)) HU " *
+                "(slice $iz).  Values > ~5 HU mean the upstream BHC is under-correcting — " *
+                "fix the BHC calibration rather than relying on this crutch." maxlog = 3
         end
 
         # Subtract fitted profile, shifting to target_hu.

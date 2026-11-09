@@ -36,17 +36,26 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
 """
 @inline function backproject_voxel(
     sinogram::AbstractArray{T, 3},
-    voxel_x::T, voxel_y::T, voxel_z::T,
+    voxel_x::T,
+    voxel_y::T,
+    voxel_z::T,
     source_positions::AbstractArray{T, 2},
     detector_centers::AbstractArray{T, 2},
     detector_u::AbstractArray{T, 2},
     detector_v::AbstractArray{T, 2},
-    n_cols::Int32, n_rows::Int32, n_angles::Int32,
-    col_center::T, row_center::T,
-    pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, pi_over_angles::T,
-    arc_det::Bool, dγ::T
-) where T
-
+    n_cols::Int32,
+    n_rows::Int32,
+    n_angles::Int32,
+    col_center::T,
+    row_center::T,
+    pixel_mag::T,
+    pixel_row_mag::T,
+    SAD::T,
+    SAD_sq::T,
+    pi_over_angles::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
     acc = zero(T)
     w_acc = zero(T)
 
@@ -87,7 +96,7 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         sv_dot_sd = sv_x * sd_x + sv_y * sd_y + sv_z * sd_z
 
         # Avoid division by zero
-        if abs(sv_dot_sd) < T(1e-10)
+        if abs(sv_dot_sd) < T(1.0e-10)
             continue
         end
 
@@ -107,9 +116,9 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         # ray on the equiangular cylinder + z at in-plane distance SDD;
         # :flat → perpendicular projection onto the planar panel.
         col_f, row_f = if arc_det
-            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)          # = SDD (in-plane)
-            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len        # along central ray
-            a_u = sv_x * dux + sv_y * duy                     # along detector û
+            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)   # = SDD (in-plane)
+            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len # along central ray
+            a_u = sv_x * dux + sv_y * duy              # along detector û
             γv = atan(a_u, a_c)
             L_in = sqrt(sv_x * sv_x + sv_y * sv_y)
             v_arc = sv_z * (sd_len / L_in) / pixel_row_mag
@@ -130,8 +139,10 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         # Axial workspaces acquire explicit cone-guard rows for the requested
         # reconstruction cylinder; custom insufficient geometries remain
         # visibly incomplete instead of receiving extrapolated data.
-        if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) &&
-           row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
+        if col_f >= T(0.5) &&
+                col_f <= T(n_cols) + T(0.5) &&
+                row_f >= T(0.5) &&
+                row_f <= T(n_rows) + T(0.5)
             # Bilinear interpolation indices
             col_lo = unsafe_trunc(Int32, col_f)
             col_hi = col_lo + Int32(1)
@@ -150,9 +161,9 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
 
             # Bilinear interpolation
             val = (one(T) - w_col) * (one(T) - w_row) * sinogram[col_lo, row_lo, angle] +
-                  w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
-                  (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
-                  w_col * w_row * sinogram[col_hi, row_hi, angle]
+                w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
+                (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
+                w_col * w_row * sinogram[col_hi, row_hi, angle]
 
             acc += val * weight_g
             w_acc += weight_g
@@ -209,21 +220,33 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
 """
 @inline function backproject_voxel_helical(
     sinogram::AbstractArray{T, 3},
-    voxel_x::T, voxel_y::T, voxel_z::T,
+    voxel_x::T,
+    voxel_y::T,
+    voxel_z::T,
     source_positions::AbstractArray{T, 2},
     detector_centers::AbstractArray{T, 2},
     detector_u::AbstractArray{T, 2},
     detector_v::AbstractArray{T, 2},
-    n_cols::Int32, n_rows::Int32, n_angles::Int32,
-    col_center::T, row_center::T,
-    pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, SDD::T,
-    delta_theta::T, q_plateau::T, feed::T, n_turns_k::Int32,
-    src_z_lo::T, src_z_hi::T,
-    arc_det::Bool, dγ::T
-) where T
-
+    n_cols::Int32,
+    n_rows::Int32,
+    n_angles::Int32,
+    col_center::T,
+    row_center::T,
+    pixel_mag::T,
+    pixel_row_mag::T,
+    SAD::T,
+    SAD_sq::T,
+    SDD::T,
+    delta_theta::T,
+    q_plateau::T,
+    feed::T,
+    n_turns_k::Int32,
+    src_z_lo::T,
+    src_z_hi::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
     half_rows = T(n_rows) / T(2)
-    det_dist = SDD - SAD              # detector-centre distance from isocentre
     acc = zero(T)
 
     for angle in Int32(1):n_angles
@@ -255,7 +278,7 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
         sd_len_sq = sd_x^2 + sd_y^2 + sd_z^2
         sv_dot_sd = sv_x * sd_x + sv_y * sd_y + sv_z * sd_z
 
-        if abs(sv_dot_sd) < T(1e-10)
+        if abs(sv_dot_sd) < T(1.0e-10)
             continue
         end
 
@@ -282,7 +305,12 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
             (u + col_center, v + row_center)
         end
 
-        if !(col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5))
+        if !(
+                col_f >= T(0.5) &&
+                    col_f <= T(n_cols) + T(0.5) &&
+                    row_f >= T(0.5) &&
+                    row_f <= T(n_rows) + T(0.5)
+            )
             continue
         end
 
@@ -301,12 +329,12 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
         # under this package's rotation convention the redundant partner view
         # is β* = β + π + 2γ (verified numerically against brute force).
         dlen2d = sqrt(sv_x * sv_x + sv_y * sv_y)
-        ℓ = (src_x * sv_y - src_y * sv_x) / max(dlen2d, T(1e-6))
+        ℓ = (src_x * sv_y - src_y * sv_x) / max(dlen2d, T(1.0e-6))
         γ = asin(clamp(ℓ / SAD, -one(T), one(T)))
 
         # conjugate ray: view β* = β + π + 2γ, source z advanced along the helix
         Δβc = T(π) + T(2) * γ
-        βc = atan(sinβ, cosβ) + Δβc          # atan(sin, cos) = β
+        βc = atan(sinβ, cosβ) + Δβc # atan(sin, cos) = β
         zc = src_z + feed * Δβc / T(2π)
         sinβc = sin(βc)
         cosβc = cos(βc)
@@ -315,23 +343,24 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
         denomc = voxel_x * sinβc + voxel_y * cosβc + SAD
         # row-coordinate slopes per unit z (v = t·(z_v − z_src)/pixel_row_mag)
         m = t / (pixel_row_mag * half_rows)
-        q̂c = abs(denomc) > T(1e-6) ?
-             (SDD / denomc) * (voxel_z - zc) / (pixel_row_mag * half_rows) : T(2)
-        mc = abs(denomc) > T(1e-6) ? SDD / (denomc * pixel_row_mag * half_rows) : zero(T)
+        q̂c = abs(denomc) > T(1.0e-6) ?
+            (SDD / denomc) * (voxel_z - zc) / (pixel_row_mag * half_rows) :
+            T(2)
+        mc = abs(denomc) > T(1.0e-6) ? SDD / (denomc * pixel_row_mag * half_rows) : zero(T)
 
         # partition-of-unity normalisation over all helix copies that exist
         norm = zero(T)
         for k in (-n_turns_k):n_turns_k
             zk = src_z + T(k) * feed
-            if zk >= src_z_lo - T(1e-6) && zk <= src_z_hi + T(1e-6)
+            if zk >= src_z_lo - T(1.0e-6) && zk <= src_z_hi + T(1.0e-6)
                 norm += _wq_aperture(q̂ - T(k) * m * feed, q_plateau)
             end
             zkc = zc + T(k) * feed
-            if zkc >= src_z_lo - T(1e-6) && zkc <= src_z_hi + T(1e-6)
+            if zkc >= src_z_lo - T(1.0e-6) && zkc <= src_z_hi + T(1.0e-6)
                 norm += _wq_aperture(q̂c - T(k) * mc * feed, q_plateau)
             end
         end
-        norm = max(norm, Wq)          # guard: the k=0 main term is always present
+        norm = max(norm, Wq) # guard: the k=0 main term is always present
 
         # ── bilinear sample + FDK distance weight ─────────────────────────
         col_lo = unsafe_trunc(Int32, col_f)
@@ -348,9 +377,9 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
         row_hi = clamp(row_hi, Int32(1), n_rows)
 
         val = (one(T) - w_col) * (one(T) - w_row) * sinogram[col_lo, row_lo, angle] +
-              w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
-              (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
-              w_col * w_row * sinogram[col_hi, row_hi, angle]
+            w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
+            (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
+            w_col * w_row * sinogram[col_hi, row_hi, angle]
 
         dist_sq = arc_det ? (sv_x^2 + sv_y^2) : (sv_x^2 + sv_y^2 + sv_z^2)
         w_fdk = SAD_sq / dist_sq
@@ -374,17 +403,23 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
 """
 @inline function backproject_voxel_matched(
     sinogram::AbstractArray{T, 3},
-    voxel_x::T, voxel_y::T, voxel_z::T,
+    voxel_x::T,
+    voxel_y::T,
+    voxel_z::T,
     source_positions::AbstractArray{T, 2},
     detector_centers::AbstractArray{T, 2},
     detector_u::AbstractArray{T, 2},
     detector_v::AbstractArray{T, 2},
-    n_cols::Int32, n_rows::Int32, n_angles::Int32,
-    col_center::T, row_center::T,
-    pixel_mag::T, pixel_row_mag::T,
-    arc_det::Bool, dγ::T
-) where T
-
+    n_cols::Int32,
+    n_rows::Int32,
+    n_angles::Int32,
+    col_center::T,
+    row_center::T,
+    pixel_mag::T,
+    pixel_row_mag::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
     acc = zero(T)
 
     # Loop over all angles
@@ -424,7 +459,7 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
         sv_dot_sd = sv_x * sd_x + sv_y * sd_y + sv_z * sd_z
 
         # Avoid division by zero
-        if abs(sv_dot_sd) < T(1e-10)
+        if abs(sv_dot_sd) < T(1.0e-10)
             continue
         end
 
@@ -444,9 +479,9 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
         # ray on the equiangular cylinder + z at in-plane distance SDD;
         # :flat → perpendicular projection onto the planar panel.
         col_f, row_f = if arc_det
-            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)          # = SDD (in-plane)
-            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len        # along central ray
-            a_u = sv_x * dux + sv_y * duy                     # along detector û
+            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)   # = SDD (in-plane)
+            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len # along central ray
+            a_u = sv_x * dux + sv_y * duy              # along detector û
             γv = atan(a_u, a_c)
             L_in = sqrt(sv_x * sv_x + sv_y * sv_y)
             v_arc = sv_z * (sd_len / L_in) / pixel_row_mag
@@ -458,7 +493,10 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
         end
 
         # Check if within detector bounds
-        if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
+        if col_f >= T(0.5) &&
+                col_f <= T(n_cols) + T(0.5) &&
+                row_f >= T(0.5) &&
+                row_f <= T(n_rows) + T(0.5)
             # Bilinear interpolation indices
             col_lo = unsafe_trunc(Int32, col_f)
             col_hi = col_lo + Int32(1)
@@ -477,9 +515,9 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
 
             # Bilinear interpolation
             val = (one(T) - w_col) * (one(T) - w_row) * sinogram[col_lo, row_lo, angle] +
-                  w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
-                  (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
-                  w_col * w_row * sinogram[col_hi, row_hi, angle]
+                w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
+                (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
+                w_col * w_row * sinogram[col_hi, row_hi, angle]
 
             # NO distance weighting - this is the matched adjoint of forward projection
             acc += val
@@ -528,9 +566,8 @@ function backproject!(
     ws_source_positions = nothing,
     ws_detector_centers = nothing,
     ws_detector_u = nothing,
-    ws_detector_v = nothing
-) where T <: AbstractFloat
-
+    ws_detector_v = nothing,
+) where {T <: AbstractFloat}
     # Get dimensions as Int32 for GPU compatibility
     nx = Int32(size(volume, 1))
     ny = Int32(size(volume, 2))
@@ -624,15 +661,31 @@ function backproject!(
 
             volume[idx] = backproject_voxel_helical(
                 sinogram,
-                voxel_x, voxel_y, voxel_z,
-                source_positions, detector_centers,
-                detector_u, detector_v,
-                n_cols, n_rows, n_angles,
-                col_center, row_center,
-                pixel_mag, pixel_row_mag, SAD, SAD_sq, SDD_T,
-                delta_theta, q_plateau, feed, n_turns_k,
-                src_z_lo, src_z_hi,
-                arc_det, dγ
+                voxel_x,
+                voxel_y,
+                voxel_z,
+                source_positions,
+                detector_centers,
+                detector_u,
+                detector_v,
+                n_cols,
+                n_rows,
+                n_angles,
+                col_center,
+                row_center,
+                pixel_mag,
+                pixel_row_mag,
+                SAD,
+                SAD_sq,
+                SDD_T,
+                delta_theta,
+                q_plateau,
+                feed,
+                n_turns_k,
+                src_z_lo,
+                src_z_hi,
+                arc_det,
+                dγ,
             )
         end
     elseif weighted
@@ -653,13 +706,25 @@ function backproject!(
             # Backproject all angles for this voxel (FDK weighted)
             volume[idx] = backproject_voxel(
                 sinogram,
-                voxel_x, voxel_y, voxel_z,
-                source_positions, detector_centers,
-                detector_u, detector_v,
-                n_cols, n_rows, n_angles,
-                col_center, row_center,
-                pixel_mag, pixel_row_mag, SAD, SAD_sq, pi_over_angles,
-                arc_det, dγ
+                voxel_x,
+                voxel_y,
+                voxel_z,
+                source_positions,
+                detector_centers,
+                detector_u,
+                detector_v,
+                n_cols,
+                n_rows,
+                n_angles,
+                col_center,
+                row_center,
+                pixel_mag,
+                pixel_row_mag,
+                SAD,
+                SAD_sq,
+                pi_over_angles,
+                arc_det,
+                dγ,
             )
         end
     else
@@ -680,13 +745,22 @@ function backproject!(
             # Backproject all angles for this voxel (unweighted/matched)
             volume[idx] = backproject_voxel_matched(
                 sinogram,
-                voxel_x, voxel_y, voxel_z,
-                source_positions, detector_centers,
-                detector_u, detector_v,
-                n_cols, n_rows, n_angles,
-                col_center, row_center,
-                pixel_mag, pixel_row_mag,
-                arc_det, dγ
+                voxel_x,
+                voxel_y,
+                voxel_z,
+                source_positions,
+                detector_centers,
+                detector_u,
+                detector_v,
+                n_cols,
+                n_rows,
+                n_angles,
+                col_center,
+                row_center,
+                pixel_mag,
+                pixel_row_mag,
+                arc_det,
+                dγ,
             )
         end
     end
@@ -715,11 +789,10 @@ function backproject(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
-    weighted::Bool = true
-) where T <: AbstractFloat
-
+    weighted::Bool = true,
+) where {T <: AbstractFloat}
     volume = similar(sinogram, T, volume_size...)
     fill!(volume, zero(T))
 
-    return backproject!(volume, sinogram, geom; weighted=weighted)
+    return backproject!(volume, sinogram, geom; weighted = weighted)
 end

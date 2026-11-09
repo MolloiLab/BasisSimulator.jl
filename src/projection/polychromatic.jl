@@ -214,18 +214,16 @@ println("Water μ at 60 keV: ", μ_volume[65, 65, 16], " mm⁻¹")
 - [`get_region_materials`](@ref): Standard phantom material definitions
 - [`compute_μ_at_energy`](@ref): Single-material attenuation lookup
 """
-function create_μ_volume!(
-        μ_volume::AbstractArray{T, 3},
-        mask::AbstractArray{<:Unsigned, 3},
-        materials::Vector,
-        energy_keV::Real;
-        ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
-        ws_μ_lut_gpu = nothing,
-        ws_μ_table = nothing,   # pre-computed μ[region, energy] matrix
-        energy_idx::Int = 0,     # index into μ_table columns
-        ws_μ_table_gpu = nothing # GPU copy of μ_table for zero-copy fast path
-    ) where {T <: AbstractFloat}
-
+function create_μ_volume!(μ_volume::AbstractArray{T, 3}, mask::AbstractArray{
+    <:Unsigned,
+    3,
+}, materials::Vector, energy_keV::Real;
+    ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
+    ws_μ_lut_gpu = nothing,
+    ws_μ_table = nothing, # pre-computed μ[region, energy] matrix
+    energy_idx::Int = 0, # index into μ_table columns
+    ws_μ_table_gpu = nothing # GPU copy of μ_table for zero-copy fast path
+) where {T <: AbstractFloat}
     # Fast path: μ_table already on GPU — skip CPU→GPU copy per energy bin
     if ws_μ_table_gpu !== nothing && energy_idx > 0
         let tbl = ws_μ_table_gpu, e = energy_idx
@@ -257,30 +255,31 @@ function create_μ_volume!(
 
     # Use AcceleratedKernels.jl for parallel execution
     AK.foreachindex(mask) do idx
-        region_idx = Int(mask[idx]) + 1  # Convert 0-based region to 1-based array index
+        region_idx = Int(mask[idx]) + 1 # Convert 0-based region to 1-based array index
         μ_volume[idx] = μ_at_energy[region_idx]
     end
 
     return μ_volume
 end
 
-
 """
 Apply physics effects except noise (used by simulate! signal chain).
 """
-function _apply_physics_no_noise!(
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry,
-        config::PhysicsConfig;
-        # Workspace kwargs for zero-allocation path
-        ws_output = nothing,             # sinogram-sized scratch (shared by convolution effects)
-        ws_optical_crosstalk_kernel = nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
-        ws_focal_spot_kernel = nothing,  # pre-computed focal spot kernel (GPU)
-        ws_lag_output = nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
-        ws_lag_intensity = nothing,      # sinogram-sized intensity scratch for lag
-        ws_lag_coeffs = nothing,         # pre-computed lag coefficients (GPU)
-    ) where {T}
-
+function _apply_physics_no_noise!(sinogram::AbstractArray{
+    T,
+    3,
+}, geom::CTGeometry, config::PhysicsConfig;
+    # Workspace kwargs for zero-allocation path
+    # sinogram-sized scratch (shared by convolution effects)
+    ws_output = nothing,
+    # pre-computed optical crosstalk 3x3 kernel (GPU)
+    ws_optical_crosstalk_kernel = nothing,
+    ws_focal_spot_kernel = nothing, # pre-computed focal spot kernel (GPU)
+    # sinogram-sized scratch for lag (needs separate from ws_output)
+    ws_lag_output = nothing,
+    ws_lag_intensity = nothing, # sinogram-sized intensity scratch for lag
+    ws_lag_coeffs = nothing, # pre-computed lag coefficients (GPU)
+) where {T}
     # Apply deterministic physics effects only
     # Skip noise since DAS model handles it
 
@@ -293,16 +292,21 @@ function _apply_physics_no_noise!(
     # Optical crosstalk
     if config.optical_crosstalk !== nothing
         apply_optical_crosstalk!(
-            sinogram, config.optical_crosstalk;
-            ws_output = ws_output, ws_kernel = ws_optical_crosstalk_kernel
+            sinogram,
+            config.optical_crosstalk;
+            ws_output = ws_output,
+            ws_kernel = ws_optical_crosstalk_kernel,
         )
     end
 
     # Focal spot blur
     if config.focal_spot !== nothing
         apply_focal_spot_blur!(
-            sinogram, config.focal_spot, geom;
-            ws_output = ws_output, ws_kernel = ws_focal_spot_kernel
+            sinogram,
+            config.focal_spot,
+            geom;
+            ws_output = ws_output,
+            ws_kernel = ws_focal_spot_kernel,
         )
     end
 
@@ -313,14 +317,16 @@ function _apply_physics_no_noise!(
     # Detector lag
     if config.lag !== nothing
         apply_lag!(
-            sinogram, config.lag;
-            ws_output = ws_lag_output, ws_intensity = ws_lag_intensity, ws_coeffs = ws_lag_coeffs
+            sinogram,
+            config.lag;
+            ws_output = ws_lag_output,
+            ws_intensity = ws_lag_intensity,
+            ws_coeffs = ws_lag_coeffs,
         )
     end
 
     return sinogram
 end
-
 
 """
     _forward_project_poly!(sinogram, mask, geom, energies, weights, materials) -> sinogram
@@ -410,72 +416,68 @@ causes beam hardening artifacts.
 - [`create_μ_volume!`](@ref): Energy-specific μ volume creation
 - [`siddon_forward_project!`](@ref): Monochromatic ray tracing
 """
-function _forward_project_poly!(
-        sinogram::AbstractArray{T, 3},
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        energies::Vector,
-        weights::Vector,
-        materials::Vector;
-        # Workspace kwargs for zero-allocation path
-        ws_μ_volume = nothing,
-        ws_sino_mono = nothing,
-        ws_I_transmitted = nothing,
-        ws_weights_norm::Union{Nothing, Vector{T}} = nothing,
-        ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
-        ws_μ_lut_gpu = nothing,
-        ws_μ_table = nothing,
-        ws_μ_table_gpu = nothing,
-        # Siddon geometry arrays (avoid re-allocating per energy)
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        # Override volume bounds for phantom FOV
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        # Bowtie spectral transmission [n_cols, n_rows, n_energies]
-        ws_bowtie_spectral = nothing,
-        # Per-energy weights on the device (the spectrum times the detector's m₁), enabling the
-        # single-pass projection
-        ws_w1_gpu = nothing,
-        # A second weighted sum over the same rays (the detector's m₂): `ws_out2 = −log Σ w₂ B e^{−L}`
-        ws_w2_gpu = nothing,
-        ws_out2 = nothing,
-        # Control flag: true = fused single-pass kernel, false = sequential energy loop
-        # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
-        # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
-        fused::Bool = false,
-        # Ray tracer: :dd_fast (default/fastest general path) or :siddon (compatibility, aliases).
-        projector::Symbol = :dd_fast,
-        # Cached per-material path lengths from `material_paths` / `dd_fast_material_paths!`.
-        # When given, the volume walk is skipped and only the spectral conversion runs — the
-        # walk does not depend on the spectrum, so one cache serves every kVp through the same
-        # geometry. Bit-identical to walking again. :dd_fast only.
-        paths = nothing
-    ) where {T <: AbstractFloat}
-
+function _forward_project_poly!(sinogram::AbstractArray{T, 3}, mask::AbstractArray{
+    <:Unsigned,
+    3,
+}, geom::CTGeometry, energies::Vector, weights::Vector, materials::Vector;
+    # Workspace kwargs for zero-allocation path
+    ws_μ_volume = nothing,
+    ws_sino_mono = nothing,
+    ws_I_transmitted = nothing,
+    ws_weights_norm::Union{Nothing, Vector{T}} = nothing,
+    ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
+    ws_μ_lut_gpu = nothing,
+    ws_μ_table = nothing,
+    ws_μ_table_gpu = nothing,
+    # Siddon geometry arrays (avoid re-allocating per energy)
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    # Override volume bounds for phantom FOV
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    # Bowtie spectral transmission [n_cols, n_rows, n_energies]
+    ws_bowtie_spectral = nothing,
+    # Per-energy weights on the device (the spectrum times the detector's m₁), enabling the
+    # single-pass projection
+    ws_w1_gpu = nothing,
+    # A second weighted sum over the same rays (the detector's m₂): `ws_out2 = −log Σ w₂ B e^{−L}`
+    ws_w2_gpu = nothing,
+    ws_out2 = nothing,
+    # Control flag: true = fused single-pass kernel, false = sequential energy loop
+    # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
+    # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
+    fused::Bool = false,
+    # Ray tracer: :dd_fast (default/fastest general path) or :siddon (compatibility, aliases).
+    projector::Symbol = :dd_fast,
+    # Cached per-material path lengths from `material_paths` / `dd_fast_material_paths!`.
+    # When given, the volume walk is skipped and only the spectral conversion runs — the
+    # walk does not depend on the spectrum, so one cache serves every kVp through the same
+    # geometry. Bit-identical to walking again. :dd_fast only.
+    paths = nothing
+) where {T <: AbstractFloat}
     n_energies = length(energies)
 
     (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
         throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
-    ws_out2 === nothing || (ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing) || throw(
-        ArgumentError("the second sum needs the workspace's attenuation table and weights")
-    )
+    ws_out2 === nothing ||
+        (ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing) ||
+        throw(ArgumentError(
+            "the second sum needs the workspace's attenuation table and weights",
+        ))
 
     # Validated here, before any of the branches below could quietly not use it: `paths` only
     # means anything on the :dd_fast two-pass path, and being ignored would look like a
     # speed-up that never happened.
     if paths !== nothing
-        projector === :dd_fast || throw(
-            ArgumentError(
-                "paths= is the :dd_fast two-pass projection; got projector=:$(projector)"
-            )
-        )
-        (ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing) || throw(
-            ArgumentError(
-                "paths= needs the workspace's attenuation table and spectral weights"
-            )
-        )
+        projector === :dd_fast ||
+            throw(ArgumentError(
+                "paths= is the :dd_fast two-pass projection; got projector=:$(projector)",
+            ))
+        (ws_μ_table_gpu !== nothing && ws_w1_gpu !== nothing) ||
+            throw(ArgumentError(
+                "paths= needs the workspace's attenuation table and spectral weights",
+            ))
         fused && throw(ArgumentError("paths= and fused=true are two different projections"))
     end
 
@@ -488,7 +490,9 @@ function _forward_project_poly!(
         w1_dev = if ws_w1_gpu !== nothing
             ws_w1_gpu
         else
-            weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
+            weights_norm = ws_weights_norm !== nothing ?
+                ws_weights_norm :
+                T.(weights ./ sum(weights))
             _buf = similar(sinogram, T, n_energies)
             copyto!(_buf, T.(weights_norm))
             _buf
@@ -498,13 +502,18 @@ function _forward_project_poly!(
             out === nothing && continue
             _project_fused_poly!(
                 projector,
-                out, mask, geom, ws_μ_table_gpu, w_dev, Val(n_energies);
+                out,
+                mask,
+                geom,
+                ws_μ_table_gpu,
+                w_dev,
+                Val(n_energies);
                 volume_extent = volume_extent,
                 ws_source_positions = ws_source_positions,
                 ws_detector_centers = ws_detector_centers,
                 ws_detector_u = ws_detector_u,
                 ws_detector_v = ws_detector_v,
-                ws_bowtie_spectral = ws_bowtie_spectral
+                ws_bowtie_spectral = ws_bowtie_spectral,
             )
         end
 
@@ -526,8 +535,13 @@ function _forward_project_poly!(
         if paths !== nothing
             @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1
             dd_fast_poly_from_paths!(
-                sinogram, paths, ws_μ_table_gpu, ws_w1_gpu;
-                ws_bowtie_spectral, ws_w2_gpu, ws_out2,
+                sinogram,
+                paths,
+                ws_μ_table_gpu,
+                ws_w1_gpu;
+                ws_bowtie_spectral,
+                ws_w2_gpu,
+                ws_out2,
             )
             return sinogram
         end
@@ -535,8 +549,12 @@ function _forward_project_poly!(
         if projector === :dd_fast
             @info "SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
             dd_fast_fused_poly_project!(
-                sinogram, mask, geom,
-                ws_μ_table_gpu, ws_w1_gpu, Val(n_energies);
+                sinogram,
+                mask,
+                geom,
+                ws_μ_table_gpu,
+                ws_w1_gpu,
+                Val(n_energies);
                 volume_extent,
                 ws_source_positions,
                 ws_detector_centers,
@@ -562,7 +580,9 @@ function _forward_project_poly!(
         μ_sub = similar(sinogram, T, size(ws_μ_table_gpu, 1), TILE_K)
         w_sub = similar(sinogram, T, TILE_K)
         has_bt = ws_bowtie_spectral !== nothing
-        bt_sub = has_bt ? similar(sinogram, T, size(sinogram, 1), size(sinogram, 2), TILE_K) : nothing
+        bt_sub = has_bt ?
+            similar(sinogram, T, size(sinogram, 1), size(sinogram, 2), TILE_K) :
+            nothing
 
         # The tiled kernel has one accumulator: each weighted sum is its own set of walks.
         for (out, w_dev) in ((sinogram, ws_w1_gpu), (ws_out2, ws_w2_gpu))
@@ -581,14 +601,18 @@ function _forward_project_poly!(
                 # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
                 _project_fused_poly!(
                     projector,
-                    out, mask, geom,
-                    μ_sub, w_sub, Val(TILE_K);
+                    out,
+                    mask,
+                    geom,
+                    μ_sub,
+                    w_sub,
+                    Val(TILE_K);
                     volume_extent = volume_extent,
                     ws_source_positions = ws_source_positions,
                     ws_detector_centers = ws_detector_centers,
                     ws_detector_u = ws_detector_u,
                     ws_detector_v = ws_detector_v,
-                    ws_bowtie_spectral = bt_sub
+                    ws_bowtie_spectral = bt_sub,
                 )
 
                 # Accumulate: undo -log, add partial Beer-Lambert sum
@@ -615,7 +639,9 @@ function _forward_project_poly!(
     # =========================================================================
 
     # Normalize weights (use pre-computed if available)
-    weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
+    weights_norm = ws_weights_norm !== nothing ?
+        ws_weights_norm :
+        T.(weights ./ sum(weights))
 
     # Use workspace buffers or allocate
     μ_volume = ws_μ_volume !== nothing ? ws_μ_volume : similar(sinogram, T, size(mask))
@@ -629,22 +655,29 @@ function _forward_project_poly!(
     for e_idx in 1:n_energies
         # Create μ volume for this energy
         create_μ_volume!(
-            μ_volume, mask, materials, energies[e_idx];
-            ws_μ_lut_cpu = ws_μ_lut_cpu, ws_μ_lut_gpu = ws_μ_lut_gpu,
-            ws_μ_table = ws_μ_table, energy_idx = e_idx,
-            ws_μ_table_gpu = ws_μ_table_gpu
+            μ_volume,
+            mask,
+            materials,
+            energies[e_idx];
+            ws_μ_lut_cpu = ws_μ_lut_cpu,
+            ws_μ_lut_gpu = ws_μ_lut_gpu,
+            ws_μ_table = ws_μ_table,
+            energy_idx = e_idx,
+            ws_μ_table_gpu = ws_μ_table_gpu,
         )
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
         _project_mono!(
             projector,
-            sino_mono, μ_volume, geom;
+            sino_mono,
+            μ_volume,
+            geom;
             ws_source_positions = ws_source_positions,
             ws_detector_centers = ws_detector_centers,
             ws_detector_u = ws_detector_u,
             ws_detector_v = ws_detector_v,
-            volume_extent = volume_extent
+            volume_extent = volume_extent,
         )
 
         # Accumulate Beer-Lambert: I += w × T_bt(E,col,row) × exp(-line_integral)
@@ -655,7 +688,13 @@ function _forward_project_poly!(
             nc = size(sinogram, 1)
             nr = size(sinogram, 2)
             bt_offset = (e_idx - 1) * nc * nr
-            let w = w, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc, nr = nr, I_trans = I_transmitted, sm = sino_mono
+            let w = w,
+                bt = ws_bowtie_spectral,
+                bt_off = bt_offset,
+                nc = nc,
+                nr = nr,
+                I_trans = I_transmitted,
+                sm = sino_mono
                 AK.foreachindex(I_trans) do idx
                     idx_0 = Int32(idx - 1)
                     col = (idx_0 % Int32(nc)) + Int32(1)

@@ -15,24 +15,50 @@ import BasisSimulator as BS
 
 function _pcct(; bowtie)
     return BS.PCCTScanner(
-        source_to_isocenter = 610.0, source_to_detector = 1113.0,
-        detector_rows = 12, detector_cols = 240,
-        detector_row_size = 0.4, detector_col_size = 2.0,      # 48 cm fan at isocentre
-        detector_material = :cdte, detector_depth = 1.6,
+        source_to_isocenter = 610.0,
+        source_to_detector = 1113.0,
+        detector_rows = 12,
+        detector_cols = 240,
+        detector_row_size = 0.4,
+        detector_col_size = 2.0, # 48 cm fan at isocentre
+        detector_material = :cdte,
+        detector_depth = 1.6,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-        pileup = false, scatter_correction = false,
-        bowtie_filter = bowtie, detector_col_offset = 0.0, detector_shape = :arc,
+        pileup = false,
+        scatter_correction = false,
+        bowtie_filter = bowtie,
+        detector_col_offset = 0.0,
+        detector_shape = :arc,
     )
 end
 
 # on the backend `to_gpu` picks (api.jl: a GPU when the test environment has one)
-_air() = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 8)), [BS.XA.Materials.air], (1.0, 1.0, 1.0), (-4.0, -4.0, -4.0), (8.0, 8.0, 8.0))
+_air() = BS.Phantom(
+    to_gpu(zeros(UInt8, 8, 8, 8)),
+    [BS.XA.Materials.air],
+    (1.0, 1.0, 1.0),
+    (-4.0, -4.0, -4.0),
+    (8.0, 8.0, 8.0),
+)
 
 @testset "photon-counting bowtie across the fan" begin
-    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    protocol = BS.CTProtocol(
+        kVp = 140,
+        mA = 100.0,
+        views = 60,
+        rotation_time = 0.5,
+        collimation_mm = 4.8,
+        additional_filters = [("Ti", 0.9)],
+    )
     # the heel effect is a separate per-ray factor (and today on the wrong axis — see heel_effect.jl);
     # this test isolates the bowtie
-    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+    opts = BS.SimOptions(
+        use_noise = false,
+        use_focal_spot = false,
+        use_scatter = false,
+        use_heel_effect = false,
+        seed = 1,
+    )
     recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
 
     for bowtie in (:large_body, :none)
@@ -40,7 +66,8 @@ _air() = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 8)), [BS.XA.Materials.air], (1.0, 
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         res = BS.simulate!(ws, _air(), protocol, opts)
         geom = ws.geom
-        n_cols = geom.n_cols; r = geom.n_rows ÷ 2 + 1
+        n_cols = geom.n_cols
+        r = geom.n_rows ÷ 2 + 1
         # measured counts per ray: the bins are log-transmissions against the per-bin air response
         counts = sum(Array(res.raw_counts[b])[:, r, 1] for b in 1:4)
         centre = counts[n_cols ÷ 2]
@@ -53,8 +80,18 @@ _air() = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 8)), [BS.XA.Materials.air], (1.0, 
                 # flat but for the grid: each dexel's position in its 4-column cell sets its gain
                 gain = BS.pcct_position_gain(ws.energies)
                 W = Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies), :]
-                cellgain(c) = sum(W[e, b] * gain[mod1(c, 4), mod1(r, 6), e] for e in axes(W, 1), b in axes(W, 2)) / sum(W)
-                @test all(isapprox.(profile, cellgain.(1:n_cols) ./ cellgain(n_cols ÷ 2); atol = 3.0e-3))
+                cellgain(c) = sum(
+                    W[e, b] * gain[mod1(c, 4), mod1(r, 6), e]
+                    for e in axes(W, 1), b in axes(W, 2)
+                ) /
+                    sum(W)
+                @test all(
+                    isapprox.(
+                        profile,
+                        cellgain.(1:n_cols) ./ cellgain(n_cols ÷ 2);
+                        atol = 3.0e-3,
+                    ),
+                )
             else
                 # the detected profile: the applied response W[e, b] (spectrum × efficiency × bin
                 # response) through the bowtie's own transmission table — the beam hardens
@@ -63,12 +100,16 @@ _air() = BS.Phantom(to_gpu(zeros(UInt8, 8, 8, 8)), [BS.XA.Materials.air], (1.0, 
                 bt = BS.resolve_bowtie_filter(bowtie)
                 B = BS.compute_bowtie_attenuation_spectral(bt, geom, Float64.(ws.energies))
                 W = Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies), :]
-                detected(c) = sum(W[e, b] * Float64(B[c, r, e]) for e in axes(W, 1), b in axes(W, 2))
+                detected(c) = sum(
+                    W[e, b] * Float64(B[c, r, e])
+                    for e in axes(W, 1), b in axes(W, 2)
+                )
                 expected(c) = detected(c) / detected(n_cols ÷ 2)
                 for c in (1, round(Int, 0.15n_cols), round(Int, 0.3n_cols), n_cols ÷ 2)
                     @test isapprox(profile[c], expected(c); rtol = 0.03)
                 end
-                @test profile[1] < 0.2                       # the edge sees a small fraction of the flux
+                # the edge sees a small fraction of the flux
+                @test profile[1] < 0.2
             end
         end
 
@@ -86,13 +127,26 @@ end
     # 1 mA: the pile-up Monte Carlo costs per photon (the rate·τ regime is set through τ below),
     # and every assertion here is on a ratio; at 100 mA the two rate grids took 25 min and
     # timed out CI
-    protocol = BS.CTProtocol(kVp = 140, mA = 1.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    protocol = BS.CTProtocol(
+        kVp = 140,
+        mA = 1.0,
+        views = 60,
+        rotation_time = 0.5,
+        collimation_mm = 4.8,
+        additional_filters = [("Ti", 0.9)],
+    )
     recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
     r = 6
 
     @testset "noise per ray follows the ray's own flux" begin
         scanner = _pcct(; bowtie = :large_body)
-        opts = BS.SimOptions(use_noise = true, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 3)
+        opts = BS.SimOptions(
+            use_noise = true,
+            use_focal_spot = false,
+            use_scatter = false,
+            use_heel_effect = false,
+            seed = 3,
+        )
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         res = BS.simulate!(ws, _air(), protocol, opts)
         n_cols = ws.geom.n_cols
@@ -108,21 +162,47 @@ end
 
     @testset "pile-up at each ray's own count rate, and its correction" begin
         pileup_scanner(τ_ns) = BS.PCCTScanner(
-            source_to_isocenter = 610.0, source_to_detector = 1113.0,
-            detector_rows = 12, detector_cols = 240, detector_row_size = 0.4, detector_col_size = 2.0,
-            detector_material = :cdte, detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-            pileup = true, dead_time_ns = τ_ns, scatter_correction = false,
-            bowtie_filter = :large_body, detector_col_offset = 0.0, detector_shape = :arc,
+            source_to_isocenter = 610.0,
+            source_to_detector = 1113.0,
+            detector_rows = 12,
+            detector_cols = 240,
+            detector_row_size = 0.4,
+            detector_col_size = 2.0,
+            detector_material = :cdte,
+            detector_depth = 1.6,
+            energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+            pileup = true,
+            dead_time_ns = τ_ns,
+            scatter_correction = false,
+            bowtie_filter = :large_body,
+            detector_col_offset = 0.0,
+            detector_shape = :arc,
         )
-        opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+        opts = BS.SimOptions(
+            use_noise = false,
+            use_focal_spot = false,
+            use_scatter = false,
+            use_heel_effect = false,
+            seed = 1,
+        )
         # a clinical regime: rate · τ ≈ 0.1 at the fan centre in air (the toy protocol's 60 views
         # make its per-view counts, and so its rate, far higher than a scanner's)
-        rate_air = BS.create_workspace(pileup_scanner(1.0), protocol, opts, recon, _air()).pileup_rate_air
+        rate_air = BS.create_workspace(
+            pileup_scanner(1.0),
+            protocol,
+            opts,
+            recon,
+            _air(),
+        ).pileup_rate_air
         scanner = pileup_scanner(0.1 / rate_air * 1.0e9)
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         @test size(ws.pileup_S, 3) == length(ws.pileup_rates) >= 2
-        @test size(ws.pileup_S, 4) == length(ws.pileup_hardness) == 7 && issorted(ws.pileup_hardness)
-        @test all(ws.pileup_S[:, :, 1, m] == [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1] for m in 1:7)   # no counts, no pile-up
+        @test size(ws.pileup_S, 4) == length(ws.pileup_hardness) == 7 &&
+            issorted(ws.pileup_hardness)
+        @test all(
+            ws.pileup_S[:, :, 1, m] == [1 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]
+            for m in 1:7
+        ) # no counts, no pile-up
         # loss grows with rate: column sums of S fall monotonically up the rate grid
         loss(k) = 1 - sum(ws.pileup_S[:, 1, k, 1])
         @test loss(length(ws.pileup_rates)) > loss(1)
@@ -135,19 +215,36 @@ end
         loss_centre = 1 - recorded(n_cols ÷ 2) / truth(n_cols ÷ 2)
         loss_edge = 1 - recorded(1) / truth(1)
         @test 0.03 < loss_centre < 0.3
-        @test loss_edge < 0.3 * loss_centre       # a tenth of the flux, well under a third of the loss
+        # a tenth of the flux, well under a third of the loss
+        @test loss_edge < 0.3 * loss_centre
         # the correction calibrated from air scans at rising currents undoes it in air
         cal = BS._calibrate_pileup(scanner, protocol, recon, _air(); sim_opts = opts)
         before = maximum(maximum(abs, Array(res.pcct_sino.bins[b])[:, r, 1]) for b in 1:4)
-        corrected_ws = BS.create_workspace(scanner, protocol, opts, recon, _air(); calibration = BS.Calibration(scanner, protocol, cal, nothing))
+        corrected_ws = BS.create_workspace(
+            scanner,
+            protocol,
+            opts,
+            recon,
+            _air();
+            calibration = BS.Calibration(scanner, protocol, cal, nothing),
+        )
         bins = BS.simulate!(corrected_ws, _air(), protocol, opts).pcct_sino.bins
         after = maximum(maximum(abs, Array(bins[b])[:, r, 1]) for b in 1:4)
         @test after < before / 5
     end
 
     @testset "scatter is injected against each ray's own flux" begin
-        scanner = BS.PCCTScanner(_pcct(; bowtie = :large_body); scatter_kernels = "BS test counter")
-        opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = true, use_heel_effect = false, seed = 1)
+        scanner = BS.PCCTScanner(
+            _pcct(; bowtie = :large_body);
+            scatter_kernels = "BS test counter",
+        )
+        opts = BS.SimOptions(
+            use_noise = false,
+            use_focal_spot = false,
+            use_scatter = true,
+            use_heel_effect = false,
+            seed = 1,
+        )
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         res = BS.simulate!(ws, _air(), protocol, opts)
         n_cols = ws.geom.n_cols
@@ -161,16 +258,38 @@ end
 
 @testset "binned detector (bf = 2): I0, basis and air agree per ray" begin
     # the NAEOTOM-style native path: 2 × 2 dexels summed into each binned pixel
-    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    protocol = BS.CTProtocol(
+        kVp = 140,
+        mA = 100.0,
+        views = 60,
+        rotation_time = 0.5,
+        collimation_mm = 4.8,
+        additional_filters = [("Ti", 0.9)],
+    )
     recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
-    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+    opts = BS.SimOptions(
+        use_noise = false,
+        use_focal_spot = false,
+        use_scatter = false,
+        use_heel_effect = false,
+        seed = 1,
+    )
     for bowtie in (:large_body, :none)
         scanner = BS.PCCTScanner(
-            source_to_isocenter = 610.0, source_to_detector = 1113.0,
-            detector_rows = 12, detector_cols = 240, detector_row_size = 0.4, detector_col_size = 2.0,
-            detector_material = :cdte, detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-            pileup = false, scatter_correction = false,
-            bowtie_filter = bowtie, detector_col_offset = 0.25, detector_shape = :arc,
+            source_to_isocenter = 610.0,
+            source_to_detector = 1113.0,
+            detector_rows = 12,
+            detector_cols = 240,
+            detector_row_size = 0.4,
+            detector_col_size = 2.0,
+            detector_material = :cdte,
+            detector_depth = 1.6,
+            energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+            pileup = false,
+            scatter_correction = false,
+            bowtie_filter = bowtie,
+            detector_col_offset = 0.25,
+            detector_shape = :arc,
             binning_factor = 2,
         )
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
@@ -178,18 +297,25 @@ end
         # the binned pixel's air count is PHYSICAL: no more than the photons it receives (the
         # detected fraction is below 1), and the sum of its four dexels
         incident = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights))
-        c = ws.geom.n_cols ÷ 2; rr = ws.geom.n_rows ÷ 2 + 1
+        c = ws.geom.n_cols ÷ 2
+        rr = ws.geom.n_rows ÷ 2 + 1
         @test sum(ws.I0_cpu[c, rr, :]) < incident
         @test sum(ws.I0_cpu[c, rr, :]) > 0.3 * incident
-        @test isapprox(sum(ws.I0_cpu[c, rr, :]), sum(Array(ws.I0_native)[(2c - 1):(2c), (2rr - 1):(2rr), :]); rtol = 1.0e-5)
+        @test isapprox(
+            sum(ws.I0_cpu[c, rr, :]),
+            sum(Array(ws.I0_native)[(2c - 1):(2c), (2rr - 1):(2rr), :]);
+            rtol = 1.0e-5,
+        )
         # the basis the decomposition inverts is consistent with the air response it was built from
         basis = BS.spectral_basis(ws)
         @test basis.I0_relerr < 5.0e-5
-        @test basis.ray_resolved                         # the grid shadows each position in its cell differently
+        # the grid shadows each position in its cell differently
+        @test basis.ray_resolved
         res = BS.simulate!(ws, _air(), protocol, opts)
         r = ws.geom.n_rows ÷ 2 + 1
         for b in 1:4
-            @test maximum(abs, Array(res.pcct_sino.bins[b])[:, r, 1]) < 3.0e-3    # air, within the 8 cm of air
+            # air, within the 8 cm of air
+            @test maximum(abs, Array(res.pcct_sino.bins[b])[:, r, 1]) < 3.0e-3
         end
     end
 end
@@ -197,26 +323,55 @@ end
 @testset "poly water calibration per column with the bowtie" begin
     # the summed-bin image of a water cylinder, beam-hardening corrected with the per-column
     # calibration, must read water everywhere across the fan — the bowtie hardens the edge
-    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 120, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    protocol = BS.CTProtocol(
+        kVp = 140,
+        mA = 100.0,
+        views = 120,
+        rotation_time = 0.5,
+        collimation_mm = 4.8,
+        additional_filters = [("Ti", 0.9)],
+    )
     recon = BS.ReconOptions(matrix_size = (96, 96, 4), fov_cm = 36.0, z_cm = 0.16)
-    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+    opts = BS.SimOptions(
+        use_noise = false,
+        use_focal_spot = false,
+        use_scatter = false,
+        use_heel_effect = false,
+        seed = 1,
+    )
     scanner = _pcct(; bowtie = :large_body)
-    n = 160; px = 36.0 / n
+    n = 160
+    px = 36.0 / n
     mask = zeros(UInt8, n, n, 8)
     for i in 1:n, j in 1:n
-        hypot((i - (n + 1) / 2) * px, (j - (n + 1) / 2) * px) <= 16.0 && (mask[i, j, :] .= 1)
+        hypot((i - (n + 1) / 2) * px, (j - (n + 1) / 2) * px) <= 16.0 &&
+            (mask[i, j, :] .= 1)
     end
-    water = BS.Phantom(to_gpu(mask), [BS.XA.Materials.air, BS.XA.Materials.water], (px, px, 0.1), (-18.0 + px / 2, -18.0 + px / 2, -0.35), (36.0, 36.0, 0.8))
+    water = BS.Phantom(
+        to_gpu(mask),
+        [BS.XA.Materials.air, BS.XA.Materials.water],
+        (px, px, 0.1),
+        (-18.0 + px / 2, -18.0 + px / 2, -0.35),
+        (36.0, 36.0, 0.8),
+    )
     ws = BS.create_workspace(scanner, protocol, opts, recon, water)
     res = BS.simulate!(ws, water, protocol, opts)
-    ch = [Array(b) for b in res.pcct_sino.bins]; I0 = Float64.(Array(res.I0_bins))
-    poly = Float32.(-log.(sum(I0[:, :, k] .* exp.(-Float64.(ch[k])) for k in 1:4) ./ sum(I0; dims = 3)))
+    ch = [Array(b) for b in res.pcct_sino.bins]
+    I0 = Float64.(Array(res.I0_bins))
+    poly = Float32.(
+        -log.(sum(I0[:, :, k] .* exp.(-Float64.(ch[k])) for k in 1:4) ./ sum(I0; dims = 3)),
+    )
     bhc = BS.calibrate_pcct_poly_bhc(ws)
     sino = BS.apply_bhc_water(poly, bhc)
-    hu = BS.to_hounsfield(BS.fdk_reconstruct(sino, ws.geom, recon.matrix_size); μ_water = bhc.μ_water_ref)[:, :, 2]
-    xs = ((1:96) .- 48.5) * (36.0 / 96); r = [hypot(xs[i], xs[j]) for i in 1:96, j in 1:96]
-    centre = mean(hu[r .< 4]); edge = mean(hu[(r .> 11) .& (r .< 14.5)])
+    hu = BS.to_hounsfield(
+        BS.fdk_reconstruct(sino, ws.geom, recon.matrix_size);
+        μ_water = bhc.μ_water_ref,
+    )[:, :, 2]
+    xs = ((1:96) .- 48.5) * (36.0 / 96)
+    r = [hypot(xs[i], xs[j]) for i in 1:96, j in 1:96]
+    centre = mean(hu[r .< 4])
+    edge = mean(hu[(r .> 11) .& (r .< 14.5)])
     @test abs(centre) < 8
     @test abs(edge) < 8
-    @test abs(edge - centre) < 6      # no cupping or capping across the fan
+    @test abs(edge - centre) < 6 # no cupping or capping across the fan
 end

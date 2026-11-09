@@ -44,32 +44,32 @@ end
     @testset "clamps ≤ 0 to ε; positives (including tiny) untouched" begin
         prep = zeros(Float32, 2, 2, 2)
         # Layout chosen so each (i,j,k) corner is a deliberate test case.
-        prep[1, 1, 1] = 1.0f0       # positive — untouched
-        prep[1, 2, 1] = -0.5f0       # negative — clamped
-        prep[2, 1, 1] = 0.0f0       # zero — clamped (kernel uses ≤)
-        prep[2, 2, 1] = 3.5f0       # positive — untouched
-        prep[1, 1, 2] = 2.0f0       # positive — untouched
-        prep[1, 2, 2] = -1.0f-6      # negative — clamped
-        prep[2, 1, 2] = 1.0f-12     # tiny POSITIVE — untouched (kernel
+        prep[1, 1, 1] = 1.0f0   # positive — untouched
+        prep[1, 2, 1] = -0.5f0  # negative — clamped
+        prep[2, 1, 1] = 0.0f0   # zero — clamped (kernel uses ≤)
+        prep[2, 2, 1] = 3.5f0   # positive — untouched
+        prep[1, 1, 2] = 2.0f0   # positive — untouched
+        prep[1, 2, 2] = -1.0f-6 # negative — clamped
+        prep[2, 1, 2] = 1.0f-12 # tiny POSITIVE — untouched (kernel
         # only clamps ≤ 0; ε is the floor for
         # CLAMPED values, not a min-positive)
-        prep[2, 2, 2] = 10.0f0       # positive — untouched
+        prep[2, 2, 2] = 10.0f0 # positive — untouched
 
         prep_in = copy(prep)
         BS.low_signal_correction_gpu!(prep)
         ε = Float32(1.0e-10)
 
         # Untouched positives stay identical.
-        @test prep[1, 1, 1] == prep_in[1, 1, 1]    # 1.0
-        @test prep[2, 2, 1] == prep_in[2, 2, 1]    # 3.5
-        @test prep[1, 1, 2] == prep_in[1, 1, 2]    # 2.0
-        @test prep[2, 1, 2] == prep_in[2, 1, 2]    # 1e-12 — still positive
-        @test prep[2, 2, 2] == prep_in[2, 2, 2]    # 10.0
+        @test prep[1, 1, 1] == prep_in[1, 1, 1] # 1.0
+        @test prep[2, 2, 1] == prep_in[2, 2, 1] # 3.5
+        @test prep[1, 1, 2] == prep_in[1, 1, 2] # 2.0
+        @test prep[2, 1, 2] == prep_in[2, 1, 2] # 1e-12 — still positive
+        @test prep[2, 2, 2] == prep_in[2, 2, 2] # 10.0
 
         # ≤ 0 entries clamped to ε.
-        @test prep[1, 2, 1] == ε                   # was -0.5
-        @test prep[2, 1, 1] == ε                   # was 0.0
-        @test prep[1, 2, 2] == ε                   # was -1e-6
+        @test prep[1, 2, 1] == ε # was -0.5
+        @test prep[2, 1, 1] == ε # was 0.0
+        @test prep[1, 2, 2] == ε # was -1e-6
     end
 
     @testset "returns the same array (in-place contract)" begin
@@ -79,14 +79,13 @@ end
     end
 end
 
-
 # -----------------------------------------------------------------------------
 # Polynomial helpers: fit_polynomial + generate_water_calibration_curve.
 # -----------------------------------------------------------------------------
 @testset "fit_polynomial" begin
     # Recover known cubic exactly.
     x = collect(range(0.0, 5.0, length = 50))
-    coeffs_true = [0.3, -1.2, 0.5, 0.07]  # a₀ + a₁x + a₂x² + a₃x³
+    coeffs_true = [0.3, -1.2, 0.5, 0.07] # a₀ + a₁x + a₂x² + a₃x³
     y = [sum(coeffs_true[i + 1] * v^i for i in 0:3) for v in x]
     coeffs_fit = BS.fit_polynomial(x, y, 3)
     @test maximum(abs.(coeffs_fit .- coeffs_true)) < 1.0e-8
@@ -98,13 +97,16 @@ end
     energies = [70.0]
     weights = [1.0]
     paths, measured, true_values = BS.generate_water_calibration_curve(
-        energies, weights;
-        max_path_cm = 30.0, n_points = 25, reference_energy_keV = 70.0,
+        energies,
+        weights;
+        max_path_cm = 30.0,
+        n_points = 25,
+        reference_energy_keV = 70.0,
     )
     @test length(paths) == length(measured) == length(true_values) == 25
     @test paths[1] ≈ 0.0
     @test paths[end] ≈ 30.0
-    @test measured[1] ≈ 0.0  atol = 1.0e-9      # -log(1) = 0
+    @test measured[1] ≈ 0.0 atol = 1.0e-9 # -log(1) = 0
     @test true_values[1] ≈ 0.0
     @test issorted(paths)
     @test issorted(measured)
@@ -131,9 +133,9 @@ end
     coeffs = bhc.polynomial.coefficients
     residuals = [
         sum(coeffs[i + 1] * m^i for i in 0:3) - t
-            for (m, t) in zip(bhc.calibration_measured, bhc.calibration_true)
+        for (m, t) in zip(bhc.calibration_measured, bhc.calibration_true)
     ]
-    @test maximum(abs.(residuals)) < 0.05   # order-3 fit on smooth water curve
+    @test maximum(abs.(residuals)) < 0.05 # order-3 fit on smooth water curve
 
     # Diagnostic-only fields are populated and have matching length.
     @test length(bhc.calibration_paths) == 100
@@ -152,9 +154,13 @@ end
     n_col = scanner.detector_cols
 
     bhc = BS.calibrate_bhc_two_material(
-        sim_opts, protocol;
-        scanner = scanner, geom = geom,
-        order = 2, hu_low = 450.0, hu_high = 600.0,
+        sim_opts,
+        protocol;
+        scanner = scanner,
+        geom = geom,
+        order = 2,
+        hu_low = 450.0,
+        hu_high = 600.0,
     )
 
     @testset "Vector{BeamHardeningCorrection} dispatch" begin
@@ -164,12 +170,14 @@ end
         # zero sinogram → output is just the constant term per column.
         for col in 1:n_col
             expected = Float32(bhc.water_bhc_per_col[col].polynomial.coefficients[1])
-            @test sino[col, 1, 1] ≈ expected  atol = 1.0e-4
+            @test sino[col, 1, 1] ≈ expected atol = 1.0e-4
         end
     end
 
     @testset "Vector{BHCPolynomial} dispatch — same result" begin
-        sino_a = Float32.(0.1 .+ 0.5 .* rand(Float32, n_col, scanner.detector_rows, protocol.views))
+        sino_a = Float32.(
+            0.1 .+ 0.5 .* rand(Float32, n_col, scanner.detector_rows, protocol.views),
+        )
         sino_b = copy(sino_a)
         BS.apply_bhc!(sino_a, bhc.water_bhc_per_col)
         polys = [b.polynomial for b in bhc.water_bhc_per_col]
@@ -178,7 +186,8 @@ end
     end
 
     @testset "shape mismatch errors" begin
-        sino = zeros(Float32, n_col + 1, scanner.detector_rows, protocol.views)  # off by one
+        # off by one
+        sino = zeros(Float32, n_col + 1, scanner.detector_rows, protocol.views)
         @test_throws ErrorException BS.apply_bhc!(sino, bhc.water_bhc_per_col)
     end
 end
@@ -223,7 +232,10 @@ end
         # 2D with neither dim matching length(e)
         @test_throws ErrorException BS.bhc_spectrum_per_column(e, rand(7, 9))
         # 3D with last dim mismatched
-        @test_throws ErrorException BS.bhc_spectrum_per_column(e, rand(n_col, n_row, n_E + 1))
+        @test_throws ErrorException BS.bhc_spectrum_per_column(
+            e,
+            rand(n_col, n_row, n_E + 1),
+        )
         # 4D not supported
         @test_throws ErrorException BS.bhc_spectrum_per_column(e, rand(2, 2, 2, 2))
     end
@@ -239,16 +251,25 @@ end
     sim_opts = BS.SimOptions()
 
     μ0 = BS.compute_polychromatic_μ_water(
-        sim_opts, protocol;
-        scanner = scanner, geom = geom, water_path_cm = 0.0
+        sim_opts,
+        protocol;
+        scanner = scanner,
+        geom = geom,
+        water_path_cm = 0.0,
     )
     μ20 = BS.compute_polychromatic_μ_water(
-        sim_opts, protocol;
-        scanner = scanner, geom = geom, water_path_cm = 20.0
+        sim_opts,
+        protocol;
+        scanner = scanner,
+        geom = geom,
+        water_path_cm = 20.0,
     )
     μ50 = BS.compute_polychromatic_μ_water(
-        sim_opts, protocol;
-        scanner = scanner, geom = geom, water_path_cm = 50.0
+        sim_opts,
+        protocol;
+        scanner = scanner,
+        geom = geom,
+        water_path_cm = 50.0,
     )
 
     # Physical bounds for water in the diagnostic energy range.
@@ -268,8 +289,11 @@ end
     )
     pcct_geom = BS.CTGeometry(pcct_scanner; n_angles = 16)
     @test_throws ArgumentError BS.compute_polychromatic_μ_water(
-        BS.SimOptions(use_focal_spot = false), protocol;
-        scanner = pcct_scanner, geom = pcct_geom, water_path_cm = 20.0,
+        BS.SimOptions(use_focal_spot = false),
+        protocol;
+        scanner = pcct_scanner,
+        geom = pcct_geom,
+        water_path_cm = 20.0,
     )
 end
 
@@ -283,9 +307,13 @@ end
     sim_opts = BS.SimOptions()
 
     bhc = BS.calibrate_bhc_two_material(
-        sim_opts, protocol;
-        scanner = scanner, geom = geom,
-        order = 2, hu_low = 450.0, hu_high = 600.0,
+        sim_opts,
+        protocol;
+        scanner = scanner,
+        geom = geom,
+        order = 2,
+        hu_low = 450.0,
+        hu_high = 600.0,
     )
 
     @test bhc isa BS.TwoMaterialBHCPerColumn
@@ -302,12 +330,12 @@ end
 
     # All per-column spectra are normalized to 1.
     for c in 1:n_col
-        @test sum(bhc.w_norm_per_col[:, c]) ≈ 1.0  atol = 1.0e-9
+        @test sum(bhc.w_norm_per_col[:, c]) ≈ 1.0 atol = 1.0e-9
     end
 
     # Global μ_water_ref / μ_bone_ref are positive, physically plausible.
     @test bhc.μ_water_ref > 0
-    @test bhc.μ_bone_ref > bhc.μ_water_ref   # cortical bone attenuates more
+    @test bhc.μ_bone_ref > bhc.μ_water_ref # cortical bone attenuates more
     @test bhc.hu_low == 450.0
     @test bhc.hu_high == 600.0
 
@@ -329,9 +357,13 @@ end
         sim_opts = BS.SimOptions()
 
         bhc = BS.calibrate_bhc_two_material(
-            sim_opts, protocol;
-            scanner = scanner, geom = geom,
-            order = 2, hu_low = 450.0, hu_high = 600.0,
+            sim_opts,
+            protocol;
+            scanner = scanner,
+            geom = geom,
+            order = 2,
+            hu_low = 450.0,
+            hu_high = 600.0,
         )
 
         matrix_size = (16, 16, 4)
@@ -357,14 +389,19 @@ end
         protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
         geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
         matrix_size = (16, 16, 4)
-        μ_water_ref = 0.19   # ~120 kVp body water, physically plausible
+        μ_water_ref = 0.19 # ~120 kVp body water, physically plausible
 
         @testset "scale_factor = 0 → identity" begin
             recon = to_gpu(Float32.(μ_water_ref .+ 0.05 .* rand(Float32, matrix_size...)))
             recon_in = Array(recon)
             BS.apply_bhc_image_domain(
-                recon, geom, matrix_size, μ_water_ref;
-                hu_low = 70.0, hu_high = 150.0, scale_factor = 0.0
+                recon,
+                geom,
+                matrix_size,
+                μ_water_ref;
+                hu_low = 70.0,
+                hu_high = 150.0,
+                scale_factor = 0.0,
             )
             @test maximum(abs.(Array(recon) .- recon_in)) < 1.0e-5
         end
@@ -378,10 +415,15 @@ end
             recon = to_gpu(recon_cpu)
             recon_in = Array(recon)
             BS.apply_bhc_image_domain(
-                recon, geom, matrix_size, μ_water_ref;
-                hu_low = 100.0, hu_high = 200.0, scale_factor = 0.5
+                recon,
+                geom,
+                matrix_size,
+                μ_water_ref;
+                hu_low = 100.0,
+                hu_high = 200.0,
+                scale_factor = 0.5,
             )
-            @test Array(recon) != recon_in   # something changed
+            @test Array(recon) != recon_in # something changed
             @test all(isfinite, Array(recon))
         end
     end
@@ -409,8 +451,11 @@ end
 
         BS.apply_radial_cupping_correction!(
             hu;
-            fov_cm = fov_cm, hu_lo = -200.0, hu_hi = 200.0,
-            poly_order = 2, target_hu = 0.0
+            fov_cm = fov_cm,
+            hu_lo = -200.0,
+            hu_hi = 200.0,
+            poly_order = 2,
+            target_hu = 0.0,
         )
 
         # After correction the radial bias is gone — every voxel should be
@@ -424,12 +469,15 @@ end
         # are still shifted by the same fit_val.  Just check finiteness +
         # shape preservation.
         hu = fill(Float32(100.0), nx, ny, nz)
-        hu[1:8, 1:8, :] .= 1000.0f0       # "bone" insert — out of water mask
+        hu[1:8, 1:8, :] .= 1000.0f0 # "bone" insert — out of water mask
         hu_in = copy(hu)
         BS.apply_radial_cupping_correction!(
             hu;
-            fov_cm = fov_cm, hu_lo = -100.0, hu_hi = 80.0,
-            poly_order = 2, target_hu = 0.0
+            fov_cm = fov_cm,
+            hu_lo = -100.0,
+            hu_hi = 80.0,
+            poly_order = 2,
+            target_hu = 0.0,
         )
         # Less than 10 samples in water mask → function early-returns the
         # slice; assert it's not totally destroyed.
@@ -468,8 +516,11 @@ end
         a_in = copy(a)
         c_in = copy(c)
         info = BS.apply_radial_capping_basis!(
-            a, c;
-            fov_cm = fov_cm, poly_order = 2, verbose = false,
+            a,
+            c;
+            fov_cm = fov_cm,
+            poly_order = 2,
+            verbose = false,
         )
         # Both volumes were mutated.
         @test a != a_in
@@ -502,7 +553,12 @@ end
         a = Float32.(0.1 .+ 0.05 .* randn(MersenneTwister(0), nx, ny, nz))
         c = Float32.(0.05 .+ 0.02 .* randn(MersenneTwister(1), nx, ny, nz))
         info = BS.apply_radial_capping_basis!(
-            a, c; fov_cm = fov_cm, q_lo = 0.4, q_hi = 0.6, verbose = false,
+            a,
+            c;
+            fov_cm = fov_cm,
+            q_lo = 0.4,
+            q_hi = 0.6,
+            verbose = false,
         )
         @test info.q_lo == 0.4
         @test info.q_hi == 0.6

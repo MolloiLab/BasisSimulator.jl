@@ -65,10 +65,8 @@ sinogram; column i ↦ t = (i − t_center)·Δt with Δt = pixel_size
 (the unwrapped helix angle grid).  Views sampled beyond the acquired angular
 range contribute zero (helix end transition).
 """
-function _wfbp_rebin(
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry,
-    ) where {T <: AbstractFloat}
+function _wfbp_rebin(sinogram::AbstractArray{T, 3}, geom::CTGeometry) where {T <:
+    AbstractFloat}
     reb = similar(sinogram)
     return _wfbp_rebin!(reb, sinogram, geom)
 end
@@ -80,11 +78,10 @@ In-place form of [`_wfbp_rebin`](@ref): writes into a caller-provided buffer
 (`reb` must be sinogram-shaped and distinct from `sinogram`).
 """
 function _wfbp_rebin!(
-        reb::AbstractArray{T, 3},
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry,
-    ) where {T <: AbstractFloat}
-
+    reb::AbstractArray{T, 3},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry,
+) where {T <: AbstractFloat}
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
     n_views = Int32(size(sinogram, 3))
@@ -97,7 +94,8 @@ function _wfbp_rebin!(
     # IS the iso column pitch.  (Using ps·R/SDD here would halve the t-grid
     # extent and truncate wide objects → interior-truncation DC bias.)
     Δt = T(geom.pixel_size)
-    t_center = (T(n_cols) + one(T)) / T(2)       # the rebinned parallel grid is centred on the central ray
+    # the rebinned parallel grid is centred on the central ray
+    t_center = (T(n_cols) + one(T)) / T(2)
     col_center = column_center(T, geom)
     pixel_mag = T(geom.pixel_size) * (SDD / R)
     arc_det = is_arc(geom)
@@ -105,10 +103,18 @@ function _wfbp_rebin!(
 
     fill!(reb, zero(T))
 
-    let sino = sinogram, reb = reb, R = R, SDD = SDD, Δβ = Δβ, Δt = Δt,
-            tc = t_center, cc = col_center, pm = pixel_mag,
-            nc = n_cols, nr = n_rows, nv = n_views
-
+    let sino = sinogram,
+        reb = reb,
+        R = R,
+        SDD = SDD,
+        Δβ = Δβ,
+        Δt = Δt,
+        tc = t_center,
+        cc = col_center,
+        pm = pixel_mag,
+        nc = n_cols,
+        nr = n_rows,
+        nv = n_views
         AK.foreachindex(reb) do idx
             idx_0 = Int32(idx - 1)
             ti = (idx_0 % nc) + Int32(1)
@@ -120,13 +126,13 @@ function _wfbp_rebin!(
             s = t / R
             if s > T(-0.999) && s < T(0.999)
                 γ = asin(s)
-                θ = (T(j) - one(T)) * Δβ          # unwrapped parallel angle
-                β = θ - γ                          # unwrapped fan view angle
-                jf = β / Δβ + one(T)               # fractional view index
+                θ = (T(j) - one(T)) * Δβ # unwrapped parallel angle
+                β = θ - γ                # unwrapped fan view angle
+                jf = β / Δβ + one(T)     # fractional view index
                 col_f = if arc_det
-                    γ / dγ_arc + cc                # equiangular: column IS the angle
+                    γ / dγ_arc + cc # equiangular: column IS the angle
                 else
-                    SDD * tan(γ) / pm + cc         # flat: planar offset
+                    SDD * tan(γ) / pm + cc # flat: planar offset
                 end
 
                 if jf >= one(T) && jf <= T(nv) && col_f >= one(T) && col_f <= T(nc)
@@ -136,9 +142,16 @@ function _wfbp_rebin!(
                     c_hi = min(c_lo + Int32(1), nc)
                     wj = jf - T(j_lo)
                     wc = col_f - T(c_lo)
-                    reb[idx] =
-                        (one(T) - wj) * ((one(T) - wc) * sino[c_lo, row, j_lo] + wc * sino[c_hi, row, j_lo]) +
-                        wj * ((one(T) - wc) * sino[c_lo, row, j_hi] + wc * sino[c_hi, row, j_hi])
+                    reb[idx] = (one(T) - wj) *
+                        (
+                            (one(T) - wc) * sino[c_lo, row, j_lo] +
+                                wc * sino[c_hi, row, j_lo]
+                        ) +
+                        wj *
+                            (
+                                (one(T) - wc) * sino[c_lo, row, j_hi] +
+                                    wc * sino[c_hi, row, j_hi]
+                            )
                 end
             end
         end
@@ -154,14 +167,13 @@ aperture weighting and per-half-turn-family normalisation.  See the file
 header for the formula.  `reb` must be the ramp-filtered rebinned sinogram.
 """
 function _wfbp_backproject!(
-        volume::AbstractArray{T, 3},
-        reb::AbstractArray{T, 3},
-        geom::CTGeometry,
-        Δt::T;
-        helical_q::Real = 0.7,
-        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
-    ) where {T <: AbstractFloat}
-
+    volume::AbstractArray{T, 3},
+    reb::AbstractArray{T, 3},
+    geom::CTGeometry,
+    Δt::T;
+    helical_q::Real = 0.7,
+    coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
+) where {T <: AbstractFloat}
     nx = Int32(size(volume, 1))
     ny = Int32(size(volume, 2))
     nz = Int32(size(volume, 3))
@@ -201,7 +213,7 @@ function _wfbp_backproject!(
     # 0.95-1.01 mm against 0.78-0.81 mm with the correct mapping, and asymmetric in x).
     use_arc = is_arc(geom)
     feed = T(geom.table_feed)
-    z_start = T(geom.source_positions[3, 1])     # source z at β = 0
+    z_start = T(geom.source_positions[3, 1]) # source z at β = 0
     t_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
     half_rows = T(n_rows) / T(2)
@@ -214,7 +226,6 @@ function _wfbp_backproject!(
     inv_n_half = one(T) / T(n_half)
 
     let reb = reb, volume = volume, cover = cover
-
         AK.foreachindex(volume) do idx
             idx_0 = Int32(idx - 1)
             ix = (idx_0 % nx) + Int32(1)
@@ -238,7 +249,7 @@ function _wfbp_backproject!(
                     θ = (T(j) - one(T)) * Δβ
                     sinθ = sin(θ)
                     cosθ = cos(θ)
-                    t̂ = x * cosθ - y * sinθ            # ray impact parameter
+                    t̂ = x * cosθ - y * sinθ # ray impact parameter
                     s = t̂ / R
                     if s > T(-0.999) && s < T(0.999)
                         γ = asin(s)
@@ -246,27 +257,46 @@ function _wfbp_backproject!(
                         # source z when this parallel ray was measured
                         z_s = z_start + feed * β / twoπ
                         cosγ = cos(γ)
-                        l̂ = x * sinθ + y * cosθ         # in-plane depth along the ray
-                        denom = l̂ + R * cosγ            # source→voxel in-plane distance
-                        if denom > T(1e-3)
+                        l̂ = x * sinθ + y * cosθ # in-plane depth along the ray
+                        denom = l̂ + R * cosγ    # source→voxel in-plane distance
+                        if denom > T(1.0e-3)
                             # wedge row coordinate: z magnified source→detector
-                            v = use_arc ? (z - z_s) * SDD / denom / prm :
+                            v = use_arc ?
+                                (z - z_s) * SDD / denom / prm :
                                 (z - z_s) * (SDD / cosγ) / denom / prm
                             q̂ = v / half_rows
                             Wq = _wq_aperture(q̂, q_plat)
                             if Wq > zero(T)
                                 t_f = t̂ / Δt + t_center
                                 row_f = v + row_center
-                                if t_f >= T(0.5) && t_f <= T(n_cols) + T(0.5) &&
-                                   row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
+                                if t_f >= T(0.5) &&
+                                        t_f <= T(n_cols) + T(0.5) &&
+                                        row_f >= T(0.5) &&
+                                        row_f <= T(n_rows) + T(0.5)
                                     wt = t_f - floor(t_f)
                                     wr = row_f - floor(row_f)
-                                    t_lo = clamp(unsafe_trunc(Int32, floor(t_f)), Int32(1), n_cols)
+                                    t_lo = clamp(
+                                        unsafe_trunc(Int32, floor(t_f)),
+                                        Int32(1),
+                                        n_cols,
+                                    )
                                     t_hi = clamp(t_lo + Int32(1), Int32(1), n_cols)
-                                    r_lo = clamp(unsafe_trunc(Int32, floor(row_f)), Int32(1), n_rows)
+                                    r_lo = clamp(
+                                        unsafe_trunc(Int32, floor(row_f)),
+                                        Int32(1),
+                                        n_rows,
+                                    )
                                     r_hi = clamp(r_lo + Int32(1), Int32(1), n_rows)
-                                    val = (one(T) - wt) * ((one(T) - wr) * reb[t_lo, r_lo, j] + wr * reb[t_lo, r_hi, j]) +
-                                          wt * ((one(T) - wr) * reb[t_hi, r_lo, j] + wr * reb[t_hi, r_hi, j])
+                                    val = (one(T) - wt) *
+                                        (
+                                            (one(T) - wr) * reb[t_lo, r_lo, j] +
+                                                wr * reb[t_lo, r_hi, j]
+                                        ) +
+                                        wt *
+                                            (
+                                                (one(T) - wr) * reb[t_hi, r_lo, j] +
+                                                    wr * reb[t_hi, r_hi, j]
+                                            )
                                     sumW += Wq
                                     sumWP += Wq * val
                                 end
@@ -276,7 +306,7 @@ function _wfbp_backproject!(
                     j += n_half
                 end
 
-                if sumW > T(1e-8)
+                if sumW > T(1.0e-8)
                     acc += sumWP / sumW
                     n_seen += Int32(1)
                 end
@@ -319,34 +349,38 @@ collimation width at each end of the helix never reaches coverage 1.
 uses, so the two paths return the same convention, and zeroes their `coverage` with them.
 """
 function wfbp_helical_reconstruct(
-        sinogram::AbstractArray{T, 3},
-        geom::CTGeometry,
-        volume_size::NTuple{3, Int};
-        filter::FilterType = StandardFilter(),
-        cutoff::Float64 = 1.0,
-        helical_q::Real = 0.7,
-        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
-        mask_fov::Bool = true,
-    ) where {T <: AbstractFloat}
-
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    filter::FilterType = StandardFilter(),
+    cutoff::Float64 = 1.0,
+    helical_q::Real = 0.7,
+    coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
+    mask_fov::Bool = true,
+) where {T <: AbstractFloat}
     if coverage !== nothing
-        size(coverage) == volume_size || throw(
-            DimensionMismatch("coverage $(size(coverage)) must match the volume $(volume_size)")
-        )
+        size(coverage) == volume_size ||
+            throw(DimensionMismatch(
+                "coverage $(size(coverage)) must match the volume $(volume_size)",
+            ))
         # Caught here rather than as a kernel-compilation failure deep in the backprojection.
-        eltype(coverage) === T || throw(
-            ArgumentError(
-                "coverage is $(eltype(coverage)); the sinogram is $(T), and they share a kernel"
-            )
-        )
-        typeof(similar(coverage, T, 1)).name === typeof(similar(sinogram, T, 1)).name || throw(
-            ArgumentError("coverage lives on a different backend from the sinogram")
-        )
+        eltype(coverage) === T ||
+            throw(ArgumentError(
+                "coverage is $(eltype(coverage)); the sinogram is $(T), and they share a kernel",
+            ))
+        typeof(similar(coverage, T, 1)).name === typeof(similar(sinogram, T, 1)).name ||
+            throw(ArgumentError("coverage lives on a different backend from the sinogram"))
     end
     reb, Δt = _wfbp_rebin(sinogram, geom)
-    filter_sinogram!(reb, geom; filter = filter, cutoff = cutoff,
-        apply_cosine = false, ray_spacing = Δt,
-        bandlimit = grid_bandlimit(geom, volume_size; ray_spacing = Δt))
+    filter_sinogram!(
+        reb,
+        geom;
+        filter = filter,
+        cutoff = cutoff,
+        apply_cosine = false,
+        ray_spacing = Δt,
+        bandlimit = grid_bandlimit(geom, volume_size; ray_spacing = Δt),
+    )
     volume = similar(sinogram, T, volume_size...)
     fill!(volume, zero(T))
     _wfbp_backproject!(volume, reb, geom, Δt; helical_q = helical_q, coverage = coverage)

@@ -91,14 +91,17 @@ simulated calibration scans: [`calibrate`](@ref), passed to [`create_workspace`]
 Its ultra-high-resolution mode is [`NAEOTOM_ALPHA_UHR`](@ref). A different scan is a variant:
 `PCCTScanner(NAEOTOM_ALPHA; pileup = false)`.
 """
-const NAEOTOM_ALPHA = let native_pitch = (0.34, 1.13 * 0.322), sid = 610.0, sdd = 1113.0, binning = 2
+const NAEOTOM_ALPHA = let native_pitch = (0.34, 1.13 * 0.322),
+    sid = 610.0,
+    sdd = 1113.0,
+    binning = 2
     PCCTScanner(;
         source_to_isocenter = sid,
         source_to_detector = sdd,
         detector_rows = 144,
         detector_cols = 1376,
-        detector_row_size = native_pitch[2] * binning * sid / sdd,   # 0.399 mm
-        detector_col_size = native_pitch[1] * binning * sid / sdd,   # 0.373 mm
+        detector_row_size = native_pitch[2] * binning * sid / sdd, # 0.399 mm
+        detector_col_size = native_pitch[1] * binning * sid / sdd, # 0.373 mm
         detector_shape = :arc,
         detector_col_offset = 0.25,
         focal_spot_width = 0.4,
@@ -204,7 +207,11 @@ A dual-energy scan is two acquisitions, one per chain: `SOMATOM_FORCE` at the lo
 two sinograms ray by ray, run tube B on tube A's arc (`SOMATOM_FORCE`) with an object inside
 detector B's 35.5 cm field, as notebook 09 does.
 """
-const SOMATOM_FORCE_B = EICTScanner(SOMATOM_FORCE; detector_cols = 640, scan_diameter = 355.0)
+const SOMATOM_FORCE_B = EICTScanner(
+    SOMATOM_FORCE;
+    detector_cols = 640,
+    scan_diameter = 355.0,
+)
 
 """
     SOMATOM_DEFINITION_FLASH
@@ -270,6 +277,16 @@ et al. 2010), `CTProtocol(kVp = 140, …, additional_filters = [("Sn", 0.4)])`. 
 two sinograms ray by ray, run tube B on tube A's arc with an object inside detector B's field, as
 notebook 12 does.
 """
-const SOMATOM_DEFINITION_FLASH_B = EICTScanner(SOMATOM_DEFINITION_FLASH; detector_cols = 480, scan_diameter = 334.0)
+const SOMATOM_DEFINITION_FLASH_B = EICTScanner(
+    SOMATOM_DEFINITION_FLASH;
+    detector_cols = 480,
+    scan_diameter = 334.0,
+)
 
-export REVOLUTION_APEX, NAEOTOM_ALPHA, NAEOTOM_ALPHA_UHR, SOMATOM_FORCE, SOMATOM_FORCE_B, SOMATOM_DEFINITION_FLASH, SOMATOM_DEFINITION_FLASH_B
+export REVOLUTION_APEX,
+    NAEOTOM_ALPHA,
+    NAEOTOM_ALPHA_UHR,
+    SOMATOM_FORCE,
+    SOMATOM_FORCE_B,
+    SOMATOM_DEFINITION_FLASH,
+    SOMATOM_DEFINITION_FLASH_B

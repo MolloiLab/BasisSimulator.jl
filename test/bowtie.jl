@@ -68,11 +68,11 @@ end
         # First non-comment row matches upstream verbatim.
         bf = BS.load_catsim_bowtie(filepath; name = "test_$(body)")
         expected = _CATSIM_FIRST_ROW[body]
-        @test bf.angles[1] ≈ expected[1]  atol = 1.0e-6
-        @test bf.thickness[1, 1] ≈ expected[2]  atol = 1.0e-6
-        @test bf.thickness[1, 2] ≈ expected[3]  atol = 1.0e-6
-        @test bf.thickness[1, 3] ≈ expected[4]  atol = 1.0e-6
-        @test bf.thickness[1, 4] ≈ expected[5]  atol = 1.0e-6
+        @test bf.angles[1] ≈ expected[1] atol = 1.0e-6
+        @test bf.thickness[1, 1] ≈ expected[2] atol = 1.0e-6
+        @test bf.thickness[1, 2] ≈ expected[3] atol = 1.0e-6
+        @test bf.thickness[1, 3] ≈ expected[4] atol = 1.0e-6
+        @test bf.thickness[1, 4] ≈ expected[5] atol = 1.0e-6
     end
 end
 
@@ -92,7 +92,7 @@ end
 @testset "load_catsim_bowtie" begin
     bf = BS.load_catsim_bowtie(
         joinpath(_BOWTIE_DATA_DIR, "medium.txt");
-        name = "catsim_medium_under_test"
+        name = "catsim_medium_under_test",
     )
     @test bf.name == "catsim_medium_under_test"
     @test bf.materials == ["Al", "graphite", "Cu", "Ti"]
@@ -100,8 +100,8 @@ end
     @test size(bf.thickness) == (888, 4)
 
     # Angles are in radians, span roughly [-0.48, +0.48] (≈ 55° total fan).
-    @test minimum(bf.angles) ≈ -0.479582  atol = 1.0e-6
-    @test maximum(bf.angles) ≈ 0.477424  atol = 1.0e-6
+    @test minimum(bf.angles) ≈ -0.479582 atol = 1.0e-6
+    @test maximum(bf.angles) ≈ 0.477424 atol = 1.0e-6
 
     # Thickness is in cm.  Medium body Al column tapers center-thin / edge-thick:
     # ~0.09 cm at center, ~3.5 cm at edges.
@@ -146,11 +146,7 @@ end
 
 @testset "interpolate_thickness" begin
     # Hand-built 3-node filter, single material, so interpolation is checkable.
-    bf = BS.BowtieFilter(
-        [0.0, 0.1, 0.2],
-        reshape([1.0, 0.5, 0.2], 3, 1),
-        ["Al"], "test",
-    )
+    bf = BS.BowtieFilter([0.0, 0.1, 0.2], reshape([1.0, 0.5, 0.2], 3, 1), ["Al"], "test")
 
     # At node: exact value.
     @test BS.interpolate_thickness(bf, 0.0)[1] ≈ 1.0
@@ -163,8 +159,8 @@ end
 
     # Out of range: clamps to the endpoint (one-sided extrapolation).
     @test BS.interpolate_thickness(bf, 0.5)[1] ≈ 0.2
-    @test BS.interpolate_thickness(bf, -0.5)[1] ≈ 0.2  # uses |fan_angle|
-    @test BS.interpolate_thickness(bf, -0.1)[1] ≈ 0.5  # symmetric on |γ|
+    @test BS.interpolate_thickness(bf, -0.5)[1] ≈ 0.2 # uses |fan_angle|
+    @test BS.interpolate_thickness(bf, -0.1)[1] ≈ 0.5 # symmetric on |γ|
 end
 
 # End-to-end smoke test, modeled directly on CatSim's test_Xray_Filter.py.
@@ -180,7 +176,7 @@ end
 @testset "compute_bowtie_attenuation_spectral (CatSim Xray_Filter port)" begin
     scanner = _clinical_scanner_with_bowtie(:medium_body)
     geom = BS.CTGeometry(scanner; n_angles = 16, fov_cm = 50.0, z_cm = 5.0)
-    energies = collect(range(20.0, 120.0, length = 20))  # matches xcist's 20-bin grid
+    energies = collect(range(20.0, 120.0, length = 20)) # matches xcist's 20-bin grid
     bowtie = BS.resolve_bowtie_filter(scanner.bowtie_filter)
 
     trans = BS.compute_bowtie_attenuation_spectral(bowtie, geom, energies)
@@ -202,7 +198,7 @@ end
     mid_c = size(trans, 1) ÷ 2 + 1
     mid_r = size(trans, 2) ÷ 2 + 1
     center_E_profile = trans[mid_c, mid_r, :]
-    @test issorted(center_E_profile)  # exp(-μ(E)·t) increases as μ(E) decreases with E
+    @test issorted(center_E_profile) # exp(-μ(E)·t) increases as μ(E) decreases with E
 
     # (4) Cone-angle correction: at fixed col, paths through bowtie get longer
     # as cone angle |α| grows (t / cos(α)), so transmission drops.

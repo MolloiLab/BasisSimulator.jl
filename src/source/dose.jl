@@ -29,14 +29,41 @@
 # scattering (under 0.2 % on CTDIw). Use `dose_calibration` to pin a scanner to a measured
 # CTDIvol; the uncalibrated beam quantities are reported alongside.
 
-const _KEV_PER_G_TO_MGY = 1.602176634e-10      # 1 keV/g = 1.602e-13 Gy
+const _KEV_PER_G_TO_MGY = 1.602176634e-10 # 1 keV/g = 1.602e-13 Gy
 const _ELECTRON_REST_KEV = 510.99895
 
 # NIST NISTIR-5632 (Hubbell & Seltzer) mass energy-absorption coefficient of dry air, cm²/g.
-const _MUEN_AIR_E = [5.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 150.0, 200.0]
+const _MUEN_AIR_E = [
+    5.0,
+    6.0,
+    8.0,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+    40.0,
+    50.0,
+    60.0,
+    80.0,
+    100.0,
+    150.0,
+    200.0,
+]
 const _MUEN_AIR = [
-    39.31, 22.7, 9.446, 4.742, 1.334, 0.5389, 0.1537, 0.06833, 0.04098, 0.03041, 0.02407,
-    0.02325, 0.02496, 0.02672,
+    39.31,
+    22.7,
+    9.446,
+    4.742,
+    1.334,
+    0.5389,
+    0.1537,
+    0.06833,
+    0.04098,
+    0.03041,
+    0.02407,
+    0.02325,
+    0.02496,
+    0.02672,
 ]
 
 """
@@ -87,23 +114,36 @@ per mAs per mm² AT THE DETECTOR — when a workspace was built with a spectrum 
 """
 function dose_source(scanner::Scanner, protocol::CTProtocol; spectrum = nothing)
     filters = Tuple{String, Float64}[]
-    scanner.flat_filter_thickness > 0 && push!(
-        filters, (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness))
-    )
+    scanner.flat_filter_thickness > 0 &&
+        push!(
+            filters,
+            (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)),
+        )
     append!(filters, protocol.additional_filters)
     SAD = Float64(scanner.source_to_isocenter)
     E, phi = if spectrum === nothing
-        e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle = ipem_anode_angle(scanner.target_angle))
+        e, w = load_spectrum_unfiltered(
+            Int(protocol.kVp);
+            anode_angle = ipem_anode_angle(scanner.target_angle),
+        )
         filter_spectrum(e, w; filters = filters, sdd_mm = SAD)
     else
         e, w = spectrum
-        collect(Float64, e), collect(Float64, w) .* (Float64(scanner.source_to_detector) / SAD)^2
+        collect(Float64, e),
+            collect(Float64, w) .* (Float64(scanner.source_to_detector) / SAD)^2
     end
     NT = protocol.collimation_mm === nothing ?
-        Float64(scanner.detector_rows * scanner.detector_row_size) : Float64(protocol.collimation_mm)
+        Float64(scanner.detector_rows * scanner.detector_row_size) :
+        Float64(protocol.collimation_mm)
     return DoseSource(
-        collect(Float64, E), collect(Float64, phi), SAD, scanner.bowtie_filter,
-        resolve_bowtie_filter(scanner.bowtie_filter), NT, Float64(protocol.kVp), filters,
+        collect(Float64, E),
+        collect(Float64, phi),
+        SAD,
+        scanner.bowtie_filter,
+        resolve_bowtie_filter(scanner.bowtie_filter),
+        NT,
+        Float64(protocol.kVp),
+        filters,
     )
 end
 
@@ -111,8 +151,12 @@ end
 function _bowtie_transmission(src::DoseSource, γ::Real)
     t = interpolate_thickness(src.bowtie, Float64(γ))
     return [
-        exp(-sum(get_bowtie_mu(src.bowtie.materials[m], E) * t[m] for m in eachindex(t); init = 0.0))
-            for E in src.E
+        exp(
+            -sum(get_bowtie_mu(src.bowtie.materials[m], E) * t[m] for m in eachindex(
+                t,
+            ); init = 0.0),
+        )
+        for E in src.E
     ]
 end
 
@@ -125,15 +169,17 @@ Air kerma per mAs at isocentre, free in air, behind the bowtie at `fan_angle` (r
 function air_kerma_free_in_air(src::DoseSource; fan_angle::Real = 0.0)
     T = _bowtie_transmission(src, fan_angle)
     return sum(
-        src.phi_iso[k] * 100.0 * T[k] * src.E[k] * muen_rho_air(src.E[k]) for k in eachindex(src.E)
-    ) * _KEV_PER_G_TO_MGY
+        src.phi_iso[k] * 100.0 * T[k] * src.E[k] * muen_rho_air(src.E[k])
+        for k in eachindex(src.E)
+    ) *
+        _KEV_PER_G_TO_MGY
 end
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 # Photon transport in PMMA
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 
-const _DOSE_DE = 0.5                           # keV, cross-section table step
+const _DOSE_DE = 0.5 # keV, cross-section table step
 const _DOSE_EMAX = 160.0
 const _DOSE_CUTOFF_KEV = 5.0
 const _PMMA_DENSITY = 1.19
@@ -145,7 +191,11 @@ function _pmma_table()
     table = _PMMA_TABLE[]
     table === nothing || return table
     Es = collect(_DOSE_DE:_DOSE_DE:_DOSE_EMAX)
-    partial(E, kind) = Unitful.ustrip(XA.mass_attenuation_coeff(XA.Materials.pmma, max(E, 1.0) * XA.keV, kind))
+    partial(E, kind) = Unitful.ustrip(XA.mass_attenuation_coeff(
+        XA.Materials.pmma,
+        max(E, 1.0) * XA.keV,
+        kind,
+    ))
     pe = [max(partial(E, XA.PhotoelectricAbsorption()), 0.0) * _PMMA_DENSITY for E in Es]
     incoherent = [partial(E, XA.IncoherentScattering()) * _PMMA_DENSITY for E in Es]
     total = pe .+ incoherent
@@ -167,7 +217,9 @@ end
     a1 = -log(ε0)
     a2 = (1 - ε0^2) / 2
     while true
-        ε = rand(rng) < a1 / (a1 + a2) ? exp(-rand(rng) * a1) : sqrt(ε0^2 + (1 - ε0^2) * rand(rng))
+        ε = rand(rng) < a1 / (a1 + a2) ?
+            exp(-rand(rng) * a1) :
+            sqrt(ε0^2 + (1 - ε0^2) * rand(rng))
         t = (1 - ε) / (k * ε)
         (1 - ε * t * (2 - t) / (1 + ε^2)) >= rand(rng) && return ε, 1 - t
     end
@@ -185,18 +237,29 @@ end
     )
 end
 
-const _DOSE_DR = 0.1                           # cm, radial ring width
-const _DOSE_DZ = 0.5                           # cm, axial bin width
-const _DOSE_PHANTOM_LENGTH = 15.0              # cm
-const _DOSE_N_CHUNKS = 32                      # fixed, so the result does not depend on nthreads
+const _DOSE_DR = 0.1              # cm, radial ring width
+const _DOSE_DZ = 0.5              # cm, axial bin width
+const _DOSE_PHANTOM_LENGTH = 15.0 # cm
+# fixed, so the result does not depend on nthreads
+const _DOSE_N_CHUNKS = 32
 
 # One chunk of histories: air-kerma tallies (total, primary) in (r, z) rings, unnormalised.
 function _dose_chunk!(
-        total::Matrix{Float64}, primary::Matrix{Float64}, energies::Vector{Float64},
-        SAD::Float64, mu_total::Vector{Float64}, p_photoelectric::Vector{Float64},
-        muen_air::Vector{Float64}, cdf::Vector{Float64}, bowtie_T::Matrix{Float64},
-        γ_max::Float64, R::Float64, beam_cm::Float64, n::Int, rng,
-    )
+    total::Matrix{Float64},
+    primary::Matrix{Float64},
+    energies::Vector{Float64},
+    SAD::Float64,
+    mu_total::Vector{Float64},
+    p_photoelectric::Vector{Float64},
+    muen_air::Vector{Float64},
+    cdf::Vector{Float64},
+    bowtie_T::Matrix{Float64},
+    γ_max::Float64,
+    R::Float64,
+    beam_cm::Float64,
+    n::Int,
+    rng,
+)
     half_length = _DOSE_PHANTOM_LENGTH / 2
     n_γ = size(bowtie_T, 1)
     for _ in 1:n
@@ -210,20 +273,26 @@ function _dose_chunk!(
         # source fixed at (0, -SAD, 0); the ray aims at (SAD·sinγ, 0 + …, z0) in the iso plane
         ux, uy, uz = SAD * sin(γ), SAD * cos(γ), z0
         norm_u = sqrt(ux^2 + uy^2 + uz^2)
-        ux /= norm_u; uy /= norm_u; uz /= norm_u
+        ux /= norm_u
+        uy /= norm_u
+        uz /= norm_u
         x, y, z = 0.0, -SAD, 0.0
         a = ux^2 + uy^2
         b = x * ux + y * uy
         disc = b^2 - a * (x^2 + y^2 - R^2)
         disc <= 0 && continue
         t = (-b - sqrt(disc)) / a
-        x += t * ux; y += t * uy; z += t * uz
+        x += t * ux
+        y += t * uy
+        z += t * uz
         abs(z) > half_length && continue
         is_primary = true
         while true
             μ = _table_lookup(mu_total, E)
             step = -log(rand(rng)) / μ
-            x += step * ux; y += step * uy; z += step * uz
+            x += step * ux
+            y += step * uy
+            z += step * uz
             r = hypot(x, y)
             (r >= R || abs(z) >= half_length) && break
             ir = floor(Int, r / _DOSE_DR) + 1
@@ -290,23 +359,34 @@ ctdi_w, rel_stat_uncertainty)`.
 The result is deterministic for a given `seed`, whatever the number of threads, and is cached.
 """
 function ctdi100(
-        src::DoseSource; phantom::Symbol = :body32,
-        beam_width_mm::Real = src.nominal_collimation_mm,
-        nominal_collimation_mm::Real = src.nominal_collimation_mm,
-        n_histories::Integer = 1_000_000, seed::Integer = 1,
-    )
-    R = phantom === :body32 ? 16.0 : phantom === :head16 ? 8.0 :
-        throw(ArgumentError("phantom must be :body32 or :head16, got :$(phantom)"))
+    src::DoseSource;
+    phantom::Symbol = :body32,
+    beam_width_mm::Real = src.nominal_collimation_mm,
+    nominal_collimation_mm::Real = src.nominal_collimation_mm,
+    n_histories::Integer = 1_000_000,
+    seed::Integer = 1,
+)
+    R = phantom === :body32 ?
+        16.0 :
+        phantom === :head16 ?
+            8.0 :
+            throw(ArgumentError("phantom must be :body32 or :head16, got :$(phantom)"))
     # Keyed on everything the transport reads. The bowtie enters by its materials and
     # thickness profile, not by its name: a DoseSource assembled by hand can carry one name and
     # another filter, and answering that from the cache would be wrong by a factor of two.
-    key = hash(
-        (
-            src.E, src.phi_iso, src.SAD_mm, src.bowtie.materials, src.bowtie.thickness,
-            src.bowtie_name, R, Float64(beam_width_mm), Float64(nominal_collimation_mm),
-            Int(n_histories), Int(seed),
-        )
-    )
+    key = hash((
+        src.E,
+        src.phi_iso,
+        src.SAD_mm,
+        src.bowtie.materials,
+        src.bowtie.thickness,
+        src.bowtie_name,
+        R,
+        Float64(beam_width_mm),
+        Float64(nominal_collimation_mm),
+        Int(n_histories),
+        Int(seed),
+    ))
     cached = lock(() -> get(_CTDI_CACHE, key, nothing), _CTDI_CACHE_LOCK)
     cached === nothing || return cached
 
@@ -322,23 +402,39 @@ function ctdi100(
     for j in 1:n_γ
         bowtie_T[j, :] .= _bowtie_transmission(src, (j - 1) / (n_γ - 1) * γ_max)
     end
-    table = _pmma_table()                        # build once, before the threads start
-    mu_total, p_photoelectric, muen_air = table.mu_total, table.p_photoelectric, table.muen_air
+    table = _pmma_table() # build once, before the threads start
+    mu_total, p_photoelectric, muen_air = table.mu_total,
+        table.p_photoelectric,
+        table.muen_air
 
     per_chunk = cld(Int(n_histories), _DOSE_N_CHUNKS)
     totals = [zeros(n_r, n_z) for _ in 1:_DOSE_N_CHUNKS]
     primaries = [zeros(n_r, n_z) for _ in 1:_DOSE_N_CHUNKS]
     Threads.@threads for chunk in 1:_DOSE_N_CHUNKS
         _dose_chunk!(
-            totals[chunk], primaries[chunk], src.E, SAD, mu_total, p_photoelectric, muen_air,
-            cdf, bowtie_T, γ_max, R, beam_width_mm / 10, per_chunk,
+            totals[chunk],
+            primaries[chunk],
+            src.E,
+            SAD,
+            mu_total,
+            p_photoelectric,
+            muen_air,
+            cdf,
+            bowtie_T,
+            γ_max,
+            R,
+            beam_width_mm / 10,
+            per_chunk,
             Random.Xoshiro(seed + 7919 * chunk),
         )
     end
 
     # photons per mAs into the sampled aperture (arc length × beam width at isocentre, mm²)
     photons_per_mAs = fluence * (2γ_max * src.SAD_mm) * beam_width_mm
-    ring_volume = [π * ((ir * _DOSE_DR)^2 - ((ir - 1) * _DOSE_DR)^2) * _DOSE_DZ for ir in 1:n_r]
+    ring_volume = [
+        π * ((ir * _DOSE_DR)^2 - ((ir - 1) * _DOSE_DR)^2) * _DOSE_DZ
+        for ir in 1:n_r
+    ]
     normalise(K, n) = K .* (photons_per_mAs / n * _KEV_PER_G_TO_MGY) ./ ring_volume
     weighted(K) = begin
         # the centre is flat over r < 1 cm, which has a quarter of the variance of r < 0.5 cm
@@ -376,7 +472,8 @@ struct DoseReport
     ctdi_w_mGy_per_100mAs::Float64
     ctdi100_center_mGy_per_100mAs::Float64
     ctdi100_periphery_mGy_per_100mAs::Float64
-    air_kerma_free_in_air_mGy_per_100mAs::Float64   # centre ray, behind the bowtie, at isocentre
+    # centre ray, behind the bowtie, at isocentre
+    air_kerma_free_in_air_mGy_per_100mAs::Float64
     phantom::Symbol
     kVp::Float64
     mAs_per_rotation::Float64
@@ -386,16 +483,19 @@ struct DoseReport
     table_increment_mm::Float64
     n_rotations::Float64
     scan_length_cm::Float64
-    wide_beam_reference_mm::Union{Nothing, Float64}  # 20.0 when the IEC N·T > 40 mm rule was used
+    # 20.0 when the IEC N·T > 40 mm rule was used
+    wide_beam_reference_mm::Union{Nothing, Float64}
     filters::Vector{Tuple{String, Float64}}
     bowtie::Symbol
     dose_calibration::Float64
-    n_histories::Int                                 # as transported: rounded up to whole chunks
+    # as transported: rounded up to whole chunks
+    n_histories::Int
     rel_stat_uncertainty::Float64
 end
 
 function Base.show(io::IO, ::MIME"text/plain", r::DoseReport)
-    mode = r.pitch === nothing ? "axial, increment $(round(r.table_increment_mm; digits = 2)) mm" :
+    mode = r.pitch === nothing ?
+        "axial, increment $(round(r.table_increment_mm; digits = 2)) mm" :
         "helical, pitch $(r.pitch)"
     print(
         io,
@@ -406,8 +506,12 @@ function Base.show(io::IO, ::MIME"text/plain", r::DoseReport)
         "  N·T = $(r.nominal_collimation_mm) mm, beam $(r.beam_width_mm) mm, filters $(r.filters), bowtie :$(r.bowtie)",
     )
     r.wide_beam_reference_mm === nothing ||
-        print(io, "\n  IEC wide-beam rule applied (reference beam $(r.wide_beam_reference_mm) mm)")
-    r.dose_calibration == 1 || print(io, "\n  scaled by dose_calibration = $(r.dose_calibration)")
+        print(
+            io,
+            "\n  IEC wide-beam rule applied (reference beam $(r.wide_beam_reference_mm) mm)",
+        )
+    r.dose_calibration == 1 ||
+        print(io, "\n  scaled by dose_calibration = $(r.dose_calibration)")
     return nothing
 end
 
@@ -432,22 +536,38 @@ Helical: `CTDIvol = CTDIw · mAs / pitch`, scan length `pitch · N·T · n_rotat
 Axial:   `CTDIvol = CTDIw · mAs · N·T / Δd`, scan length `n_rotations · Δd`.
 """
 function compute_dose(
-        src::DoseSource, protocol::CTProtocol;
-        phantom::Symbol = :body32, overbeam_mm::Real = 0.0,
-        table_increment_mm::Union{Nothing, Real} = nothing, n_tubes::Integer = 1,
-        dose_calibration::Real = 1.0, n_histories::Integer = 1_000_000, seed::Integer = 1,
-    )
+    src::DoseSource,
+    protocol::CTProtocol;
+    phantom::Symbol = :body32,
+    overbeam_mm::Real = 0.0,
+    table_increment_mm::Union{Nothing, Real} = nothing,
+    n_tubes::Integer = 1,
+    dose_calibration::Real = 1.0,
+    n_histories::Integer = 1_000_000,
+    seed::Integer = 1,
+)
     NT = src.nominal_collimation_mm
     beam = NT + overbeam_mm
     wide_reference = NT > 40 ? 20.0 : nothing
     mc = if wide_reference === nothing
-        ctdi100(src; phantom, beam_width_mm = beam, nominal_collimation_mm = NT, n_histories, seed)
+        ctdi100(
+            src;
+            phantom,
+            beam_width_mm = beam,
+            nominal_collimation_mm = NT,
+            n_histories,
+            seed,
+        )
     else
         # IEC 60601-2-44 A1: measure at the reference beam, scale by the free-in-air ratio,
         # which for a uniform beam is the ratio of (beam width / N·T).
         reference = ctdi100(
-            src; phantom, beam_width_mm = wide_reference + overbeam_mm,
-            nominal_collimation_mm = wide_reference, n_histories, seed,
+            src;
+            phantom,
+            beam_width_mm = wide_reference + overbeam_mm,
+            nominal_collimation_mm = wide_reference,
+            n_histories,
+            seed,
         )
         # The free-in-air CTDI in the amendment is taken over the WHOLE beam profile (a long or
         # stepped chamber, not the 100 mm pencil) — that is the point of the rule. For a uniform
@@ -467,31 +587,55 @@ function compute_dose(
 
     mAs = protocol.mA * protocol.rotation_time
     helical = protocol.pitch !== nothing
-    increment = helical ? protocol.pitch * NT :
+    increment = helical ?
+        protocol.pitch * NT :
         (table_increment_mm === nothing ? NT : Float64(table_increment_mm))
-    increment > 0 || throw(ArgumentError("table increment must be positive, got $(increment) mm"))
+    increment > 0 ||
+        throw(ArgumentError("table increment must be positive, got $(increment) mm"))
     ctdi_vol = mc.ctdi_w * mAs * NT / increment * n_tubes * dose_calibration
     scan_length_cm = protocol.n_rotations * increment / 10
     return DoseReport(
-        ctdi_vol, ctdi_vol * scan_length_cm,
-        100mc.ctdi_w, 100mc.center, 100mc.periphery, 100air_kerma_free_in_air(src),
-        phantom, src.kVp, mAs, NT, beam,
-        helical ? Float64(protocol.pitch) : nothing, increment, protocol.n_rotations, scan_length_cm,
-        wide_reference, src.filters, src.bowtie_name, Float64(dose_calibration),
-        cld(Int(n_histories), _DOSE_N_CHUNKS) * _DOSE_N_CHUNKS, mc.rel_stat_uncertainty,
+        ctdi_vol,
+        ctdi_vol * scan_length_cm,
+        100mc.ctdi_w,
+        100mc.center,
+        100mc.periphery,
+        100air_kerma_free_in_air(src),
+        phantom,
+        src.kVp,
+        mAs,
+        NT,
+        beam,
+        helical ? Float64(protocol.pitch) : nothing,
+        increment,
+        protocol.n_rotations,
+        scan_length_cm,
+        wide_reference,
+        src.filters,
+        src.bowtie_name,
+        Float64(dose_calibration),
+        cld(Int(n_histories), _DOSE_N_CHUNKS) * _DOSE_N_CHUNKS,
+        mc.rel_stat_uncertainty,
     )
 end
 
-compute_dose(scanner::Scanner, protocol::CTProtocol; spectrum = nothing, kwargs...) =
-    compute_dose(dose_source(scanner, protocol; spectrum), protocol; kwargs...)
+compute_dose(
+    scanner::Scanner,
+    protocol::CTProtocol;
+    spectrum = nothing,
+    kwargs...,
+) = compute_dose(dose_source(scanner, protocol; spectrum), protocol; kwargs...)
 
 """
     compute_ctdi_vol(scanner, protocol; kwargs...) -> Float64
 
 CTDIvol in mGy; see [`compute_dose`](@ref) for the keywords and the full report.
 """
-compute_ctdi_vol(scanner::Scanner, protocol::CTProtocol; kwargs...) =
-    compute_dose(scanner, protocol; kwargs...).ctdi_vol_mGy
+compute_ctdi_vol(scanner::Scanner, protocol::CTProtocol; kwargs...) = compute_dose(
+    scanner,
+    protocol;
+    kwargs...,
+).ctdi_vol_mGy
 
 """
     compute_dlp(report::DoseReport) -> Float64
@@ -500,8 +644,11 @@ compute_ctdi_vol(scanner::Scanner, protocol::CTProtocol; kwargs...) =
 Dose-length product in mGy·cm: CTDIvol times the scan length.
 """
 compute_dlp(report::DoseReport) = report.dlp_mGy_cm
-compute_dlp(scanner::Scanner, protocol::CTProtocol; kwargs...) =
-    compute_dose(scanner, protocol; kwargs...).dlp_mGy_cm
+compute_dlp(scanner::Scanner, protocol::CTProtocol; kwargs...) = compute_dose(
+    scanner,
+    protocol;
+    kwargs...,
+).dlp_mGy_cm
 
 """
     dose_report(ws, protocol; kwargs...) -> Union{DoseReport, Nothing}

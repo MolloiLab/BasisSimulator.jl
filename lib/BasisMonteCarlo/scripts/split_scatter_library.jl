@@ -32,10 +32,21 @@ function write_entry(stem, header, name, arrays, elements)
     entries = Dict{String, Any}[]
     offset = 0
     open(stem * ".bin", "w") do io
-        for (owner, kind) in vcat([(name, k) for k in sort!(collect(keys(arrays)))], [("elements", k) for k in sort!(collect(keys(elements)))])
+        for (owner, kind) in vcat(
+                [(name, k) for k in sort!(collect(keys(arrays)))],
+                [("elements", k) for k in sort!(collect(keys(elements)))],
+            )
             A = owner == "elements" ? elements[kind] : arrays[kind]
             write(io, htol.(vec(Float32.(A))))
-            push!(entries, Dict{String, Any}("scanner" => owner, "kind" => kind, "shape" => collect(size(A)), "offset_bytes" => offset))
+            push!(
+                entries,
+                Dict{String, Any}(
+                    "scanner" => owner,
+                    "kind" => kind,
+                    "shape" => collect(size(A)),
+                    "offset_bytes" => offset,
+                ),
+            )
             offset += sizeof(Float32) * length(A)
         end
     end
@@ -74,20 +85,32 @@ function split_scatter_library(header_path, out_dir)
     header = TOML.parsefile(header_path)
     elements = read_arrays(header_path, "elements")
     return map(header["scanners"]) do s
-        write_entry(joinpath(out_dir, entry_stem(s["name"])), header, s["name"], read_arrays(header_path, s["name"]), elements)
+        write_entry(
+            joinpath(out_dir, entry_stem(s["name"])),
+            header,
+            s["name"],
+            read_arrays(header_path, s["name"]),
+            elements,
+        )
     end
 end
 
 # The release assets: one zip per entry, its SHA-256 and the extracted tree's git-tree-sha1.
 function archive_entries(headers)
-    p7zip = Base.require(Base.PkgId(Base.UUID("3f19e933-33d8-53b3-aaab-bd5110c3b7a0"), "p7zip_jll"))
+    p7zip = Base.require(Base.PkgId(
+        Base.UUID("3f19e933-33d8-53b3-aaab-bd5110c3b7a0"),
+        "p7zip_jll",
+    ))
     Pkg = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
     SHA = Base.require(Base.PkgId(Base.UUID("ea8e919c-243c-51af-8825-aaa63cd721ce"), "SHA"))
     for header in headers
         stem = splitext(header)[1]
         zip = stem * ".zip"
         rm(zip; force = true)
-        run(pipeline(`$(Base.invokelatest(p7zip.p7zip)) a -tzip $(zip) $(stem * ".toml") $(stem * ".bin")`; stdout = devnull))
+        run(pipeline(
+            `$(Base.invokelatest(p7zip.p7zip)) a -tzip $(zip) $(stem * ".toml") $(stem * ".bin")`;
+            stdout = devnull,
+        ))
         sha = open(io -> bytes2hex(Base.invokelatest(SHA.sha256, io)), zip)
         tree = mktempdir() do dir
             cp(stem * ".toml", joinpath(dir, basename(stem) * ".toml"))
@@ -95,13 +118,16 @@ function archive_entries(headers)
             bytes2hex(Base.invokelatest(Pkg.GitTools.tree_hash, dir))
         end
         name = only(TOML.parsefile(header)["scanners"])["name"]
-        println("\"$(name)\": file $(basename(stem)).toml, sha256 \"$(sha)\", tree_hash \"$(tree)\"")
+        println(
+            "\"$(name)\": file $(basename(stem)).toml, sha256 \"$(sha)\", tree_hash \"$(tree)\"",
+        )
     end
     return nothing
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    length(ARGS) >= 2 || error("usage: split_scatter_library.jl library.toml out_dir [--archive]")
+    length(ARGS) >= 2 ||
+        error("usage: split_scatter_library.jl library.toml out_dir [--archive]")
     headers = split_scatter_library(ARGS[1], ARGS[2])
     foreach(println, headers)
     "--archive" in ARGS && archive_entries(headers)

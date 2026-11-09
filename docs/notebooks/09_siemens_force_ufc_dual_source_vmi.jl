@@ -97,7 +97,8 @@ PlutoUI.TableOfContents()
 # ╔═╡ 09000001-0000-4000-8000-000000000040
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
@@ -141,17 +142,50 @@ let
         subtitle = "UFC (SOMATOM Force) vs Gemstone (GE Apex Elite)",
         xlabel = "Photon Energy (keV)",
         ylabel = "Collected Fraction η(E)",
-        titlesize = 32, subtitlesize = 24,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 18, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 24,
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 18,
+        yticklabelsize = 16,
     )
-    Mke.lines!(ax, Es, η_ufc; color = :crimson, linewidth = 3, label = "UFC Gd₂O₂S (BS.UFC_MC_EFFICIENCY_LUT)")
-    Mke.lines!(ax, Es, η_gem; color = :steelblue, linewidth = 3, label = "Gemstone garnet (src)")
+    Mke.lines!(
+        ax,
+        Es,
+        η_ufc;
+        color = :crimson,
+        linewidth = 3,
+        label = "UFC Gd₂O₂S (BS.UFC_MC_EFFICIENCY_LUT)",
+    )
+    Mke.lines!(
+        ax,
+        Es,
+        η_gem;
+        color = :steelblue,
+        linewidth = 3,
+        label = "Gemstone garnet (src)",
+    )
 
     Mke.vlines!(ax, [50.24]; color = :crimson, linestyle = :dash, linewidth = 1.5)
-    Mke.text!(ax, 50.24, 0.70; text = "Gd K-edge\n50.2 keV", fontsize = 16, align = (:left, :top), offset = (4, 0))
+    Mke.text!(
+        ax,
+        50.24,
+        0.7;
+        text = "Gd K-edge\n50.2 keV",
+        fontsize = 16,
+        align = (:left, :top),
+        offset = (4, 0),
+    )
     Mke.vlines!(ax, [52.0, 63.31]; color = :steelblue, linestyle = :dash, linewidth = 1.5)
-    Mke.text!(ax, 63.31, 0.99; text = "Tb / Lu K-edges", fontsize = 16, align = (:left, :top), offset = (4, 0))
+    Mke.text!(
+        ax,
+        63.31,
+        0.99;
+        text = "Tb / Lu K-edges",
+        fontsize = 16,
+        align = (:left, :top),
+        offset = (4, 0),
+    )
 
     Mke.ylims!(ax, 0.55, 1.02)
     Mke.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
@@ -256,7 +290,9 @@ let s = scanner, constant = BS.SOMATOM_FORCE
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -270,7 +306,7 @@ let s = scanner, constant = BS.SOMATOM_FORCE
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
@@ -302,7 +338,7 @@ protocol_low = BS.CTProtocol(
     mA = 380.0,
     views = 1160,
     rotation_time = 0.5,
-    collimation_mm = 4.8,    # nominal beam width; axial cone guards are automatic
+    collimation_mm = 4.8, # nominal beam width; axial cone guards are automatic
     additional_filters = [("Ti", 0.9)],
 );
 
@@ -369,24 +405,39 @@ begin
     # Draw 0 is the noise-free expectation; draw r ≥ 1 gives each tube the seed `seed + 1000 (r − 1)`,
     # so the tubes stay independent within a draw, and draws of each other.
     EXPOSURES = [
-        (label = "100 kVp", protocol = protocol_low, seed = 1234, view_arc = 1.0, tube = :a),
-        (label = "Sn140 kVp", protocol = protocol_high, seed = 4321, view_arc = 1.0, tube = :b),
+        (
+            label = "100 kVp",
+            protocol = protocol_low,
+            seed = 1234,
+            view_arc = 1.0,
+            tube = :a,
+        ),
+        (
+            label = "Sn140 kVp",
+            protocol = protocol_high,
+            seed = 4321,
+            view_arc = 1.0,
+            tube = :b,
+        ),
     ]
     DE_DRAWS = (reference = 0, measured = 1, calibration = 9)
     realization_seed(e, r) = e.seed + 1000 * (max(r, 1) - 1)
-    opts_for(e, r) = with_option(with_option(with_option(force_opts, :seed, realization_seed(e, r)),
-        :use_noise, r > 0), :view_arc, e.view_arc)
+    opts_for(e, r) = with_option(
+        with_option(
+            with_option(force_opts, :seed, realization_seed(e, r)),
+            :use_noise,
+            r > 0,
+        ),
+        :view_arc,
+        e.view_arc,
+    )
 end;
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
 # Keep the intended centered 5 × 0.6 mm saved grid. The axial workspace
 # automatically adds symmetric detector guard rows so peripheral voxels
 # on both terminal slices retain measured cone-beam support.
-recon_opts = BS.ReconOptions(
-    matrix_size = (512, 512, 5),
-    fov_cm = 35.0,
-    z_cm = 0.30,
-);
+recon_opts = BS.ReconOptions(matrix_size = (512, 512, 5), fov_cm = 35.0, z_cm = 0.3);
 
 # ╔═╡ 09000006-0000-4000-8000-000000000030
 """
@@ -398,10 +449,16 @@ the detector actually integrates (centered ray, no bowtie).
 """
 function ufc_detected_spectrum(protocol)
     e, w = BS.resolve_source_spectrum_without_bowtie(
-        force_opts, protocol; scanner = scanner,
+        force_opts,
+        protocol;
+        scanner = scanner,
     )
-    t = BS.UFC_MC_EFFICIENCY_LUT                          # 1 keV grid: index = energy
-    eff(E) = (i = clamp(floor(Int, E), 1, 139); f = E - i; (1 - f) * t.efficiency[i] + f * t.efficiency[i + 1])
+    t = BS.UFC_MC_EFFICIENCY_LUT # 1 keV grid: index = energy
+    eff(E) = (
+        i = clamp(floor(Int, E), 1, 139);
+        f = E - i;
+        (1 - f) * t.efficiency[i] + f * t.efficiency[i + 1]
+    )
     return e, Float64.(w) .* e .* eff.(e)
 end;
 
@@ -419,9 +476,12 @@ let
         subtitle = "w(E) · E · η_UFC(E), normalized — Sn hardening on tube B",
         xlabel = "Energy (keV)",
         ylabel = "Relative Detected Signal",
-        titlesize = 32, subtitlesize = 24,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 18, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 24,
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 18,
+        yticklabelsize = 16,
     )
 
     for (label, prot, color) in specs
@@ -429,15 +489,19 @@ let
         wn = wη ./ sum(wη)
         mean_E = sum(e .* wn)
         Mke.lines!(
-            ax, Float64.(e), wn ./ maximum(wn);
-            color = color, linewidth = 3,
+            ax,
+            Float64.(e),
+            wn ./ maximum(wn);
+            color = color,
+            linewidth = 3,
             label = "$(label)  (mean $(round(mean_E, digits = 1)) keV)",
         )
     end
     Mke.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_detected_spectra.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -504,8 +568,15 @@ function acquire(draws)
             t = time()
             ws = BS.create_workspace(scanner, e.protocol, opts, recon_opts, ph)
             try
-                result = BS.simulate!(ws, ph, e.protocol, opts; report_dose = false,
-                    keep_projection = projection === nothing, projection)
+                result = BS.simulate!(
+                    ws,
+                    ph,
+                    e.protocol,
+                    opts;
+                    report_dose = false,
+                    keep_projection = projection === nothing,
+                    projection,
+                )
                 projection === nothing && (projection = result.projection)
                 channels[r] = Array(ws.sinogram)
                 if model === nothing
@@ -521,9 +592,16 @@ function acquire(draws)
     end
     GC.gc(true)
     basis = BS.spectral_basis_from_acquisitions(acquisitions = [p.basis for p in parts])
-    Dict(r => (draw = r, channels = [p.channels[r] for p in parts], basis = basis,
-               geom = first(parts).geom, seconds = [p.seconds[r] for p in parts])
-         for r in draws)
+    Dict(
+        r => (
+            draw = r,
+            channels = [p.channels[r] for p in parts],
+            basis = basis,
+            geom = first(parts).geom,
+            seconds = [p.seconds[r] for p in parts],
+        )
+        for r in draws
+    )
 end;
 
 # ╔═╡ 09000007-0000-4000-8000-000000000030
@@ -531,19 +609,27 @@ de_acq = acquire((DE_DRAWS.reference, DE_DRAWS.measured, DE_DRAWS.calibration));
 
 # ╔═╡ 09000007-0000-4000-8000-000000000035
 let
-    role = Dict(DE_DRAWS.reference => "noise-free reference", DE_DRAWS.measured => "measured",
-        DE_DRAWS.calibration => "calibration")
+    role = Dict(
+        DE_DRAWS.reference => "noise-free reference",
+        DE_DRAWS.measured => "measured",
+        DE_DRAWS.calibration => "calibration",
+    )
     seeds(r) = r == 0 ? "none" : join([realization_seed(e, r) for e in EXPOSURES], ", ")
     secs(v) = join([string(round(s, digits = 1)) for s in v], ", ")
-    rows = ["| $(r) | $(role[r]) | $(seeds(r)) | $(secs(de_acq[r].seconds)) |" for r in sort(collect(keys(de_acq)))]
-    Markdown.parse("""
+    rows = [
+        "| $(r) | $(role[r]) | $(seeds(r)) | $(secs(de_acq[r].seconds)) |"
+        for r in sort(collect(keys(de_acq)))
+    ]
+    Markdown.parse(
+        """
     | Draw | Role | Seeds (A, B) | Seconds (A, B) |
     |---:|---|---|---|
     $(join(rows, "\n"))
 
     Draw 0 projects each tube, $(VIEW_SAMPLES) sub-views per view; draws 1 and 9 re-use that projection
     and only draw their noise (wall time on this render, compilation included in the first call).
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 09000007-0000-4000-8000-000000000036
@@ -559,31 +645,34 @@ let
     slice_hi = permutedims(de_measured.channels[2][:, mid_r, :], (2, 1))
 
     all_v = vcat(vec(slice_lo), vec(slice_hi))
-    sino_window = (
-        Float64(quantile(all_v, 0.01)),
-        Float64(quantile(all_v, 0.99)),
-    )
+    sino_window = (Float64(quantile(all_v, 0.01)), Float64(quantile(all_v, 0.99)))
 
     fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 24,
+        xlabel = "View",
+        ylabel = "Detector Column",
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 16,
+        yticklabelsize = 16,
     )
 
-    panels = (
-        (1, 1, "100 kVp (tube A)", slice_lo),
-        (1, 2, "Sn140 kVp (tube B)", slice_hi),
-    )
+    panels = ((1, 1, "100 kVp (tube A)", slice_lo), (1, 2, "Sn140 kVp (tube B)", slice_hi))
 
     for (r, c, ttl, slice) in panels
         ax = Mke.Axis(fig[r, c]; title = ttl, axis_kwargs...)
         Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
     end
     Mke.Colorbar(
-        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
-        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18
+        fig[1, 3];
+        colormap = :viridis,
+        colorrange = sino_window,
+        label = "Log Line Integral",
+        width = 16,
+        labelsize = 22,
+        ticklabelsize = 18,
     )
     fig
 end
@@ -623,9 +712,12 @@ function ufc_bhc_calibration(protocol, geom)
     # resolve_source_spectrum_full folds bowtie AND the src UFC η(E)
     # (via the same build_physics_config the forward model used).
     e, ŵ = BS.resolve_source_spectrum_full(
-        force_opts, protocol; scanner = scanner, geom = geom,
+        force_opts,
+        protocol;
+        scanner = scanner,
+        geom = geom,
     )
-    e2, w_col = BS.bhc_spectrum_per_column(e, ŵ)          # [n_E, n_col]
+    e2, w_col = BS.bhc_spectrum_per_column(e, ŵ) # [n_E, n_col]
 
     # Single mono-equivalent target = mean energy of the η-folded mean spectrum
     w_mean = vec(sum(w_col; dims = 2)) ./ size(w_col, 2)
@@ -634,11 +726,12 @@ function ufc_bhc_calibration(protocol, geom)
     # Parameter-free water BHC from the custom UFC-η per-column spectrum — zero
     # segmentation thresholds (the two-material bone pass is deprecated:
     # its 450–600 HU window misclassified dense iodine as bone).
-    model = BS.calibrate_bhc_water(
-        e2, w_col;
-        reference_energy_keV = ref_E,
+    model = BS.calibrate_bhc_water(e2, w_col; reference_energy_keV = ref_E)
+    return (
+        model = model,
+        μ_water = model.μ_water_ref,
+        ref_E_keV = model.reference_energy_keV,
     )
-    return (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
 end;
 
 # ╔═╡ 09000008-0000-4000-8000-000000000008
@@ -662,7 +755,9 @@ function ufc_poly_recon(sino_cpu, geom, bhc)
     #  QA metric via measure_radial_cupping)
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc.μ_water))
 
-    ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
+    ws_fdk = nothing
+    sino_gpu = nothing
+    recon_μ = nothing
     GC.gc(true)
     return hu
 end;
@@ -701,7 +796,8 @@ poly_water_stats = let
     ERODE_PX = 12.0
     mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
     sw_bool = BS.erode_mask_2d(
-        mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER); erode_px = ERODE_PX,
+        mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER);
+        erode_px = ERODE_PX,
     )
     sw_idx = findall(sw_bool)
     n_z = size(hu_mixed, 3)
@@ -735,21 +831,24 @@ let
         (3, "Mixed M$(MIX_W_LOW)", hu_mixed),
     )
     for (c, ttl, vol) in panels
-        ax = Mke.Axis(
-            fig[1, c]; title = ttl,
-            aspect = Mke.DataAspect(), axis_kwargs...,
-        )
+        ax = Mke.Axis(fig[1, c]; title = ttl, aspect = Mke.DataAspect(), axis_kwargs...)
         Mke.heatmap!(ax, vol[:, :, mid]; colormap = :grays, colorrange = HU_window)
         Mke.hidedecorations!(ax)
     end
     Mke.Colorbar(
-        fig[1, 4]; colormap = :grays, colorrange = HU_window,
-        label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
+        fig[1, 4];
+        colormap = :grays,
+        colorrange = HU_window,
+        label = "HU",
+        width = 16,
+        labelsize = 22,
+        ticklabelsize = 18,
     )
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_poly_recon.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -786,13 +885,11 @@ let
         title = "Eroded Water Region",
         subtitle = "Overlaid on mixed image",
         aspect = Mke.DataAspect(),
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32,
+        subtitlesize = 24,
     )
     Mke.heatmap!(ax1, hu_mixed[:, :, mid]; colormap = :grays, colorrange = HU_window)
-    Mke.heatmap!(
-        ax1, overlay; colormap = :reds, alpha = 0.5,
-        nan_color = (:white, 0.0),
-    )
+    Mke.heatmap!(ax1, overlay; colormap = :reds, alpha = 0.5, nan_color = (:white, 0.0))
     Mke.hidedecorations!(ax1)
 
     # ─── Right panel — water ⟨HU⟩ ± σ per poly readout ───────────────────
@@ -801,25 +898,29 @@ let
         fig[1, 2];
         title = "Poly Water HU",
         subtitle = "Solid-water ROI, mean ± σ",
-        xlabel = "Reconstruction", ylabel = "HU",
+        xlabel = "Reconstruction",
+        ylabel = "HU",
         xticks = (collect(1:n), [e[1] for e in entries]),
-        titlesize = 32, subtitlesize = 24,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 18, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 24,
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 18,
+        yticklabelsize = 16,
     )
-    Mke.barplot!(
-        ax2, 1:n, means;
-        color = bar_colors, strokecolor = :black, strokewidth = 1,
-    )
+    Mke.barplot!(ax2, 1:n, means; color = bar_colors, strokecolor = :black, strokewidth = 1)
     Mke.errorbars!(ax2, 1:n, means, stds; color = :black, whiskerwidth = 14, linewidth = 2)
     Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
     for (k, (m, s)) in enumerate(zip(means, stds))
         Mke.text!(
-            ax2, k, m + s;
+            ax2,
+            k,
+            m + s;
             text = "$(round(m, digits = 1)) ± $(round(s, digits = 1)) HU",
             align = (:center, :bottom),
-            fontsize = 16, offset = (0, 6),
+            fontsize = 16,
+            offset = (0, 6),
         )
     end
 
@@ -828,7 +929,8 @@ let
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_poly_water_values.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -851,12 +953,14 @@ is involved, and the noise-free, measured and calibration draws all share it.
 basis = de_measured.basis;
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000015
-Markdown.parse("""
+Markdown.parse(
+    """
 The basis holds $(basis.n_channels) channels on a $(length(basis.E))-point
 energy grid for $(size(basis.Φ, 1)) × $(size(basis.Φ, 2)) rays; the response
 sums to the air counts to within $(round(basis.I0_relerr, sigdigits = 2))
 (relative).
-""")
+""",
+)
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000001
 md"""
@@ -914,7 +1018,12 @@ are then reconstructed alike.
 HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000006
-VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
+VMI_CHAIN = (
+    method = :nchannel,
+    controls = BS.NChannelControls(),
+    use_tlbf = false,
+    antialias = true,
+);
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000007
 # One window for the composite and its complement alike: no fitted Force pair exists (see above).
@@ -923,14 +1032,32 @@ FORCE_FILTER = BS.SoftFilter();
 # ╔═╡ 0900000b-0000-4000-8000-000000000008
 # `pair_basis` and `composite_energy` (basis-spectral-denoising's `PAIR_BASIS`), from the calibration draw
 calibration = let a = de_acq[DE_DRAWS.calibration]
-    decompose(denoiser) = BS.vmi_pipeline(; channels = a.channels, basis = a.basis, geom = a.geom,
-        to_backend = to_gpu, matrix_size = recon_opts.matrix_size, vmi_energies = Tuple(de_vmi_energies),
-        denoiser, keep_sinograms = true, VMI_CHAIN..., use_acnr = false).sinograms
-    sp(d; kw...) = BS.spectral_pair(d.water, d.iodine, a.geom, recon_opts.matrix_size;
-        filter = BS.SoftFilter(), antialias = VMI_CHAIN.antialias, to_backend = to_gpu, kw...)
-    x = sp(decompose(nothing))                                   # the plain decomposition
-    c = sp(decompose(BS.SpectralHYPR(image = nothing));          # after the projection HYPR
-        basis = (Estar = x.Estar, β = x.β))
+    decompose(denoiser) = BS.vmi_pipeline(;
+        channels = a.channels,
+        basis = a.basis,
+        geom = a.geom,
+        to_backend = to_gpu,
+        matrix_size = recon_opts.matrix_size,
+        vmi_energies = Tuple(de_vmi_energies),
+        denoiser,
+        keep_sinograms = true,
+        VMI_CHAIN...,
+        use_acnr = false,
+    ).sinograms
+    sp(d; kw...) = BS.spectral_pair(
+        d.water,
+        d.iodine,
+        a.geom,
+        recon_opts.matrix_size;
+        filter = BS.SoftFilter(),
+        antialias = VMI_CHAIN.antialias,
+        to_backend = to_gpu,
+        kw...,
+    )
+    x = sp(decompose(nothing)) # the plain decomposition
+    c = sp(decompose(BS.SpectralHYPR(image = nothing)); # after the projection HYPR
+        basis = (Estar = x.Estar, β = x.β)
+    )
     (pair_basis = (Estar = x.Estar, β = x.β), composite_energy = c.Estar)
 end;
 
@@ -956,13 +1083,23 @@ de_vmi = BS.vmi_pipeline(;
 # ╔═╡ 0900000b-0000-4000-8000-000000000011
 # The same draw and reconstruction without the denoising (no HYPR, no ACNR), and the noise-free
 # reference (draw 0, the same projection), reconstructed alike.
-de_none, de_ref = (BS.vmi_pipeline(;
-        channels = de_acq[r].channels, basis, geom = de_measured.geom, to_backend = to_gpu,
-        matrix_size = recon_opts.matrix_size, vmi_energies = Tuple(de_vmi_energies),
-        denoiser = nothing, use_acnr = false, fbp_filter = FORCE_FILTER,
-        pair_basis = calibration.pair_basis, composite_energy = calibration.composite_energy,
+de_none, de_ref = (
+    BS.vmi_pipeline(;
+        channels = de_acq[r].channels,
+        basis,
+        geom = de_measured.geom,
+        to_backend = to_gpu,
+        matrix_size = recon_opts.matrix_size,
+        vmi_energies = Tuple(de_vmi_energies),
+        denoiser = nothing,
+        use_acnr = false,
+        fbp_filter = FORCE_FILTER,
+        pair_basis = calibration.pair_basis,
+        composite_energy = calibration.composite_energy,
         VMI_CHAIN...,
-    ) for r in (DE_DRAWS.measured, DE_DRAWS.reference));
+    )
+    for r in (DE_DRAWS.measured, DE_DRAWS.reference)
+);
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000015
 let
@@ -970,7 +1107,8 @@ let
     d = de_vmi.settings.denoiser
     pct(x) = round(100x, digits = 3)
     pb = calibration.pair_basis
-    Markdown.parse("""
+    Markdown.parse(
+        """
     The decomposition solved $(q.n_rays) rays in $(round(de_vmi.elapsed_s, digits = 1)) s
     with $(round(q.outer_mean, digits = 1)) outer iterations on average; $(pct(q.frac_not_converged))% did not
     converge and $(pct(q.frac_bound_iodine))% / $(pct(q.frac_bound_water))% touched the iodine / water bounds.
@@ -981,7 +1119,8 @@ let
     β = $(round(pb.β, sigdigits = 3)), and the composite ACNR and the image HYPR act on at
     $(round(calibration.composite_energy, digits = 1)) keV. The image HYPR pooled the complement over a
     $(d.image_estimates.window) × $(d.image_estimates.window) window.
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000040
@@ -991,16 +1130,17 @@ let
 
     fig = Mke.Figure(size = (1400, 580))
     axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 24,
+        xlabel = "View",
+        ylabel = "Detector Column",
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 16,
+        yticklabelsize = 16,
     )
 
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
+    _qrange(arr) = (Float64(quantile(vec(arr), 0.01)), Float64(quantile(vec(arr), 0.99)))
 
     slice_iod = permutedims(de_vmi.sinograms.iodine[:, mid_r, :], (2, 1))
     slice_wat = permutedims(de_vmi.sinograms.water[:, mid_r, :], (2, 1))
@@ -1014,8 +1154,13 @@ let
         ax = Mke.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
         Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
         Mke.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
+            fig[r, cbar_c];
+            colormap = :viridis,
+            colorrange = range,
+            label = cbar_label,
+            width = 16,
+            labelsize = 22,
+            ticklabelsize = 18,
         )
     end
     fig
@@ -1028,10 +1173,7 @@ let
 
     mid = size(de_vmi.images.iodine, 3) ÷ 2 + 1
 
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
+    _qrange(arr) = (Float64(quantile(vec(arr), 0.01)), Float64(quantile(vec(arr), 0.99)))
 
     slice_iod = de_vmi.images.iodine[:, :, mid]
     slice_wat = de_vmi.images.water[:, :, mid]
@@ -1043,14 +1185,21 @@ let
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
         ax = Mke.Axis(
-            fig[r, panel_c]; title = ttl,
-            aspect = Mke.DataAspect(), axis_kwargs...
+            fig[r, panel_c];
+            title = ttl,
+            aspect = Mke.DataAspect(),
+            axis_kwargs...,
         )
         Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
         Mke.hidedecorations!(ax)
         Mke.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
+            fig[r, cbar_c];
+            colormap = :viridis,
+            colorrange = range,
+            label = cbar_label,
+            width = 16,
+            labelsize = 22,
+            ticklabelsize = 18,
         )
     end
     fig
@@ -1082,11 +1231,13 @@ solid_water_basis = let
     sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
     sw_bool = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
 
-    n_raw = count(sw_bool_raw); n_eroded = count(sw_bool)
-    n_eroded == 0 && error(
-        "solid_water_basis: deep erosion (σ = $(ERODE_PX) px) wiped out the SW " *
-            "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask."
-    )
+    n_raw = count(sw_bool_raw)
+    n_eroded = count(sw_bool)
+    n_eroded == 0 &&
+        error(
+            "solid_water_basis: deep erosion (σ = $(ERODE_PX) px) wiped out the SW " *
+                "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask.",
+        )
 
     sw_idx = findall(sw_bool)
     _mean(vol) = mean(vol[ci, z] for z in axes(vol, 3) for ci in sw_idx)
@@ -1097,7 +1248,9 @@ solid_water_basis = let
         "⟨c_iodine⟩_SW = $(round(1000c_i, digits = 3)) mg/mL"
 
     (
-        c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * size(de_vmi.images.water, 3),
+        c_water = c_w,
+        c_iodine = c_i,
+        n_voxels = length(sw_idx) * size(de_vmi.images.water, 3),
         mask_2d = collect(sw_bool),
     )
 end;
@@ -1105,36 +1258,53 @@ end;
 # ╔═╡ 0900000c-0000-4000-8000-000000000020
 # The VMI stack as one volume per energy (keV → (nx, ny, nz) HU).
 vmi_HU_final = Dict(
-    Float64(E) => de_vmi.vmis[:, :, :, k] for (k, E) in pairs(de_vmi.energies)
+    Float64(E) => de_vmi.vmis[:, :, :, k]
+    for (k, E) in pairs(de_vmi.energies)
 );
 
 # ╔═╡ 0900000c-0000-4000-8000-000000000040
 let
     HU_window = (-200, 500)
     mid = size(de_vmi.vmis, 3) ÷ 2 + 1
-    runs = (("No denoising", de_none), ("SpectralHYPR", de_vmi), ("Noise-free reference", de_ref))
+    runs = (
+        ("No denoising", de_none),
+        ("SpectralHYPR", de_vmi),
+        ("Noise-free reference", de_ref),
+    )
 
     fig = Mke.Figure(size = (1500, 1150))
     for (r, (label, run)) in enumerate(runs)
         Mke.Label(fig[r, 1], label; rotation = π / 2, fontsize = 26, tellheight = false)
         for (c, E) in enumerate(de_vmi_energies)
             ax = Mke.Axis(
-                fig[r, c + 1]; title = r == 1 ? "$(Int(E)) keV" : "",
-                aspect = Mke.DataAspect(), titlesize = 30,
+                fig[r, c + 1];
+                title = r == 1 ? "$(Int(E)) keV" : "",
+                aspect = Mke.DataAspect(),
+                titlesize = 30,
             )
-            Mke.heatmap!(ax, run.vmis[:, :, mid, c]; colormap = :grays, colorrange = HU_window)
+            Mke.heatmap!(
+                ax,
+                run.vmis[:, :, mid, c];
+                colormap = :grays,
+                colorrange = HU_window,
+            )
             Mke.hidedecorations!(ax)
         end
     end
     Mke.Colorbar(
         fig[1:3, length(de_vmi_energies) + 2];
-        colormap = :grays, colorrange = HU_window,
-        label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
+        colormap = :grays,
+        colorrange = HU_window,
+        label = "HU",
+        width = 16,
+        labelsize = 22,
+        ticklabelsize = 18,
     )
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_grid.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -1160,8 +1330,24 @@ ROD_LABELS = (
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000020
 ROD_NAMES = (
-    Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
-    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
+    Ca = (
+        "50 mg/mL",
+        "100 mg/mL",
+        "200 mg/mL",
+        "300 mg/mL",
+        "400 mg/mL",
+        "500 mg/mL",
+        "600 mg/mL",
+    ),
+    I = (
+        "2.0 mg/mL",
+        "2.5 mg/mL",
+        "5.0 mg/mL",
+        "7.5 mg/mL",
+        "10.0 mg/mL",
+        "15.0 mg/mL",
+        "20.0 mg/mL",
+    ),
 );
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000030
@@ -1195,12 +1381,12 @@ rod_data = let
 
     rod_rois = Dict(
         lab => rod_roi_mask(lab)
-            for lab in vcat(collect(ROD_LABELS.Ca), collect(ROD_LABELS.I))
+        for lab in vcat(collect(ROD_LABELS.Ca), collect(ROD_LABELS.I))
     )
 
     μ_water_E = Dict(
         E => BS.compute_μ_at_energy(BS.XA.Materials.water, E)
-            for E in de_vmi_energies
+        for E in de_vmi_energies
     )
 
     function theoretical_hu(material, E::Float64)
@@ -1210,9 +1396,11 @@ rod_data = let
 
     function measured_hu(vmi_vol, label::UInt8)
         roi = rod_rois[label]
-        s = 0.0; n = 0
-        for z in 1:size(vmi_vol, 3), ci in roi
-            s += vmi_vol[ci, z]; n += 1
+        s = 0.0
+        n = 0
+        for z in axes(vmi_vol, 3), ci in roi
+            s += vmi_vol[ci, z]
+            n += 1
         end
         return s / n
     end
@@ -1225,15 +1413,17 @@ rod_data = let
         meas = zeros(Float64, n_rods, n_E)
         theo = zeros(Float64, n_rods, n_E)
         for (i, lab) in pairs(labels)
-            mat = materials[Int(lab) + 1]   # mask_value + 1
+            mat = materials[Int(lab) + 1] # mask_value + 1
             for (j, E) in pairs(de_vmi_energies)
                 meas[i, j] = measured_hu(vmi_HU_final[E], lab)
                 theo[i, j] = theoretical_hu(mat, E)
             end
         end
         out[group] = (
-            labels = labels, names = ROD_NAMES[group],
-            measured = meas, theoretical = theo,
+            labels = labels,
+            names = ROD_NAMES[group],
+            measured = meas,
+            theoretical = theo,
         )
     end
     out
@@ -1259,27 +1449,29 @@ let
         title = "Eroded Water Region",
         subtitle = "Overlaid on 70 keV VMI",
         aspect = Mke.DataAspect(),
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32,
+        subtitlesize = 24,
     )
     Mke.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
-    Mke.heatmap!(
-        ax1, overlay;
-        colormap = :reds, alpha = 0.5,
-        nan_color = (:white, 0.0),
-    )
+    Mke.heatmap!(ax1, overlay; colormap = :reds, alpha = 0.5, nan_color = (:white, 0.0))
     Mke.hidedecorations!(ax1)
 
     sw_idx = findall(solid_water_basis.mask_2d)
     n_z = size(vmi_HU_final[70.0], 3)
     function _mean_hu(vol)
-        s = 0.0; n = 0
+        s = 0.0
+        n = 0
         for z in 1:n_z, ci in sw_idx
-            s += vol[ci, z]; n += 1
+            s += vol[ci, z]
+            n += 1
         end
         return s / n
     end
     sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in de_vmi_energies]
-    ref_hu_per_keV = [_mean_hu(view(de_ref.vmis, :, :, :, k)) for k in eachindex(de_vmi_energies)]
+    ref_hu_per_keV = [
+        _mean_hu(view(de_ref.vmis, :, :, :, k))
+        for k in eachindex(de_vmi_energies)
+    ]
 
     n_E = length(de_vmi_energies)
     bar_colors = [Mke.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
@@ -1288,18 +1480,32 @@ let
         fig[1, 2];
         title = "Water Region Mean HU",
         subtitle = "SpectralHYPR (bars) vs noise-free reference (◆)",
-        xlabel = "VMI Energy (keV)", ylabel = "HU",
+        xlabel = "VMI Energy (keV)",
+        ylabel = "HU",
         xticks = (collect(1:n_E), ["$(Int(E))" for E in de_vmi_energies]),
-        titlesize = 32, subtitlesize = 22,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 18, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 22,
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 18,
+        yticklabelsize = 16,
     )
     Mke.barplot!(
-        ax2, 1:n_E, sw_hu_per_keV;
+        ax2,
+        1:n_E,
+        sw_hu_per_keV;
         color = bar_colors,
-        strokecolor = :black, strokewidth = 1,
+        strokecolor = :black,
+        strokewidth = 1,
     )
-    Mke.scatter!(ax2, 1:n_E, ref_hu_per_keV; color = :black, marker = :diamond, markersize = 18)
+    Mke.scatter!(
+        ax2,
+        1:n_E,
+        ref_hu_per_keV;
+        color = :black,
+        marker = :diamond,
+        markersize = 18,
+    )
     Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
     y_max = max(15.0, 1.2 * maximum(abs, vcat(sw_hu_per_keV, ref_hu_per_keV)))
@@ -1307,15 +1513,19 @@ let
     # the values, above the bars and clear of the reference markers
     for (k, (h, r)) in enumerate(zip(sw_hu_per_keV, ref_hu_per_keV))
         Mke.text!(
-            ax2, k, 0.6 * y_max;
+            ax2,
+            k,
+            0.6 * y_max;
             text = "$(round(h, digits = 1)) HU\nref $(round(r, digits = 1))",
-            align = (:center, :center), fontsize = 16,
+            align = (:center, :center),
+            fontsize = 16,
         )
     end
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_roi.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -1331,7 +1541,7 @@ mixed in.  The same draw without the denoising shows what the chain removes.
 """
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000065
-const WATER_NOISE_ROI_RADIUS_PX = 12;   # ≈8.2 mm at 0.683 mm/px
+const WATER_NOISE_ROI_RADIUS_PX = 12; # ≈8.2 mm at 0.683 mm/px
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000070
 water_noise_roi = let
@@ -1350,8 +1560,10 @@ water_noise_roi = let
         "$(n_vox) vx × $(nz_r) z = $(n_vox * nz_r) total"
 
     (
-        center_xy = (Float64(cx), Float64(cy)), mask_2d = roi_bool,
-        n_voxels = n_vox, n_total = n_vox * nz_r,
+        center_xy = (Float64(cx), Float64(cy)),
+        mask_2d = roi_bool,
+        n_voxels = n_vox,
+        n_total = n_vox * nz_r,
     )
 end;
 
@@ -1364,8 +1576,13 @@ vmi_noise_by_keV = let
     out = Dict{Float64, NamedTuple}()
     for (k, E) in enumerate(de_vmi_energies)
         p, n, r = vals(de_vmi, k), vals(de_none, k), vals(de_ref, k)
-        out[E] = (mean = mean(p), reference = mean(r), std = std(p .- r), std_none = std(n .- r),
-            n = length(p))
+        out[E] = (
+            mean = mean(p),
+            reference = mean(r),
+            std = std(p .- r),
+            std_none = std(n .- r),
+            n = length(p),
+        )
         @info "water ROI @ $(Int(E)) keV: ⟨HU⟩ = $(round(mean(p), digits = 2)) " *
             "(reference $(round(mean(r), digits = 2))), σ = $(round(std(p .- r), digits = 2)) HU " *
             "(no denoising $(round(std(n .- r), digits = 2)) HU, n = $(length(p)))"
@@ -1388,13 +1605,11 @@ let
         title = "Water-Region Noise ROI",
         subtitle = "Overlaid on 70 keV VMI",
         aspect = Mke.DataAspect(),
-        titlesize = 32, subtitlesize = 24,
+        titlesize = 32,
+        subtitlesize = 24,
     )
     Mke.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
-    Mke.heatmap!(
-        ax1, overlay; colormap = :reds, alpha = 0.5,
-        nan_color = (:white, 0.0),
-    )
+    Mke.heatmap!(ax1, overlay; colormap = :reds, alpha = 0.5, nan_color = (:white, 0.0))
     Mke.hidedecorations!(ax1)
 
     Es = sort(collect(keys(vmi_noise_by_keV)))
@@ -1407,21 +1622,54 @@ let
         subtitle = "σ of (VMI − noise-free reference)",
         xlabel = "VMI Energy (keV)",
         ylabel = "Noise σ (HU)",
-        titlesize = 32, subtitlesize = 22,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 18, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 22,
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 18,
+        yticklabelsize = 16,
     )
-    Mke.scatterlines!(ax2, Es, σn; color = :gray45, markersize = 14, linewidth = 2.5,
-        linestyle = :dash, label = "No denoising")
-    Mke.scatterlines!(ax2, Es, σs; color = :tomato, markersize = 18, linewidth = 3,
-        label = "SpectralHYPR")
+    Mke.scatterlines!(
+        ax2,
+        Es,
+        σn;
+        color = :gray45,
+        markersize = 14,
+        linewidth = 2.5,
+        linestyle = :dash,
+        label = "No denoising",
+    )
+    Mke.scatterlines!(
+        ax2,
+        Es,
+        σs;
+        color = :tomato,
+        markersize = 18,
+        linewidth = 3,
+        label = "SpectralHYPR",
+    )
     for (E, σ) in zip(Es, σs)
-        Mke.text!(ax2, E, σ; text = "$(round(σ; digits = 1))", align = (:center, :top),
-            fontsize = 16, offset = (0, -12))
+        Mke.text!(
+            ax2,
+            E,
+            σ;
+            text = "$(round(σ; digits = 1))",
+            align = (:center, :top),
+            fontsize = 16,
+            offset = (0, -12),
+        )
     end
     for (E, σ) in zip(Es, σn)
-        Mke.text!(ax2, E, σ; text = "$(round(σ; digits = 1))", align = (:center, :bottom),
-            fontsize = 16, offset = (0, 10), color = :gray35)
+        Mke.text!(
+            ax2,
+            E,
+            σ;
+            text = "$(round(σ; digits = 1))",
+            align = (:center, :bottom),
+            fontsize = 16,
+            offset = (0, 10),
+            color = :gray35,
+        )
     end
     Mke.xlims!(ax2, first(Es) - 15, last(Es) + 15)
     Mke.ylims!(ax2, 0, 1.25 * maximum(σn))
@@ -1429,7 +1677,8 @@ let
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_noise.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -1448,14 +1697,18 @@ let
 
     panels = (
         (
-            group = :Ca, title = "Calcium rods",
+            group = :Ca,
+            title = "Calcium rods",
             subtitle = "50–600 mg/mL",
-            cmap = cmap_ca, ylim = (0, 4200),
+            cmap = cmap_ca,
+            ylim = (0, 4200),
         ),
         (
-            group = :I, title = "Iodine rods",
+            group = :I,
+            title = "Iodine rods",
             subtitle = "2–20 mg/mL",
-            cmap = cmap_i, ylim = (0, 1500),
+            cmap = cmap_i,
+            ylim = (0, 1500),
         ),
     )
 
@@ -1467,9 +1720,12 @@ let
             xlabel = "VMI energy (keV)",
             ylabel = "HU",
             xticks = de_vmi_energies,
-            titlesize = 32, subtitlesize = 24,
-            xlabelsize = 22, ylabelsize = 22,
-            xticklabelsize = 18, yticklabelsize = 16,
+            titlesize = 32,
+            subtitlesize = 24,
+            xlabelsize = 22,
+            ylabelsize = 22,
+            xticklabelsize = 18,
+            yticklabelsize = 16,
         )
         Mke.ylims!(ax, p.ylim...)
 
@@ -1478,35 +1734,48 @@ let
         for i in eachindex(d.names)
             color = p.cmap[i]
             Mke.scatterlines!(
-                ax, de_vmi_energies, vec(d.measured[i, :]);
-                color = color, linewidth = 2.5, markersize = 9,
+                ax,
+                de_vmi_energies,
+                vec(d.measured[i, :]);
+                color = color,
+                linewidth = 2.5,
+                markersize = 9,
             )
             Mke.lines!(
-                ax, de_vmi_energies, vec(d.theoretical[i, :]);
-                color = color, linewidth = 1.6, linestyle = :dash,
+                ax,
+                de_vmi_energies,
+                vec(d.theoretical[i, :]);
+                color = color,
+                linewidth = 1.6,
+                linestyle = :dash,
             )
             rod_lines[i] = Mke.LineElement(color = color, linewidth = 2.5)
         end
 
         style_meas = Mke.MarkerElement(
-            color = :black, marker = :circle, markersize = 9,
-            strokecolor = :black, strokewidth = 1,
+            color = :black,
+            marker = :circle,
+            markersize = 9,
+            strokecolor = :black,
+            strokewidth = 1,
         )
-        style_theo = Mke.LineElement(
-            color = :black, linewidth = 1.6, linestyle = :dash,
-        )
+        style_theo = Mke.LineElement(color = :black, linewidth = 1.6, linestyle = :dash)
         Mke.axislegend(
             ax,
             vcat([style_meas, style_theo], rod_lines),
             vcat(["Measured", "Theoretical"], collect(d.names));
-            position = :rt, framevisible = true, labelsize = 18,
-            rowgap = 1, padding = (6, 6, 6, 6),
+            position = :rt,
+            framevisible = true,
+            labelsize = 18,
+            rowgap = 1,
+            padding = (6, 6, 6, 6),
         )
     end
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_vs_theoretical.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end
@@ -1528,23 +1797,21 @@ let
     )
 
     function fit_lr(x::Vector{Float64}, y::Vector{Float64})
-        x̄ = mean(x); ȳ = mean(y)
-        sxx = sum((x .- x̄) .^ 2)
+        x̄ = mean(x)
+        ȳ = mean(y)
+        sxx = sum((x .- x̄).^2)
         sxy = sum((x .- x̄) .* (y .- ȳ))
         β = sxy / sxx
         α = ȳ - β * x̄
         ŷ = α .+ β .* x
-        ss_res = sum((y .- ŷ) .^ 2)
-        ss_tot = sum((y .- ȳ) .^ 2)
+        ss_res = sum((y .- ŷ).^2)
+        ss_tot = sum((y .- ȳ).^2)
         r² = 1 - ss_res / ss_tot
         rmse = sqrt(ss_res / length(y))
         return (slope = β, intercept = α, r² = r², rmse = rmse)
     end
 
-    panels = (
-        (:Ca, "Calcium Rods", "50–600 mg/mL"),
-        (:I, "Iodine Rods", "2–20 mg/mL"),
-    )
+    panels = ((:Ca, "Calcium Rods", "50–600 mg/mL"), (:I, "Iodine Rods", "2–20 mg/mL"))
 
     for (row, (group, title, subtitle)) in pairs(panels)
         d = rod_data[group]
@@ -1554,16 +1821,23 @@ let
             subtitle = subtitle,
             xlabel = "Theoretical HU",
             ylabel = "Measured HU",
-            titlesize = 32, subtitlesize = 24,
-            xlabelsize = 22, ylabelsize = 22,
-            xticklabelsize = 16, yticklabelsize = 16,
+            titlesize = 32,
+            subtitlesize = 24,
+            xlabelsize = 22,
+            ylabelsize = 22,
+            xticklabelsize = 16,
+            yticklabelsize = 16,
         )
 
         lim_lo = min(0.0, minimum(d.measured), minimum(d.theoretical))
         lim_hi = max(maximum(d.measured), maximum(d.theoretical)) * 1.05
         Mke.lines!(
-            ax, [lim_lo, lim_hi], [lim_lo, lim_hi];
-            color = :black, linestyle = :dash, linewidth = 2,
+            ax,
+            [lim_lo, lim_hi],
+            [lim_lo, lim_hi];
+            color = :black,
+            linestyle = :dash,
+            linewidth = 2,
             label = "Unity (y = x)",
         )
 
@@ -1581,21 +1855,23 @@ let
                 "$(sign_str) $(round(abs(f.intercept), digits = 0)) HU   " *
                 "R² = $(round(f.r², digits = 3))   " *
                 "RMSE = $(round(f.rmse, digits = 1)) HU"
-            Mke.lines!(
-                ax, xrange, yrange;
-                color = color, linewidth = 2, label = label,
-            )
+            Mke.lines!(ax, xrange, yrange; color = color, linewidth = 2, label = label)
         end
 
         Mke.axislegend(
-            ax; position = :rb, framevisible = true,
-            labelsize = 16, padding = (6, 6, 6, 6), rowgap = 1,
+            ax;
+            position = :rb,
+            framevisible = true,
+            labelsize = 16,
+            padding = (6, 6, 6, 6),
+            rowgap = 1,
         )
     end
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_regression.png"),
-        fig; px_per_unit = 2,
+        fig;
+        px_per_unit = 2,
     )
     fig
 end

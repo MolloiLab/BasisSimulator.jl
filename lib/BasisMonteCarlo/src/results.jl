@@ -87,15 +87,15 @@ The first call in a Julia session starts Geant4 (a few seconds) and fixes `physi
 session.
 """
 function simulate_monoenergetic(
-        detector::AbstractDetector,
-        energy_keV::Real;
-        n::Integer = 100_000,
-        beam::Beam = PencilBeam(),
-        physics::PhysicsSettings = PhysicsSettings(),
-        seed::Integer = 1,
-        record_deposits::Bool = false,
-        record_vertices::Bool = false,
-    )
+    detector::AbstractDetector,
+    energy_keV::Real;
+    n::Integer = 100_000,
+    beam::Beam = PencilBeam(),
+    physics::PhysicsSettings = PhysicsSettings(),
+    seed::Integer = 1,
+    record_deposits::Bool = false,
+    record_vertices::Bool = false,
+)
     e = engine(detector, physics)
     set_beam!(e, energy_keV, beam, seed)
     return run_photons(
@@ -112,8 +112,22 @@ function simulate_monoenergetic(
 end
 
 """Fire `n` photons with the beam already set, and collect the run's records."""
-function run_photons(e, detector, energy_keV, n, beam, physics, seed, record_deposits, record_vertices = false)
-    d = reset!(getSIMdata(e.app); recording_deposits = record_deposits, recording_vertices = record_vertices)
+function run_photons(
+    e,
+    detector,
+    energy_keV,
+    n,
+    beam,
+    physics,
+    seed,
+    record_deposits,
+    record_vertices = false,
+)
+    d = reset!(
+        getSIMdata(e.app);
+        recording_deposits = record_deposits,
+        recording_vertices = record_vertices,
+    )
     beamOn(e.app, Int(n))
 
     escapes = (
@@ -149,8 +163,11 @@ function run_photons(e, detector, energy_keV, n, beam, physics, seed, record_dep
 end
 
 # Several energies: one run each, spread over the workers of `start_workers` when there are any
-simulate_monoenergetic(detector::AbstractDetector, energies::AbstractVector; kw...) =
-    simulate_sweep([(detector, E) for E in energies]; kw...)
+simulate_monoenergetic(
+    detector::AbstractDetector,
+    energies::AbstractVector;
+    kw...,
+) = simulate_sweep([(detector, E) for E in energies]; kw...)
 
 """
     TrackRecord
@@ -175,10 +192,13 @@ doing: where photons interact, which way they scatter, where the fluorescence go
 photon; meant for tens of photons, not thousands.
 """
 function record_tracks(
-        detector::AbstractDetector, energy_keV::Real; n::Integer = 30,
-        beam::Beam = PencilBeam(),
-        physics::PhysicsSettings = PhysicsSettings(), seed::Integer = 1
-    )
+    detector::AbstractDetector,
+    energy_keV::Real;
+    n::Integer = 30,
+    beam::Beam = PencilBeam(),
+    physics::PhysicsSettings = PhysicsSettings(),
+    seed::Integer = 1,
+)
     e = engine(detector, physics)
     set_beam!(e, energy_keV, beam, seed)
     d = reset!(getSIMdata(e.app); recording = true)
@@ -209,8 +229,11 @@ detector's detection probability with that threshold. With the default threshold
 slightly below [`interaction_probability`](@ref): a photon that only Rayleigh-scatters out
 deposits nothing.
 """
-quantum_efficiency(r::MonoenergeticRun; threshold_keV::Real = 0) =
-    count(>(threshold_keV), r.edep_keV) / r.n
+quantum_efficiency(r::MonoenergeticRun; threshold_keV::Real = 0) = count(
+    >(threshold_keV),
+    r.edep_keV,
+) /
+    r.n
 
 """
     energy_absorption_efficiency(run)
@@ -242,8 +265,11 @@ end
 
 Fraction of photons that left their full energy (within `tolerance_keV`) in the detector.
 """
-photopeak_fraction(r::MonoenergeticRun; tolerance_keV::Real = 0.5) =
-    count(>=(r.energy_keV - tolerance_keV), r.edep_keV) / r.n
+photopeak_fraction(r::MonoenergeticRun; tolerance_keV::Real = 0.5) = count(
+    >=(r.energy_keV - tolerance_keV),
+    r.edep_keV,
+) /
+    r.n
 
 """
     absorbed_energy_spectrum(run; bin_keV = 0.5) -> (; energy_keV, density)
@@ -271,9 +297,11 @@ per incident photon per keV. `backward = true` keeps only those leaving against 
 `false` only those leaving with it, `nothing` both.
 """
 function escape_spectrum(
-        r::MonoenergeticRun; kind::Symbol = :fluorescence, backward = nothing,
-        bin_keV::Real = 0.5
-    )
+    r::MonoenergeticRun;
+    kind::Symbol = :fluorescence,
+    backward = nothing,
+    bin_keV::Real = 0.5,
+)
     nbins = ceil(Int, r.energy_keV / bin_keV) + 1
     counts = zeros(Int, nbins)
     for i in eachindex(r.escapes.kind)
@@ -298,17 +326,18 @@ the absorbed-energy spectrum sits at the photon energy minus one of these lines.
 energy.
 """
 function fluorescence_lines(
-        r::MonoenergeticRun;
-        min_fraction::Real = 0.02,
-        width_keV::Real = 0.4,
-    )
+    r::MonoenergeticRun;
+    min_fraction::Real = 0.02,
+    width_keV::Real = 0.4,
+)
     T = NamedTuple{
         (:energy_keV, :element, :line, :fraction),
         Tuple{Float64, String, String, Float64},
     }
     remaining = Float64[
-        r.escapes.energy_keV[i] for i in eachindex(r.escapes.kind)
-            if r.escapes.kind[i] === :fluorescence
+        r.escapes.energy_keV[i]
+        for i in eachindex(r.escapes.kind)
+        if r.escapes.kind[i] === :fluorescence
     ]
     total = length(remaining)
     edges = k_edges(r.detector.material)

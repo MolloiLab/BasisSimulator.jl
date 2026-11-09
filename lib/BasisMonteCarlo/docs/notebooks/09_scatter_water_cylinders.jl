@@ -61,7 +61,10 @@ let
             color = (PALETTE.photon, 0.35),
         )
     end
-    arc = [Mke.Point2f(sdd * sind(a), sdd * cosd(a)) for a in range(-fan / 2, fan / 2; length = 100)]
+    arc = [
+        Mke.Point2f(sdd * sind(a), sdd * cosd(a))
+        for a in range(-fan / 2, fan / 2; length = 100)
+    ]
     Mke.lines!(ax, arc; color = PALETTE.kept, linewidth = 7)
     Mke.scatter!(ax, [Mke.Point2f(0, 0)]; color = PALETTE.photon, markersize = 16)
     Mke.lines!(
@@ -166,16 +169,16 @@ workers = MC.start_workers(8)
 # One colour per kind of particle, used by every figure
 PALETTE = (
     photon = Mke.RGBf(0.13, 0.36, 0.66),  # the incident photon
-    xray = Mke.RGBf(0.9, 0.45, 0.05),  # characteristic x rays
-    electron = Mke.RGBf(0.7, 0.12, 0.17),  # electrons, and the light they make
-    kept = Mke.RGBf(0.27, 0.55, 0.34),  # the signal
+    xray = Mke.RGBf(0.9, 0.45, 0.05),     # characteristic x rays
+    electron = Mke.RGBf(0.7, 0.12, 0.17), # electrons, and the light they make
+    kept = Mke.RGBf(0.27, 0.55, 0.34),    # the signal
     slab = Mke.RGBAf(0.45, 0.52, 0.62, 0.3),
     slab_edge = Mke.RGBf(0.3, 0.36, 0.44),
     reflector = Mke.RGBf(0.85, 0.83, 0.7),
     ceramic = Mke.RGBf(0.9, 0.92, 0.95),
     ceramic_hit = Mke.RGBf(0.78, 0.85, 0.95),
     tungsten = Mke.RGBf(0.25, 0.25, 0.3),
-    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator v0.15.1's analytic model
+    reference = Mke.RGBf(0.55, 0.2, 0.6), # BasisSimulator v0.15.1's analytic model
     ink = Mke.RGBf(0.13, 0.13, 0.16),
     muted = Mke.RGBf(0.42, 0.42, 0.46),
 )
@@ -210,15 +213,8 @@ THEME = Mke.Theme(
         yticklabelsize = 15,
         zticklabelsize = 15,
     ),
-    Legend = (
-        labelsize = 17,
-        framevisible = false,
-        patchsize = (30, 14),
-        rowgap = 8,
-    ),
-    Lines = (
-        linewidth = 2.5,
-    ),
+    Legend = (labelsize = 17, framevisible = false, patchsize = (30, 14), rowgap = 8),
+    Lines = (linewidth = 2.5,),
 )
 
 # ╔═╡ 5047a5c0-8771-5586-afb8-108e0931ea6a
@@ -226,16 +222,16 @@ THEME = Mke.Theme(
 An in-figure annotation on a translucent rounded background, so it never fights the data.
 """
 function note!(
-        ax,
-        x,
-        y,
-        text;
-        align = (:left, :center),
-        color = PALETTE.ink,
-        fontsize = 16,
-        offset = (0, 0),
-        alpha = 0.85,
-    )
+    ax,
+    x,
+    y,
+    text;
+    align = (:left, :center),
+    color = PALETTE.ink,
+    fontsize = 16,
+    offset = (0, 0),
+    alpha = 0.85,
+)
     return Mke.textlabel!(
         ax,
         Mke.Point2f(x, y);
@@ -374,11 +370,17 @@ end
 # ╔═╡ 8bb9f076-b85b-59ca-8451-b5f576b67b46
 # Geant4's attenuation (1/mm), 1–150 keV, in all and by Compton and Rayleigh scattering: for the
 # exact primary, and for forced detection's way out of the patient
-attenuation = MC.forced_attenuation([MC.DetectorMaterial(:Water), MC.DetectorMaterial(:PMMA)])
+attenuation = MC.forced_attenuation([
+    MC.DetectorMaterial(:Water),
+    MC.DetectorMaterial(:PMMA),
+])
 
 
 # ╔═╡ 2dcf8255-0e2b-4cf7-849d-97a9eed8a6ad
-geant4_mu = Dict(name => attenuation[MC.DetectorMaterial(name).name].total for name in (:Water, :PMMA))
+geant4_mu = Dict(
+    name => attenuation[MC.DetectorMaterial(name).name].total
+    for name in (:Water, :PMMA)
+)
 
 # ╔═╡ 2d378e76-156a-5016-8397-79e007b0622e
 """
@@ -392,8 +394,11 @@ function primary_in_bin(s, length_mm, μ, collimation_mm)
     row_share = min(s.row_bin_mm, width) / width
     column_share = s.column_bin_deg / s.fan_deg
     detected = sum(
-        wk * exp(-μ[clamp(round(Int, Ek), 1, 150)] * length_mm) * s.efficiency[clamp(round(Int, Ek), 1, 150)] * Ek
-            for (Ek, wk) in zip(e, weights)
+        wk *
+            exp(-μ[clamp(round(Int, Ek), 1, 150)] * length_mm) *
+            s.efficiency[clamp(round(Int, Ek), 1, 150)] *
+            Ek
+        for (Ek, wk) in zip(e, weights)
     )
     return column_share * row_share * detected
 end
@@ -411,8 +416,11 @@ function primary_in_column(s, ci, diameter_mm, μ, collimation_mm; steps = 50)
     width = collimation_mm * s.source_to_detector_mm / s.source_to_isocenter_mm
     R = diameter_mm / 2
     detected(L) = sum(
-        wk * exp(-μ[clamp(round(Int, Ek), 1, 150)] * L) * s.efficiency[clamp(round(Int, Ek), 1, 150)] * Ek
-            for (Ek, wk) in zip(e, weights)
+        wk *
+            exp(-μ[clamp(round(Int, Ek), 1, 150)] * L) *
+            s.efficiency[clamp(round(Int, Ek), 1, 150)] *
+            Ek
+        for (Ek, wk) in zip(e, weights)
     )
     function at(γ)
         abs(γ) <= s.fan_deg / 2 || return 0.0
@@ -453,7 +461,8 @@ end
 
 # ╔═╡ fe49b770-1d9e-5f1f-b1c0-1f4fa95764da
 """The scatter per photon in the central bin of a tally."""
-central_scatter(t) = t.scatter[(size(t.scatter, 1) + 1) ÷ 2, (size(t.scatter, 2) + 1) ÷ 2] / t.n
+central_scatter(t) = t.scatter[(size(t.scatter, 1) + 1) ÷ 2, (size(t.scatter, 2) + 1) ÷ 2] /
+    t.n
 
 # ╔═╡ ad0535ed-e20c-5d0f-b356-602e50d01d73
 md"""
@@ -470,13 +479,17 @@ size_diameters = collect(200.0:50.0:500.0)
 force_variants = [scanner_with("force", grid) for grid in (:none, :across, :both)]
 
 # ╔═╡ b35396c7-f7e6-5b79-9744-27766d9a96a0
-size_scans = [fan_scan(force_variants, D, MC.DetectorMaterial(:Water), 40.0; seed = round(Int, D)) for D in size_diameters]
+size_scans = [
+    fan_scan(force_variants, D, MC.DetectorMaterial(:Water), 40.0; seed = round(Int, D))
+    for D in size_diameters
+]
 
 # ╔═╡ eee182c1-089c-5624-8d26-439b81c9bdd2
 # SPR in the central bin, one row per diameter, one column per grid (none, 1-D, 2-D)
 size_spr = [
-    central_scatter(size_scans[i][k]) / primary_in_bin(force_variants[k], D, geant4_mu[:Water], 40.0)
-        for (i, D) in enumerate(size_diameters), k in 1:3
+    central_scatter(size_scans[i][k]) /
+        primary_in_bin(force_variants[k], D, geant4_mu[:Water], 40.0)
+    for (i, D) in enumerate(size_diameters), k in 1:3
 ]
 
 # ╔═╡ ca7f3555-1bed-586a-b69f-e4ff6e8144b3
@@ -486,16 +499,22 @@ size_spr = [
 # too much to judge 5 % by.)
 primary_check = [
     let t = size_scans[i][1], s = force_variants[1]
-            rows = MC.row_edges(s)
-            half = 40.0 * s.source_to_detector_mm / s.source_to_isocenter_mm / 2
-            covered = [r for r in 1:(length(rows) - 1) if -half <= rows[r] && rows[r + 1] <= half]
-            c = (size(t.primary, 1) + 1) ÷ 2
-            columns = (c - 2):(c + 2)
-            simulated = sum(t.primary[columns, covered]) / t.n
-            exact = length(covered) * sum(primary_in_column(s, ci, D, geant4_mu[:Water], 40.0) for ci in columns)
-            abs(simulated / exact - 1)
+        rows = MC.row_edges(s)
+        half = 40.0 * s.source_to_detector_mm / s.source_to_isocenter_mm / 2
+        covered = [
+            r
+            for r in 1:(length(rows) - 1)
+            if -half <= rows[r] && rows[r + 1] <= half
+        ]
+        c = (size(t.primary, 1) + 1) ÷ 2
+        columns = (c - 2):(c + 2)
+        simulated = sum(t.primary[columns, covered]) / t.n
+        exact = length(covered) *
+            sum(primary_in_column(s, ci, D, geant4_mu[:Water], 40.0) for ci in columns)
+        abs(simulated / exact - 1)
     end
-        for (i, D) in enumerate(size_diameters) if D <= 300
+    for (i, D) in enumerate(size_diameters)
+    if D <= 300
 ]
 
 # ╔═╡ 859c7739-942a-5cc1-a90a-064f8a3b1ae4
@@ -545,7 +564,11 @@ function bs_spr(scanner, diameter_mm)
     for i in 1:cols
         b = scanner.source_to_isocenter * sin((i - (cols + 1) / 2) * Δγ)
         L = abs(b) < R ? 2 * sqrt(R^2 - b^2) : 0.0
-        transmitted = sum(wk * exp(-μ[clamp(round(Int, Ek), 1, 150)] * L) for (Ek, wk) in zip(e, w)) / sum(w)
+        transmitted = sum(
+            wk * exp(-μ[clamp(round(Int, Ek), 1, 150)] * L)
+            for (Ek, wk) in zip(e, w)
+        ) /
+            sum(w)
         sinogram[i, :, 1] .= -log(transmitted)
     end
     scatter = MC.basissimulator_v0_15_1_scatter(
@@ -606,7 +629,7 @@ end
 let
     rows = [
         "| $(Int(D / 10)) cm | $(round(size_spr[i, 1]; digits = 3)) | $(round(size_spr[i, 2]; digits = 3)) | $(round(size_spr[i, 3]; digits = 3)) | $(round(bs_size_spr[i]; digits = 3)) |"
-            for (i, D) in enumerate(size_diameters)
+        for (i, D) in enumerate(size_diameters)
     ]
     Markdown.parse(
         """
@@ -616,7 +639,7 @@ let
 
         Per centimetre of water the SPR with a grid grows by about $(round(100 * (exp(log(size_spr[end, 3] / size_spr[1, 3]) / 30) - 1); digits = 1)) % (2-D) and
         $(round(100 * (exp(log(size_spr[end, 2] / size_spr[1, 2]) / 30) - 1); digits = 1)) % (1-D): this is the rate a library over water-equivalent diameter must follow.
-        """
+        """,
     )
 end
 
@@ -647,12 +670,18 @@ endo = let
     variants = [scanner_with("aquilion", :none)]
     [
         (
-                diameter_mm = D,
-                spr = central_scatter(only(fan_scan(variants, D, MC.DetectorMaterial(:Water), 138.0; seed = 3000 + round(Int, D)))) /
+            diameter_mm = D,
+            spr = central_scatter(only(fan_scan(
+                variants,
+                D,
+                MC.DetectorMaterial(:Water),
+                138.0;
+                seed = 3000 + round(Int, D),
+            ))) /
                 primary_in_bin(only(variants), D, geant4_mu[:Water], 138.0),
-                measured = measured,
-            )
-            for (D, measured) in ((200.0, 0.497), (320.0, 0.785))
+            measured = measured,
+        )
+        for (D, measured) in ((200.0, 0.497), (320.0, 0.785))
     ]
 end
 
@@ -660,8 +689,14 @@ end
 kyriakou = let
     variants = [scanner_with("flash", :across)]
     s = only(variants)
-    map_sf(D) = let spr = central_scatter(only(fan_scan(variants, D, MC.DetectorMaterial(:PMMA), 19.2; seed = 4000 + round(Int, D)))) /
-            primary_in_bin(s, D, geant4_mu[:PMMA], 19.2)
+    map_sf(D) = let spr = central_scatter(only(fan_scan(
+        variants,
+        D,
+        MC.DetectorMaterial(:PMMA),
+        19.2;
+        seed = 4000 + round(Int, D),
+    ))) /
+        primary_in_bin(s, D, geant4_mu[:PMMA], 19.2)
         spr / (1 + spr)
     end
     [(diameter_mm = D, fraction = map_sf(D)) for D in (80.0, 160.0, 240.0, 320.0, 400.0)]
@@ -698,8 +733,15 @@ function library_central_spr(name, diameter_mm, collimation_mm; bowtie_on)
         b = s.source_to_isocenter_mm * sind(γ)
         abs(b) < R || continue
         t = bowtie_on ? bowtie.aluminium_mm[argmin(abs.(bowtie.angles_deg .- γ))] : 0.0
-        filtered = [wk * exp(-μ_al[clamp(round(Int, Ek), 1, 150)] * t) for (Ek, wk) in zip(e, w)]
-        ray = (angle_deg = γ, wet_mm = 2 * sqrt(R^2 - b^2), weight = 0.1 / s.fan_deg * sum(filtered) / sum(w))
+        filtered = [
+            wk * exp(-μ_al[clamp(round(Int, Ek), 1, 150)] * t)
+            for (Ek, wk) in zip(e, w)
+        ]
+        ray = (
+            angle_deg = γ,
+            wet_mm = 2 * sqrt(R^2 - b^2),
+            weight = 0.1 / s.fan_deg * sum(filtered) / sum(w),
+        )
         scan = MC.library_scan(
             library,
             name,
@@ -733,7 +775,8 @@ kyriakou_bowtie = let
         library_with = with / (1 + with),
         factor = factor,
         fraction = factor * spr / (1 + factor * spr),
-        small_extra_aluminium_mm = maximum(bowtie.aluminium_mm[small]) - minimum(bowtie.aluminium_mm),
+        small_extra_aluminium_mm = maximum(bowtie.aluminium_mm[small]) -
+            minimum(bowtie.aluminium_mm),
     )
 end
 
@@ -741,7 +784,11 @@ end
 melnyk = let
     variants = [scanner_with("apex", :across), scanner_with("apex", :both)]
     tallies = fan_scan(variants, 350.0, MC.DetectorMaterial(:Water), 160.0; seed = 5000)
-    spr = [central_scatter(tallies[k]) / primary_in_bin(variants[k], 350.0, geant4_mu[:Water], 160.0) for k in 1:2]
+    spr = [
+        central_scatter(tallies[k]) /
+            primary_in_bin(variants[k], 350.0, geant4_mu[:Water], 160.0)
+        for k in 1:2
+    ]
     (one_d = spr[1], two_d = spr[2], reduction = 1 - spr[2] / spr[1])
 end
 
@@ -749,7 +796,10 @@ end
 let
     e, w = spectrum
     μ = geant4_mu[:Water]
-    primary(L) = sum(wk * Ek * exp(-μ[clamp(round(Int, Ek), 1, 150)] * L) for (Ek, wk) in zip(e, w))
+    primary(L) = sum(
+        wk * Ek * exp(-μ[clamp(round(Int, Ek), 1, 150)] * L)
+        for (Ek, wk) in zip(e, w)
+    )
     fall = primary(320.0) / primary(200.0)
     Markdown.parse(
         """
@@ -774,7 +824,7 @@ let
         applies that factor to the direct simulation. The 8 cm phantom's rays stay within the bowtie's
         flat centre (at most $(round(kyriakou_bowtie.small_extra_aluminium_mm; digits = 2)) mm more aluminium), so it needs none. The Definition's own bowtie
         and grid are not published; BasisSimulator's stand in for them.
-        """
+        """,
     )
 end
 
@@ -804,12 +854,12 @@ grid_check = let
     angles = collect(0.0:1.0:6.0)
     beams = [
         MC.AreaBeam(;
-                width_mm = pitch[1],
-                height_mm = pitch[2],
-                angle_x_deg = a,
-                start_mm = 12.0,
-            )
-            for a in angles
+            width_mm = pitch[1],
+            height_mm = pitch[2],
+            angle_x_deg = a,
+            start_mm = 12.0,
+        )
+        for a in angles
     ]
     runs = MC.simulate_sweep(
         [(absorber, 60.0, 7, beam) for beam in beams];
@@ -931,7 +981,8 @@ saved = let
             "melnyk" => melnyk,
             "grid_check" => grid_check,
             "scorecard" => MC.scorecard(checks),
-            "source" => "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 09_scatter_water_cylinders.jl",
+            "source" =>
+                "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 09_scatter_water_cylinders.jl",
         ),
     )
     path

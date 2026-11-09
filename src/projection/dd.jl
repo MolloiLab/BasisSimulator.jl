@@ -77,8 +77,11 @@ export dd_forward_project!, dd_forward_project
 # The iso-plane position of voxel boundary `b` (0-based) along an axis starting at `vmin` in steps
 # of `vstep`, seen from the source at `s0` with magnification `mag_fac` (`_dd_bounds` inverts it).
 # -----------------------------------------------------------------------------
-@inline _dd_edge(s0::T, vmin::T, b::T, vstep::T, mag_fac::T) where {T} =
-    fma(fma(b, vstep, vmin) - s0, mag_fac, s0)
+@inline _dd_edge(s0::T, vmin::T, b::T, vstep::T, mag_fac::T) where {T} = fma(
+    fma(b, vstep, vmin) - s0,
+    mag_fac,
+    s0,
+)
 
 # `(sin(γ), cos(γ))` of a fan angle by one Taylor polynomial in `fma`s, for the same reason: the
 # CPU's `sin` and the device's differ by ulps. Its terms reach Float64's rounding for |γ| ≤ π/4,
@@ -88,8 +91,16 @@ const _COS_TERMS = ntuple(k -> (-1)^(k - 1) / factorial(2k - 2), 9)
 
 @inline function _dd_sincos(γ::T) where {T}
     γ2 = γ * γ
-    s = foldr((a, acc) -> fma(acc, γ2, T(a)), _SIN_TERMS[1:(end - 1)]; init = T(_SIN_TERMS[end]))
-    c = foldr((a, acc) -> fma(acc, γ2, T(a)), _COS_TERMS[1:(end - 1)]; init = T(_COS_TERMS[end]))
+    s = foldr(
+        (a, acc) -> fma(acc, γ2, T(a)),
+        _SIN_TERMS[1:(end - 1)];
+        init = T(_SIN_TERMS[end]),
+    )
+    c = foldr(
+        (a, acc) -> fma(acc, γ2, T(a)),
+        _COS_TERMS[1:(end - 1)];
+        init = T(_COS_TERMS[end]),
+    )
     return (γ * s, c)
 end
 
@@ -110,8 +121,14 @@ end
 # `_dd_overlap > 0` test in the loop.
 # -----------------------------------------------------------------------------
 @inline function _dd_bounds(
-        lo::T, hi::T, s0::T, vmin::T, vstep::T, inv_mf::T, n::Int32,
-    ) where {T}
+    lo::T,
+    hi::T,
+    s0::T,
+    vmin::T,
+    vstep::T,
+    inv_mf::T,
+    n::Int32,
+) where {T}
     c_lo = fma(lo - s0, inv_mf, s0 - vmin) / vstep
     c_hi = fma(hi - s0, inv_mf, s0 - vmin) / vstep
     c_lo = clamp(c_lo, zero(T), T(n) + one(T))
@@ -127,14 +144,26 @@ end
 # Returns a flat tuple (compiler-inlined): the value-tuple plus a `valid` flag.
 # -----------------------------------------------------------------------------
 @inline function _dd_col_setup(
-        col::Int32,
-        sx::T, sy::T, sz::T,
-        dcx::T, dcy::T, ux::T, uy::T,
-        mag::T, ps::T, col_center::T,
-        nx::Int32, ny::Int32,
-        vmin_x::T, vmin_y::T, vx::T, vy::T,
-        arc_det::Bool, dγ::T,
-    ) where {T}
+    col::Int32,
+    sx::T,
+    sy::T,
+    sz::T,
+    dcx::T,
+    dcy::T,
+    ux::T,
+    uy::T,
+    mag::T,
+    ps::T,
+    col_center::T,
+    nx::Int32,
+    ny::Int32,
+    vmin_x::T,
+    vmin_y::T,
+    vx::T,
+    vy::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
     half = T(0.5)
 
     # detector COLUMN boundaries (transaxial), world (x,y) at detector mid-row.
@@ -155,24 +184,37 @@ end
     else
         uL = (T(col) - half - col_center) * ps * mag
         uU = (T(col) + half - col_center) * ps * mag
-        (
-            fma(uL, ux, dcx), fma(uL, uy, dcy),
-            fma(uU, ux, dcx), fma(uU, uy, dcy),
-        )
+        (fma(uL, ux, dcx), fma(uL, uy, dcy), fma(uU, ux, dcx), fma(uU, uy, dcy))
     end
 
     # integration axis = dominant source component
     vertical = abs(sy) >= abs(sx)
     if vertical
-        s_long = sy;  s_tran = sx
-        dtL = bxL;  dlL = byL;  dtU = bxU;  dlU = byU
-        n_t = nx;  v_t = vx;  vmin_t = vmin_x
-        n_long = ny;  v_long = vy;  vmin_long = vmin_y
+        s_long = sy
+        s_tran = sx
+        dtL = bxL
+        dlL = byL
+        dtU = bxU
+        dlU = byU
+        n_t = nx
+        v_t = vx
+        vmin_t = vmin_x
+        n_long = ny
+        v_long = vy
+        vmin_long = vmin_y
     else
-        s_long = sx;  s_tran = sy
-        dtL = byL;  dlL = bxL;  dtU = byU;  dlU = bxU
-        n_t = ny;  v_t = vy;  vmin_t = vmin_y
-        n_long = nx;  v_long = vx;  vmin_long = vmin_x
+        s_long = sx
+        s_tran = sy
+        dtL = byL
+        dlL = bxL
+        dtU = byU
+        dlU = bxU
+        n_t = ny
+        v_t = vy
+        vmin_t = vmin_y
+        n_long = nx
+        v_long = vx
+        vmin_long = vmin_x
     end
 
     # project the two column boundaries onto the iso-plane (long = 0)
@@ -180,23 +222,45 @@ end
     scaleU = s_long / (s_long - dlU)
     dXa = fma(dtL - s_tran, scaleL, s_tran)
     dXb = fma(dtU - s_tran, scaleU, s_tran)
-    dXlo = min(dXa, dXb);  dXhi = max(dXa, dXb)
+    dXlo = min(dXa, dXb)
+    dXhi = max(dXa, dXb)
     detXstep = dXhi - dXlo
     deltaT = fma(half, dXa + dXb, -s_tran)
     scale_col = half * (scaleL + scaleU)
 
     return (
-        detXstep > T(1.0e-12), vertical, s_long, s_tran,
-        dXlo, dXhi, detXstep, deltaT, scale_col,
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+        detXstep > T(1.0e-12),
+        vertical,
+        s_long,
+        s_tran,
+        dXlo,
+        dXhi,
+        detXstep,
+        deltaT,
+        scale_col,
+        n_t,
+        v_t,
+        vmin_t,
+        n_long,
+        v_long,
+        vmin_long,
     )
 end
 
 @inline function _dd_row_setup(
-        row::Int32, sz::T, dcz::T, vvz::T,
-        mag::T, prs::T, row_center::T, scale_col::T,
-        s_long::T, deltaT::T, v_long::T, detXstep::T,
-    ) where {T}
+    row::Int32,
+    sz::T,
+    dcz::T,
+    vvz::T,
+    mag::T,
+    prs::T,
+    row_center::T,
+    scale_col::T,
+    s_long::T,
+    deltaT::T,
+    v_long::T,
+    detXstep::T,
+) where {T}
     half = T(0.5)
     wL = (T(row) - half - row_center) * prs * mag
     wU = (T(row) + half - row_center) * prs * mag
@@ -204,44 +268,114 @@ end
     zdU = fma(wU, vvz, dcz)
     dZa = fma(scale_col, zdL - sz, sz)
     dZb = fma(scale_col, zdU - sz, sz)
-    dZlo = min(dZa, dZb);  dZhi = max(dZa, dZb)
+    dZlo = min(dZa, dZb)
+    dZhi = max(dZa, dZb)
     detZstep = dZhi - dZlo
     deltaZ = fma(half, dZa + dZb, -sz)
 
     valid = detXstep > T(1.0e-12) && detZstep > T(1.0e-12)
     invCos = sqrt(fma(deltaZ, deltaZ, fma(deltaT, deltaT, s_long * s_long))) /
-        abs(s_long) * v_long
+        abs(s_long) *
+        v_long
     norm = valid ? invCos / (detXstep * detZstep) : zero(T)
 
     return (valid, dZlo, dZhi, norm)
 end
 
 @inline function _dd_cell_setup(
-        col::Int32, row::Int32,
-        sx::T, sy::T, sz::T,
-        dcx::T, dcy::T, dcz::T, ux::T, uy::T, vvz::T,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T,
-        nx::Int32, ny::Int32,
-        vmin_x::T, vmin_y::T, vx::T, vy::T,
-        arc_det::Bool, dγ::T,
-    ) where {T}
+    col::Int32,
+    row::Int32,
+    sx::T,
+    sy::T,
+    sz::T,
+    dcx::T,
+    dcy::T,
+    dcz::T,
+    ux::T,
+    uy::T,
+    vvz::T,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    nx::Int32,
+    ny::Int32,
+    vmin_x::T,
+    vmin_y::T,
+    vx::T,
+    vy::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
     (
-        valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
-        deltaT, scale_col, n_t, v_t, vmin_t, n_long, v_long,
+        valid_x,
+        vertical,
+        s_long,
+        s_tran,
+        dXlo,
+        dXhi,
+        detXstep,
+        deltaT,
+        scale_col,
+        n_t,
+        v_t,
+        vmin_t,
+        n_long,
+        v_long,
         vmin_long,
     ) = _dd_col_setup(
-        col, sx, sy, sz, dcx, dcy, ux, uy, mag, ps, col_center,
-        nx, ny, vmin_x, vmin_y, vx, vy, arc_det, dγ
+        col,
+        sx,
+        sy,
+        sz,
+        dcx,
+        dcy,
+        ux,
+        uy,
+        mag,
+        ps,
+        col_center,
+        nx,
+        ny,
+        vmin_x,
+        vmin_y,
+        vx,
+        vy,
+        arc_det,
+        dγ,
     )
     (valid_z, dZlo, dZhi, norm) = _dd_row_setup(
-        row, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep
+        row,
+        sz,
+        dcz,
+        vvz,
+        mag,
+        prs,
+        row_center,
+        scale_col,
+        s_long,
+        deltaT,
+        v_long,
+        detXstep,
     )
     valid = valid_x && valid_z
     return (
-        valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi,
+        valid,
+        vertical,
+        s_long,
+        s_tran,
+        dXlo,
+        dXhi,
+        dZlo,
+        dZhi,
         valid ? norm : zero(T),
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+        n_t,
+        v_t,
+        vmin_t,
+        n_long,
+        v_long,
+        vmin_long,
     )
 end
 
@@ -249,23 +383,76 @@ end
 # Single detector-cell mono line integral (Σμ·l), gather form.
 # -----------------------------------------------------------------------------
 @inline function _dd_trace_cell(
-        volume::AbstractArray{T, 3},
-        col::Int32, row::Int32,
-        sx::T, sy::T, sz::T,
-        dcx::T, dcy::T, dcz::T, ux::T, uy::T, vvz::T,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T,
-        nx::Int32, ny::Int32, nz::Int32,
-        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        arc_det::Bool, dγ::T,
-    ) where {T}
-
+    volume::AbstractArray{T, 3},
+    col::Int32,
+    row::Int32,
+    sx::T,
+    sy::T,
+    sz::T,
+    dcx::T,
+    dcy::T,
+    dcz::T,
+    ux::T,
+    uy::T,
+    vvz::T,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    vmin_x::T,
+    vmin_y::T,
+    vmin_z::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    arc_det::Bool,
+    dγ::T,
+) where {T}
     (
-        valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+        valid,
+        vertical,
+        s_long,
+        s_tran,
+        dXlo,
+        dXhi,
+        dZlo,
+        dZhi,
+        norm,
+        n_t,
+        v_t,
+        vmin_t,
+        n_long,
+        v_long,
+        vmin_long,
     ) = _dd_cell_setup(
-        col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-        mag, ps, prs, col_center, row_center, nx, ny, vmin_x, vmin_y, vx, vy,
-        arc_det, dγ
+        col,
+        row,
+        sx,
+        sy,
+        sz,
+        dcx,
+        dcy,
+        dcz,
+        ux,
+        uy,
+        vvz,
+        mag,
+        ps,
+        prs,
+        col_center,
+        row_center,
+        nx,
+        ny,
+        vmin_x,
+        vmin_y,
+        vx,
+        vy,
+        arc_det,
+        dγ,
     )
 
     valid || return zero(T)
@@ -311,44 +498,145 @@ end
 # transaxial voxel traversal.  Each accumulator still observes voxel
 # contributions in the scalar kernel's exact `il -> it -> ip` order.
 @inline function _dd_trace_rows4(
-        volume::AbstractArray{T, 3}, col::Int32, row1::Int32, n_rows::Int32,
-        sx::T, sy::T, sz::T, dcx::T, dcy::T, dcz::T, ux::T, uy::T, vvz::T,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T,
-        nx::Int32, ny::Int32, nz::Int32,
-        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T, dγ::T,
-    ) where {T}
+    volume::AbstractArray{T, 3},
+    col::Int32,
+    row1::Int32,
+    n_rows::Int32,
+    sx::T,
+    sy::T,
+    sz::T,
+    dcx::T,
+    dcy::T,
+    dcz::T,
+    ux::T,
+    uy::T,
+    vvz::T,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    vmin_x::T,
+    vmin_y::T,
+    vmin_z::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    dγ::T,
+) where {T}
     (
-        valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
-        deltaT, scale_col, n_t, v_t, vmin_t, n_long, v_long,
+        valid_x,
+        vertical,
+        s_long,
+        s_tran,
+        dXlo,
+        dXhi,
+        detXstep,
+        deltaT,
+        scale_col,
+        n_t,
+        v_t,
+        vmin_t,
+        n_long,
+        v_long,
         vmin_long,
     ) = _dd_col_setup(
-        col, sx, sy, sz, dcx, dcy, ux, uy, mag, ps, col_center,
-        nx, ny, vmin_x, vmin_y, vx, vy, true, dγ
+        col,
+        sx,
+        sy,
+        sz,
+        dcx,
+        dcy,
+        ux,
+        uy,
+        mag,
+        ps,
+        col_center,
+        nx,
+        ny,
+        vmin_x,
+        vmin_y,
+        vx,
+        vy,
+        true,
+        dγ,
     )
 
-    row2 = row1 + Int32(1); row3 = row1 + Int32(2); row4 = row1 + Int32(3)
-    use1 = row1 <= n_rows; use2 = row2 <= n_rows
-    use3 = row3 <= n_rows; use4 = row4 <= n_rows
+    row2 = row1 + Int32(1)
+    row3 = row1 + Int32(2)
+    row4 = row1 + Int32(3)
+    use1 = row1 <= n_rows
+    use2 = row2 <= n_rows
+    use3 = row3 <= n_rows
+    use4 = row4 <= n_rows
     valid1, dZlo1, dZhi1, norm1 = _dd_row_setup(
-        row1, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep
+        row1,
+        sz,
+        dcz,
+        vvz,
+        mag,
+        prs,
+        row_center,
+        scale_col,
+        s_long,
+        deltaT,
+        v_long,
+        detXstep,
     )
     valid2, dZlo2, dZhi2, norm2 = _dd_row_setup(
-        row2, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep
+        row2,
+        sz,
+        dcz,
+        vvz,
+        mag,
+        prs,
+        row_center,
+        scale_col,
+        s_long,
+        deltaT,
+        v_long,
+        detXstep,
     )
     valid3, dZlo3, dZhi3, norm3 = _dd_row_setup(
-        row3, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep
+        row3,
+        sz,
+        dcz,
+        vvz,
+        mag,
+        prs,
+        row_center,
+        scale_col,
+        s_long,
+        deltaT,
+        v_long,
+        detXstep,
     )
     valid4, dZlo4, dZhi4, norm4 = _dd_row_setup(
-        row4, sz, dcz, vvz, mag, prs, row_center, scale_col,
-        s_long, deltaT, v_long, detXstep
+        row4,
+        sz,
+        dcz,
+        vvz,
+        mag,
+        prs,
+        row_center,
+        scale_col,
+        s_long,
+        deltaT,
+        v_long,
+        detXstep,
     )
-    valid1 = valid_x && valid1 && use1; valid2 = valid_x && valid2 && use2
-    valid3 = valid_x && valid3 && use3; valid4 = valid_x && valid4 && use4
+    valid1 = valid_x && valid1 && use1
+    valid2 = valid_x && valid2 && use2
+    valid3 = valid_x && valid3 && use3
+    valid4 = valid_x && valid4 && use4
 
-    acc1 = zero(T); acc2 = zero(T); acc3 = zero(T); acc4 = zero(T)
+    acc1 = zero(T)
+    acc2 = zero(T)
+    acc3 = zero(T)
+    acc4 = zero(T)
     il = Int32(1)
     while il <= n_long
         lp = fma(T(il) - T(0.5), v_long, vmin_long)
@@ -437,28 +725,35 @@ replacement for [`siddon_forward_project!`](@ref): same arguments, same
 `[n_cols, n_rows, n_angles]` sinogram, same cm units and Σμ·l output.
 """
 function dd_forward_project!(
-        sinogram::AbstractArray{T, 3},
-        volume::AbstractArray{T, 3},
-        geom::CTGeometry;
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    ) where {T <: AbstractFloat}
-
-    nx = Int32(size(volume, 1)); ny = Int32(size(volume, 2)); nz = Int32(size(volume, 3))
-    n_cols = Int32(size(sinogram, 1)); n_rows = Int32(size(sinogram, 2))
+    sinogram::AbstractArray{T, 3},
+    volume::AbstractArray{T, 3},
+    geom::CTGeometry;
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+) where {T <: AbstractFloat}
+    nx = Int32(size(volume, 1))
+    ny = Int32(size(volume, 2))
+    nz = Int32(size(volume, 3))
+    n_cols = Int32(size(sinogram, 1))
+    n_rows = Int32(size(sinogram, 2))
 
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
-    vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)
-    vx = T(vol_bounds[1]) / T(nx); vy = T(vol_bounds[2]) / T(ny); vz = T(vol_bounds[3]) / T(nz)
+    vmin_x = T(-vol_bounds[1] / 2)
+    vmin_y = T(-vol_bounds[2] / 2)
+    vmin_z = T(-vol_bounds[3] / 2)
+    vx = T(vol_bounds[1]) / T(nx)
+    vy = T(vol_bounds[2]) / T(ny)
+    vz = T(vol_bounds[3]) / T(nz)
     _dd_check_isotropy(vx, vy)
 
     mag = T(geom.SDD / geom.SAD)
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
+    ps = T(geom.pixel_size)
+    prs = T(geom.pixel_row_size)
     col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
@@ -475,12 +770,34 @@ function dd_forward_project!(
         angle = (idx_0 ÷ n_rows) + Int32(1)
 
         sinogram[idx] = _dd_trace_cell(
-            volume, col, row,
-            sp[1, angle], sp[2, angle], sp[3, angle],
-            dc[1, angle], dc[2, angle], dc[3, angle], du[1, angle], du[2, angle], dv[3, angle],
-            mag, ps, prs, col_center, row_center,
-            nx, ny, nz, vmin_x, vmin_y, vmin_z, vx, vy, vz,
-            arc_det, dγ,
+            volume,
+            col,
+            row,
+            sp[1, angle],
+            sp[2, angle],
+            sp[3, angle],
+            dc[1, angle],
+            dc[2, angle],
+            dc[3, angle],
+            du[1, angle],
+            du[2, angle],
+            dv[3, angle],
+            mag,
+            ps,
+            prs,
+            col_center,
+            row_center,
+            nx,
+            ny,
+            nz,
+            vmin_x,
+            vmin_y,
+            vmin_z,
+            vx,
+            vy,
+            vz,
+            arc_det,
+            dγ,
         )
     end
     return sinogram
@@ -489,35 +806,73 @@ end
 # HIR-only arc fast path: four detector rows share one column/view DD setup.
 # The public `dd_forward_project!` remains the generic reference entry point.
 function _dd_forward_project_arc_rowtile4!(
-        sinogram::AbstractArray{T, 3}, volume::AbstractArray{T, 3}, geom::CTGeometry;
-        ws_source_positions = nothing, ws_detector_centers = nothing,
-        ws_detector_u = nothing, ws_detector_v = nothing,
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    ) where {T <: AbstractFloat}
+    sinogram::AbstractArray{T, 3},
+    volume::AbstractArray{T, 3},
+    geom::CTGeometry;
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+) where {T <: AbstractFloat}
     is_arc(geom) || return dd_forward_project!(
-        sinogram, volume, geom; ws_source_positions, ws_detector_centers,
-        ws_detector_u, ws_detector_v, volume_extent
+        sinogram,
+        volume,
+        geom;
+        ws_source_positions,
+        ws_detector_centers,
+        ws_detector_u,
+        ws_detector_v,
+        volume_extent,
     )
 
-    nx = Int32(size(volume, 1)); ny = Int32(size(volume, 2)); nz = Int32(size(volume, 3))
-    nc = Int32(size(sinogram, 1)); nr = Int32(size(sinogram, 2))
-    na = Int32(size(sinogram, 3)); ntiles = (nr + Int32(3)) ÷ Int32(4)
+    nx = Int32(size(volume, 1))
+    ny = Int32(size(volume, 2))
+    nz = Int32(size(volume, 3))
+    nc = Int32(size(sinogram, 1))
+    nr = Int32(size(sinogram, 2))
+    ntiles = (nr + Int32(3)) ÷ Int32(4)
     bounds = volume_extent === nothing ? geom.fov : volume_extent
-    vmx = T(-bounds[1] / 2); vmy = T(-bounds[2] / 2); vmz = T(-bounds[3] / 2)
-    vsx = T(bounds[1]) / T(nx); vsy = T(bounds[2]) / T(ny); vsz = T(bounds[3]) / T(nz)
+    vmx = T(-bounds[1] / 2)
+    vmy = T(-bounds[2] / 2)
+    vmz = T(-bounds[3] / 2)
+    vsx = T(bounds[1]) / T(nx)
+    vsy = T(bounds[2]) / T(ny)
+    vsz = T(bounds[3]) / T(nz)
     _dd_check_isotropy(vsx, vsy)
     mag = T(geom.SDD / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    cc = column_center(T, geom); rc = (T(nr) + one(T)) / T(2)
+    ps = T(geom.pixel_size)
+    prs = T(geom.pixel_row_size)
+    cc = column_center(T, geom)
+    rc = (T(nr) + one(T)) / T(2)
     dγ = T(geom.pixel_size / geom.SAD)
     sp = _dd_geom_array(ws_source_positions, volume, geom.source_positions, T)
     dc = _dd_geom_array(ws_detector_centers, volume, geom.detector_centers, T)
     du = _dd_geom_array(ws_detector_u, volume, geom.detector_u, T)
     dv = _dd_geom_array(ws_detector_v, volume, geom.detector_v, T)
-    let sino = sinogram, vol = volume, sp = sp, dc = dc, du = du, dv = dv,
-            nx = nx, ny = ny, nz = nz, nc = nc, nr = nr, na = na,
-            vmx = vmx, vmy = vmy, vmz = vmz, vsx = vsx, vsy = vsy, vsz = vsz,
-            mag = mag, ps = ps, prs = prs, cc = cc, rc = rc, dγ = dγ
+    let sino = sinogram,
+        vol = volume,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = nc,
+        nr = nr,
+        vmx = vmx,
+        vmy = vmy,
+        vmz = vmz,
+        vsx = vsx,
+        vsy = vsy,
+        vsz = vsz,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        cc = cc,
+        rc = rc,
+        dγ = dγ
         AK.foreachindex(sino) do idx
             idx0 = Int32(idx - 1)
             col = (idx0 % nc) + Int32(1)
@@ -527,14 +882,38 @@ function _dd_forward_project_arc_rowtile4!(
             slot >= ntiles && return
             tile = slot
             row1 = tile * Int32(4) + Int32(1)
-            row2 = row1 + Int32(1); row3 = row1 + Int32(2); row4 = row1 + Int32(3)
+            row2 = row1 + Int32(1)
+            row3 = row1 + Int32(2)
+            row4 = row1 + Int32(3)
             a1, a2, a3, a4 = _dd_trace_rows4(
-                vol, col, row1, nr,
-                sp[1, angle], sp[2, angle], sp[3, angle],
-                dc[1, angle], dc[2, angle], dc[3, angle],
-                du[1, angle], du[2, angle], dv[3, angle],
-                mag, ps, prs, cc, rc, nx, ny, nz,
-                vmx, vmy, vmz, vsx, vsy, vsz, dγ
+                vol,
+                col,
+                row1,
+                nr,
+                sp[1, angle],
+                sp[2, angle],
+                sp[3, angle],
+                dc[1, angle],
+                dc[2, angle],
+                dc[3, angle],
+                du[1, angle],
+                du[2, angle],
+                dv[3, angle],
+                mag,
+                ps,
+                prs,
+                cc,
+                rc,
+                nx,
+                ny,
+                nz,
+                vmx,
+                vmy,
+                vmz,
+                vsx,
+                vsy,
+                vsz,
+                dγ,
             )
             sino[col, row1, angle] = a1
             row2 <= nr && (sino[col, row2, angle] = a2)
@@ -552,10 +931,10 @@ Allocating distance-driven forward projection.  Drop-in for
 [`siddon_forward_project`](@ref).
 """
 function dd_forward_project(
-        volume::AbstractArray{T, 3},
-        geom::CTGeometry;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    ) where {T <: AbstractFloat}
+    volume::AbstractArray{T, 3},
+    geom::CTGeometry;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+) where {T <: AbstractFloat}
     sinogram = similar(volume, T, geom.n_cols, geom.n_rows, geom.n_angles)
     fill!(sinogram, zero(T))
     return dd_forward_project!(sinogram, volume, geom; volume_extent = volume_extent)

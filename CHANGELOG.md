@@ -12,6 +12,14 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+### Changed
+
+- The code is formatted and linted with [Fatou](https://github.com/jolars/fatou) at its
+  defaults (line width 92), replacing Runic: `src/`, `test/`, `docs/`, `lib/BasisMonteCarlo`
+  and every notebook cell. A new `fatou` CI job checks both. Lint clean-up removed unused
+  locals and the internal `R_energies` workspace field and `ws_R_energies` keyword, which
+  nothing read; no results change.
+
 ## [0.16.6](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.5...v0.16.6) (2026-11-09)
 
 Fixes projections that came out wrong on the GPU with CUDA.jl 5 (AcceleratedKernels 0.4) since v0.16.4,

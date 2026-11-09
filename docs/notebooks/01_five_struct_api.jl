@@ -99,7 +99,8 @@ phantom mask to that type is the only thing that decides where the whole pipelin
 # ╔═╡ 01000005-0000-4000-8000-000000000001
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()   # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
+    # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
@@ -133,14 +134,15 @@ outer ring, each 28 mm across.
 
 # ╔═╡ 02000002-0000-4000-8000-000000000001
 phantom_cpu = BS.create_gammex_472(
-    n_voxels = 512,   # in-plane voxels across the 35 cm field
-    n_slices = 16,    # axial slices
+    n_voxels = 512, # in-plane voxels across the 35 cm field
+    n_slices = 16,  # axial slices
     fov_cm = 35.0,
     z_cm = 1.0,
 );
 
 # ╔═╡ 02000003-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 The mask is `$(eltype(phantom_cpu.mask))` of size $(join(size(phantom_cpu.mask), " × ")), with
 voxels of $(join(round.(phantom_cpu.voxel_size .* 10; digits = 3), " × ")) mm and
 $(length(phantom_cpu.materials)) entries in its material table (entry `L + 1` is the material of
@@ -148,7 +150,8 @@ label `L`; labels the phantom doesn't use are air).
 
 `Phantom` is parameterised on its mask's array type, so moving the mask to the device once is
 enough: every forward projection of this phantom then runs there.
-""")
+""",
+)
 
 # ╔═╡ 02000004-0000-4000-8000-000000000001
 phantom = BS.Phantom(
@@ -199,17 +202,24 @@ let
         title = "Input phantom",
         subtitle = "Gammex Model 472 · slice $mid of $(size(phantom_cpu.mask, 3))",
         aspect = Mke.DataAspect(),
-        titlesize = 28, subtitlesize = 20,
+        titlesize = 28,
+        subtitlesize = 20,
     )
     Mke.heatmap!(ax, mapped; colormap = cmap, colorrange = (0.5, n + 0.5))
     Mke.hidedecorations!(ax)
     Mke.Colorbar(
         fig[1, 2];
-        colormap = cmap, colorrange = (0.5, n + 0.5),
+        colormap = cmap,
+        colorrange = (0.5, n + 0.5),
         ticks = (1:n, [info[l][1] for l in labels]),
-        ticklabelsize = 12, width = 16,
+        ticklabelsize = 12,
+        width = 16,
     )
-    Mke.save(joinpath(@__DIR__, "..", "assets", "gammex_472_phantom.png"), fig; px_per_unit = 2)
+    Mke.save(
+        joinpath(@__DIR__, "..", "assets", "gammex_472_phantom.png"),
+        fig;
+        px_per_unit = 2,
+    )
     fig
 end
 
@@ -246,7 +256,9 @@ let s = scanner, constant = BS.REVOLUTION_APEX
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -260,12 +272,13 @@ let s = scanner, constant = BS.REVOLUTION_APEX
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
 # ╔═╡ 03000003-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 Scanner: $(scanner.detector_rows) rows × $(scanner.detector_cols) columns, detector shape
 `:$(scanner.detector_shape)`, bowtie `:$(scanner.bowtie_filter)`, source–isocentre
 $(scanner.source_to_isocenter) mm.
@@ -274,7 +287,8 @@ $(scanner.source_to_isocenter) mm.
     Anything that changes from scan to scan (kVp, mA, views, rotation time, collimation, pitch)
     belongs to `CTProtocol`. That split is what lets one scanner run a sweep of protocols, as the
     two scans below do.
-""")
+""",
+)
 
 # ╔═╡ 04000001-0000-4000-8000-000000000001
 md"""
@@ -291,14 +305,14 @@ protocol_standard = BS.CTProtocol(
     mA = 200.0,
     views = 500,
     rotation_time = 1.0,
-    collimation_mm = 5.0,                 # nominal beam width N·T
-    additional_filters = [("Al", 4.5)],   # on top of the scanner's 2.5 mm flat filter
+    collimation_mm = 5.0,               # nominal beam width N·T
+    additional_filters = [("Al", 4.5)], # on top of the scanner's 2.5 mm flat filter
 );
 
 # ╔═╡ 04000003-0000-4000-8000-000000000001
 protocol_lowdose = BS.CTProtocol(
     kVp = 120,
-    mA = 50.0,                            # a quarter of the dose
+    mA = 50.0, # a quarter of the dose
     views = 500,
     rotation_time = 1.0,
     collimation_mm = 5.0,
@@ -350,10 +364,11 @@ projections per view.
 
 # ╔═╡ 05000002-0000-4000-8000-000000000001
 sim_opts = BS.SimOptions(
-    seed = 1234,            # fixed noise realisation: same seed + same inputs = same sinogram
+    # fixed noise realisation: same seed + same inputs = same sinogram
+    seed = 1234,
     projector = :dd_fast,
-    view_samples = 5,       # the detector integrates over the arc of each view (5 sub-views)
-
+    # the detector integrates over the arc of each view (5 sub-views)
+    view_samples = 5,
     # Switch individual effects off, e.g.:
     # use_scatter     = false,   # no patient scatter
     # use_heel_effect = false,
@@ -427,7 +442,7 @@ sim_std = let
 
     out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose)
     ws = nothing
-    GC.gc(true)   # hand the device memory back now
+    GC.gc(true) # hand the device memory back now
     out
 end;
 
@@ -436,7 +451,7 @@ sim_std.dose
 
 # ╔═╡ 07000015-0000-4000-8000-000000000001
 let
-    sino = sim_std.sino                  # (n_col, n_row, n_view), −log(I/I₀)
+    sino = sim_std.sino # (n_col, n_row, n_view), −log(I/I₀)
     n_col, n_row, n_view = size(sino)
     mid_row = n_row ÷ 2 + 1
 
@@ -447,13 +462,32 @@ let
         subtitle = "central detector row · 120 kVp / 200 mA · $n_view views · $n_col columns",
         xlabel = "view",
         ylabel = "detector column",
-        titlesize = 32, subtitlesize = 24,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
+        titlesize = 32,
+        subtitlesize = 24,
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 16,
+        yticklabelsize = 16,
     )
-    hm = Mke.heatmap!(ax, 1:n_view, 1:n_col, permutedims(sino[:, mid_row, :]); colormap = :viridis)
-    Mke.Colorbar(fig[1, 2], hm; label = "line integral  −log(I / I₀)", width = 14, labelsize = 18)
-    Mke.save(joinpath(@__DIR__, "..", "assets", "sinogram_standard.png"), fig; px_per_unit = 2)
+    hm = Mke.heatmap!(
+        ax,
+        1:n_view,
+        1:n_col,
+        permutedims(sino[:, mid_row, :]);
+        colormap = :viridis,
+    )
+    Mke.Colorbar(
+        fig[1, 2],
+        hm;
+        label = "line integral  −log(I / I₀)",
+        width = 14,
+        labelsize = 18,
+    )
+    Mke.save(
+        joinpath(@__DIR__, "..", "assets", "sinogram_standard.png"),
+        fig;
+        px_per_unit = 2,
+    )
     fig
 end
 
@@ -482,7 +516,8 @@ sim_low.dose
 # ╔═╡ 08000012-0000-4000-8000-000000000001
 let
     d_s, d_l = sim_std.dose, sim_low.dose
-    Markdown.parse("""
+    Markdown.parse(
+        """
     | protocol | mAs / rotation | CTDIvol (mGy) | DLP (mGy·cm) | scan length (cm) |
     |:--|--:|--:|--:|--:|
     | standard dose | $(round(d_s.mAs_per_rotation; digits = 1)) | $(round(d_s.ctdi_vol_mGy; digits = 2)) | $(round(d_s.dlp_mGy_cm; digits = 2)) | $(round(d_s.scan_length_cm; digits = 2)) |
@@ -493,7 +528,8 @@ let
     CTDIw of this beam is $(round(d_s.ctdi_w_mGy_per_100mAs; digits = 2)) mGy per 100 mAs. The
     Monte Carlo's statistical uncertainty is ±$(round(100 * d_s.rel_stat_uncertainty; digits = 2)) %.
     Pass `dose_kwargs = (; phantom = :head16)` to `simulate!` for the 16 cm head phantom.
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 08000020-0000-4000-8000-000000000001
@@ -512,31 +548,58 @@ is given, without projecting again. A noise study over many seeds, or a noise-fr
 noise_draws = let
     ws = BS.create_workspace(scanner, protocol_standard, sim_opts, recon_opts, phantom)
     # one full simulation that keeps everything before the noise …
-    t_full = @elapsed (kept = BS.simulate!(ws, phantom, protocol_standard, sim_opts;
-        report_dose = false, keep_projection = true))
+    t_full = @elapsed (
+        kept = BS.simulate!(
+            ws,
+            phantom,
+            protocol_standard,
+            sim_opts;
+            report_dose = false,
+            keep_projection = true,
+        )
+    )
     # … and a second noise realization drawn from it with another seed
-    opts_2 = BS.SimOptions(; seed = 5678, projector = sim_opts.projector,
-        view_samples = sim_opts.view_samples)
-    BS.simulate!(ws, phantom, protocol_standard, opts_2; report_dose = false, projection = kept.projection)
+    opts_2 = BS.SimOptions(;
+        seed = 5678,
+        projector = sim_opts.projector,
+        view_samples = sim_opts.view_samples,
+    )
+    BS.simulate!(
+        ws,
+        phantom,
+        protocol_standard,
+        opts_2;
+        report_dose = false,
+        projection = kept.projection,
+    )
     sino_reused = Array(ws.sinogram)
     # the same seed simulated from scratch, for comparison
     BS.simulate!(ws, phantom, protocol_standard, opts_2; report_dose = false)
     identical = Array(ws.sinogram) == sino_reused
-    t_reuse = @elapsed BS.simulate!(ws, phantom, protocol_standard, opts_2;
-        report_dose = false, projection = kept.projection)
-    ws = nothing; kept = nothing
+    t_reuse = @elapsed BS.simulate!(
+        ws,
+        phantom,
+        protocol_standard,
+        opts_2;
+        report_dose = false,
+        projection = kept.projection,
+    )
+    ws = nothing
+    kept = nothing
     GC.gc(true)
     (t_full = t_full, t_reuse = t_reuse, identical = identical)
 end;
 
 # ╔═╡ 08000022-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 A full simulation of the standard scan took $(round(noise_draws.t_full; digits = 2)) s; a noise
 draw from its kept projection took $(round(noise_draws.t_reuse; digits = 2)) s,
 $(round(noise_draws.t_full / noise_draws.t_reuse; digits = 1))× less. The draw from the
 projection $(noise_draws.identical ? "is bit-identical to" : "differs from") simulating the same
 seed from scratch.
-""")
+""",
+)
 
 # ╔═╡ 07000000-0000-4000-8000-000000000001
 md"""
@@ -564,10 +627,12 @@ put water at 0 HU. Both protocols share a beam, so one calibration serves both.
 bhc = BS.calibrate_bhc_water(sim_opts, protocol_standard; scanner, geom = sim_std.geom);
 
 # ╔═╡ 09000007-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 **Water BHC:** $(length(bhc.water_bhc_per_col)) per-column polynomials · reference energy
 $(round(bhc.reference_energy_keV; digits = 1)) keV · water μ = $(round(bhc.μ_water_ref; digits = 5)) cm⁻¹
-""")
+""",
+)
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
@@ -599,14 +664,21 @@ function reconstruct_hu(sim, bhc; algorithm::Symbol = :fbp, strength::Integer = 
     ws = if algorithm === :fbp
         BS.create_fdk_recon_workspace(sino, sim.geom, recon_opts.matrix_size)
     elseif algorithm === :hir
-        BS.create_hir_recon_workspace(sino, sim.geom, recon_opts.matrix_size;
-            strength, projector = sim_opts.projector)
+        BS.create_hir_recon_workspace(
+            sino,
+            sim.geom,
+            recon_opts.matrix_size;
+            strength,
+            projector = sim_opts.projector,
+        )
     else
         throw(ArgumentError("algorithm must be :fbp or :hir"))
     end
     μ = BS.reconstruct!(ws, sino, sim.geom)
     hu = Float32.(BS.to_hounsfield(Array(μ); μ_water = bhc.μ_water_ref))
-    ws = nothing; sino = nothing; μ = nothing
+    ws = nothing
+    sino = nothing
+    μ = nothing
     GC.gc(true)
     return hu
 end;
@@ -641,11 +713,16 @@ fewer complete rays.
 
 # ╔═╡ 10000005-0000-4000-8000-000000000001
 water_roi = let
-    labels = BS.resample_to_recon(phantom_cpu, sim_std.geom, recon_opts.matrix_size; method = :nearest)
+    labels = BS.resample_to_recon(
+        phantom_cpu,
+        sim_std.geom,
+        recon_opts.matrix_size;
+        method = :nearest,
+    )
     nx, ny, nz = size(labels)
     kmid = (nz + 1) ÷ 2
     water = UInt8(BS.REGION_SOLID_WATER)
-    r = 3                                     # erosion radius, voxels
+    r = 3 # erosion radius, voxels
     m = falses(nx, ny)
     for j in (1 + r):(ny - r), i in (1 + r):(nx - r)
         m[i, j] = all(labels[i + di, j + dj, kmid] == water for dj in -r:r, di in -r:r)
@@ -657,8 +734,12 @@ end;
 noise = let
     k, m = water_roi.kmid, water_roi.mask
     stat(v) = (mean = Float64(mean(v[:, :, k][m])), σ = Float64(std(v[:, :, k][m])))
-    (fbp_std = stat(hu_fbp_std), hir_std = stat(hu_hir_std),
-     fbp_low = stat(hu_fbp_low), hir_low = stat(hu_hir_low))
+    (
+        fbp_std = stat(hu_fbp_std),
+        hir_std = stat(hu_hir_std),
+        fbp_low = stat(hu_fbp_low),
+        hir_low = stat(hu_hir_low),
+    )
 end;
 
 # ╔═╡ 10000001-0000-4000-8000-000000000001
@@ -678,21 +759,47 @@ let
     fig = Mke.Figure(size = (1100, 1000))
     panels = [
         (1, 1, hu_fbp_std, "FBP", "200 mA · σ = $(round(noise.fbp_std.σ; digits = 1)) HU"),
-        (1, 2, hu_hir_std, "Hybrid IR (strength 60)", "200 mA · σ = $(round(noise.hir_std.σ; digits = 1)) HU"),
+        (
+            1,
+            2,
+            hu_hir_std,
+            "Hybrid IR (strength 60)",
+            "200 mA · σ = $(round(noise.hir_std.σ; digits = 1)) HU",
+        ),
         (2, 1, hu_fbp_low, "FBP", "50 mA · σ = $(round(noise.fbp_low.σ; digits = 1)) HU"),
-        (2, 2, hu_hir_low, "Hybrid IR (strength 60)", "50 mA · σ = $(round(noise.hir_low.σ; digits = 1)) HU"),
+        (
+            2,
+            2,
+            hu_hir_low,
+            "Hybrid IR (strength 60)",
+            "50 mA · σ = $(round(noise.hir_low.σ; digits = 1)) HU",
+        ),
     ]
     local hm
     for (r, c, vol, title, sub) in panels
-        ax = Mke.Axis(fig[r, c]; title, subtitle = sub, aspect = Mke.DataAspect(),
-            titlesize = 26, subtitlesize = 19)
+        ax = Mke.Axis(
+            fig[r, c];
+            title,
+            subtitle = sub,
+            aspect = Mke.DataAspect(),
+            titlesize = 26,
+            subtitlesize = 19,
+        )
         hm = Mke.heatmap!(ax, vol[:, :, k]; colormap = :grays, colorrange = colorrng)
         Mke.hidedecorations!(ax)
     end
     Mke.Colorbar(fig[1:2, 3], hm; label = "HU", width = 14, labelsize = 18)
-    Mke.Label(fig[0, 1:2], "Gammex 472, central slice · window $(colorrng[1]) to $(colorrng[2]) HU";
-        fontsize = 20, tellwidth = false)
-    Mke.save(joinpath(@__DIR__, "..", "assets", "recon_compare_4panel.png"), fig; px_per_unit = 2)
+    Mke.Label(
+        fig[0, 1:2],
+        "Gammex 472, central slice · window $(colorrng[1]) to $(colorrng[2]) HU";
+        fontsize = 20,
+        tellwidth = false,
+    )
+    Mke.save(
+        joinpath(@__DIR__, "..", "assets", "recon_compare_4panel.png"),
+        fig;
+        px_per_unit = 2,
+    )
     fig
 end
 
@@ -700,7 +807,8 @@ end
 let
     band = BS.get_hir_params(60).target_noise_reduction
     red(a, b) = round(100 * (1 - b.σ / a.σ); digits = 1)
-    Markdown.parse("""
+    Markdown.parse(
+        """
     **Water, central slice, $(count(water_roi.mask)) voxels deep inside the solid-water body:**
 
     | protocol | FBP mean (HU) | FBP σ (HU) | HIR mean (HU) | HIR σ (HU) | HIR noise reduction |
@@ -712,7 +820,8 @@ let
     Quantum noise alone predicts 2×; the fixed electronic noise of the detector weighs more at
     low dose and pushes the ratio a little above that. The package's calibration band for HIR
     at strength 60 is $(band[1])–$(band[2]) % noise reduction.
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 12000003-0000-4000-8000-000000000001
@@ -728,15 +837,19 @@ mA, as the measured 50 mA scan shows.
 # ╔═╡ 12000003-0000-4000-8000-000000000002
 let
     mA0, ctdi0, σ0 = protocol_standard.mA, sim_std.dose.ctdi_vol_mGy, noise.fbp_std.σ
-    rows = ["| $(mA) | $(round(ctdi0 * mA / mA0; digits = 2)) | $(round(σ0 * sqrt(mA0 / mA); digits = 1)) |"
-            for mA in (25, 50, 100, 200, 300, 400)]
-    Markdown.parse("""
+    rows = [
+        "| $(mA) | $(round(ctdi0 * mA / mA0; digits = 2)) | $(round(σ0 * sqrt(mA0 / mA); digits = 1)) |"
+        for mA in (25, 50, 100, 200, 300, 400)
+    ]
+    Markdown.parse(
+        """
     | tube current (mA) | CTDIvol (mGy) | expected FBP water noise (HU) |
     |--:|--:|--:|
     $(join(rows, "\n"))
 
     Measured at 50 mA: $(round(noise.fbp_low.σ; digits = 1)) HU.
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 12000003-0000-4000-8000-000000000003
@@ -747,9 +860,15 @@ end
 const DOSE_INPUTS = (200.0, 13.72, 46.5);
 
 # ╔═╡ 12000003-0000-4000-8000-000000000007
-let measured = (Float64(protocol_standard.mA), Float64(sim_std.dose.ctdi_vol_mGy), Float64(noise.fbp_std.σ))
+let measured = (
+    Float64(protocol_standard.mA),
+    Float64(sim_std.dose.ctdi_vol_mGy),
+    Float64(noise.fbp_std.σ),
+)
     all(isapprox.(DOSE_INPUTS, measured; rtol = 0.01)) ||
-        error("DOSE_INPUTS = $(DOSE_INPUTS) no longer match this scan, $(measured): update them")
+        error(
+            "DOSE_INPUTS = $(DOSE_INPUTS) no longer match this scan, $(measured): update them",
+        )
     nothing
 end
 
@@ -759,8 +878,12 @@ end
 # ╔═╡ 12000003-0000-4000-8000-000000000005
 # tube current, CTDIvol (mGy), expected FBP noise (HU), noise relative to the standard scan
 dose_plan = let r = tube_mA / DOSE_INPUTS[1]
-    (tube_mA, round(DOSE_INPUTS[2] * r; digits = 2), round(DOSE_INPUTS[3] / sqrt(r); digits = 1),
-     round(1 / sqrt(r); digits = 2))
+    (
+        tube_mA,
+        round(DOSE_INPUTS[2] * r; digits = 2),
+        round(DOSE_INPUTS[3] / sqrt(r); digits = 1),
+        round(1 / sqrt(r); digits = 2),
+    )
 end;
 
 # ╔═╡ 12000003-0000-4000-8000-000000000006
@@ -777,7 +900,11 @@ than the central ones, so this is where any z-dependence would show first.
 """
 
 # ╔═╡ 12000001-0000-4000-8000-000000000003
-@bind z_slice PlutoUI.Slider(1:size(hu_fbp_std, 3); default = size(hu_fbp_std, 3) ÷ 2, show_value = true)
+@bind z_slice PlutoUI.Slider(
+    1:size(hu_fbp_std, 3);
+    default = size(hu_fbp_std, 3) ÷ 2,
+    show_value = true,
+)
 
 # ╔═╡ 12000001-0000-4000-8000-000000000004
 let
@@ -787,14 +914,33 @@ let
     z_mm = 10 * (-fov_z_cm / 2 + (z_slice - 0.5) * fov_z_cm / nz)
 
     fig = Mke.Figure(size = (1100, 560))
-    Mke.Label(fig[0, 1:3],
+    Mke.Label(
+        fig[0, 1:3],
         "slice $(z_slice) of $(nz) · z = $(round(z_mm; digits = 2)) mm · $(round(dz_mm; digits = 3)) mm slices · 200 mA";
-        fontsize = 24, font = :bold, tellwidth = false)
+        fontsize = 24,
+        font = :bold,
+        tellwidth = false,
+    )
     ax1 = Mke.Axis(fig[1, 1]; title = "FBP", titlesize = 22, aspect = Mke.DataAspect())
-    hm = Mke.heatmap!(ax1, hu_fbp_std[:, :, z_slice]; colormap = :grays, colorrange = (-200, 500))
+    hm = Mke.heatmap!(
+        ax1,
+        hu_fbp_std[:, :, z_slice];
+        colormap = :grays,
+        colorrange = (-200, 500),
+    )
     Mke.hidedecorations!(ax1)
-    ax2 = Mke.Axis(fig[1, 2]; title = "Hybrid IR (strength 60)", titlesize = 22, aspect = Mke.DataAspect())
-    Mke.heatmap!(ax2, hu_hir_std[:, :, z_slice]; colormap = :grays, colorrange = (-200, 500))
+    ax2 = Mke.Axis(
+        fig[1, 2];
+        title = "Hybrid IR (strength 60)",
+        titlesize = 22,
+        aspect = Mke.DataAspect(),
+    )
+    Mke.heatmap!(
+        ax2,
+        hu_hir_std[:, :, z_slice];
+        colormap = :grays,
+        colorrange = (-200, 500),
+    )
     Mke.hidedecorations!(ax2)
     Mke.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
     fig
@@ -830,14 +976,32 @@ let
     end
 
     checks = NamedTuple[]
-    addcheck(name, val, lo, hi) = push!(checks,
-        (name = name, value = round(val; digits = 2), lo = lo, hi = hi, pass = lo <= val <= hi))
+    addcheck(name, val, lo, hi) = push!(
+        checks,
+        (
+            name = name,
+            value = round(val; digits = 2),
+            lo = lo,
+            hi = hi,
+            pass = lo <= val <= hi,
+        ),
+    )
 
     addcheck("water mean, FBP 200 mA (HU)", noise.fbp_std.mean, -6.0, 6.0)
     addcheck("water mean, HIR 200 mA (HU)", noise.hir_std.mean, -6.0, 6.0)
     addcheck("FBP noise ratio 50 / 200 mA", noise.fbp_low.σ / noise.fbp_std.σ, 1.7, 2.4)
-    addcheck("HIR noise < FBP noise, 200 mA (ratio)", noise.hir_std.σ / noise.fbp_std.σ, 0.0, 0.95)
-    addcheck("CTDIvol ratio 50 / 200 mA", sim_low.dose.ctdi_vol_mGy / sim_std.dose.ctdi_vol_mGy, 0.2499, 0.2501)
+    addcheck(
+        "HIR noise < FBP noise, 200 mA (ratio)",
+        noise.hir_std.σ / noise.fbp_std.σ,
+        0.0,
+        0.95,
+    )
+    addcheck(
+        "CTDIvol ratio 50 / 200 mA",
+        sim_low.dose.ctdi_vol_mGy / sim_std.dose.ctdi_vol_mGy,
+        0.2499,
+        0.2501,
+    )
 
     # Radial non-uniformity QA (non-mutating). On a uniform water cylinder both numbers are ≈ 0
     # after the full-spectrum BHC; on the Gammex the radial fit also picks up the hardening
@@ -848,33 +1012,47 @@ let
     addcheck("DC offset QA, FBP (absolute HU, worst slice)", abs(cup.dc_hu), 0.0, 6.0)
 
     rod_rows = String[]
-    n_pass = 0; n_rod = 0
+    n_pass = 0
+    n_rod = 0
     slc(v) = @view v[:, :, k]
-    for lab in 1:(length(phantom_cpu.materials) - 1)   # material entry L + 1 is label L
+    for lab in 1:(length(phantom_cpu.materials) - 1)
+        # material entry L + 1 is label L
         lab == Int(BS.REGION_SOLID_WATER) && continue
         m = eroded(UInt8(lab); r = 2)
         count(m) < 20 && continue
         mat = phantom_cpu.materials[lab + 1]
         theory = 1000 * (BS.compute_μ_at_energy(mat, refE) - μw) / μw
-        fbp = mean(slc(hu_fbp_std)[m]); hir = mean(slc(hu_hir_std)[m])
+        fbp = mean(slc(hu_fbp_std)[m])
+        hir = mean(slc(hu_hir_std)[m])
         fbp_low = mean(slc(hu_fbp_low)[m])
         tol = max(15.0, 0.15 * abs(theory))
         ok = abs(fbp - theory) <= tol &&
-             abs(fbp - fbp_low) <= max(10.0, 0.03 * abs(theory)) &&
-             abs(hir - fbp) <= max(10.0, 0.03 * abs(theory))
-        n_rod += 1; n_pass += ok
-        push!(rod_rows,
+            abs(fbp - fbp_low) <= max(10.0, 0.03 * abs(theory)) &&
+            abs(hir - fbp) <= max(10.0, 0.03 * abs(theory))
+        n_rod += 1
+        n_pass += ok
+        push!(
+            rod_rows,
             "| $(mat.name) | $(round(Int, theory)) | $(round(Int, fbp)) | " *
-            "$(round(fbp - theory; digits = 0)) ($(round(100 * (fbp - theory) / max(abs(theory), 1.0); digits = 1)) %) | " *
-            "$(round(Int, fbp_low)) | $(round(Int, hir)) | $(ok ? "✅" : "❌") |")
+                "$(round(fbp - theory; digits = 0)) ($(round(100 * (fbp - theory) / max(abs(theory), 1.0); digits = 1)) %) | " *
+                "$(round(Int, fbp_low)) | $(round(Int, hir)) | $(ok ? "✅" : "❌") |",
+        )
     end
     addcheck("rods passing (theory, dose- and algorithm-invariant)", n_pass, n_rod, n_rod)
 
     n_ok = count(c -> c.pass, checks)
-    verdict = n_ok == length(checks) ? "✅ VERIFICATION PASS ($(n_ok)/$(length(checks)))" :
-                                       "❌ VERIFICATION FAIL ($(n_ok)/$(length(checks)))"
-    rows = join(["| $(c.name) | $(c.value) | [$(c.lo), $(c.hi)] | $(c.pass ? "✅" : "❌") |" for c in checks], "\n")
-    Markdown.parse("""
+    verdict = n_ok == length(checks) ?
+        "✅ VERIFICATION PASS ($(n_ok)/$(length(checks)))" :
+        "❌ VERIFICATION FAIL ($(n_ok)/$(length(checks)))"
+    rows = join(
+        [
+            "| $(c.name) | $(c.value) | [$(c.lo), $(c.hi)] | $(c.pass ? "✅" : "❌") |"
+            for c in checks
+        ],
+        "\n",
+    )
+    Markdown.parse(
+        """
     #### $(verdict)
 
     | check | value | expected | pass |
@@ -886,7 +1064,8 @@ let
     | rod | theory | FBP 200 mA | FBP − theory | FBP 50 mA | HIR 200 mA | pass |
     |:--|--:|--:|--:|--:|--:|:--|
     $(join(rod_rows, "\n"))
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 11000001-0000-4000-8000-000000000001

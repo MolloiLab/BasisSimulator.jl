@@ -81,7 +81,8 @@ import PlutoUI
 # ╔═╡ 05000001-0000-4000-8000-000000000040
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()   # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
+    # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end
@@ -115,7 +116,7 @@ there. Without it, every compute cell skips and says so.
 const XCAT_DIR = get(ENV, "BASISSIM_XCAT_DIR", joinpath(@__DIR__, "data", "xcat"));
 
 # ╔═╡ 05000002-0000-4000-8000-000000000014
-const CONTRAST_STATE = "high_contrast";   # the sheets: non_contrast, low_contrast, high_contrast
+const CONTRAST_STATE = "high_contrast"; # the sheets: non_contrast, low_contrast, high_contrast
 
 # ╔═╡ 05000002-0000-4000-8000-000000000011
 """
@@ -128,11 +129,14 @@ missing.
 function find_xcat_export(dir, state)
     isdir(dir) || return "no XCAT directory (set `BASISSIM_XCAT_DIR`)"
     raws = filter(f -> endswith(f, "act_1.raw"), readdir(dir))
-    length(raws) == 1 || return "expected one *act_1.raw in the XCAT directory, found $(length(raws))"
+    length(raws) ==
+        1 || return "expected one *act_1.raw in the XCAT directory, found $(length(raws))"
     name = only(raws)
     m = match(r"(\d{3,4})[x_](\d{3,4})[x_](\d{3,4})", name)
     a = match(r"^(v(?:fe)?male_\d+)", name)
-    (m === nothing || a === nothing) && return "cannot read the dimensions or anatomy from $(name)"
+    (
+        m === nothing || a === nothing
+    ) && return "cannot read the dimensions or anatomy from $(name)"
     dims = Tuple(parse.(Int, m.captures))
     raw = joinpath(dir, name)
     filesize(raw) == prod(dims) || return "$(name) is not $(join(dims, " × ")) bytes"
@@ -149,14 +153,20 @@ xcat = find_xcat_export(XCAT_DIR, CONTRAST_STATE);
 const HAS_XCAT = xcat isa NamedTuple;
 
 # ╔═╡ 05000002-0000-4000-8000-000000000013
-HAS_XCAT ? Markdown.parse("""
+HAS_XCAT ?
+    Markdown.parse(
+        """
     **XCAT export:** `$(xcat.name)` ($(join(xcat.dims, " × ")) voxels,
     $(round(prod(xcat.dims) / 1024^3; digits = 2)) GiB) · materials: `$(xcat.sheet_name)`
-    """) : Markdown.parse("""
+    """,
+    ) :
+    Markdown.parse(
+        """
     !!! warning "XCAT export not found — compute cells skipped"
         $(xcat). Set `BASISSIM_XCAT_DIR` to a folder holding one `*act_1.raw` and its
         `Material_Spreadsheets/`, or place them in `docs/notebooks/data/xcat/`, and re-run.
-    """)
+    """,
+    )
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
@@ -180,9 +190,11 @@ function downsample_labeled(phantom::AbstractArray{T, 3}, factor::Int) where {T}
     nx, ny, nz = size(phantom) .÷ factor
     out = similar(phantom, (nx, ny, nz))
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        out[i, j, k] = phantom[(i - 1) * factor + factor ÷ 2 + 1,
-                               (j - 1) * factor + factor ÷ 2 + 1,
-                               (k - 1) * factor + factor ÷ 2 + 1]
+        out[i, j, k] = phantom[
+            (i - 1) * factor + factor ÷ 2 + 1,
+            (j - 1) * factor + factor ÷ 2 + 1,
+            (k - 1) * factor + factor ÷ 2 + 1,
+        ]
     end
     return out
 end
@@ -191,23 +203,26 @@ end
 const DOWNSAMPLE_FACTOR = 2;
 
 # ╔═╡ 05000003-0000-4000-8000-000000000021
-const VOXEL_SIZE_CM = ntuple(_ -> 0.02 * DOWNSAMPLE_FACTOR, 3);   # 0.2 mm export × factor
+const VOXEL_SIZE_CM = ntuple(_ -> 0.02 * DOWNSAMPLE_FACTOR, 3); # 0.2 mm export × factor
 
 # ╔═╡ 05000003-0000-4000-8000-000000000030
 phantom_full_uhr = HAS_XCAT ?
-    downsample_labeled(read_xcat_mask(xcat.raw, xcat.dims), DOWNSAMPLE_FACTOR) : nothing;
+    downsample_labeled(read_xcat_mask(xcat.raw, xcat.dims), DOWNSAMPLE_FACTOR) :
+    nothing;
 
 # ╔═╡ 05000003-0000-4000-8000-000000000040
 if phantom_full_uhr === nothing
     md"""!!! warning "Skipped: no XCAT export (see 1)" """
 else
     let (nx, ny, nz) = size(phantom_full_uhr)
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **Phantom read:** $(nx) × $(ny) × $(nz) voxels of $(round(VOXEL_SIZE_CM[1] * 10; digits = 2)) mm
         ($(round(sizeof(phantom_full_uhr) / 1024^2; digits = 1)) MiB as UInt8),
         $(join(round.((nx, ny, nz) .* VOXEL_SIZE_CM; digits = 1), " × ")) cm,
         $(length(unique(phantom_full_uhr))) labels present.
-        """)
+        """,
+        )
     end
 end
 
@@ -229,20 +244,45 @@ import XLSX
 
 # ╔═╡ 05000004-0000-4000-8000-000000000004
 const _ATOMIC_MASSES = Dict(
-    1 => 1.008, 6 => 12.011, 7 => 14.007, 8 => 15.999, 11 => 22.99, 12 => 24.305,
-    15 => 30.974, 16 => 32.06, 17 => 35.45, 19 => 39.098, 20 => 40.078, 26 => 55.845, 53 => 126.904,
+    1 => 1.008,
+    6 => 12.011,
+    7 => 14.007,
+    8 => 15.999,
+    11 => 22.99,
+    12 => 24.305,
+    15 => 30.974,
+    16 => 32.06,
+    17 => 35.45,
+    19 => 39.098,
+    20 => 40.078,
+    26 => 55.845,
+    53 => 126.904,
 );
 
 # ╔═╡ 05000004-0000-4000-8000-000000000005
 const _I_VALUES_EV = Dict(
-    1 => 19.2, 6 => 81.0, 7 => 82.0, 8 => 95.0, 11 => 149.0, 12 => 156.0,
-    15 => 173.0, 16 => 180.0, 17 => 174.0, 19 => 190.0, 20 => 191.0, 26 => 286.0, 53 => 491.0,
+    1 => 19.2,
+    6 => 81.0,
+    7 => 82.0,
+    8 => 95.0,
+    11 => 149.0,
+    12 => 156.0,
+    15 => 173.0,
+    16 => 180.0,
+    17 => 174.0,
+    19 => 190.0,
+    20 => 191.0,
+    26 => 286.0,
+    53 => 491.0,
 );
 
 # ╔═╡ 05000004-0000-4000-8000-000000000006
 """⟨Z/A⟩ of a composition (mass fractions)."""
-compute_ZA_ratio(comp::Dict{Int, Float64}) =
-    sum(w * Z / _ATOMIC_MASSES[Z] for (Z, w) in comp) / sum(values(comp))
+compute_ZA_ratio(comp::Dict{Int, Float64}) = sum(
+    w * Z / _ATOMIC_MASSES[Z]
+    for (Z, w) in comp
+) /
+    sum(values(comp))
 
 # ╔═╡ 05000004-0000-4000-8000-000000000007
 """Bragg additivity for the mean excitation energy of a composition."""
@@ -268,12 +308,19 @@ function load_xcat_materials(sheet)
     out = Dict{Int, BS.XA.Material}()
     for r in 2:size(data, 1)
         data[r, ncol] isa Number || continue
-        comp = Dict{Int, Float64}(Z => Float64(data[r, c]) for (c, Z) in zcols
-                                  if data[r, c] isa Number && data[r, c] > 0)
-        isapprox(sum(values(comp)), 1; atol = 1.0e-3) || error("mass fractions of $(data[r, 1]) do not sum to 1")
+        comp = Dict{Int, Float64}(
+            Z => Float64(data[r, c])
+            for (c, Z) in zcols
+            if data[r, c] isa Number && data[r, c] > 0
+        )
+        isapprox(sum(values(comp)), 1; atol = 1.0e-3) ||
+            error("mass fractions of $(data[r, 1]) do not sum to 1")
         out[Int(data[r, ncol])] = BS.XA.Material(
-            string(data[r, 1]), compute_ZA_ratio(comp), compute_mean_excitation_energy(comp),
-            Float64(data[r, ncol - 1]) * u"g/cm^3", comp,
+            string(data[r, 1]),
+            compute_ZA_ratio(comp),
+            compute_mean_excitation_energy(comp),
+            Float64(data[r, ncol - 1]) * u"g/cm^3",
+            comp,
         )
     end
     return out
@@ -283,7 +330,8 @@ end
 materials_full = HAS_XCAT ? load_xcat_materials(xcat.sheet) : nothing;
 
 # ╔═╡ 05000004-0000-4000-8000-000000000012
-const LABEL_RANGE = (0, materials_full === nothing ? 1 : maximum(keys(materials_full)));   # one colour per label ID in every map
+# one colour per label ID in every map
+const LABEL_RANGE = (0, materials_full === nothing ? 1 : maximum(keys(materials_full)));
 
 # ╔═╡ 05000004-0000-4000-8000-000000000011
 if materials_full === nothing || phantom_full_uhr === nothing
@@ -291,11 +339,13 @@ if materials_full === nothing || phantom_full_uhr === nothing
 else
     let present = sort(Int.(unique(phantom_full_uhr)))
         unnamed = [l for l in present if l != 0 && !haskey(materials_full, l)]
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **$(length(materials_full)) materials** in `$(xcat.sheet_name)`; $(length(present)) labels
         present in the volume; labels present but not named by the sheet (read as air):
         $(isempty(unnamed) ? "none" : join(unnamed, ", ")).
-        """)
+        """,
+        )
     end
 end
 
@@ -315,34 +365,48 @@ by 1 cm on every side, is the region we scan.
 """
 
 # ╔═╡ 05000005-0000-4000-8000-000000000010
-heart_label_ids = materials_full === nothing ? nothing : let
-    pattern = r"^(myo|bldpl)|pericardium|coronary|^(rca|lcx|lad)\d"i
-    sort(UInt8[UInt8(id) for (id, mat) in materials_full if occursin(pattern, mat.name)])
-end;
+heart_label_ids = materials_full === nothing ?
+    nothing :
+    let
+        pattern = r"^(myo|bldpl)|pericardium|coronary|^(rca|lcx|lad)\d"i
+        sort(
+            UInt8[UInt8(id) for (id, mat) in materials_full if occursin(pattern, mat.name)]
+        )
+    end;
 
 # ╔═╡ 05000005-0000-4000-8000-000000000011
-heart_label_ids === nothing ? md"" : Markdown.parse(
-    "**$(length(heart_label_ids)) cardiac labels:** " *
-    join(["$(Int(id)) `$(materials_full[Int(id)].name)`" for id in heart_label_ids], " · "))
+heart_label_ids === nothing ?
+    md"" :
+    Markdown.parse(
+        "**$(length(heart_label_ids)) cardiac labels:** " *
+            join(
+                ["$(Int(id)) `$(materials_full[Int(id)].name)`" for id in heart_label_ids],
+                " · ",
+            ),
+    )
 
 # ╔═╡ 05000005-0000-4000-8000-000000000020
-heart_bbox = (phantom_full_uhr === nothing || heart_label_ids === nothing) ? nothing : let
-    is_heart = falses(256)
-    for id in heart_label_ids
-        is_heart[Int(id) + 1] = true
-    end
-    nx, ny, nz = size(phantom_full_uhr)
-    lo, hi = [nx + 1, ny + 1, nz + 1], [0, 0, 0]
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        if is_heart[Int(phantom_full_uhr[i, j, k]) + 1]
-            lo .= min.(lo, (i, j, k)); hi .= max.(hi, (i, j, k))
+heart_bbox = (phantom_full_uhr === nothing || heart_label_ids === nothing) ?
+    nothing :
+    let
+        is_heart = falses(256)
+        for id in heart_label_ids
+            is_heart[Int(id) + 1] = true
         end
-    end
-    hi[1] == 0 && error("no cardiac voxels in the phantom")
-    pad = round.(Int, 1.0 ./ VOXEL_SIZE_CM)                      # 1 cm
-    lo .= max.(1, lo .- pad); hi .= min.((nx, ny, nz), hi .+ pad)
-    (i_lo = lo[1], i_hi = hi[1], j_lo = lo[2], j_hi = hi[2], k_lo = lo[3], k_hi = hi[3])
-end;
+        nx, ny, nz = size(phantom_full_uhr)
+        lo, hi = [nx + 1, ny + 1, nz + 1], [0, 0, 0]
+        @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
+            if is_heart[Int(phantom_full_uhr[i, j, k]) + 1]
+                lo .= min.(lo, (i, j, k))
+                hi .= max.(hi, (i, j, k))
+            end
+        end
+        hi[1] == 0 && error("no cardiac voxels in the phantom")
+        pad = round.(Int, 1.0 ./ VOXEL_SIZE_CM) # 1 cm
+        lo .= max.(1, lo .- pad)
+        hi .= min.((nx, ny, nz), hi .+ pad)
+        (i_lo = lo[1], i_hi = hi[1], j_lo = lo[2], j_hi = hi[2], k_lo = lo[3], k_hi = hi[3])
+    end;
 
 # ╔═╡ 05000006-0000-4000-8000-000000000000
 md"""
@@ -361,19 +425,25 @@ field. For a chest scan with a small field, keep the whole phantom and set a sma
 """
 
 # ╔═╡ 05000006-0000-4000-8000-000000000010
-phantom_cropped = heart_bbox === nothing ? nothing : let b = heart_bbox
-    phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
-end;
+phantom_cropped = heart_bbox === nothing ?
+    nothing :
+    let b = heart_bbox
+        phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
+    end;
 
 # ╔═╡ 05000006-0000-4000-8000-000000000020
-phantom_cropped === nothing ? md"" : let
-    n_full, n_crop = length(phantom_full_uhr), length(phantom_cropped)
-    Markdown.parse("""
+phantom_cropped === nothing ?
+    md"" :
+    let
+        n_full, n_crop = length(phantom_full_uhr), length(phantom_cropped)
+        Markdown.parse(
+            """
     **Crop:** $(join(size(phantom_cropped), " × ")) voxels,
     $(join(round.(size(phantom_cropped) .* VOXEL_SIZE_CM; digits = 1), " × ")) cm ·
     $(round(100 * n_crop / n_full; digits = 1)) % of the $(round(n_full / 1.0e6; digits = 1)) M-voxel phantom
-    """)
-end
+    """,
+        )
+    end
 
 # ╔═╡ 05000007-0000-4000-8000-000000000010
 if phantom_cropped === nothing
@@ -385,28 +455,67 @@ else
         vmm = round(VOXEL_SIZE_CM[1] * 10; digits = 2)
 
         fig = Mke.Figure(size = (1300, 600))
-        ax_l = Mke.Axis(fig[1, 1]; title = "Full phantom · z = $(z_full)",
+        ax_l = Mke.Axis(
+            fig[1, 1];
+            title = "Full phantom · z = $(z_full)",
             subtitle = "$(size(phantom_full_uhr, 1)) × $(size(phantom_full_uhr, 2)) @ $(vmm) mm · crop box in red",
-            aspect = Mke.DataAspect(), titlesize = 26, subtitlesize = 18)
-        Mke.heatmap!(ax_l, Float32.(phantom_full_uhr[:, :, z_full]); colormap = :tab20, colorrange = LABEL_RANGE)
-        Mke.poly!(ax_l, Mke.Point2f[(b.i_lo, b.j_lo), (b.i_hi, b.j_lo), (b.i_hi, b.j_hi), (b.i_lo, b.j_hi)];
-            color = :transparent, strokecolor = :red, strokewidth = 3)
+            aspect = Mke.DataAspect(),
+            titlesize = 26,
+            subtitlesize = 18,
+        )
+        Mke.heatmap!(
+            ax_l,
+            Float32.(phantom_full_uhr[:, :, z_full]);
+            colormap = :tab20,
+            colorrange = LABEL_RANGE,
+        )
+        Mke.poly!(
+            ax_l,
+            Mke.Point2f[
+                (b.i_lo, b.j_lo),
+                (b.i_hi, b.j_lo),
+                (b.i_hi, b.j_hi),
+                (b.i_lo, b.j_hi),
+            ];
+            color = :transparent,
+            strokecolor = :red,
+            strokewidth = 3,
+        )
         Mke.hidedecorations!(ax_l)
 
-        ax_r = Mke.Axis(fig[1, 2]; title = "Cropped cardiac block · z = $(z_crop)",
+        ax_r = Mke.Axis(
+            fig[1, 2];
+            title = "Cropped cardiac block · z = $(z_crop)",
             subtitle = "$(size(phantom_cropped, 1)) × $(size(phantom_cropped, 2)) @ $(vmm) mm (same voxels, smaller extent)",
-            aspect = Mke.DataAspect(), titlesize = 26, subtitlesize = 18)
-        Mke.heatmap!(ax_r, Float32.(phantom_cropped[:, :, z_crop]); colormap = :tab20, colorrange = LABEL_RANGE)
+            aspect = Mke.DataAspect(),
+            titlesize = 26,
+            subtitlesize = 18,
+        )
+        Mke.heatmap!(
+            ax_r,
+            Float32.(phantom_cropped[:, :, z_crop]);
+            colormap = :tab20,
+            colorrange = LABEL_RANGE,
+        )
         Mke.hidedecorations!(ax_r)
-        Mke.Label(fig[2, 1:2], "label maps, colour = label ID · anterior at the top, patient's left on the right";
-            fontsize = 16, tellwidth = false)
-        Mke.save(joinpath(@__DIR__, "..", "assets", "xcat_grid_crop.png"), fig; px_per_unit = 2)
+        Mke.Label(
+            fig[2, 1:2],
+            "label maps, colour = label ID · anterior at the top, patient's left on the right";
+            fontsize = 16,
+            tellwidth = false,
+        )
+        Mke.save(
+            joinpath(@__DIR__, "..", "assets", "xcat_grid_crop.png"),
+            fig;
+            px_per_unit = 2,
+        )
         fig
     end
 end
 
 # ╔═╡ 05000008-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 ### 2. Build the `Phantom` and its world affine
 
 Without an `origin`, `Phantom` centres the block on the isocentre
@@ -417,16 +526,20 @@ Two phantoms are built from the same crop. `phantom_cpu` keeps the XCAT labels, 
 resampling. The simulation phantom is `compact_materials(phantom_cpu)` on the device: the same
 attenuation with the labels renumbered densely. The sheet's label IDs run to $(materials_full === nothing ? "—" : maximum(keys(materials_full))), and a table
 of every ID would carry hundreds of materials no voxel holds (`:dd_fast` itself takes any number).
-""")
+""",
+)
 
 # ╔═╡ 05000008-0000-4000-8000-000000000011
-phantom_cpu = phantom_cropped === nothing ? nothing :
+phantom_cpu = phantom_cropped === nothing ?
+    nothing :
     BS.Phantom(phantom_cropped, materials_full, VOXEL_SIZE_CM);
 
 # ╔═╡ 05000008-0000-4000-8000-000000000010
-phantom = phantom_cpu === nothing ? nothing : let c = BS.compact_materials(phantom_cpu)
-    BS.Phantom(to_gpu(c.mask), c.materials, c.voxel_size, c.origin, c.extent)
-end;
+phantom = phantom_cpu === nothing ?
+    nothing :
+    let c = BS.compact_materials(phantom_cpu)
+        BS.Phantom(to_gpu(c.mask), c.materials, c.voxel_size, c.origin, c.extent)
+    end;
 
 # ╔═╡ 05000009-0000-4000-8000-000000000001
 md"""
@@ -450,8 +563,11 @@ if phantom_cpu === nothing
 else
     let A = BS.phantom_to_world_affine(phantom_cpu)
         rows = ["| " * join(round.(A[i, :]; digits = 4), " | ") * " |" for i in 1:4]
-        centre = phantom_cpu.origin .+ phantom_cpu.extent ./ 2 .- phantom_cpu.voxel_size ./ 2
-        Markdown.parse("""
+        centre = phantom_cpu.origin .+
+            phantom_cpu.extent ./ 2 .-
+            phantom_cpu.voxel_size ./ 2
+        Markdown.parse(
+            """
         **`A_phantom = phantom_to_world_affine(phantom_cpu)`** (cm)
 
         | col 1 | col 2 | col 3 | col 4 |
@@ -461,7 +577,8 @@ else
         - voxel = $(round.(phantom_cpu.voxel_size .* 10; digits = 2)) mm, extent = $(round.(phantom_cpu.extent; digits = 3)) cm
         - origin (voxel `(0, 0, 0)`) = $(round.(phantom_cpu.origin; digits = 3)) cm
         - centre of the block = $(round.(centre; digits = 6)) cm, the isocentre
-        """)
+        """,
+        )
     end
 end
 
@@ -484,7 +601,9 @@ let s = scanner, constant = BS.REVOLUTION_APEX
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -498,7 +617,7 @@ let s = scanner, constant = BS.REVOLUTION_APEX
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
@@ -521,11 +640,7 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000040
-sim_opts = BS.SimOptions(
-    seed = 1234,
-    projector = :dd_fast,
-    view_samples = 5,
-);
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
@@ -568,7 +683,8 @@ let A = BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
     rows = ["| " * join(round.(A[i, :]; digits = 4), " | ") * " |" for i in 1:4]
     n = recon_opts.matrix_size
     fov = geom_inspect.fov
-    Markdown.parse("""
+    Markdown.parse(
+        """
     **`A_recon = recon_to_world_affine(geom, matrix_size)`** (cm)
 
     | col 1 | col 2 | col 3 | col 4 |
@@ -577,7 +693,8 @@ let A = BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
 
     - matrix = $(join(n, " × ")), voxel = $(join(round.(fov ./ n .* 10; digits = 3), " × ")) mm, FOV = $(join(round.(fov; digits = 3), " × ")) cm
     - origin = $(join(round.(-1 .* fov ./ 2 .+ fov ./ n ./ 2; digits = 4), ", ")) cm: centred on the isocentre
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 0500000c-0000-4000-8000-000000000010
@@ -587,7 +704,8 @@ else
     let np = size(phantom_cpu.mask), nr = recon_opts.matrix_size, fov = geom_inspect.fov
         vp = round.(phantom_cpu.voxel_size .* 10; digits = 3)
         vr = round.(fov ./ nr .* 10; digits = 3)
-        Markdown.parse("""
+        Markdown.parse(
+            """
         The two grids share world coordinates but little else:
 
         | | phantom (cropped) | reconstruction |
@@ -596,7 +714,8 @@ else
         | voxel size (mm) | $(join(vp, " × ")) | $(join(vr, " × ")) |
         | extent (cm) | $(join(round.(phantom_cpu.extent; digits = 2), " × ")) | $(join(round.(fov; digits = 2), " × ")) |
         | origin (cm) | $(join(round.(phantom_cpu.origin; digits = 3), ", ")) | $(join(round.(-1 .* fov ./ 2 .+ fov ./ nr ./ 2; digits = 3), ", ")) |
-        """)
+        """,
+        )
     end
 end
 
@@ -609,34 +728,51 @@ beam-hardening correction → FDK → HU with the correction's own μ_water.
 """
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000010
-sim = phantom === nothing ? nothing : let
-    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-    t = @elapsed result = BS.simulate!(ws, phantom, protocol, sim_opts)
-    out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
-    ws = nothing
-    GC.gc(true)
-    out
-end;
+sim = phantom === nothing ?
+    nothing :
+    let
+        ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+        t = @elapsed result = BS.simulate!(ws, phantom, protocol, sim_opts)
+        out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
+        ws = nothing
+        GC.gc(true)
+        out
+    end;
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000020
-bhc = sim === nothing ? nothing : BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = sim.geom);
+bhc = sim === nothing ?
+    nothing :
+    BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = sim.geom);
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000030
-recon_HU = sim === nothing ? nothing : let
-    sino = BS.apply_bhc_water(to_gpu(sim.sino), bhc)
-    ws = BS.create_fdk_recon_workspace(sino, sim.geom, recon_opts.matrix_size; filter = :standard)
-    μ = Array(BS.reconstruct!(ws, sino, sim.geom))
-    ws = nothing; sino = nothing; GC.gc(true)
-    Float32.(BS.to_hounsfield(μ; μ_water = bhc.μ_water_ref))
-end;
+recon_HU = sim === nothing ?
+    nothing :
+    let
+        sino = BS.apply_bhc_water(to_gpu(sim.sino), bhc)
+        ws = BS.create_fdk_recon_workspace(
+            sino,
+            sim.geom,
+            recon_opts.matrix_size;
+            filter = :standard,
+        )
+        μ = Array(BS.reconstruct!(ws, sino, sim.geom))
+        ws = nothing
+        sino = nothing
+        GC.gc(true)
+        Float32.(BS.to_hounsfield(μ; μ_water = bhc.μ_water_ref))
+    end;
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000040
-sim === nothing ? md"" : Markdown.parse("""
+sim === nothing ?
+    md"" :
+    Markdown.parse(
+        """
 **Scan A:** $(join(size(sim.sino), " × ")) sinogram (columns × rows × views), simulated in
 $(round(sim.t; digits = 1)) s (first call, compilation included) · CTDIvol =
 $(round(sim.dose.ctdi_vol_mGy; digits = 2)) mGy · water BHC at
 $(round(bhc.reference_energy_keV; digits = 1)) keV
-""")
+""",
+    )
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000001
 md"""
@@ -655,7 +791,8 @@ partial-volume fraction, resample a 0/1 mask of the structure instead.
 """
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000010
-gt_resampled_nn = sim === nothing ? nothing :
+gt_resampled_nn = sim === nothing ?
+    nothing :
     BS.resample_to_recon(phantom_cpu, sim.geom, recon_opts.matrix_size; method = :nearest);
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000012
@@ -665,20 +802,29 @@ function cardiac_coverage(mask, geom, matrix_size)
     for id in heart_label_ids
         binary[mask .== id] .= 0x01
     end
-    ph = BS.Phantom(binary, Dict(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water), VOXEL_SIZE_CM)
+    ph = BS.Phantom(
+        binary,
+        Dict(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water),
+        VOXEL_SIZE_CM,
+    )
     return BS.resample_to_recon(ph, geom, matrix_size; method = :linear)
 end
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000013
-cardiac_coverage_lin = sim === nothing ? nothing :
+cardiac_coverage_lin = sim === nothing ?
+    nothing :
     cardiac_coverage(phantom_cropped, sim.geom, recon_opts.matrix_size);
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000020
-sim === nothing ? md"" : Markdown.parse("""
+sim === nothing ?
+    md"" :
+    Markdown.parse(
+        """
 `gt_resampled_nn` is $(eltype(gt_resampled_nn)) $(join(size(gt_resampled_nn), " × ")), `cardiac_coverage_lin`
 is $(eltype(cardiac_coverage_lin)) $(join(size(cardiac_coverage_lin), " × ")), `recon_HU` is
 $(eltype(recon_HU)) $(join(size(recon_HU), " × ")): index `(i, j, k)` is the same physical voxel in all three.
-""")
+""",
+    )
 
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
 md"""
@@ -701,12 +847,14 @@ end
 if phantom_cpu === nothing
     md"""!!! warning "Skipped: no XCAT export (see 1)" """
 else
-    let M = inv(BS.phantom_to_world_affine(phantom_cpu)) * BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
+    let M = inv(BS.phantom_to_world_affine(phantom_cpu)) *
+        BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
         rows = ["| " * join(round.(M[i, :]; digits = 4), " | ") * " |" for i in 1:4]
         n = recon_opts.matrix_size
         vc = M * [(n[1] - 1) / 2, (n[2] - 1) / 2, (n[3] - 1) / 2, 1.0]
         pc = (size(phantom_cpu.mask) .- 1) ./ 2
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **`M = inv(A_phantom) * A_recon`**
 
         | col 1 | col 2 | col 3 | col 4 |
@@ -715,7 +863,8 @@ else
 
         The centre of the reconstruction grid maps to phantom index $(round.((vc[1], vc[2], vc[3]); digits = 2)),
         the centre of the cropped block ($(round.(pc; digits = 2))).
-        """)
+        """,
+        )
     end
 end
 
@@ -753,27 +902,64 @@ else
         hu_kw = (colormap = :grays, colorrange = (-300, 700))
         tk = (titlesize = 26, subtitlesize = 18, aspect = Mke.DataAspect())
 
-        ax = Mke.Axis(fig[1, 1]; title = "HU reconstruction",
-            subtitle = "slice $(z) of $(size(recon_HU, 3)) · FOV $(recon_opts.fov_cm) cm, centred", tk...)
-        hm = Mke.heatmap!(ax, hu; hu_kw...); Mke.hidedecorations!(ax)
+        ax = Mke.Axis(
+            fig[1, 1];
+            title = "HU reconstruction",
+            subtitle = "slice $(z) of $(size(recon_HU, 3)) · FOV $(recon_opts.fov_cm) cm, centred",
+            tk...,
+        )
+        hm = Mke.heatmap!(ax, hu; hu_kw...)
+        Mke.hidedecorations!(ax)
         Mke.Colorbar(fig[1, 3], hm; label = "HU", width = 14, labelsize = 18)
 
-        ax = Mke.Axis(fig[1, 2]; title = "All labels (:nearest)",
-            subtitle = "$(length(unique(gt_resampled_nn))) labels on the reconstruction grid", tk...)
-        Mke.heatmap!(ax, Float32.(lab); colormap = :tab20, colorrange = LABEL_RANGE); Mke.hidedecorations!(ax)
-
-        ax = Mke.Axis(fig[2, 1]; title = "HU + cardiac labels", subtitle = ":nearest, α = 0.6", tk...)
-        Mke.heatmap!(ax, hu; hu_kw...)
-        Mke.heatmap!(ax, nn_overlay; colormap = :tab20, colorrange = LABEL_RANGE, alpha = 0.6, nan_color = (:white, 0.0))
+        ax = Mke.Axis(
+            fig[1, 2];
+            title = "All labels (:nearest)",
+            subtitle = "$(length(unique(gt_resampled_nn))) labels on the reconstruction grid",
+            tk...,
+        )
+        Mke.heatmap!(ax, Float32.(lab); colormap = :tab20, colorrange = LABEL_RANGE)
         Mke.hidedecorations!(ax)
 
-        ax = Mke.Axis(fig[2, 2]; title = "HU + cardiac coverage", subtitle = ":linear on a 0/1 mask, shown ≥ 0.05", tk...)
+        ax = Mke.Axis(
+            fig[2, 1];
+            title = "HU + cardiac labels",
+            subtitle = ":nearest, α = 0.6",
+            tk...,
+        )
         Mke.heatmap!(ax, hu; hu_kw...)
-        hc = Mke.heatmap!(ax, lin_overlay; colormap = :viridis, colorrange = (0, 1), alpha = 0.7,
-            nan_color = (:white, 0.0))
+        Mke.heatmap!(
+            ax,
+            nn_overlay;
+            colormap = :tab20,
+            colorrange = LABEL_RANGE,
+            alpha = 0.6,
+            nan_color = (:white, 0.0),
+        )
+        Mke.hidedecorations!(ax)
+
+        ax = Mke.Axis(
+            fig[2, 2];
+            title = "HU + cardiac coverage",
+            subtitle = ":linear on a 0/1 mask, shown ≥ 0.05",
+            tk...,
+        )
+        Mke.heatmap!(ax, hu; hu_kw...)
+        hc = Mke.heatmap!(
+            ax,
+            lin_overlay;
+            colormap = :viridis,
+            colorrange = (0, 1),
+            alpha = 0.7,
+            nan_color = (:white, 0.0),
+        )
         Mke.hidedecorations!(ax)
         Mke.Colorbar(fig[2, 3], hc; label = "cardiac fraction", width = 14, labelsize = 18)
-        Mke.save(joinpath(@__DIR__, "..", "assets", "xcat_grid_overlay.png"), fig; px_per_unit = 2)
+        Mke.save(
+            joinpath(@__DIR__, "..", "assets", "xcat_grid_overlay.png"),
+            fig;
+            px_per_unit = 2,
+        )
         fig
     end
 end
@@ -799,25 +985,35 @@ else
         nx, ny = size(lab, 1), size(lab, 2)
         refE, μw = bhc.reference_energy_keV, bhc.μ_water_ref
         # voxels inside the reconstruction circle only
-        inside(i, j) = (i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <= (min(nx, ny) / 2 - 2)^2
+        inside(i, j) = (i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <=
+            (min(nx, ny) / 2 - 2)^2
         rows = String[]
         for id in sort(unique(lab[:, :, k]))
             haskey(materials_full, Int(id)) || continue
-            vox = [recon_HU[i, j, k] for j in 2:(ny - 1), i in 2:(nx - 1)
-                   if inside(i, j) && all(lab[i + di, j + dj, k] == id for di in -1:1, dj in -1:1)]
+            vox = [
+                recon_HU[i, j, k]
+                for j in 2:(ny - 1), i in 2:(nx - 1)
+                if inside(i, j) &&
+                    all(lab[i + di, j + dj, k] == id for di in -1:1, dj in -1:1)
+            ]
             length(vox) < 200 && continue
             mat = materials_full[Int(id)]
             theory = 1000 * (BS.compute_μ_at_energy(mat, refE) - μw) / μw
-            push!(rows, "| $(Int(id)) | `$(mat.name)` | $(length(vox)) | $(round(mean(vox); digits = 1)) | " *
-                        "$(round(std(vox); digits = 1)) | $(round(theory; digits = 1)) | $(round(mean(vox) - theory; digits = 1)) |")
+            push!(
+                rows,
+                "| $(Int(id)) | `$(mat.name)` | $(length(vox)) | $(round(mean(vox); digits = 1)) | " *
+                    "$(round(std(vox); digits = 1)) | $(round(theory; digits = 1)) | $(round(mean(vox) - theory; digits = 1)) |",
+            )
         end
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **Scan A, slice $(k): per-label ROI statistics** (theory = monoenergetic HU at $(round(refE; digits = 1)) keV)
 
         | label | material | voxels | mean HU | σ (HU) | theory HU | mean − theory |
         |--:|:--|--:|--:|--:|--:|--:|
         $(join(rows, "\n"))
-        """)
+        """,
+        )
     end
 end
 
@@ -840,28 +1036,41 @@ phantom allows), so the helix has anatomy to sweep through.
 """
 
 # ╔═╡ 05000013-0000-4000-8000-000000000010
-heart_bbox_tall = heart_bbox === nothing ? nothing : let b = heart_bbox
-    extra = round(Int, 4.0 / VOXEL_SIZE_CM[3])
-    merge(b, (k_lo = max(1, b.k_lo - extra), k_hi = min(size(phantom_full_uhr, 3), b.k_hi + extra)))
-end;
+heart_bbox_tall = heart_bbox === nothing ?
+    nothing :
+    let b = heart_bbox
+        extra = round(Int, 4.0 / VOXEL_SIZE_CM[3])
+        merge(
+            b,
+            (
+                k_lo = max(1, b.k_lo - extra),
+                k_hi = min(size(phantom_full_uhr, 3), b.k_hi + extra),
+            ),
+        )
+    end;
 
 # ╔═╡ 05000013-0000-4000-8000-000000000020
-phantom_cropped_tall = heart_bbox_tall === nothing ? nothing : let b = heart_bbox_tall
-    phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
-end;
+phantom_cropped_tall = heart_bbox_tall === nothing ?
+    nothing :
+    let b = heart_bbox_tall
+        phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
+    end;
 
 # ╔═╡ 05000013-0000-4000-8000-000000000031
-phantom_helical_cpu = phantom_cropped_tall === nothing ? nothing :
+phantom_helical_cpu = phantom_cropped_tall === nothing ?
+    nothing :
     BS.Phantom(phantom_cropped_tall, materials_full, VOXEL_SIZE_CM);
 
 # ╔═╡ 05000013-0000-4000-8000-000000000030
-phantom_helical = phantom_helical_cpu === nothing ? nothing : let c = BS.compact_materials(phantom_helical_cpu)
-    BS.Phantom(to_gpu(c.mask), c.materials, c.voxel_size, c.origin, c.extent)
-end;
+phantom_helical = phantom_helical_cpu === nothing ?
+    nothing :
+    let c = BS.compact_materials(phantom_helical_cpu)
+        BS.Phantom(to_gpu(c.mask), c.materials, c.voxel_size, c.origin, c.extent)
+    end;
 
 # ╔═╡ 05000013-0000-4000-8000-000000000040
 recon_opts_helical = BS.ReconOptions(
-    matrix_size = (384, 384, 64),   # 64 slices of 0.625 mm
+    matrix_size = (384, 384, 64), # 64 slices of 0.625 mm
     fov_cm = 14.0,
     z_cm = 4.0,
 );
@@ -880,30 +1089,58 @@ slices, so the affines apply as before.
 
 # ╔═╡ 05000012-0000-4000-8000-000000000005
 protocol_helical = BS.CTProtocol(
-    kVp = 120, mA = 250.0, views = 500, rotation_time = 1.0,
-    collimation_mm = 10.0, additional_filters = [("Al", 4.5)],
-    pitch = 1.0, n_rotations = 8,
+    kVp = 120,
+    mA = 250.0,
+    views = 500,
+    rotation_time = 1.0,
+    collimation_mm = 10.0,
+    additional_filters = [("Al", 4.5)],
+    pitch = 1.0,
+    n_rotations = 8,
 );
 
 # ╔═╡ 05000012-0000-4000-8000-000000000010
-sim_helical = phantom_helical === nothing ? nothing : let
-    ws = BS.create_workspace(scanner, protocol_helical, sim_opts, recon_opts_helical, phantom_helical)
-    t = @elapsed result = BS.simulate!(ws, phantom_helical, protocol_helical, sim_opts)
-    out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
-    ws = nothing
-    GC.gc(true)
-    out
-end;
+sim_helical = phantom_helical === nothing ?
+    nothing :
+    let
+        ws = BS.create_workspace(
+            scanner,
+            protocol_helical,
+            sim_opts,
+            recon_opts_helical,
+            phantom_helical,
+        )
+        t = @elapsed result = BS.simulate!(ws, phantom_helical, protocol_helical, sim_opts)
+        out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
+        ws = nothing
+        GC.gc(true)
+        out
+    end;
 
 # ╔═╡ 05000012-0000-4000-8000-000000000020
-recon_HU_helical = sim_helical === nothing ? nothing : let
-    bhc_h = BS.calibrate_bhc_water(sim_opts, protocol_helical; scanner, geom = sim_helical.geom)
-    sino = BS.apply_bhc_water(to_gpu(sim_helical.sino), bhc_h)
-    ws = BS.create_fdk_recon_workspace(sino, sim_helical.geom, recon_opts_helical.matrix_size; filter = :standard)
-    μ = Array(BS.reconstruct!(ws, sino, sim_helical.geom))   # helical geometry → rebinned WFBP
-    ws = nothing; sino = nothing; GC.gc(true)
-    Float32.(BS.to_hounsfield(μ; μ_water = bhc_h.μ_water_ref))
-end;
+recon_HU_helical = sim_helical === nothing ?
+    nothing :
+    let
+        bhc_h = BS.calibrate_bhc_water(
+            sim_opts,
+            protocol_helical;
+            scanner,
+            geom = sim_helical.geom,
+        )
+        sino = BS.apply_bhc_water(to_gpu(sim_helical.sino), bhc_h)
+        ws = BS.create_fdk_recon_workspace(
+            sino,
+            sim_helical.geom,
+            recon_opts_helical.matrix_size;
+            filter = :standard,
+        )
+        # helical geometry → rebinned WFBP
+        μ = Array(BS.reconstruct!(ws, sino, sim_helical.geom))
+        ws = nothing
+        sino = nothing
+        GC.gc(true)
+        Float32.(BS.to_hounsfield(μ; μ_water = bhc_h.μ_water_ref))
+    end;
 
 # ╔═╡ 05000014-0000-4000-8000-000000000010
 if sim_helical === nothing
@@ -912,7 +1149,8 @@ else
     let A = BS.recon_to_world_affine(sim_helical.geom, recon_opts_helical.matrix_size)
         rows = ["| " * join(round.(A[i, :]; digits = 4), " | ") * " |" for i in 1:4]
         d = sim_helical.dose
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **Scan B:** $(join(size(sim_helical.sino), " × ")) sinogram, simulated in
         $(round(sim_helical.t; digits = 1)) s · CTDIvol = $(round(d.ctdi_vol_mGy; digits = 2)) mGy,
         DLP = $(round(d.dlp_mGy_cm; digits = 1)) mGy·cm over $(round(d.scan_length_cm; digits = 1)) cm (pitch $(d.pitch))
@@ -925,17 +1163,29 @@ else
 
         $(recon_opts_helical.matrix_size[3]) slices over $(recon_opts_helical.z_cm) cm, against Scan A's
         $(recon_opts.matrix_size[3]) over $(recon_opts.z_cm) cm; the same centred origin rule.
-        """)
+        """,
+        )
     end
 end
 
 # ╔═╡ 05000012-0000-4000-8000-000000000030
-gt_helical_nn = sim_helical === nothing ? nothing :
-    BS.resample_to_recon(phantom_helical_cpu, sim_helical.geom, recon_opts_helical.matrix_size; method = :nearest);
+gt_helical_nn = sim_helical === nothing ?
+    nothing :
+    BS.resample_to_recon(
+        phantom_helical_cpu,
+        sim_helical.geom,
+        recon_opts_helical.matrix_size;
+        method = :nearest,
+    );
 
 # ╔═╡ 05000016-0000-4000-8000-000000000010
-cardiac_coverage_lin_helical = sim_helical === nothing ? nothing :
-    cardiac_coverage(phantom_cropped_tall, sim_helical.geom, recon_opts_helical.matrix_size);
+cardiac_coverage_lin_helical = sim_helical === nothing ?
+    nothing :
+    cardiac_coverage(
+        phantom_cropped_tall,
+        sim_helical.geom,
+        recon_opts_helical.matrix_size,
+    );
 
 # ╔═╡ 05000015-0000-4000-8000-000000000001
 md"""
@@ -952,7 +1202,11 @@ much finer than the reconstruction, a true volume fraction needs box averaging i
 """
 
 # ╔═╡ 05000015-0000-4000-8000-000000000010
-@bind z_helical PlutoUI.Slider(1:recon_opts_helical.matrix_size[3]; default = recon_opts_helical.matrix_size[3] ÷ 2, show_value = true)
+@bind z_helical PlutoUI.Slider(
+    1:recon_opts_helical.matrix_size[3];
+    default = recon_opts_helical.matrix_size[3] ÷ 2,
+    show_value = true,
+)
 
 # ╔═╡ 05000016-0000-4000-8000-000000000020
 if sim_helical === nothing
@@ -969,27 +1223,59 @@ else
         end
         nx, ny = size(lab)
         inside(i, j) = (i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <= (min(nx, ny) / 2)^2
-        nn_over = [inside(i, j) && is_cardiac[Int(lab[i, j]) + 1] ? Float32(lab[i, j]) : NaN32 for i in 1:nx, j in 1:ny]
-        lin_over = [inside(i, j) && cov[i, j] > 0.01f0 ? Float32(cov[i, j]) : NaN32 for i in 1:nx, j in 1:ny]
-        z_mm = 10 * (-recon_opts_helical.z_cm / 2 + (z - 0.5) * recon_opts_helical.z_cm / nz)
+        nn_over = [
+            inside(i, j) && is_cardiac[Int(lab[i, j]) + 1] ? Float32(lab[i, j]) : NaN32
+            for i in 1:nx, j in 1:ny
+        ]
+        lin_over = [
+            inside(i, j) && cov[i, j] > 0.01f0 ? Float32(cov[i, j]) : NaN32
+            for i in 1:nx, j in 1:ny
+        ]
+        z_mm = 10 *
+            (-recon_opts_helical.z_cm / 2 + (z - 0.5) * recon_opts_helical.z_cm / nz)
 
         fig = Mke.Figure(size = (1500, 600))
-        Mke.Label(fig[0, 1:4], "helical WFBP · slice $(z) of $(nz) · z = $(round(z_mm; digits = 2)) mm";
-            fontsize = 24, font = :bold, tellwidth = false)
+        Mke.Label(
+            fig[0, 1:4],
+            "helical WFBP · slice $(z) of $(nz) · z = $(round(z_mm; digits = 2)) mm";
+            fontsize = 24,
+            font = :bold,
+            tellwidth = false,
+        )
         hu_kw = (colormap = :grays, colorrange = (-200, 600))
         tk = (titlesize = 21, aspect = Mke.DataAspect())
         ax1 = Mke.Axis(fig[1, 1]; title = "HU reconstruction", tk...)
-        hm = Mke.heatmap!(ax1, recon; hu_kw...); Mke.hidedecorations!(ax1)
+        Mke.heatmap!(ax1, recon; hu_kw...)
+        Mke.hidedecorations!(ax1)
         ax2 = Mke.Axis(fig[1, 2]; title = ":nearest cardiac labels", tk...)
         Mke.heatmap!(ax2, recon; hu_kw...)
-        Mke.heatmap!(ax2, nn_over; colormap = :tab20, colorrange = LABEL_RANGE, alpha = 0.65, nan_color = (:white, 0.0))
+        Mke.heatmap!(
+            ax2,
+            nn_over;
+            colormap = :tab20,
+            colorrange = LABEL_RANGE,
+            alpha = 0.65,
+            nan_color = (:white, 0.0),
+        )
         Mke.hidedecorations!(ax2)
         ax3 = Mke.Axis(fig[1, 3]; title = ":linear cardiac coverage", tk...)
         Mke.heatmap!(ax3, recon; hu_kw...)
-        hc = Mke.heatmap!(ax3, lin_over; colormap = :viridis, colorrange = (0, 1), alpha = 0.75,
-            nan_color = (:white, 0.0))
+        hc = Mke.heatmap!(
+            ax3,
+            lin_over;
+            colormap = :viridis,
+            colorrange = (0, 1),
+            alpha = 0.75,
+            nan_color = (:white, 0.0),
+        )
         Mke.hidedecorations!(ax3)
-        Mke.Colorbar(fig[1, 4], hc; label = "cardiac fraction", labelsize = 16, ticklabelsize = 13)
+        Mke.Colorbar(
+            fig[1, 4],
+            hc;
+            label = "cardiac fraction",
+            labelsize = 16,
+            ticklabelsize = 13,
+        )
         fig
     end
 end
@@ -1024,23 +1310,33 @@ else
         audit = function (geom, ms)
             A = BS.recon_to_world_affine(geom, ms)
             Ainv = inv(A)
-            grid_err = 0.0; rt_err = 0.0
+            grid_err = 0.0
+            rt_err = 0.0
             for ax in 1:3, idx in (1, (ms[ax] + 1) ÷ 2, ms[ax])
-                v = zeros(4); v[4] = 1.0; v[ax] = idx - 1
+                v = zeros(4)
+                v[4] = 1.0
+                v[ax] = idx - 1
                 world_bp = -geom.fov[ax] / 2 + (idx - 0.5) * geom.fov[ax] / ms[ax]
                 grid_err = max(grid_err, abs((A * v)[ax] - world_bp))
                 rt_err = max(rt_err, abs((Ainv * (A * v))[ax] - (idx - 1)))
             end
-            (grid_err * 1.0e4, rt_err)                       # µm, voxels
+            (grid_err * 1.0e4, rt_err) # µm, voxels
         end
-        rows = ["| axial | $(join(round.(audit(sim.geom, recon_opts.matrix_size); sigdigits = 2), " | ")) |"]
+        rows = [
+            "| axial | $(join(round.(audit(sim.geom, recon_opts.matrix_size); sigdigits = 2), " | ")) |",
+        ]
         sim_helical === nothing ||
-            push!(rows, "| helical | $(join(round.(audit(sim_helical.geom, recon_opts_helical.matrix_size); sigdigits = 2), " | ")) |")
-        Markdown.parse("""
+            push!(
+                rows,
+                "| helical | $(join(round.(audit(sim_helical.geom, recon_opts_helical.matrix_size); sigdigits = 2), " | ")) |",
+            )
+        Markdown.parse(
+            """
         | geometry | affine vs reconstructor grid (max, µm) | round trip `A⁻¹·A·v − v` (max, voxels) |
         |---|--:|--:|
         $(join(rows, "\n"))
-        """)
+        """,
+        )
     end
 end
 
@@ -1054,18 +1350,29 @@ else
         # (Integer resolution: a systematic shift below half a voxel also reads (0, 0).)
         reg_offset = function (recon, gt; R = 5)
             mid = size(recon, 3) ÷ 2
-            hu = Float32.(recon[:, :, mid]); lab = gt[:, :, mid]
+            hu = Float32.(recon[:, :, mid])
+            lab = gt[:, :, mid]
             nx, ny = size(hu)
-            gr = zeros(Float32, nx, ny); lb = zeros(Float32, nx, ny)
+            gr = zeros(Float32, nx, ny)
+            lb = zeros(Float32, nx, ny)
             for j in 2:(ny - 1), i in 2:(nx - 1)
                 gr[i, j] = hypot(hu[i + 1, j] - hu[i - 1, j], hu[i, j + 1] - hu[i, j - 1])
                 # symmetric boundary marker (both sides of an edge), so it carries no half-voxel bias
-                (lab[i, j] != lab[i + 1, j] || lab[i, j] != lab[i - 1, j] ||
-                 lab[i, j] != lab[i, j + 1] || lab[i, j] != lab[i, j - 1]) && (lb[i, j] = 1.0f0)
+                (
+                    lab[i, j] != lab[i + 1, j] ||
+                        lab[i, j] != lab[i - 1, j] ||
+                        lab[i, j] != lab[i, j + 1] ||
+                        lab[i, j] != lab[i, j - 1]
+                ) &&
+                    (lb[i, j] = 1.0f0)
             end
-            scores = Dict((dx, dy) => sum(gr[i, j] * lb[i + dx, j + dy]
-                                          for j in (1 + R):(ny - R), i in (1 + R):(nx - R))
-                          for dx in -R:R, dy in -R:R)
+            scores = Dict(
+                (dx, dy) => sum(
+                    gr[i, j] * lb[i + dx, j + dy]
+                    for j in (1 + R):(ny - R), i in (1 + R):(nx - R)
+                )
+                for dx in -R:R, dy in -R:R
+            )
             best = argmax(scores)
             (best, scores[(0, 0)] / scores[best])
         end
@@ -1075,13 +1382,15 @@ else
             h = reg_offset(recon_HU_helical, gt_helical_nn)
             push!(rows, "| helical | $(h[1]) | $(round(h[2]; digits = 3)) |")
         end
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **Registration of the image to the labels** (central slice, shifts in voxels)
 
         | geometry | best (dx, dy) | score at (0, 0) / best |
         |---|---|--:|
         $(join(rows, "\n"))
-        """)
+        """,
+        )
     end
 end
 

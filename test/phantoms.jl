@@ -11,9 +11,20 @@ import JSON
 @testset "XCAT registry + material map" begin
     @test BS.xcat_phantoms() == [:female_chest, :female_slab, :male_chest, :male_slab]
     m = BS.xcat_default_materials()
-    for n in ("ncat_water", "ncat_muscle", "ncat_lung", "ncat_dry_spine", "ncat_dry_rib",
-              "ncat_adipose", "ncat_blood", "ncat_heart", "ncat_cartilage",
-              "ncat_liver", "ncat_intestine", "ncat_spleen")
+    for n in (
+            "ncat_water",
+            "ncat_muscle",
+            "ncat_lung",
+            "ncat_dry_spine",
+            "ncat_dry_rib",
+            "ncat_adipose",
+            "ncat_blood",
+            "ncat_heart",
+            "ncat_cartilage",
+            "ncat_liver",
+            "ncat_intestine",
+            "ncat_spleen",
+        )
         @test haskey(m, n)
         @test m[n] isa XA.Material
     end
@@ -32,16 +43,22 @@ end
     #   label 1 (water):  [1,1] [2,1] [1,2]            → 3 voxels
     #   label 2 (muscle): [2,2] [3,2] [2,3] [3,3]      → 4 voxels (overwrites (2,2))
     #   label 0 (air):    [3,1] [1,3]                  → 2 voxels
-    write(joinpath(dir, "syn.density_0"), Int8[1, 1, 1, 1])   # water,  2×2
-    write(joinpath(dir, "syn.density_1"), Int8[1, 1, 1, 1])   # muscle, 2×2
+    write(joinpath(dir, "syn.density_0"), Int8[1, 1, 1, 1]) # water,  2×2
+    write(joinpath(dir, "syn.density_1"), Int8[1, 1, 1, 1]) # muscle, 2×2
     hdr = Dict(
         "n_materials" => 2,
         "mat_name" => ["ncat_water", "ncat_muscle"],
         "volumefractionmap_filename" => ["syn.density_0", "syn.density_1"],
         "volumefractionmap_datatype" => ["int8", "int8"],
-        "cols" => [2, 2], "rows" => [2, 2], "slices" => [1, 1],
-        "x_size" => [1.0, 1.0], "y_size" => [1.0, 1.0], "z_size" => [1.0, 1.0],
-        "x_offset" => [1.5, 0.5], "y_offset" => [1.5, 0.5], "z_offset" => [1.0, 1.0],
+        "cols" => [2, 2],
+        "rows" => [2, 2],
+        "slices" => [1, 1],
+        "x_size" => [1.0, 1.0],
+        "y_size" => [1.0, 1.0],
+        "z_size" => [1.0, 1.0],
+        "x_offset" => [1.5, 0.5],
+        "y_offset" => [1.5, 0.5],
+        "z_offset" => [1.0, 1.0],
     )
     open(io -> JSON.print(io, hdr), joinpath(dir, "syn.json"), "w")
 
@@ -53,8 +70,9 @@ end
     @test count(==(0x02), p.mask) == 4
     @test count(==(0x00), p.mask) == 2
     @test p.label_names == Dict(1 => "ncat_water", 2 => "ncat_muscle")
-    @test length(p.materials) == 3               # air + water + muscle (label-keyed, 0 = air)
-    @test p.voxel_size_cm == (0.1, 0.1, 0.1)      # 1 mm header → 0.1 cm
+    # air + water + muscle (label-keyed, 0 = air)
+    @test length(p.materials) == 3
+    @test p.voxel_size_cm == (0.1, 0.1, 0.1) # 1 mm header → 0.1 cm
 
     # the pieces build a Phantom in one line
     phantom = BS.Phantom(p.mask, p.materials, p.voxel_size_cm)
@@ -63,11 +81,20 @@ end
     # material override by XCIST name + explicit voxel size
     mats = BS.xcat_default_materials()
     mats["ncat_water"] = XA.Materials.air
-    p2 = load_xcat_phantom(:female_slab; path = dir, materials = mats, voxel_size_cm = (0.2, 0.2, 0.2))
+    p2 = load_xcat_phantom(
+        :female_slab;
+        path = dir,
+        materials = mats,
+        voxel_size_cm = (0.2, 0.2, 0.2),
+    )
     @test p2.voxel_size_cm == (0.2, 0.2, 0.2)
 
     # an unmapped material name is a clear error
-    @test_throws ErrorException load_xcat_phantom(:female_slab; path = dir, materials = Dict("ncat_muscle" => XA.Materials.muscle))
+    @test_throws ErrorException load_xcat_phantom(
+        :female_slab;
+        path = dir,
+        materials = Dict("ncat_muscle" => XA.Materials.muscle),
+    )
 end
 
 # Regression: each piece's rows are stored BOTTOM-UP, so a piece must be read in
@@ -80,16 +107,22 @@ end
 @testset "XCIST y rows are stored bottom-up (regression)" begin
     dir = mktempdir()
     # water: 2×1 (one row) and muscle: 2×2 (two rows) tile a 2×3 grid, no air.
-    write(joinpath(dir, "syn.density_0"), Int8[1, 1])           # water,  cols=2 rows=1
-    write(joinpath(dir, "syn.density_1"), Int8[1, 1, 1, 1])     # muscle, cols=2 rows=2
+    write(joinpath(dir, "syn.density_0"), Int8[1, 1])       # water,  cols=2 rows=1
+    write(joinpath(dir, "syn.density_1"), Int8[1, 1, 1, 1]) # muscle, cols=2 rows=2
     hdr = Dict(
         "n_materials" => 2,
         "mat_name" => ["ncat_water", "ncat_muscle"],
         "volumefractionmap_filename" => ["syn.density_0", "syn.density_1"],
         "volumefractionmap_datatype" => ["int8", "int8"],
-        "cols" => [2, 2], "rows" => [1, 2], "slices" => [1, 1],
-        "x_size" => [1.0, 1.0], "y_size" => [1.0, 1.0], "z_size" => [1.0, 1.0],
-        "x_offset" => [0.5, 0.5], "y_offset" => [1.5, 3.5], "z_offset" => [1.0, 1.0],
+        "cols" => [2, 2],
+        "rows" => [1, 2],
+        "slices" => [1, 1],
+        "x_size" => [1.0, 1.0],
+        "y_size" => [1.0, 1.0],
+        "z_size" => [1.0, 1.0],
+        "x_offset" => [0.5, 0.5],
+        "y_offset" => [1.5, 3.5],
+        "z_offset" => [1.0, 1.0],
     )
     open(io -> JSON.print(io, hdr), joinpath(dir, "syn.json"), "w")
 
@@ -103,6 +136,6 @@ end
 
     # the pieces tile exactly: every voxel claimed once, none twice, no air
     @test count(==(0x00), p.mask) == 0
-    @test count(==(0x01), p.mask) == 2          # water occupancy preserved in full
-    @test count(==(0x02), p.mask) == 4          # muscle occupancy preserved in full
+    @test count(==(0x01), p.mask) == 2 # water occupancy preserved in full
+    @test count(==(0x02), p.mask) == 4 # muscle occupancy preserved in full
 end

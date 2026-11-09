@@ -32,7 +32,8 @@ using Unitful: @u_str
 # ╔═╡ 10000001-0000-4000-8000-000000000006
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
@@ -69,14 +70,16 @@ define titanium → water cylinder with two Ti rods, and the same cylinder witho
 """
 
 # ╔═╡ 10000002-0000-4000-8000-000000000002
-Markdown.parse("""
+Markdown.parse(
+    """
 ## Notebook Setup
 
 The shared docs environment and the backend-neutral `GPUSelect.Storage()` device choice of
 notebook 01.
 
 **Backend detected:** $(GPU_BACKEND.name)
-""")
+""",
+)
 
 # ╔═╡ 10000002-0000-4000-8000-000000000003
 PlutoUI.TableOfContents()
@@ -94,10 +97,10 @@ mass fraction 1.0) at 4.54 g/cm³. `ZA_ratio` and the mean excitation energy
 # ╔═╡ 10000003-0000-4000-8000-000000000002
 titanium = BS.XA.Material(
     "Titanium (implant)",
-    0.45948,            # ⟨Z/A⟩ for Ti
-    233.0u"eV",         # mean excitation energy
-    4.54u"g/cm^3",      # bulk density
-    Dict(22 => 1.0),    # elemental composition: pure Ti
+    0.45948,         # ⟨Z/A⟩ for Ti
+    233.0u"eV",      # mean excitation energy
+    4.54u"g/cm^3",   # bulk density
+    Dict(22 => 1.0), # elemental composition: pure Ti
 );
 
 # ╔═╡ 10000004-0000-4000-8000-000000000001
@@ -114,11 +117,11 @@ measurement below is compared with.
 phantom_mask = let
     n = 128
     nz = 8
-    vox = 30.0 / n                  # 30 cm field, cm per voxel
+    vox = 30.0 / n # 30 cm field, cm per voxel
     mask = zeros(UInt8, n, n, nz)
     c = (n + 1) / 2
-    r_water = 13.0 / vox            # 26 cm diameter water cylinder
-    r_ti = 0.75 / vox               # 1.5 cm diameter rods
+    r_water = 13.0 / vox # 26 cm diameter water cylinder
+    r_ti = 0.75 / vox    # 1.5 cm diameter rods
     rods = ((c - 4.0 / vox, c), (c + 4.0 / vox, c))
     for k in 1:nz, j in 1:n, i in 1:n
         (i - c)^2 + (j - c)^2 <= r_water^2 || continue
@@ -135,7 +138,7 @@ phantom = BS.Phantom(
 );
 
 # ╔═╡ 10000004-0000-4000-8000-000000000004
-phantom_reference = BS.Phantom(       # the same geometry, rods made of water
+phantom_reference = BS.Phantom( # the same geometry, rods made of water
     to_gpu(phantom_mask.mask),
     Dict(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water, 2 => BS.XA.Materials.water),
     ntuple(_ -> phantom_mask.vox, 3),
@@ -175,7 +178,9 @@ let s = scanner, constant = BS.REVOLUTION_APEX
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -189,7 +194,7 @@ let s = scanner, constant = BS.REVOLUTION_APEX
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
@@ -215,9 +220,14 @@ function scan_hu(phantom)
     sino = BS.apply_bhc_water(ws.sinogram, bhc)
     ws_fdk = BS.create_fdk_recon_workspace(sino, ws.geom, recon_opts.matrix_size)
     μ = BS.reconstruct!(ws_fdk, sino, ws.geom)
-    out = (hu = Float32.(BS.to_hounsfield(Array(μ); μ_water = bhc.μ_water_ref)),
-           max_line_integral = Float64(maximum(ws.sinogram)))
-    ws = nothing; ws_fdk = nothing; sino = nothing; μ = nothing
+    out = (
+        hu = Float32.(BS.to_hounsfield(Array(μ); μ_water = bhc.μ_water_ref)),
+        max_line_integral = Float64(maximum(ws.sinogram)),
+    )
+    ws = nothing
+    ws_fdk = nothing
+    sino = nothing
+    μ = nothing
     GC.gc(true)
     return out
 end;
@@ -251,25 +261,44 @@ fig_artifacts = let
     fig = Mke.Figure(size = (1350, 900))
     tk = (aspect = Mke.DataAspect(), titlesize = 20)
     ax = Mke.Axis(fig[1, 1]; title = "Reference (no metal) · [-200, 200] HU", tk...)
-    Mke.heatmap!(ax, ref; colorrange = (-200, 200), colormap = :grays); Mke.hidedecorations!(ax)
+    Mke.heatmap!(ax, ref; colorrange = (-200, 200), colormap = :grays)
+    Mke.hidedecorations!(ax)
     ax = Mke.Axis(fig[1, 2]; title = "Titanium rods · [-200, 200] HU", tk...)
-    hm = Mke.heatmap!(ax, ti; colorrange = (-200, 200), colormap = :grays); Mke.hidedecorations!(ax)
+    hm = Mke.heatmap!(ax, ti; colorrange = (-200, 200), colormap = :grays)
+    Mke.hidedecorations!(ax)
     Mke.Colorbar(fig[1, 3], hm; label = "HU")
     ax = Mke.Axis(fig[1, 4]; title = "Titanium rods · [-1000, 10000] HU", tk...)
-    hw = Mke.heatmap!(ax, ti; colorrange = (-1000, 10000), colormap = :grays); Mke.hidedecorations!(ax)
+    hw = Mke.heatmap!(ax, ti; colorrange = (-1000, 10000), colormap = :grays)
+    Mke.hidedecorations!(ax)
     Mke.Colorbar(fig[1, 5], hw; label = "HU")
 
-    ax = Mke.Axis(fig[2, 1:2]; title = "Artifact: titanium − reference · [-300, 300] HU", tk...)
-    hd = Mke.heatmap!(ax, ti .- ref; colorrange = (-300, 300), colormap = :RdBu); Mke.hidedecorations!(ax)
+    ax = Mke.Axis(
+        fig[2, 1:2];
+        title = "Artifact: titanium − reference · [-300, 300] HU",
+        tk...,
+    )
+    hd = Mke.heatmap!(ax, ti .- ref; colorrange = (-300, 300), colormap = :RdBu)
+    Mke.hidedecorations!(ax)
     Mke.hlines!(ax, [row]; color = (:black, 0.4), linestyle = :dash)
     Mke.Colorbar(fig[2, 3], hd; label = "ΔHU")
-    ax = Mke.Axis(fig[2, 4:5]; title = "Profile through both rods", xlabel = "x (cm)", ylabel = "HU",
-        titlesize = 20, xlabelsize = 18, ylabelsize = 18)
+    ax = Mke.Axis(
+        fig[2, 4:5];
+        title = "Profile through both rods",
+        xlabel = "x (cm)",
+        ylabel = "HU",
+        titlesize = 20,
+        xlabelsize = 18,
+        ylabelsize = 18,
+    )
     Mke.lines!(ax, x_cm, ref[:, row]; label = "reference", linewidth = 2)
     Mke.lines!(ax, x_cm, ti[:, row]; label = "titanium", linewidth = 2)
     Mke.ylims!(ax, -400, 1000)
     Mke.axislegend(ax; position = :lt)
-    Mke.save(joinpath(@__DIR__, "..", "assets", "titanium_artifacts.png"), fig; px_per_unit = 2)
+    Mke.save(
+        joinpath(@__DIR__, "..", "assets", "titanium_artifacts.png"),
+        fig;
+        px_per_unit = 2,
+    )
     fig
 end
 
@@ -278,10 +307,13 @@ let
     k = size(scan_ti.hu, 3) ÷ 2
     ti, ref = scan_ti.hu[:, :, k], scan_ref.hu[:, :, k]
     cn = size(ti, 1) ÷ 2
-    band(v) = mean(v[(cn - 8):(cn + 8), (cn - 2):(cn + 2)])        # between the rods
-    away(v) = mean(v[(cn - 8):(cn + 8), (cn - 72):(cn - 64)])      # water, 8 cm below the rod axis
-    ring(v) = std(v[(cn - 40):(cn + 40), (cn + 30):(cn + 40)])     # water band 3–4 cm above the axis
-    Markdown.parse("""
+    band(v) = mean(v[(cn - 8):(cn + 8), (cn - 2):(cn + 2)]) # between the rods
+    # water, 8 cm below the rod axis
+    away(v) = mean(v[(cn - 8):(cn + 8), (cn - 72):(cn - 64)])
+    # water band 3–4 cm above the axis
+    ring(v) = std(v[(cn - 40):(cn + 40), (cn + 30):(cn + 40)])
+    Markdown.parse(
+        """
     | measurement | reference (no metal) | titanium | titanium − reference |
     |:--|--:|--:|--:|
     | between the rods, mean HU | $(round(band(ref); digits = 1)) | $(round(band(ti); digits = 1)) | $(round(band(ti) - band(ref); digits = 1)) |
@@ -297,7 +329,8 @@ let
     $(round(ring(ti); digits = 1)) HU, the streaks. A line integral of
     $(round(scan_ti.max_line_integral; digits = 1)) means the rays through both rods keep about
     $(round(100 * exp(-scan_ti.max_line_integral); sigdigits = 2)) % of their unattenuated signal.
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 10000007-0000-4000-8000-000000000001

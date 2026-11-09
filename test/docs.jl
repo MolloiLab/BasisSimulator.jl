@@ -32,27 +32,45 @@ end
     for n in _EXPORTED
         locs = _doc_locations(n)
         path = isempty(locs) ? nothing : first(locs)[1]
-        _APIMap.api_section(string(n), path) == "other" && push!(unplaced, "$n ($(something(path, "no docstring")))")
+        _APIMap.api_section(string(n), path) == "other" &&
+            push!(unplaced, "$n ($(something(path, "no docstring")))")
     end
     @test unplaced == String[]
 
     # Every source file holding an exported name's docstring is covered by the file map itself
     # (exact file or folder prefix), whatever the per-name overrides say — a new file must be
     # given a section deliberately.
-    files = sort!(unique(p for n in _EXPORTED for (p, _) in _doc_locations(n) if p !== nothing))
+    files = sort!(unique(
+        p
+        for n in _EXPORTED
+        for (p, _) in _doc_locations(n)
+        if p !== nothing
+    ))
     covered(p) = haskey(_APIMap.API_FILE_SECTION, p) ||
         any(k -> endswith(k, "/") && startswith(p, k), keys(_APIMap.API_FILE_SECTION))
     @test filter(!covered, files) == String[]
 
     # The map points only at sections that exist and at names / files that still exist.
-    all_targets = [values(_APIMap.API_NAME_SECTION)..., values(_APIMap.API_PREFIX_SECTION)...,
-                   values(_APIMap.API_FILE_SECTION)...]
+    all_targets = [
+        values(_APIMap.API_NAME_SECTION)...,
+        values(_APIMap.API_PREFIX_SECTION)...,
+        values(_APIMap.API_FILE_SECTION)...,
+    ]
     @test filter(!in(section_ids), all_targets) == String[]
     exported = Set(string.(_EXPORTED))
     @test filter(!in(exported), collect(keys(_APIMap.API_NAME_SECTION))) == String[]
     @test filter(!in(exported), _APIMap.API_LEADS) == String[]
     src = joinpath(pkgdir(BS), "src")
-    srcfiles = [replace(relpath(joinpath(r, f), src), '\\' => '/') for (r, _, fs) in walkdir(src) for f in fs if endswith(f, ".jl")]
-    stale = [k for k in keys(_APIMap.API_FILE_SECTION) if !any(f -> f == k || (endswith(k, "/") && startswith(f, k)), srcfiles)]
+    srcfiles = [
+        replace(relpath(joinpath(r, f), src), '\\' => '/')
+        for (r, _, fs) in walkdir(src)
+        for f in fs
+        if endswith(f, ".jl")
+    ]
+    stale = [
+        k
+        for k in keys(_APIMap.API_FILE_SECTION)
+        if !any(f -> f == k || (endswith(k, "/") && startswith(f, k)), srcfiles)
+    ]
     @test stale == String[]
 end

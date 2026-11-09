@@ -46,10 +46,12 @@ struct SimOptions
     use_heel_effect::Bool
     # --- General ---
     seed::Union{Int, Nothing}
-    projector::Symbol                  # :dd_fast (default), :siddon (comparison)
+    projector::Symbol # :dd_fast (default), :siddon (comparison)
     # --- Acquisition ---
-    view_samples::Int                  # angular samples per view across its integration arc (1 = instantaneous)
-    view_arc::Float64                  # the arc a view integrates over, as a fraction of the view spacing
+    # angular samples per view across its integration arc (1 = instantaneous)
+    view_samples::Int
+    # the arc a view integrates over, as a fraction of the view spacing
+    view_arc::Float64
 end
 
 """
@@ -78,28 +80,36 @@ count-noise blend of [`PCCTScanner`](@ref). A variant is the copy constructor,
   energy for rapid kVp switching.
 """
 function SimOptions(;
-        use_scatter::Bool = true,
-        use_focal_spot::Bool = true,
-        use_noise::Bool = true,
-        use_heel_effect::Bool = true,
-        seed::Union{Int, Nothing} = 42,
-        projector::Symbol = :dd_fast,
-        view_samples::Integer = 1,
-        view_arc::Real = 1.0,
-    )
+    use_scatter::Bool = true,
+    use_focal_spot::Bool = true,
+    use_noise::Bool = true,
+    use_heel_effect::Bool = true,
+    seed::Union{Int, Nothing} = 42,
+    projector::Symbol = :dd_fast,
+    view_samples::Integer = 1,
+    view_arc::Real = 1.0,
+)
     _validate_projector(projector)
-    view_samples >= 1 || throw(ArgumentError("view_samples must be at least 1, got $(view_samples)"))
+    view_samples >= 1 ||
+        throw(ArgumentError("view_samples must be at least 1, got $(view_samples)"))
     0 < view_arc <= 1 || throw(ArgumentError("view_arc must be in (0, 1], got $(view_arc)"))
     return SimOptions(
-        use_scatter, use_focal_spot, use_noise, use_heel_effect, seed, projector,
-        Int(view_samples), Float64(view_arc)
+        use_scatter,
+        use_focal_spot,
+        use_noise,
+        use_heel_effect,
+        seed,
+        projector,
+        Int(view_samples),
+        Float64(view_arc),
     )
 end
 
 # A variant of `o`: every option copied, the keywords given replaced.
-SimOptions(o::SimOptions; kwargs...) = SimOptions(;
-    merge(NamedTuple{fieldnames(SimOptions)}(getfield.(Ref(o), fieldnames(SimOptions))), values(kwargs))...,
-)
+SimOptions(o::SimOptions; kwargs...) = SimOptions(; merge(
+    NamedTuple{fieldnames(SimOptions)}(getfield.(Ref(o), fieldnames(SimOptions))),
+    values(kwargs),
+)...)
 
 """
     ReconOptions
@@ -139,10 +149,10 @@ ReconOptions(matrix_size = (512, 512, 80), fov_cm = 50.0, z_cm = 5.0)
 ```
 """
 function ReconOptions(;
-        matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
-        fov_cm::Real = 35.0,
-        z_cm::Union{Real, Nothing} = nothing,
-    )
+    matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
+    fov_cm::Real = 35.0,
+    z_cm::Union{Real, Nothing} = nothing,
+)
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
     _z_cm = isnothing(z_cm) ? nothing : Float64(z_cm)
     return ReconOptions(_size, Float64(fov_cm), _z_cm)

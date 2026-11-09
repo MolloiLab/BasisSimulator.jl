@@ -66,8 +66,10 @@ end
 # own second moment, the native dexel's counts being Poisson.
 function _native_table_response(t)
     nE, nT = length(t.energies), length(t.thresholds)
-    R = dropdims(sum(t.mean[t.type_index[:], :, :]; dims = 1); dims = 1) ./ length(t.type_index)
-    second = dropdims(sum(t.pair[t.type_index[:], :, 2, 2, :, :]; dims = 1); dims = 1) ./ length(t.type_index)
+    R = dropdims(sum(t.mean[t.type_index[:], :, :]; dims = 1); dims = 1) ./
+        length(t.type_index)
+    second = dropdims(sum(t.pair[t.type_index[:], :, 2, 2, :, :]; dims = 1); dims = 1) ./
+        length(t.type_index)
     Cov = second .- reshape(R, nE, nT, 1) .* reshape(R, nE, 1, nT)
     return MCResponseData(round.(Int, t.energies), round.(Int, t.thresholds), R, Cov)
 end
@@ -75,17 +77,20 @@ end
 # The scanner's thresholds among the table's: the table is cumulative at its own 16.
 function _table_threshold_index(t, thresholds)
     idx = [findfirst(==(Float64(x)), t.thresholds) for x in thresholds]
-    any(isnothing, idx) && throw(
-        ArgumentError(
+    any(isnothing, idx) &&
+        throw(ArgumentError(
             "the photon-counting response is tabulated at the thresholds $(t.thresholds) keV; " *
-                "$(thresholds) are not all among them"
-        )
-    )
+                "$(thresholds) are not all among them",
+        ))
     return Int.(idx)
 end
 
 # The spectrum's weights spread linearly onto the table's energy grid.
-function _table_weights(grid::AbstractVector, energies::AbstractVector, weights::AbstractVector)
+function _table_weights(
+    grid::AbstractVector,
+    energies::AbstractVector,
+    weights::AbstractVector,
+)
     w = zeros(length(grid))
     for (E, x) in zip(Float64.(energies), Float64.(weights))
         x == 0 && continue
@@ -150,11 +155,15 @@ Poisson while two neighbours covary by the class's rate, and a 2 × 2 digital su
 photon twice: its variance exceeds its mean. The shares are this spectrum's; [`pcct_count!`](@ref)
 keeps every dexel's mean whatever its own spectrum.
 """
-function pcct_event_classes(thresholds::AbstractVector, energies::AbstractVector, weights::AbstractVector)
+function pcct_event_classes(
+    thresholds::AbstractVector,
+    energies::AbstractVector,
+    weights::AbstractVector,
+)
     t = pcct_native_table()
     ti = _table_threshold_index(t, thresholds)
     nb = length(ti)
-    D = zeros(nb, length(t.thresholds))                  # cumulative → differential
+    D = zeros(nb, length(t.thresholds)) # cumulative → differential
     for b in 1:nb
         D[b, ti[b]] = 1
         b < nb && (D[b, ti[b + 1]] = -1)
@@ -169,22 +178,42 @@ function pcct_event_classes(thresholds::AbstractVector, energies::AbstractVector
             x == 0 && continue
             M .+= x .* (D * @view(t.mean[ty, e, :]))
             for (dx, dy) in offsets
-                P[(dx, dy)] .+= x .* (D * @view(t.pair[ty, e, mx * dx + 2, my * dy + 2, :, :]) * transpose(D))
+                P[(dx, dy)] .+= x .*
+                    (
+                        D *
+                            @view(t.pair[ty, e, mx * dx + 2, my * dy + 2, :, :]) *
+                            transpose(D)
+                    )
             end
         end
     end
-    shared_pairs = NamedTuple{(:dx, :dy, :b, :b2, :c1, :c2), Tuple{Int, Int, Int, Int, Float64, Float64}}[]
+    shared_pairs = NamedTuple{
+        (:dx, :dy, :b, :b2, :c1, :c2),
+        Tuple{Int, Int, Int, Int, Float64, Float64},
+    }[]
     shared = zeros(nb)
     for (dx, dy) in ((1, 0), (0, 1), (1, 1), (1, -1))
-        S = (P[(dx, dy)] .+ transpose(P[(-dx, -dy)])) ./ 2   # the same photons, seen from either side
+        # the same photons, seen from either side
+        S = (P[(dx, dy)] .+ transpose(P[(-dx, -dy)])) ./ 2
         for b in 1:nb, b2 in 1:nb
             (M[b] > 0 && M[b2] > 0 && S[b, b2] > 1.0e-7 * max(M[b], M[b2])) || continue
-            push!(shared_pairs, (dx = dx, dy = dy, b = b, b2 = b2, c1 = S[b, b2] / M[b], c2 = S[b, b2] / M[b2]))
+            push!(
+                shared_pairs,
+                (
+                    dx = dx,
+                    dy = dy,
+                    b = b,
+                    b2 = b2,
+                    c1 = S[b, b2] / M[b],
+                    c2 = S[b, b2] / M[b2],
+                ),
+            )
             shared[b] += S[b, b2] / M[b]
             shared[b2] += S[b, b2] / M[b2]
         end
     end
-    all(shared .< 1) || error("pcct_event_classes: the shared counts exceed the counts ($(shared))")
+    all(shared .< 1) ||
+        error("pcct_event_classes: the shared counts exceed the counts ($(shared))")
     return (pairs = shared_pairs, single = 1 .- shared)
 end
 
@@ -212,18 +241,20 @@ the realisation on a backend whatever the thread count or launch order (`seed = 
 fresh one), and the two dexels of a shared photon draw it alike.
 """
 function pcct_count!(
-        counts::AbstractVector,
-        expected::AbstractVector,
-        classes;
-        seed = nothing,
-        binning::Integer = 1,
-        pileup = nothing,
-    )
+    counts::AbstractVector,
+    expected::AbstractVector,
+    classes;
+    seed = nothing,
+    binning::Integer = 1,
+    pileup = nothing,
+)
     nb = length(expected)
     nc, nr, nv = size(expected[1])
     length(counts) == nb || throw(DimensionMismatch("one counts array per bin"))
     size(counts[1]) == (nc ÷ binning, nr ÷ binning, nv) ||
-        throw(DimensionMismatch("the counts must be the expected counts summed $binning × $binning"))
+        throw(DimensionMismatch(
+            "the counts must be the expected counts summed $binning × $binning",
+        ))
     T = eltype(counts[1])
     device(x) = copyto!(similar(counts[1], eltype(x), size(x)), x)
     base = seed === nothing ? rand(Random.default_rng(), UInt64) : UInt64(seed)
@@ -245,10 +276,15 @@ function pcct_count!(
     pile = if pileup === nothing
         nothing
     else
-        size(pileup.S, 3) == length(pileup.rates) && size(pileup.S, 4) == length(pileup.hardness) ||
+        size(pileup.S, 3) == length(pileup.rates) &&
+            size(pileup.S, 4) == length(pileup.hardness) ||
             throw(DimensionMismatch("pcct_count!: one matrix per rate and hardness"))
-        length(pileup.rates) >= 2 && length(pileup.hardness) >= 2 && issorted(pileup.hardness) ||
-            throw(ArgumentError("pcct_count!: at least two rates and two increasing hardness nodes"))
+        length(pileup.rates) >= 2 &&
+            length(pileup.hardness) >= 2 &&
+            issorted(pileup.hardness) ||
+            throw(ArgumentError(
+                "pcct_count!: at least two rates and two increasing hardness nodes",
+            ))
         (
             S = device(T.(pileup.S)),
             dr = T(pileup.rates[2] - pileup.rates[1]),
@@ -269,8 +305,10 @@ function _pcct_count!(out::NTuple{NB}, λ::NTuple{NB}, pairs, pile, base, bf) wh
         cb, rb, v = Tuple(pixels[idx])
         acc = ntuple(_ -> zero(eltype(out[1])), Val(NB))
         for j in Int32(0):(bf - Int32(1)), i in Int32(0):(bf - Int32(1))
-            c, r = (Int32(cb) - Int32(1)) * bf + Int32(1) + i, (Int32(rb) - Int32(1)) * bf + Int32(1) + j
-            n = pairs === nothing ? ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB)) :
+            c, r = (Int32(cb) - Int32(1)) * bf + Int32(1) + i,
+                (Int32(rb) - Int32(1)) * bf + Int32(1) + j
+            n = pairs === nothing ?
+                ntuple(b -> @inbounds(λ[b][c, r, v]), Val(NB)) :
                 _dexel_counts(λ, pairs, base, c, r, v, nc, nr)
             pile === nothing || (n = _pile_up(n, pile))
             acc = acc .+ n
@@ -280,7 +318,10 @@ function _pcct_count!(out::NTuple{NB}, λ::NTuple{NB}, pairs, pile, base, bf) wh
     return out
 end
 
-@inline _add_at(n::NTuple{NB}, b, x) where {NB} = ntuple(i -> i == b ? n[i] + x : n[i], Val(NB))
+@inline _add_at(n::NTuple{NB}, b, x) where {NB} = ntuple(
+    i -> i == b ? n[i] + x : n[i],
+    Val(NB),
+)
 
 # One dexel's counts in every bin: each class it shares with a forward neighbour (`+ (dx, dy)`,
 # counted in bin `b`) and with a backward one (`− (dx, dy)`, in `b2`), then its unshared counts, the
@@ -296,13 +337,21 @@ end
         cn, rn = c + dx, r + dy
         if 1 <= cn <= nc && 1 <= rn <= nr
             rate = _shared_rate(own[b], @inbounds(λ[b2][cn, rn, v]), pairs, p)
-            n = _add_at(n, b, first(_poisson_draw(_DrawStream(base, NB + p, c, r, v), rate)))
+            n = _add_at(
+                n,
+                b,
+                first(_poisson_draw(_DrawStream(base, NB + p, c, r, v), rate)),
+            )
             shared = _add_at(shared, b, rate)
         end
         cp, rp = c - dx, r - dy
         if 1 <= cp <= nc && 1 <= rp <= nr
             rate = _shared_rate(@inbounds(λ[b][cp, rp, v]), own[b2], pairs, p)
-            n = _add_at(n, b2, first(_poisson_draw(_DrawStream(base, NB + p, cp, rp, v), rate)))
+            n = _add_at(
+                n,
+                b2,
+                first(_poisson_draw(_DrawStream(base, NB + p, cp, rp, v), rate)),
+            )
             shared = _add_at(shared, b2, rate)
         end
     end
@@ -312,7 +361,11 @@ end
 # A dexel's counts `n` from the photons it shares, plus its unshared counts in every bin: the rest
 # of its expected counts `own`, the classes' rates `shared` taken off.
 @inline _add_unshared(n::NTuple{NB}, shared, own, base, c, r, v) where {NB} = ntuple(
-    b -> n[b] + first(_poisson_draw(_DrawStream(base, b, c, r, v), max(own[b] - shared[b], zero(own[b])))),
+    b -> n[b] +
+        first(_poisson_draw(
+            _DrawStream(base, b, c, r, v),
+            max(own[b] - shared[b], zero(own[b])),
+        )),
     Val(NB),
 )
 
@@ -320,8 +373,11 @@ end
 # neighbour counting `λ2` in the second: the mean of the two dexels' estimates, `λ1 c1` and `λ2 c2`
 # (equal in a flat field of the classes' spectrum), capped at each dexel's `λ k`, the class's share of
 # its shared counts, so that no dexel's shared counts exceed its counts.
-@inline _shared_rate(λ1, λ2, pairs, p) =
-    @inbounds min(fma(λ1, pairs.c1[p], λ2 * pairs.c2[p]) / 2, λ1 * pairs.k1[p], λ2 * pairs.k2[p])
+@inline _shared_rate(λ1, λ2, pairs, p) = @inbounds min(
+    fma(λ1, pairs.c1[p], λ2 * pairs.c2[p]) / 2,
+    λ1 * pairs.k1[p],
+    λ2 * pairs.k2[p],
+)
 
 # A dexel's counts piled up at its own counted rate and spectrum: `S` bilinear in the rate and the
 # mean bin between the family's matrices.
@@ -345,16 +401,15 @@ end
 @inline function _migrate(S, n::NTuple{NB, T}, k, m, f, g) where {NB, T}
     return ntuple(i -> _migrate_row(S, n, i, k, m, f, g), Val(NB))
 end
-@inline _migrate_row(S, n::NTuple{NB, T}, i, k, m, f, g) where {NB, T} = sum(
-    ntuple(
-        j -> @inbounds(
-            (
-                (1 - g) * ((1 - f) * S[i, j, k + 1, m] + f * S[i, j, k + 2, m]) +
-                    g * ((1 - f) * S[i, j, k + 1, m + 1] + f * S[i, j, k + 2, m + 1])
-            ) * n[j]
-        ),
-        Val(NB),
-    )
-)
+@inline _migrate_row(S, n::NTuple{NB, T}, i, k, m, f, g) where {NB, T} = sum(ntuple(
+    j -> @inbounds(
+        (
+            (1 - g) * ((1 - f) * S[i, j, k + 1, m] + f * S[i, j, k + 2, m]) +
+                g * ((1 - f) * S[i, j, k + 1, m + 1] + f * S[i, j, k + 2, m + 1])
+        ) *
+            n[j],
+    ),
+    Val(NB),
+))
 
 # Internal: the simulator's plumbing, reached as `BasisSimulator.pcct_count!` etc. (not exported).

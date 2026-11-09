@@ -58,7 +58,7 @@ struct HIRParams
     n_subsets::Int
     huber_delta::Float32
     relaxation::Float32
-    target_noise_reduction::Tuple{Int, Int}  # (min%, max%)
+    target_noise_reduction::Tuple{Int, Int} # (min%, max%)
 end
 
 # Ordered subsets: fixed at 12 for every strength.  One OS epoch ≈ 12 full-data
@@ -82,12 +82,12 @@ const _HIR_N_SUBSETS = 12
 # `test/api.jl`) and monotone in measured σ.
 const _HIR_ANCHORS = (
     #  %   λ       nepochs  δ        relaxation  target band
-    (  0, 0.0f0,   0,       0.08f0,  0.5f0,      ( 0,  0)),
-    ( 20, 1.0f0,   1,       0.08f0,  0.5f0,      ( 8, 15)),
-    ( 40, 2.0f0,   2,       0.07f0,  0.4f0,      (15, 25)),
-    ( 60, 4.0f0,   2,       0.06f0,  0.35f0,     (25, 35)),
-    ( 80, 6.0f0,   3,       0.05f0,  0.3f0,      (30, 42)),
-    (100, 8.0f0,   4,       0.045f0, 0.28f0,     (35, 50)),
+    (0, 0.0f0, 0, 0.08f0, 0.5f0, (0, 0)),
+    (20, 1.0f0, 1, 0.08f0, 0.5f0, (8, 15)),
+    (40, 2.0f0, 2, 0.07f0, 0.4f0, (15, 25)),
+    (60, 4.0f0, 2, 0.06f0, 0.35f0, (25, 35)),
+    (80, 6.0f0, 3, 0.05f0, 0.3f0, (30, 42)),
+    (100, 8.0f0, 4, 0.045f0, 0.28f0, (35, 50)),
 )
 
 @inline _hir_anchor(a) = HIRParams(a[1], a[2], a[3], _HIR_N_SUBSETS, a[4], a[5], a[6])
@@ -129,9 +129,10 @@ function get_hir_params(strength::Integer)
         # multiple-of-10 test, so a stale call errors loudly here instead of
         # silently reconstructing at 3 % strength.
         hint = 1 ≤ strength ≤ 5 ?
-            "  `strength` is now a percentage: the old level $strength is `strength = $(20 * strength)`." : ""
+            "  `strength` is now a percentage: the old level $strength is `strength = $(20 * strength)`." :
+            ""
         throw(ArgumentError(
-            "HIR strength must be 0-100 in steps of 10, got $strength.$hint"
+            "HIR strength must be 0-100 in steps of 10, got $strength.$hint",
         ))
     end
 
@@ -153,7 +154,9 @@ function get_hir_params(strength::Integer)
         _HIR_N_SUBSETS,
         lerp(lo[4], hi[4]),
         lerp(lo[5], hi[5]),
-        (round(Int, lerp(Float32(lo[6][1]), Float32(hi[6][1]))),
-         round(Int, lerp(Float32(lo[6][2]), Float32(hi[6][2])))),
+        (
+            round(Int, lerp(Float32(lo[6][1]), Float32(hi[6][1]))),
+            round(Int, lerp(Float32(lo[6][2]), Float32(hi[6][2]))),
+        ),
     )
 end

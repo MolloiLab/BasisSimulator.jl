@@ -29,18 +29,22 @@ All GPU-side buffers match the backend of the phantom mask passed to
 Pre-computed setup data (geometry, spectrum, physics config, detector) is
 computed once in `create_workspace()` and stored here for zero-alloc reuse.
 """
-mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <: AbstractArray{T, 1}, A2 <: AbstractArray{T, 2}}
+mutable struct PCCTWorkspace{
+    T <: AbstractFloat,
+    A3 <: AbstractArray{T, 3},
+    A1 <: AbstractArray{T, 1},
+    A2 <: AbstractArray{T, 2},
+}
     # ─── Forward projection (GPU-side) ───
-    bins::Vector{A3}           # n_bins sinogram buffers (output of forward projection)
-    μ_volume::A3               # attenuation volume, reused per energy
-    sino_buf::A3               # forward projection scratch, reused per energy
+    bins::Vector{A3} # n_bins sinogram buffers (output of forward projection)
+    μ_volume::A3     # attenuation volume, reused per energy
+    sino_buf::A3     # forward projection scratch, reused per energy
 
     # ─── Spatial kernel scratch (GPU-side) ───
-    scratch::A3                # ONE buffer for spatial kernels
+    scratch::A3 # ONE buffer for spatial kernels
 
     # ─── Pre-computed CPU vectors/matrices ───
-    R::Matrix{Float64}          # spectral response matrix (n_energies × n_bins)
-    R_energies::Vector{Float64} # energy grid for R matrix
+    R::Matrix{Float64} # spectral response matrix (n_energies × n_bins)
     # ─── Air response, per ray ───
     # `I0[col, row, b]` is the forward kernel's own air output for that ray and bin — the source
     # spectrum through the bowtie (and heel effect) at that ray, Σ_e W[e, b]·bt[col, row, e] — so
@@ -48,43 +52,53 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # per ray, as a real scanner's air calibration makes it.  With no bowtie it is constant
     # across the fan.  Every count-domain step (noise, pile-up, scatter, capture, combine)
     # forms counts as `I0[col, row, b] · exp(-p)`.
-    I0::A3                      # [n_cols, n_rows, n_bins], binned resolution, backend
-    I0_all::A2                  # [n_cols, n_rows]: Σ_b I0, the whole-spectrum air response per ray
-    I0_cpu::Array{Float64, 3}   # the same on the host
-    I0_native::Union{Nothing, A3}  # [native cols, native rows, n_bins] when bf > 1
-    thresholds_T::Vector{T}     # T-typed thresholds (n_bins)
+    I0::A3 # [n_cols, n_rows, n_bins], binned resolution, backend
+    # [n_cols, n_rows]: Σ_b I0, the whole-spectrum air response per ray
+    I0_all::A2
+    I0_cpu::Array{Float64, 3}     # the same on the host
+    I0_native::Union{Nothing, A3} # [native cols, native rows, n_bins] when bf > 1
+    thresholds_T::Vector{T}       # T-typed thresholds (n_bins)
 
     # ─── μ lookup table (pre-computed for all energies × materials) ───
-    μ_lut_cpu::Vector{T}                     # μ LUT CPU buffer (n_regions)
-    μ_lut_gpu::A1                            # μ LUT GPU buffer (n_regions, matches mask backend)
-    μ_table::Matrix{T}                       # pre-computed μ[region, energy] (n_regions × n_energies)
+    μ_lut_cpu::Vector{T} # μ LUT CPU buffer (n_regions)
+    # μ LUT GPU buffer (n_regions, matches mask backend)
+    μ_lut_gpu::A1
+    # pre-computed μ[region, energy] (n_regions × n_energies)
+    μ_table::Matrix{T}
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
-    geom_source_positions::A2                # (3, n_angles) source positions
-    geom_detector_centers::A2                # (3, n_angles) detector centers
-    geom_detector_u::A2                      # (3, n_angles) detector u vectors
-    geom_detector_v::A2                      # (3, n_angles) detector v vectors
+    geom_source_positions::A2 # (3, n_angles) source positions
+    geom_detector_centers::A2 # (3, n_angles) detector centers
+    geom_detector_u::A2       # (3, n_angles) detector u vectors
+    geom_detector_v::A2       # (3, n_angles) detector v vectors
 
     # ─── Native-resolution buffers (for spatial binning path, bf > 1) ───
-    native_bins::Union{Nothing, Vector{A3}}  # per-bin at native dexel res
-    native_sino_buf::Union{Nothing, A3}      # Siddon scratch at native res
-    native_geom::Union{Nothing, CTGeometry}  # native-res geometry
+    native_bins::Union{Nothing, Vector{A3}} # per-bin at native dexel res
+    native_sino_buf::Union{Nothing, A3}     # Siddon scratch at native res
+    native_geom::Union{Nothing, CTGeometry} # native-res geometry
     native_geom_source_positions::Union{Nothing, A2}
     native_geom_detector_centers::Union{Nothing, A2}
     native_geom_detector_u::Union{Nothing, A2}
     native_geom_detector_v::Union{Nothing, A2}
 
     # ─── Tube physics scratch (for combined sinogram) ───
-    tube_physics_scratch::Union{Nothing, A3}  # sinogram-sized scratch for scatter/focal spot
-    focal_spot_kernel::Union{Nothing, A2}     # pre-computed focal-spot kernel (nothing when blur off/negligible)
+    # sinogram-sized scratch for scatter/focal spot
+    tube_physics_scratch::Union{Nothing, A3}
+    # pre-computed focal-spot kernel (nothing when blur off/negligible)
+    focal_spot_kernel::Union{Nothing, A2}
 
     # ─── Tiled spectral projection (fused PCCT forward projection) ───
-    μ_table_gpu::A2                          # GPU copy of μ_table [n_regions, n_energies_padded]
-    W_matrix_gpu::A2                         # spectral weight matrix [n_energies_padded, n_bins] on GPU
-    bowtie_spectral::Union{Nothing, A3}      # [n_cols, n_rows, n_energies_padded] source transmission per ray (bowtie × heel), nothing when flat
-    native_bowtie_spectral::Union{Nothing, A3}  # the same at native resolution when bf > 1
-    outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
-    native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
+    # GPU copy of μ_table [n_regions, n_energies_padded]
+    μ_table_gpu::A2
+    # spectral weight matrix [n_energies_padded, n_bins] on GPU
+    W_matrix_gpu::A2
+    # [n_cols, n_rows, n_energies_padded] source transmission per ray (bowtie × heel), nothing when flat
+    bowtie_spectral::Union{Nothing, A3}
+    native_bowtie_spectral::Union{Nothing, A3} # the same at native resolution when bf > 1
+    # flattened output buffer [n_elements * n_bins] on GPU
+    outputs_flat::A1
+    # native-res flattened output (nothing if bf==1)
+    native_outputs_flat::Union{Nothing, A1}
 
     # ─── Pulse pile-up (the Monte Carlo migration, per dexel by counted rate and spectrum) ───
     # `pileup_S[:, :, k, m]` is `pileup_family`'s matrix at counted rate `pileup_rates[k]` (counts
@@ -92,27 +106,34 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # `pileup_hardness[m]` (the source spectrum through 0 … 32 cm of water): each dexel takes the
     # matrix bilinear in its own counted rate and the mean bin of its own counts, so the bowtie's and
     # the patient's hardening change its pile-up as they change its spectrum.
-    pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
-    defects::Union{Nothing, NamedTuple}                # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`), on the backend
-    scatter_correction::Bool                           # PCCTScanner.scatter_correction
-    scatter::Union{Nothing, ScatterPlan}               # the scatter library on this acquisition's rays (nothing: use_scatter off)
-    noise_reduction::Float64                           # PCCTScanner.noise_reduction
-    noise_classes::NamedTuple                          # the photons neighbouring native dexels share (`pcct_event_classes`)
-    pileup_S::Union{Nothing, Array{Float64, 4}}        # (n_bins × n_bins × n_rates × n_hardness), nothing when pileup off
-    pileup_rates::Vector{Float64}                      # the counted rates (counts / s / dexel) of pileup_S
-    pileup_hardness::Vector{Float64}                   # the mean bins of pileup_S's spectra
-    pileup_rate_air::Float64                           # the brightest dexel's counted rate in air (the family's top)
+    pileup::Bool # PCCTScanner.pileup && dead_time_ns > 0
+    # the dexels' defect factors at the projection's resolution (`_pcct_dexel_defects`), on the backend
+    defects::Union{Nothing, NamedTuple}
+    scatter_correction::Bool # PCCTScanner.scatter_correction
+    # the scatter library on this acquisition's rays (nothing: use_scatter off)
+    scatter::Union{Nothing, ScatterPlan}
+    noise_reduction::Float64 # PCCTScanner.noise_reduction
+    # the photons neighbouring native dexels share (`pcct_event_classes`)
+    noise_classes::NamedTuple
+    # (n_bins × n_bins × n_rates × n_hardness), nothing when pileup off
+    pileup_S::Union{Nothing, Array{Float64, 4}}
+    # the counted rates (counts / s / dexel) of pileup_S
+    pileup_rates::Vector{Float64}
+    pileup_hardness::Vector{Float64} # the mean bins of pileup_S's spectra
+    # the brightest dexel's counted rate in air (the family's top)
+    pileup_rate_air::Float64
 
     # ─── Pre-computed setup data (computed once, reused) ───
-    geom::CTGeometry                         # CT geometry (binned resolution)
-    energies::Vector{Float64}                # downsampled spectrum energies
-    weights::Vector{Float64}                 # downsampled spectrum weights
-    config::PhysicsConfig                    # physics configuration
-    pcct_detector::PhotonCountingDetector{Float64}  # PCCT detector
-    mats::Vector{XA.Material}                # resolved materials
-    kVp::Float64                             # max energy (kVp)
-    dose_source::DoseSource                  # the beam, for `dose_report` / `result.dose`
-    calibration::Union{Nothing, Calibration} # the scanner's (`calibrate`): simulate! corrects with it
+    geom::CTGeometry # CT geometry (binned resolution)
+    energies::Vector{Float64} # downsampled spectrum energies
+    weights::Vector{Float64} # downsampled spectrum weights
+    config::PhysicsConfig # physics configuration
+    pcct_detector::PhotonCountingDetector{Float64} # PCCT detector
+    mats::Vector{XA.Material} # resolved materials
+    kVp::Float64 # max energy (kVp)
+    dose_source::DoseSource # the beam, for `dose_report` / `result.dose`
+    # the scanner's (`calibrate`): simulate! corrects with it
+    calibration::Union{Nothing, Calibration}
 end
 
 """
@@ -158,14 +179,27 @@ result2 = simulate!(ws, phantom, protocol, sim_opts)
 ```
 """
 function create_workspace(
-        scanner::PCCTScanner, protocol, sim_opts, recon_opts, phantom;
-        calibration = nothing,
-        T::Type{<:AbstractFloat} = Float32,
-        extended_collimation::Bool = false,
-    )
+    scanner::PCCTScanner,
+    protocol,
+    sim_opts,
+    recon_opts,
+    phantom;
+    calibration = nothing,
+    T::Type{<:AbstractFloat} = Float32,
+    extended_collimation::Bool = false,
+)
     calibration = _check_calibration(scanner, protocol, sim_opts, calibration)
     # --- Pre-compute geometry first (collimation derives n_rows) ---
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
+    geom = CTGeometry(
+        scanner;
+        n_angles = protocol.views,
+        fov_cm = recon_opts.fov_cm,
+        z_cm = recon_opts.z_cm,
+        collimation_mm = protocol.collimation_mm,
+        extended_collimation = extended_collimation,
+        pitch = protocol.pitch,
+        n_rotations = protocol.n_rotations,
+    )
 
     sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
@@ -176,7 +210,11 @@ function create_workspace(
     # GPU-side buffers — similar() matches phantom.mask's backend
     ref_mask = phantom.mask
     memory_estimate = estimate_pcct_workspace_bytes(
-        sino_shape, vol_shape, n_bins, scanner.binning_factor; T,
+        sino_shape,
+        vol_shape,
+        n_bins,
+        scanner.binning_factor;
+        T,
     )
     check_pcct_workspace_budget(ref_mask, memory_estimate)
     owned_backend = Any[]
@@ -191,7 +229,11 @@ function create_workspace(
         sino_buf = allocate_backend(sino_shape)
         scratch = allocate_backend(sino_shape)
 
-        energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+        energies, weights_vec = resolve_source_spectrum_without_bowtie(
+            sim_opts,
+            protocol;
+            scanner = scanner,
+        )
         n_energies = length(energies)
         config = build_physics_config(scanner, sim_opts, energies, weights_vec)
         pcct_detector = _build_pcct_detector(scanner)
@@ -200,7 +242,6 @@ function create_workspace(
         thresholds = pcct_detector.energy_thresholds_keV
         # Pre-compute spectral response data
         R_mat = compute_mc_drm(pcct_detector, kVp)
-        R_energies_vec = collect(range(1.0, Float64(kVp), length = size(R_mat, 1)))
 
         # BHC, scatter correction, and pile-up correction are all decoupled —
         # applied at the notebook level via dedicated `apply_*` functions.
@@ -231,7 +272,10 @@ function create_workspace(
         n_regions = length(mats)
         μ_lut_cpu = Vector{T}(undef, n_regions)
         μ_lut_gpu = allocate_backend(n_regions)
-        μ_exact = [compute_μ_at_energy(mats[r], Float64(E)) for r in 1:n_regions, E in energies]
+        μ_exact = [
+            compute_μ_at_energy(mats[r], Float64(E))
+            for r in 1:n_regions, E in energies
+        ]
         μ_table = T.(μ_exact)
 
         # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
@@ -244,12 +288,9 @@ function create_workspace(
         geom_detector_v = allocate_backend(size(geom.detector_v)...)
         copyto!(geom_detector_v, T.(geom.detector_v))
 
-        # Pre-compute 2×2 decomposition matrix for pseudo-dual-energy VMI
-        max_keV = 120.0
         # --- Native-resolution geometry and buffers (for spatial binning path) ---
         bf = scanner.binning_factor
         if bf > 1
-            magnification = scanner.source_to_detector / scanner.source_to_isocenter
             # a native dexel's pitch: the pixel's over the binning
             native_col_iso_mm = scanner.detector_col_size / bf
             native_row_iso_mm = scanner.detector_row_size / bf
@@ -257,21 +298,34 @@ function create_workspace(
             # but with bf× more cols and rows at native dexel pitch
             _native_n_cols = geom.n_cols * bf
             _native_n_rows = geom.n_rows * bf
-            _native_pixel_size = native_col_iso_mm / 10.0  # mm → cm
-            _native_pixel_row_size = native_row_iso_mm / 10.0  # mm → cm
+            _native_pixel_size = native_col_iso_mm / 10.0     # mm → cm
+            _native_pixel_row_size = native_row_iso_mm / 10.0 # mm → cm
             _native_geom = CTGeometry(
-                geom.SAD, geom.SDD, geom.n_angles, _native_n_rows, _native_n_cols,
-                _native_pixel_size, _native_pixel_row_size,
+                geom.SAD,
+                geom.SDD,
+                geom.n_angles,
+                _native_n_rows,
+                _native_n_cols,
+                _native_pixel_size,
+                _native_pixel_row_size,
                 geom.angles,
-                geom.source_positions, geom.detector_centers,
-                geom.detector_u, geom.detector_v,
-                geom.fov,  # same recon FOV
-                geom.pitch, geom.table_feed, geom.detector_shape,
+                geom.source_positions,
+                geom.detector_centers,
+                geom.detector_u,
+                geom.detector_v,
+                geom.fov, # same recon FOV
+                geom.pitch,
+                geom.table_feed,
+                geom.detector_shape,
                 # the offset is in columns: `spatial_bin!` sums native columns (c-1)·bf+1 … c·bf, so
                 # the binned centre is the native centre and a δ-column binned offset is δ·bf native
                 geom.column_offset * bf,
             )
-            native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
+            native_sino_shape = (
+                _native_geom.n_cols,
+                _native_geom.n_rows,
+                _native_geom.n_angles,
+            )
             _native_bins = [allocate_backend(native_sino_shape) for _ in 1:n_bins]
             _native_sino_buf = allocate_backend(native_sino_shape)
             # Pre-computed geometry arrays at native resolution
@@ -339,12 +393,18 @@ function create_workspace(
         # the cell's mean.
         _bt_table(g; grid::Bool) = let
             bt = bowtie_filter !== nothing && bowtie_filter.name != "none" ?
-                compute_bowtie_attenuation_spectral(bowtie_filter, g, Float64.(energies)) : nothing
-            heel = config.heel_effect !== nothing ? compute_heel_spectral(config.heel_effect, g, Float64.(energies)) : nothing
+                compute_bowtie_attenuation_spectral(bowtie_filter, g, Float64.(energies)) :
+                nothing
+            heel = config.heel_effect !== nothing ?
+                compute_heel_spectral(config.heel_effect, g, Float64.(energies)) :
+                nothing
             trans = bt === nothing ? heel : (heel === nothing ? bt : bt .* heel)
             if grid
                 gain = pcct_position_gain(energies)
-                cell = [gain[mod1(c, 4), mod1(r, 6), e] for c in 1:g.n_cols, r in 1:g.n_rows, e in 1:n_energies]
+                cell = [
+                    gain[mod1(c, 4), mod1(r, 6), e]
+                    for c in 1:g.n_cols, r in 1:g.n_rows, e in 1:n_energies
+                ]
                 trans = trans === nothing ? cell : trans .* cell
             end
             trans === nothing && return nothing
@@ -366,7 +426,8 @@ function create_workspace(
         # does to the counts).
         _air_response(nc, nr, trans) = let out = zeros(Float64, nc, nr, n_bins)
             for b in 1:n_bins, e in 1:n_energies
-                w = Float64(W_kernel[e, b]); w == 0 && continue
+                w = Float64(W_kernel[e, b])
+                w == 0 && continue
                 if trans === nothing
                     out[:, :, b] .+= w
                 else
@@ -376,17 +437,31 @@ function create_workspace(
             out
         end
         I0_cpu = if bf > 1
-            native = _air_response(_native_n_cols, _native_n_rows, _bt_native === nothing ? nothing : _bt_native[2])
+            native = _air_response(
+                _native_n_cols,
+                _native_n_rows,
+                _bt_native === nothing ? nothing : _bt_native[2],
+            )
             binned = zeros(Float64, sino_shape[1], sino_shape[2], n_bins)
             for b in 1:n_bins, r in 1:sino_shape[2], c in 1:sino_shape[1]
-                binned[c, r, b] = sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), b])
+                binned[c, r, b] = sum(
+                    @view native[
+                        ((c - 1) * bf + 1):(c * bf),
+                        ((r - 1) * bf + 1):(r * bf),
+                        b,
+                    ]
+                )
             end
             _I0_native_gpu = allocate_backend(size(native)...)
             copyto!(_I0_native_gpu, T.(native))
             binned
         else
             _I0_native_gpu = nothing
-            _air_response(sino_shape[1], sino_shape[2], _bt_binned === nothing ? nothing : _bt_binned[2])
+            _air_response(
+                sino_shape[1],
+                sino_shape[2],
+                _bt_binned === nothing ? nothing : _bt_binned[2],
+            )
         end
         _I0_gpu = allocate_backend(size(I0_cpu)...)
         copyto!(_I0_gpu, T.(I0_cpu))
@@ -410,14 +485,20 @@ function create_workspace(
         # native dexel piles up on its own, before the 2 × 2 sum. The family reaches the brightest dexel's counted rate in air (its counts per view
         # over the time per view; no ray of this protocol counts faster), on the absolute rate grid
         # every workspace shares, so a calibration at another tube current sees the same detector.
-        _use_pileup = scanner.pileup &&
-            pcct_detector.dead_time_ns > 0
+        _use_pileup = scanner.pileup && pcct_detector.dead_time_ns > 0
         _time_per_view_pileup = protocol.rotation_time / protocol.views
-        _count_rate_air = maximum(sum(I0_cpu; dims = 3)) / Float64(bf * bf) / _time_per_view_pileup
-        _family = _use_pileup ? pileup_family(
-                pcct_detector.energy_thresholds_keV, Float64.(weights_vec), Float64.(energies),
-                _count_rate_air, Float64(pcct_detector.dead_time_ns),
-            ) : nothing
+        _count_rate_air = maximum(sum(I0_cpu; dims = 3)) /
+            Float64(bf * bf) /
+            _time_per_view_pileup
+        _family = _use_pileup ?
+            pileup_family(
+                pcct_detector.energy_thresholds_keV,
+                Float64.(weights_vec),
+                Float64.(energies),
+                _count_rate_air,
+                Float64(pcct_detector.dead_time_ns),
+            ) :
+            nothing
         _pileup_S = _family === nothing ? nothing : _family.S
         _pileup_rates = _family === nothing ? Float64[] : _family.rates
         _pileup_hardness = _family === nothing ? Float64[] : _family.hardness
@@ -430,11 +511,19 @@ function create_workspace(
         _scatter = if config.scatter === nothing
             nothing
         else
-            config.scatter.energy_weighted && throw(
-                ArgumentError("the scatter kernels \"$(config.scatter.name)\" are an energy integrator's; a photon counter needs counting kernels")
+            config.scatter.energy_weighted &&
+                throw(ArgumentError(
+                    "the scatter kernels \"$(config.scatter.name)\" are an energy integrator's; a photon counter needs counting kernels",
+                ))
+            r_index = E -> clamp(
+                round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1,
+                1,
+                n_R,
             )
-            r_index = E -> clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
-            qe = E -> max(quantum_efficiency(pcct_detector.material, pcct_detector.thickness_mm, E), 1.0e-6)
+            qe = E -> max(
+                quantum_efficiency(pcct_detector.material, pcct_detector.thickness_mm, E),
+                1.0e-6,
+            )
             _photons = compute_detector_I0(geom, protocol, sum(weights_vec))
             _scatter_plan(
                 config.scatter,
@@ -471,27 +560,69 @@ function create_workspace(
         end
 
         # ─── The dexels' defect factors, on the backend (the detection applies them there) ───
-        _defects = let g = bf > 1 ? _native_geom : geom, d = _pcct_dexel_defects(scanner, g.n_cols, g.n_rows, energies, weights_vec)
+        _defects = let g = bf > 1 ? _native_geom : geom,
+            d = _pcct_dexel_defects(scanner, g.n_cols, g.n_rows, energies, weights_vec)
             on_backend(x) = copyto!(allocate_backend(size(x)...), T.(x))
             d === nothing ? nothing : (factors = on_backend(d.factors), p = on_backend(d.p))
         end
 
-        return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
-            bins, μ_volume, sino_buf, scratch,
-            R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec,
-            μ_lut_cpu, μ_lut_gpu, μ_table,
-            geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-            _native_bins, _native_sino_buf,
-            _native_geom, _n_src, _n_det, _n_u, _n_v,
-            tube_scratch, _pcct_focal_kernel,
-            _μ_table_gpu, _W_matrix_gpu, _bowtie_spectral_gpu, _native_bowtie_spectral_gpu, _outputs_flat, _native_outputs_flat,
+        return PCCTWorkspace{
+            T,
+            typeof(sino_buf),
+            typeof(μ_lut_gpu),
+            typeof(geom_source_positions),
+        }(
+            bins,
+            μ_volume,
+            sino_buf,
+            scratch,
+            R_mat,
+            _I0_gpu,
+            _I0_all_gpu,
+            I0_cpu,
+            _I0_native_gpu,
+            thresholds_T_vec,
+            μ_lut_cpu,
+            μ_lut_gpu,
+            μ_table,
+            geom_source_positions,
+            geom_detector_centers,
+            geom_detector_u,
+            geom_detector_v,
+            _native_bins,
+            _native_sino_buf,
+            _native_geom,
+            _n_src,
+            _n_det,
+            _n_u,
+            _n_v,
+            tube_scratch,
+            _pcct_focal_kernel,
+            _μ_table_gpu,
+            _W_matrix_gpu,
+            _bowtie_spectral_gpu,
+            _native_bowtie_spectral_gpu,
+            _outputs_flat,
+            _native_outputs_flat,
             _use_pileup,
             _defects,
-            scanner.scatter_correction, _scatter, Float64(scanner.noise_reduction),
-            pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec), _pileup_S,
-            _pileup_rates, _pileup_hardness, _count_rate_air,
-            geom, energies, weights_vec, config, pcct_detector, mats,
-            kVp, dose_source(scanner, protocol), calibration
+            scanner.scatter_correction,
+            _scatter,
+            Float64(scanner.noise_reduction),
+            pcct_event_classes(pcct_detector.energy_thresholds_keV, energies, weights_vec),
+            _pileup_S,
+            _pileup_rates,
+            _pileup_hardness,
+            _count_rate_air,
+            geom,
+            energies,
+            weights_vec,
+            config,
+            pcct_detector,
+            mats,
+            kVp,
+            dose_source(scanner, protocol),
+            calibration,
         )
     catch
         release_backend!(owned_backend)
@@ -523,28 +654,38 @@ Type parameters:
 - `A3`: 3D array type matching GPU backend
 - `A1`: 1D array type matching GPU backend
 """
-mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}}
+mutable struct EICTWorkspace{
+    T <: AbstractFloat,
+    A3 <: AbstractArray{T, 3},
+    A2 <: AbstractArray{T, 2},
+    A1 <: AbstractArray{T, 1},
+}
     # ─── Forward projection (GPU-side) ───
-    sinogram::A3          # output sinogram (n_cols, n_rows, n_angles)
-    dispersion::A3        # per-ray signal variance per unit mean, S₂/S₁ (sino shape)
-    μ_volume::A3          # attenuation volume, reused per energy (nx, ny, nz)
-    sino_mono::A3         # monochromatic sinogram scratch (sino shape)
-    I_transmitted::A3     # Beer-Lambert accumulator (sino shape)
+    sinogram::A3      # output sinogram (n_cols, n_rows, n_angles)
+    dispersion::A3    # per-ray signal variance per unit mean, S₂/S₁ (sino shape)
+    μ_volume::A3      # attenuation volume, reused per energy (nx, ny, nz)
+    sino_mono::A3     # monochromatic sinogram scratch (sino shape)
+    I_transmitted::A3 # Beer-Lambert accumulator (sino shape)
 
     # ─── Physics effect scratch buffers (GPU-side, shared) ───
-    physics_output::A3    # sinogram-sized scratch for convolution effects (shared)
-    lag_intensity::A3     # sinogram-sized scratch for lag intensity computation
+    physics_output::A3 # sinogram-sized scratch for convolution effects (shared)
+    lag_intensity::A3  # sinogram-sized scratch for lag intensity computation
 
     # ─── Pre-computed physics kernels (GPU-side) ───
-    scatter_correction::Bool                    # EICTScanner.scatter_correction
-    scatter::Union{Nothing, ScatterPlan}        # the scatter library on this acquisition's rays (nothing: use_scatter off)
+    scatter_correction::Bool # EICTScanner.scatter_correction
+    # the scatter library on this acquisition's rays (nothing: use_scatter off)
+    scatter::Union{Nothing, ScatterPlan}
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
-    focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
-    bowtie_spectral::Union{Nothing, A3}         # [n_cols, n_rows, n_energies] spectral transmission
-    air_reference::A2                           # [n_cols, n_rows] air signal S₁ of each dexel
-    dexel_gain::A2                              # [n_cols, n_rows] each dexel's gain (1: ideal)
-    dexel_offset::A2                            # [n_cols, n_rows] each dexel's offset, units of E_ref (0: ideal)
-    lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
+    focal_spot_kernel::Union{Nothing, A2}        # focal spot blur kernel
+    # [n_cols, n_rows, n_energies] spectral transmission
+    bowtie_spectral::Union{Nothing, A3}
+    # [n_cols, n_rows] air signal S₁ of each dexel
+    air_reference::A2
+    # [n_cols, n_rows] each dexel's gain (1: ideal)
+    dexel_gain::A2
+    # [n_cols, n_rows] each dexel's offset, units of E_ref (0: ideal)
+    dexel_offset::A2
+    lag_coeffs::Union{Nothing, A1} # lag coefficients (n_frames)
 
     # ─── Noise (CPU + GPU) ───
     noise_rand_cpu::Vector{T}  # randn output (n_elements)
@@ -553,21 +694,21 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     enoise_rand_gpu::A1        # electronic noise GPU transfer buffer (n_elements)
 
     # ─── Pre-computed vectors ───
-    weights_norm::Vector{T}    # T.(weights ./ sum(weights))
-    μ_lut_cpu::Vector{T}       # μ LUT CPU buffer (n_regions)
-    μ_lut_gpu::A1              # μ LUT GPU buffer (matches mask backend)
-    μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
-    μ_table_gpu::A2            # GPU copy of μ_table for zero-copy create_μ_volume!
-    m1::Vector{Float64}        # mean signal per incident photon, keV (eid_signal_moments)
-    m2::Vector{Float64}        # mean squared signal per incident photon, keV²
-    wm1_gpu::A1                # w̄·m₁/E_ref, padded to the projection tiles
-    wm2_gpu::A1                # w̄·m₂/E_ref², padded likewise
+    weights_norm::Vector{T} # T.(weights ./ sum(weights))
+    μ_lut_cpu::Vector{T}    # μ LUT CPU buffer (n_regions)
+    μ_lut_gpu::A1           # μ LUT GPU buffer (matches mask backend)
+    μ_table::Matrix{T}      # pre-computed μ[region, energy] (n_regions × n_energies)
+    μ_table_gpu::A2         # GPU copy of μ_table for zero-copy create_μ_volume!
+    m1::Vector{Float64}     # mean signal per incident photon, keV (eid_signal_moments)
+    m2::Vector{Float64}     # mean squared signal per incident photon, keV²
+    wm1_gpu::A1             # w̄·m₁/E_ref, padded to the projection tiles
+    wm2_gpu::A1             # w̄·m₂/E_ref², padded likewise
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
-    geom_source_positions::A2      # (3, n_angles) source positions
-    geom_detector_centers::A2      # (3, n_angles) detector centers
-    geom_detector_u::A2            # (3, n_angles) detector u vectors
-    geom_detector_v::A2            # (3, n_angles) detector v vectors
+    geom_source_positions::A2 # (3, n_angles) source positions
+    geom_detector_centers::A2 # (3, n_angles) detector centers
+    geom_detector_u::A2       # (3, n_angles) detector u vectors
+    geom_detector_v::A2       # (3, n_angles) detector v vectors
 
     # ─── Pre-computed setup data ───
     geom::CTGeometry
@@ -578,28 +719,39 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     rng::MersenneTwister
 
     # ─── Noise constant (scanner + spectrum derived) ───
-    σ_electronic::T   # electronic_noise / detection_gain, in units of E_ref = Σ w̄ m₁ (keV)
+    σ_electronic::T # electronic_noise / detection_gain, in units of E_ref = Σ w̄ m₁ (keV)
 
     # the beam, for `dose_report` / the `dose` of every `simulate!` result; `nothing` when
     # the spectrum was overridden, because dose needs absolute units
     dose_source::Union{Nothing, DoseSource}
-    calibration::Union{Nothing, Calibration}    # the scanner's (`calibrate`): simulate! corrects with it
+    # the scanner's (`calibrate`): simulate! corrects with it
+    calibration::Union{Nothing, Calibration}
 end
 
 # The energy-integrating workspace behind `create_workspace(::EICTScanner, …)`.
 function _create_eict_workspace(
-        scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom;
-        calibration = nothing,
-        T::Type{<:AbstractFloat} = Float32,
-        spectrum_override::Union{
-            Nothing,
-            Tuple{AbstractVector, AbstractVector},
-        } = nothing,
-        extended_collimation::Bool = false,
-    )
+    scanner::EICTScanner,
+    protocol,
+    sim_opts,
+    recon_opts,
+    phantom;
+    calibration = nothing,
+    T::Type{<:AbstractFloat} = Float32,
+    spectrum_override::Union{Nothing, Tuple{AbstractVector, AbstractVector}} = nothing,
+    extended_collimation::Bool = false,
+)
     calibration = _check_calibration(scanner, protocol, sim_opts, calibration)
     # Geometry
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
+    geom = CTGeometry(
+        scanner;
+        n_angles = protocol.views,
+        fov_cm = recon_opts.fov_cm,
+        z_cm = recon_opts.z_cm,
+        collimation_mm = protocol.collimation_mm,
+        extended_collimation = extended_collimation,
+        pitch = protocol.pitch,
+        n_rotations = protocol.n_rotations,
+    )
 
     # Spectrum — IPEM polychromatic by default; spectrum_override lets a
     # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`
@@ -610,7 +762,9 @@ function _create_eict_workspace(
     else
         e, w = spectrum_override
         length(e) == length(w) ||
-            throw(ArgumentError("spectrum_override: length(energies)=$(length(e)) != length(weights)=$(length(w))"))
+            throw(ArgumentError(
+                "spectrum_override: length(energies)=$(length(e)) != length(weights)=$(length(w))",
+            ))
         Vector{Float64}(e), Vector{Float64}(w)
     end
     n_energies = length(energies)
@@ -712,7 +866,8 @@ function _create_eict_workspace(
     # These are pre-patient source effects applied during spectral forward projection.
     bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
     bowtie_spectral_gpu = nothing
-    air_ref_cpu = ones(T, sino_shape[1], sino_shape[2])   # S₁ = Σ w̄ m₁′ = 1 without a bowtie
+    # S₁ = Σ w̄ m₁′ = 1 without a bowtie
+    air_ref_cpu = ones(T, sino_shape[1], sino_shape[2])
 
     # Start with heel effect spectral transmission (energy-dependent, per-column)
     heel_trans = if config.heel_effect !== nothing
@@ -732,7 +887,7 @@ function _create_eict_workspace(
     has_source_spectral = bowtie_trans !== nothing || heel_trans !== nothing
     if has_source_spectral
         if bowtie_trans !== nothing && heel_trans !== nothing
-            trans_cpu = bowtie_trans .* heel_trans  # Element-wise multiply
+            trans_cpu = bowtie_trans .* heel_trans # Element-wise multiply
         elseif bowtie_trans !== nothing
             trans_cpu = bowtie_trans
         else
@@ -747,9 +902,10 @@ function _create_eict_workspace(
         bowtie_spectral_gpu = bt_gpu
 
         # The air signal of each dexel: S₁(col, row) = Σ w̄ m₁′ T_source(col, row)
-        air_ref_cpu .= T.(
-            dropdims(sum(trans_cpu .* reshape(w̄ .* m1 ./ E_ref, 1, 1, :); dims = 3); dims = 3)
-        )
+        air_ref_cpu .= T.(dropdims(
+            sum(trans_cpu .* reshape(w̄ .* m1 ./ E_ref, 1, 1, :); dims = 3);
+            dims = 3,
+        ))
     end
     air_reference = similar(ref, T, sino_shape[1], sino_shape[2])
     copyto!(air_reference, air_ref_cpu)
@@ -759,9 +915,10 @@ function _create_eict_workspace(
     scatter_plan = if config.scatter === nothing
         nothing
     else
-        config.scatter.energy_weighted || throw(
-            ArgumentError("the scatter kernels \"$(config.scatter.name)\" are a photon counter's; an energy integrator needs energy-weighted kernels")
-        )
+        config.scatter.energy_weighted ||
+            throw(ArgumentError(
+                "the scatter kernels \"$(config.scatter.name)\" are a photon counter's; an energy integrator needs energy-weighted kernels",
+            ))
         _scatter_plan(
             config.scatter,
             geom,
@@ -769,7 +926,10 @@ function _create_eict_workspace(
             weights_vec;
             source = _scatter_source(bowtie_filter, config.heel_effect, energies),
             detection = m1,
-            channels = hcat(fill(1 / E_ref, n_energies), m2 ./ max.(m1, 1.0e-30) ./ E_ref^2),
+            channels = hcat(
+                fill(1 / E_ref, n_energies),
+                m2 ./ max.(m1, 1.0e-30) ./ E_ref^2,
+            ),
             measured_channels = 1,
             correction = scanner.scatter_correction,
             air = Float64.(air_ref_cpu),
@@ -798,19 +958,51 @@ function _create_eict_workspace(
     σ_electronic = T(scanner.electronic_noise / scanner.detection_gain / E_ref)
     dexel_defects = _eict_dexel_defects(scanner, sino_shape[1], sino_shape[2], E_ref)
 
-    return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
-        sinogram, similar(ref, T, sino_shape), μ_volume, sino_mono, I_transmitted,
-        physics_output, lag_intensity,
-        scanner.scatter_correction, scatter_plan,
-        optical_crosstalk_kernel, focal_spot_kernel,
-        bowtie_spectral_gpu, air_reference,
+    return EICTWorkspace{
+        T,
+        typeof(sinogram),
+        typeof(geom_source_positions),
+        typeof(noise_rand_gpu),
+    }(
+        sinogram,
+        similar(ref, T, sino_shape),
+        μ_volume,
+        sino_mono,
+        I_transmitted,
+        physics_output,
+        lag_intensity,
+        scanner.scatter_correction,
+        scatter_plan,
+        optical_crosstalk_kernel,
+        focal_spot_kernel,
+        bowtie_spectral_gpu,
+        air_reference,
         copyto!(similar(ref, T, sino_shape[1], sino_shape[2]), T.(dexel_defects[1])),
         copyto!(similar(ref, T, sino_shape[1], sino_shape[2]), T.(dexel_defects[2])),
         lag_coeffs_buf,
-        noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
-        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, m1, m2, wm1_gpu, wm2_gpu,
-        geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-        geom, energies, weights_vec, config, mats, rng,
+        noise_rand_cpu,
+        noise_rand_gpu,
+        enoise_rand_cpu,
+        enoise_rand_gpu,
+        weights_norm,
+        μ_lut_cpu,
+        μ_lut_gpu,
+        μ_table,
+        μ_table_gpu,
+        m1,
+        m2,
+        wm1_gpu,
+        wm2_gpu,
+        geom_source_positions,
+        geom_detector_centers,
+        geom_detector_u,
+        geom_detector_v,
+        geom,
+        energies,
+        weights_vec,
+        config,
+        mats,
+        rng,
         σ_electronic,
         # A spectrum override carries relative weights (its own docstring's example is
         # `([E_mono], [sum(weights)])`), and dose needs absolute photons/mAs/mm². Reporting one
@@ -821,7 +1013,12 @@ function _create_eict_workspace(
 end
 
 # A per-energy weight vector on the device, zero beyond the spectrum up to the projection's tiles.
-function _padded_device_vector(ref, ::Type{T}, v::AbstractVector, n_padded::Integer) where {T}
+function _padded_device_vector(
+    ref,
+    ::Type{T},
+    v::AbstractVector,
+    n_padded::Integer,
+) where {T}
     host = zeros(T, n_padded)
     host[1:length(v)] .= T.(v)
     dev = similar(ref, T, n_padded)
@@ -863,8 +1060,14 @@ constructor as a photon counter's, so a caller builds and simulates any scanner 
   Bowtie + heel + detector response evaluate at the override's actual energy
   grid, so per-ray spectral physics still runs.
 """
-create_workspace(scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom; kwargs...) =
-    _create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
+create_workspace(
+    scanner::EICTScanner,
+    protocol,
+    sim_opts,
+    recon_opts,
+    phantom;
+    kwargs...,
+) = _create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
 
 # =============================================================================
 # FDKReconWorkspace — Pre-allocated workspace for zero-allocation reconstruct!()
@@ -883,17 +1086,22 @@ Type parameters:
 
 Create with [`create_fdk_recon_workspace`](@ref).
 """
-mutable struct FDKReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}}
+mutable struct FDKReconWorkspace{
+    T <: AbstractFloat,
+    A3 <: AbstractArray{T, 3},
+    A2 <: AbstractArray{T, 2},
+    A1 <: AbstractArray{T, 1},
+}
     # ─── Output ───
-    volume::A3                # Reconstructed volume (nx, ny, nz)
+    volume::A3 # Reconstructed volume (nx, ny, nz)
 
     # ─── Filtering scratch ───
-    filtered::A3              # Cosine-weighted + filtered sinogram (sino shape)
-    conv_scratch::A3          # Convolution output scratch (sino shape)
-    filter_kernel::A1         # Spatial domain filter kernel
+    filtered::A3      # Cosine-weighted + filtered sinogram (sino shape)
+    conv_scratch::A3  # Convolution output scratch (sino shape)
+    filter_kernel::A1 # Spatial domain filter kernel
 
     # ─── Backprojection geometry (GPU-side, pre-computed) ───
-    bp_source_positions::A2   # Geometry arrays for backproject! [3, n_angles]
+    bp_source_positions::A2 # Geometry arrays for backproject! [3, n_angles]
     bp_detector_centers::A2
     bp_detector_u::A2
     bp_detector_v::A2
@@ -908,13 +1116,13 @@ Create a pre-allocated workspace for zero-allocation FDK `reconstruct!()`.
 (e.g., `:standard`, `:ram_lak`).
 """
 function create_fdk_recon_workspace(
-        sinogram::AbstractArray{<:AbstractFloat, 3},
-        geom::CTGeometry,
-        volume_size::NTuple{3, Int};
-        T::Type{<:AbstractFloat} = eltype(sinogram),
-        filter::Union{FilterType, Symbol} = StandardFilter(),
-        cutoff::Float64 = 1.0
-    )
+    sinogram::AbstractArray{<:AbstractFloat, 3},
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    T::Type{<:AbstractFloat} = eltype(sinogram),
+    filter::Union{FilterType, Symbol} = StandardFilter(),
+    cutoff::Float64 = 1.0,
+)
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
@@ -932,7 +1140,10 @@ function create_fdk_recon_workspace(
     raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
     kernel_cpu = create_spatial_kernel(
-        kernel_size_int, filter, pixel_size; bandlimit = grid_bandlimit(geom, volume_size),
+        kernel_size_int,
+        filter,
+        pixel_size;
+        bandlimit = grid_bandlimit(geom, volume_size),
     )
     if is_arc(geom) && !is_helical(geom)
         # equiangular fan filter correction (helical WFBP filters rebinned
@@ -952,9 +1163,20 @@ function create_fdk_recon_workspace(
     bp_detector_v = similar(sinogram, T, size(geom.detector_v)...)
     copyto!(bp_detector_v, T.(geom.detector_v))
 
-    return FDKReconWorkspace{T, typeof(volume), typeof(bp_source_positions), typeof(filter_kernel)}(
-        volume, filtered, conv_scratch, filter_kernel,
-        bp_source_positions, bp_detector_centers, bp_detector_u, bp_detector_v
+    return FDKReconWorkspace{
+        T,
+        typeof(volume),
+        typeof(bp_source_positions),
+        typeof(filter_kernel),
+    }(
+        volume,
+        filtered,
+        conv_scratch,
+        filter_kernel,
+        bp_source_positions,
+        bp_detector_centers,
+        bp_detector_u,
+        bp_detector_v,
     )
 end
 
@@ -967,11 +1189,11 @@ per-column model and `μ_water_ref` contract as [`calibrate_bhc_water`](@ref)
 is returned.
 """
 function calibrate_pcct_poly_bhc(
-        ws::PCCTWorkspace;
-        order::Int = 5,
-        max_path_cm::Real = 50.0,
-        n_points::Int = 100,
-    )
+    ws::PCCTWorkspace;
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+)
     n_E = length(ws.energies)
     energies = Float64.(ws.energies)
     W = Float64.(Array(ws.W_matrix_gpu))[1:n_E, :]
@@ -990,8 +1212,12 @@ function calibrate_pcct_poly_bhc(
     end
     reference_energy_keV = sum(energies .* w_detected) / sum(w_detected)
     return calibrate_bhc_water(
-        energies, weights_per_col;
-        order, max_path_cm, n_points, reference_energy_keV,
+        energies,
+        weights_per_col;
+        order,
+        max_path_cm,
+        n_points,
+        reference_energy_keV,
     )
 end
 
@@ -1014,7 +1240,8 @@ export calibrate_pcct_poly_bhc
 # requested grid sits inside it at `output_x/y/z`.  `ws.volume` remains the exact grid asked for.
 "The diameter of the circle at isocentre the detector's fan covers (cm)."
 function scan_circle_diameter(geom::CTGeometry)
-    half = geom.n_cols * geom.pixel_size / 2          # half the fan at isocentre (arc length / planar)
+    # half the fan at isocentre (arc length / planar)
+    half = geom.n_cols * geom.pixel_size / 2
     if is_arc(geom)
         return 2 * geom.SAD * sin(min(half / geom.SAD, π / 2))
     else
@@ -1023,9 +1250,7 @@ function scan_circle_diameter(geom::CTGeometry)
     end
 end
 
-function _hir_support(
-        geom::CTGeometry, volume_size::NTuple{3, Int}, enabled::Bool,
-    )
+function _hir_support(geom::CTGeometry, volume_size::NTuple{3, Int}, enabled::Bool)
     nx, ny, nz = volume_size
     # Helical HIR keeps its WFBP domain (the in-plane extension of a helical work grid is a
     # separate change, recorded in the CHANGELOG as not yet done). A single-slice request gets
@@ -1043,11 +1268,10 @@ function _hir_support(
     work_nx = pad(nx, dx)
     work_ny = pad(ny, dy)
     radius = min(work_nx * dx, work_ny * dy) / 2
-    radius < geom.SAD || throw(
-        ArgumentError(
-            "HIR reconstruction radius $radius cm must be smaller than SAD $(geom.SAD) cm"
-        )
-    )
+    radius < geom.SAD ||
+        throw(ArgumentError(
+            "HIR reconstruction radius $radius cm must be smaller than SAD $(geom.SAD) cm",
+        ))
     cone_ratio = (geom.SAD + radius) / (geom.SAD - radius)
     dz = geom.fov[3] / nz
     work_nz = nz == 1 ? 1 : max(nz, ceil(Int, geom.fov[3] * cone_ratio / dz))
@@ -1056,16 +1280,32 @@ function _hir_support(
 
     work_fov = (work_nx * dx, work_ny * dy, work_nz * dz)
     work_geom = CTGeometry(
-        geom.SAD, geom.SDD, geom.n_angles, geom.n_rows, geom.n_cols,
-        geom.pixel_size, geom.pixel_row_size,
-        geom.angles, geom.source_positions, geom.detector_centers,
-        geom.detector_u, geom.detector_v, work_fov,
-        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
+        geom.SAD,
+        geom.SDD,
+        geom.n_angles,
+        geom.n_rows,
+        geom.n_cols,
+        geom.pixel_size,
+        geom.pixel_row_size,
+        geom.angles,
+        geom.source_positions,
+        geom.detector_centers,
+        geom.detector_u,
+        geom.detector_v,
+        work_fov,
+        geom.pitch,
+        geom.table_feed,
+        geom.detector_shape,
+        geom.column_offset,
     )
     x0 = (work_nx - nx) ÷ 2 + 1
     y0 = (work_ny - ny) ÷ 2 + 1
     z0 = (work_nz - nz) ÷ 2 + 1
-    return work_geom, (work_nx, work_ny, work_nz), x0:(x0 + nx - 1), y0:(y0 + ny - 1), z0:(z0 + nz - 1)
+    return work_geom,
+        (work_nx, work_ny, work_nz),
+        x0:(x0 + nx - 1),
+        y0:(y0 + ny - 1),
+        z0:(z0 + nz - 1)
 end
 
 """
@@ -1084,19 +1324,26 @@ Type parameters:
 
 Create with [`create_hir_recon_workspace`](@ref).
 """
-mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}, AI <: AbstractVector{Int32}}
+mutable struct HIRReconWorkspace{
+    T <: AbstractFloat,
+    A3 <: AbstractArray{T, 3},
+    A2 <: AbstractArray{T, 2},
+    A1 <: AbstractArray{T, 1},
+    AI <: AbstractVector{Int32},
+}
     # ─── Output / iterate ───
-    volume::A3                # exact caller-requested output grid
-    work_volume::A3           # PWLS iterate on the internal support domain (scan circle, cone halo)
+    volume::A3 # exact caller-requested output grid
+    # PWLS iterate on the internal support domain (scan circle, cone halo)
+    work_volume::A3
     work_geom::CTGeometry
-    output_x::UnitRange{Int}  # where the requested grid sits inside the work grid
+    output_x::UnitRange{Int} # where the requested grid sits inside the work grid
     output_y::UnitRange{Int}
     output_z::UnitRange{Int}
 
     # ─── FDK filtering scratch ───
-    filtered::A3              # (sino shape)
-    conv_scratch::A3          # (sino shape)
-    filter_kernel::A1         # (~n_cols elements)
+    filtered::A3      # (sino shape)
+    conv_scratch::A3  # (sino shape)
+    filter_kernel::A1 # (~n_cols elements)
 
     # ─── Shared geometry (GPU-side, used by fwd_proj + backproj) ───
     geom_source_positions::A2 # (3, n_angles)
@@ -1105,32 +1352,32 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
     geom_detector_v::A2
 
     # ─── PWLS pre-computed weights (computed once in create) ───
-    W_proj::A3                # Projection domain weights (sino shape)
-    V_inv::A3                 # Image domain weights (vol shape)
+    W_proj::A3 # Projection domain weights (sino shape)
+    V_inv::A3  # Image domain weights (vol shape)
 
     # ─── PWLS iteration scratch (reused every iteration) ───
     # `data_weights` holds W_proj ⊙ stat_weights, folded once per reconstruct!
     # call (the product is loop-invariant), so the subset residual kernel reads
     # one array instead of two.
-    data_weights::A3          # W_proj ⊙ statistical weights (sino shape)
-    correction::A3            # Backprojection scratch (vol shape)
-    reg_grad::A3              # Regularization gradient (vol shape)
+    data_weights::A3 # W_proj ⊙ statistical weights (sino shape)
+    correction::A3   # Backprojection scratch (vol shape)
+    reg_grad::A3     # Regularization gradient (vol shape)
 
     # ─── Ordered subsets (pre-computed) ───
-    subsets::Vector{Vector{Int}}            # angle indices per subset
-    subset_geometries::Vector{CTGeometry}   # pre-built geometry per subset
-    subset_geom_source_positions::Vector{A2}  # GPU geometry arrays per subset
+    subsets::Vector{Vector{Int}}             # angle indices per subset
+    subset_geometries::Vector{CTGeometry}    # pre-built geometry per subset
+    subset_geom_source_positions::Vector{A2} # GPU geometry arrays per subset
     subset_geom_detector_centers::Vector{A2}
     subset_geom_detector_u::Vector{A2}
     subset_geom_detector_v::Vector{A2}
-    subset_angle_idx::Vector{AI}            # device-side global angle index per subset
-    subset_Ax_buf::A3                       # (n_cols, n_rows, max_subset_size)
+    subset_angle_idx::Vector{AI} # device-side global angle index per subset
+    subset_Ax_buf::A3            # (n_cols, n_rows, max_subset_size)
 
     # ─── Pre-computed HIR params ───
     params::HIRParams
 
     # ─── Forward-projection ray tracer (must match the sim's projector) ───
-    projector::Symbol         # :dd_fast (default) or :siddon
+    projector::Symbol # :dd_fast (default) or :siddon
 end
 
 """
@@ -1151,15 +1398,15 @@ as the simulation's `SimOptions(; projector=…)` so the recon inverts the
 operator that generated the data.
 """
 function create_hir_recon_workspace(
-        sinogram::AbstractArray{<:AbstractFloat, 3},
-        geom::CTGeometry,
-        volume_size::NTuple{3, Int};
-        T::Type{<:AbstractFloat} = eltype(sinogram),
-        strength::Integer = 60,
-        filter::Union{FilterType, Symbol} = StandardFilter(),
-        cutoff::Float64 = 1.0,
-        projector::Symbol = :dd_fast
-    )
+    sinogram::AbstractArray{<:AbstractFloat, 3},
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    T::Type{<:AbstractFloat} = eltype(sinogram),
+    strength::Integer = 60,
+    filter::Union{FilterType, Symbol} = StandardFilter(),
+    cutoff::Float64 = 1.0,
+    projector::Symbol = :dd_fast,
+)
     _validate_projector(projector)
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
@@ -1168,7 +1415,9 @@ function create_hir_recon_workspace(
     # domain.  Helical HIR retains its existing WFBP-domain behavior.
     params = get_hir_params(strength)
     work_geom, work_size, output_x, output_y, output_z = _hir_support(
-        geom, volume_size, params.nepochs > 0
+        geom,
+        volume_size,
+        params.nepochs > 0,
     )
 
     # Exact public output plus the internal iterative domain.  Alias them when
@@ -1188,7 +1437,10 @@ function create_hir_recon_workspace(
     raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
     kernel_cpu = create_spatial_kernel(
-        kernel_size_int, filter, pixel_size; bandlimit = grid_bandlimit(geom, volume_size),
+        kernel_size_int,
+        filter,
+        pixel_size;
+        bandlimit = grid_bandlimit(geom, volume_size),
     )
     if is_arc(geom) && !is_helical(geom)
         # equiangular fan filter correction (helical WFBP filters rebinned
@@ -1215,12 +1467,21 @@ function create_hir_recon_workspace(
     # 834×8×500 → 512×512×8).  W_proj = 1/(A·1) uses the selected forward
     # projector so the system matrix matches the sim's.
     W_proj = compute_projection_weights(
-        work_geom, work_size, T;
-        projector = projector, like = sinogram, circular_support = true,
+        work_geom,
+        work_size,
+        T;
+        projector = projector,
+        like = sinogram,
+        circular_support = true,
     )
     V_inv = compute_image_weights(
-        work_geom, work_size, T; like = sinogram, projector = projector,
-        active_z = 1:work_size[3], circular_support = true,
+        work_geom,
+        work_size,
+        T;
+        like = sinogram,
+        projector = projector,
+        active_z = 1:work_size[3],
+        circular_support = true,
     )
 
     # PWLS iteration scratch buffers
@@ -1269,16 +1530,40 @@ function create_hir_recon_workspace(
     max_subset_size = maximum(length(s) for s in subsets)
     subset_Ax_buf = similar(sinogram, T, sino_shape[1], sino_shape[2], max_subset_size)
 
-    return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel), typeof(idx_proto)}(
-        volume, work_volume, work_geom, output_x, output_y, output_z,
-        filtered, conv_scratch, filter_kernel,
-        geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-        W_proj, V_inv,
-        data_weights, correction, reg_grad,
-        subsets, subset_geometries,
-        subset_geom_src, subset_geom_det, subset_geom_u, subset_geom_v,
-        subset_angle_idx, subset_Ax_buf,
+    return HIRReconWorkspace{
+        T,
+        typeof(volume),
+        typeof(geom_source_positions),
+        typeof(filter_kernel),
+        typeof(idx_proto),
+    }(
+        volume,
+        work_volume,
+        work_geom,
+        output_x,
+        output_y,
+        output_z,
+        filtered,
+        conv_scratch,
+        filter_kernel,
+        geom_source_positions,
+        geom_detector_centers,
+        geom_detector_u,
+        geom_detector_v,
+        W_proj,
+        V_inv,
+        data_weights,
+        correction,
+        reg_grad,
+        subsets,
+        subset_geometries,
+        subset_geom_src,
+        subset_geom_det,
+        subset_geom_u,
+        subset_geom_v,
+        subset_angle_idx,
+        subset_Ax_buf,
         params,
-        projector
+        projector,
     )
 end

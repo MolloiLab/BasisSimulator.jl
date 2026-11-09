@@ -60,11 +60,10 @@ Inspirations:
 #  Paper-fixed internal constants (§2.4 / §2.6) — not exposed
 # =============================================================================
 
-const _SFJSD_α = 0.7f0    # iteration decay
-const _SFJSD_lavg = 5        # locally-averaged range window (5×5)
-const _SFJSD_σ_ref_px = 10.0f0   # heavy low-pass reference (Gaussian)
-const _SFJSD_σ_cap = 12.0f0   # internal compute safety on σ_e (paper §2.9)
-
+const _SFJSD_α = 0.7f0         # iteration decay
+const _SFJSD_lavg = 5          # locally-averaged range window (5×5)
+const _SFJSD_σ_ref_px = 10.0f0 # heavy low-pass reference (Gaussian)
+const _SFJSD_σ_cap = 12.0f0    # internal compute safety on σ_e (paper §2.9)
 
 # =============================================================================
 #  Internal helpers
@@ -83,7 +82,7 @@ function _sfjsd_sep_gauss_3d(sino::Array{Float32, 3}, σ_px::Real)
     radius = max(1, ceil(Int, 3σ))
     ks = Float32[exp(-(k^2) / (2σ^2)) for k in -radius:radius]
     ks ./= sum(ks)
-    n_col, n_row, n_view = size(sino)
+    n_row = size(sino, 2)
     out = similar(sino)
     Threads.@threads for r in 1:n_row
         slice = Float32.(@view sino[:, r, :])
@@ -99,27 +98,32 @@ Pure 2D separable Gaussian on a (n_col, n_view) slice — col-pass then
 view-pass.  Internal helper for `_sfjsd_sep_gauss_3d`.
 """
 function _sfjsd_gauss_2d(
-        slice2d::AbstractMatrix{Float32},
-        ks::AbstractVector{Float32}, radius::Int
-    )
+    slice2d::AbstractMatrix{Float32},
+    ks::AbstractVector{Float32},
+    radius::Int,
+)
     nc, nv = size(slice2d)
     tmp = Matrix{Float32}(undef, nc, nv)
     out = Matrix{Float32}(undef, nc, nv)
     @inbounds for v in 1:nv, c in 1:nc
-        s = 0.0f0; w = 0.0f0
+        s = 0.0f0
+        w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             c2 = c + dk
             (1 ≤ c2 ≤ nc) || continue
-            s += ks[i] * slice2d[c2, v]; w += ks[i]
+            s += ks[i] * slice2d[c2, v]
+            w += ks[i]
         end
         tmp[c, v] = s / w
     end
     @inbounds for v in 1:nv, c in 1:nc
-        s = 0.0f0; w = 0.0f0
+        s = 0.0f0
+        w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             v2 = v + dk
             (1 ≤ v2 ≤ nv) || continue
-            s += ks[i] * tmp[c, v2]; w += ks[i]
+            s += ks[i] * tmp[c, v2]
+            w += ks[i]
         end
         out[c, v] = s / w
     end
@@ -152,12 +156,15 @@ sub-sampled at stride `s`.  Each pixel's output is the bilateral
 weighted mean over its neighborhood.
 """
 function _sfjsd_pass!(
-        out::AbstractMatrix{Float32},
-        target::AbstractMatrix{Float32},
-        σ_sp::Float32,
-        Λ1::AbstractMatrix{Float32}, Λ2::AbstractMatrix{Float32},
-        σ1_rng::Float32, σ2_rng::Float32, stride::Int
-    )
+    out::AbstractMatrix{Float32},
+    target::AbstractMatrix{Float32},
+    σ_sp::Float32,
+    Λ1::AbstractMatrix{Float32},
+    Λ2::AbstractMatrix{Float32},
+    σ1_rng::Float32,
+    σ2_rng::Float32,
+    stride::Int,
+)
     nc, nv = size(target)
     radius = max(1, ceil(Int, 3 * Float64(σ_sp)))
     inv_2σ²_sp = 1.0f0 / (2.0f0 * σ_sp * σ_sp + 1.0f-30)
@@ -167,7 +174,8 @@ function _sfjsd_pass!(
 
     Threads.@threads for v in 1:nv
         @inbounds for c in 1:nc
-            sum_v = 0.0f0; wtot = 0.0f0
+            sum_v = 0.0f0
+            wtot = 0.0f0
             for dv in -radius:stride:radius
                 v2 = v + dv
                 (1 ≤ v2 ≤ nv) || continue
@@ -176,24 +184,29 @@ function _sfjsd_pass!(
                     (1 ≤ c2 ≤ nc) || continue
 
                     # 5×5 locally-averaged squared diff
-                    Δ1² = 0.0f0; Δ2² = 0.0f0; cnt = 0
+                    Δ1² = 0.0f0
+                    Δ2² = 0.0f0
+                    cnt = 0
                     for dav in -half_lavg:half_lavg, dac in -half_lavg:half_lavg
-                        ca = c + dac;  va = v + dav
-                        cb = c2 + dac; vb = v2 + dav
+                        ca = c + dac
+                        va = v + dav
+                        cb = c2 + dac
+                        vb = v2 + dav
                         (1 ≤ ca ≤ nc && 1 ≤ va ≤ nv) || continue
                         (1 ≤ cb ≤ nc && 1 ≤ vb ≤ nv) || continue
                         d1 = Λ1[cb, vb] - Λ1[ca, va]
                         d2 = Λ2[cb, vb] - Λ2[ca, va]
-                        Δ1² += d1 * d1; Δ2² += d2 * d2; cnt += 1
+                        Δ1² += d1 * d1
+                        Δ2² += d2 * d2
+                        cnt += 1
                     end
                     if cnt > 0
-                        Δ1² /= cnt; Δ2² /= cnt
+                        Δ1² /= cnt
+                        Δ2² /= cnt
                     end
 
                     spatial_d² = Float32(dc * dc + dv * dv)
-                    log_w = -spatial_d² * inv_2σ²_sp -
-                        Δ1² * inv_2σ²_r1 -
-                        Δ2² * inv_2σ²_r2
+                    log_w = -spatial_d² * inv_2σ²_sp - Δ1² * inv_2σ²_r1 - Δ2² * inv_2σ²_r2
                     w = exp(log_w)
                     sum_v += w * target[c2, v2]
                     wtot += w
@@ -213,9 +226,12 @@ internally by both the SURE optimization and the main per-row loop.
 Returns the denoised (n_col·n_view, 2) matrix.
 """
 function _sfjsd_apply_D(
-        M::AbstractMatrix{Float32}, σ0::Float32,
-        n_col::Int, n_view::Int, stride::Int
-    )
+    M::AbstractMatrix{Float32},
+    σ0::Float32,
+    n_col::Int,
+    n_view::Int,
+    stride::Int,
+)
     F = svd(M; full = false)
     U, Σ, V = F.U, F.S, F.V
 
@@ -227,7 +243,8 @@ function _sfjsd_apply_D(
     σ1_rng = max(_sfjsd_mad_scale(Λ1), eps(Float32))
     σ2_rng = max(_sfjsd_mad_scale(Λ2), eps(Float32))
 
-    Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
+    Λ1_d = similar(Λ1)
+    Λ2_d = similar(Λ2)
     _sfjsd_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, stride)
     _sfjsd_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, stride)
 
@@ -242,9 +259,12 @@ Stein's unbiased risk estimator with Hutchinson MC divergence
 (paper Eq 16+17) in whitened identity-covariance coordinates.
 """
 function _sfjsd_sure(
-        M::AbstractMatrix{Float32}, σ0::Float32,
-        n_col::Int, n_view::Int, stride::Int
-    )
+    M::AbstractMatrix{Float32},
+    σ0::Float32,
+    n_col::Int,
+    n_view::Int,
+    stride::Int,
+)
     Md = _sfjsd_apply_D(M, σ0, n_col, n_view, stride)
 
     rng = MersenneTwister(42)
@@ -254,7 +274,7 @@ function _sfjsd_sure(
     div_est = sum(b .* (Md_p .- Md)) / δ
 
     n = length(M)
-    return Float32(sum((Md .- M) .^ 2)) - Float32(n) + 2.0f0 * div_est
+    return Float32(sum((Md .- M).^2)) - Float32(n) + 2.0f0 * div_est
 end
 
 """
@@ -265,12 +285,15 @@ detector row.  Default search range [0.5, 5.0] px covers the typical
 clinical optimum across all four hardware classes (paper §2.6).
 """
 function _sfjsd_sure_optimize(
-        M::AbstractMatrix{Float32},
-        n_col::Int, n_view::Int, stride::Int;
-        σ_lo::Real = 0.5, σ_hi::Real = 5.0,
-        tol::Real = 0.15,
-        verbose::Bool = true
-    )
+    M::AbstractMatrix{Float32},
+    n_col::Int,
+    n_view::Int,
+    stride::Int;
+    σ_lo::Real = 0.5,
+    σ_hi::Real = 5.0,
+    tol::Real = 0.15,
+    verbose::Bool = true,
+)
     φ = Float32((sqrt(5) - 1) / 2)
     a, b = Float32(σ_lo), Float32(σ_hi)
     c = b - φ * (b - a)
@@ -280,18 +303,23 @@ function _sfjsd_sure_optimize(
     n_evals = 2
     while abs(b - a) > tol
         if fc < fd
-            b = d; d = c; fd = fc
+            b = d
+            d = c
+            fd = fc
             c = b - φ * (b - a)
             fc = _sfjsd_sure(M, c, n_col, n_view, stride)
         else
-            a = c; c = d; fc = fd
+            a = c
+            c = d
+            fc = fd
             d = a + φ * (b - a)
             fd = _sfjsd_sure(M, d, n_col, n_view, stride)
         end
         n_evals += 1
     end
     σ_star = (a + b) / 2.0f0
-    verbose && @info "[SF-JSD SURE] converged: σ₀★ = $(round(σ_star, digits = 2)) px after $(n_evals) evals"
+    verbose &&
+        @info "[SF-JSD SURE] converged: σ₀★ = $(round(σ_star, digits = 2)) px after $(n_evals) evals"
     return σ_star
 end
 
@@ -304,8 +332,9 @@ center detector column ± 5 cols at the mid detector row).  Used to
 pick the spatial-kernel resampling stride.
 """
 function _sfjsd_corr_length(p::Array{Float32, 3})
-    n_col, n_row, n_view = size(p)
-    c0 = max(1, n_col ÷ 2 - 5); c1 = min(n_col, n_col ÷ 2 + 4)
+    n_col, n_row, _ = size(p)
+    c0 = max(1, n_col ÷ 2 - 5)
+    c1 = min(n_col, n_col ÷ 2 + 4)
     mid_r = n_row ÷ 2 + 1
     patch = Float32.(p[c0:c1, mid_r, :])
 
@@ -315,11 +344,13 @@ function _sfjsd_corr_length(p::Array{Float32, 3})
     ks ./= sum(ks)
     smoothed = similar(patch)
     @inbounds for c_i in axes(patch, 1), v in axes(patch, 2)
-        s = 0.0f0; w = 0.0f0
+        s = 0.0f0
+        w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             v2 = v + dk
             (1 ≤ v2 ≤ size(patch, 2)) || continue
-            s += ks[i] * patch[c_i, v2]; w += ks[i]
+            s += ks[i] * patch[c_i, v2]
+            w += ks[i]
         end
         smoothed[c_i, v] = s / w
     end
@@ -328,7 +359,8 @@ function _sfjsd_corr_length(p::Array{Float32, 3})
     n_lags = 5
     ac = zeros(Float32, n_lags)
     for lag in 0:(n_lags - 1)
-        s = 0.0; n = 0
+        s = 0.0
+        n = 0
         for c_i in 1:(size(resid, 1) - lag), v in axes(resid, 2)
             s += Float64(resid[c_i, v]) * Float64(resid[c_i + lag, v])
             n += 1
@@ -354,8 +386,7 @@ end
 Stride from the noise correlation length: <1.5 px → 1, 1.5–2.5 → 2,
 ≥2.5 → 3 (paper §2.4(iii)).
 """
-_sfjsd_pick_stride(corr_len::Real) =
-    corr_len < 1.5 ? 1 : (corr_len < 2.5 ? 2 : 3)
+_sfjsd_pick_stride(corr_len::Real) = corr_len < 1.5 ? 1 : (corr_len < 2.5 ? 2 : 3)
 
 """
     _sfjsd_pick_n_iter(min_N) -> Int
@@ -365,7 +396,6 @@ gives 1 iter (high-flux dual-kVp regime), else 2 (photon-starved PCCT
 bin pairs and dual-layer detectors) (paper §2.5).
 """
 _sfjsd_pick_n_iter(min_N::Real) = min_N ≥ 100 ? 1 : 2
-
 
 # =============================================================================
 #  Public API — apply_sino_sfjsd_denoise
@@ -432,22 +462,23 @@ Black (in prep.), *Joint Sinogram Denoising via Subspace–Frequency
 Reduction for Two-Channel Spectral CT*.
 """
 function apply_sino_sfjsd_denoise(
-        channels::AbstractVector{<:AbstractArray{Float32, 3}},
-        I0::AbstractVector{<:Real};
-        σ₀::Real = 0.0,
-        verbose::Bool = true,
-    )
-    length(channels) == 2 || error(
-        "apply_sino_sfjsd_denoise: requires exactly 2 channels (got $(length(channels))). " *
-            "N>2 is paper §2.9 future work."
-    )
-    length(I0) == 2 || error(
-        "apply_sino_sfjsd_denoise: I0 must have length 2 (got $(length(I0)))."
-    )
+    channels::AbstractVector{<:AbstractArray{Float32, 3}},
+    I0::AbstractVector{<:Real};
+    σ₀::Real = 0.0,
+    verbose::Bool = true,
+)
+    length(channels) == 2 ||
+        error(
+            "apply_sino_sfjsd_denoise: requires exactly 2 channels (got $(length(channels))). " *
+                "N>2 is paper §2.9 future work.",
+        )
+    length(I0) == 2 ||
+        error("apply_sino_sfjsd_denoise: I0 must have length 2 (got $(length(I0))).")
     sz = size(channels[1])
-    size(channels[2]) == sz || error(
-        "apply_sino_sfjsd_denoise: channel shapes differ — $(size(channels[1])) vs $(size(channels[2]))."
-    )
+    size(channels[2]) == sz ||
+        error(
+            "apply_sino_sfjsd_denoise: channel shapes differ — $(size(channels[1])) vs $(size(channels[2])).",
+        )
 
     p_lo = Float32.(channels[1])
     p_hi = Float32.(channels[2])
@@ -482,8 +513,10 @@ function apply_sino_sfjsd_denoise(
     ξ_lo = w_lo .* (p_lo .- p_ref_lo)
     ξ_hi = w_hi .* (p_hi .- p_ref_hi)
 
-    p_lo = nothing; p_hi = nothing
-    N_lo = nothing; N_hi = nothing
+    p_lo = nothing
+    p_hi = nothing
+    N_lo = nothing
+    N_hi = nothing
     GC.gc(true)
 
     # ─── Auto-derive σ_0★ via SURE on the mid-row, or use user's value. ─
@@ -521,7 +554,8 @@ function apply_sino_sfjsd_denoise(
             σ1_rng = max(_sfjsd_mad_scale(Λ1), eps(Float32))
             σ2_rng = max(_sfjsd_mad_scale(Λ2), eps(Float32))
 
-            Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
+            Λ1_d = similar(Λ1)
+            Λ2_d = similar(Λ2)
             _sfjsd_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, stride)
             _sfjsd_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, stride)
 
@@ -530,9 +564,10 @@ function apply_sino_sfjsd_denoise(
             ξ_lo[:, r, :] .= reshape(view(M_d, :, 1), n_col, n_view)
             ξ_hi[:, r, :] .= reshape(view(M_d, :, 2), n_col, n_view)
         end
-        verbose && @info "[SF-JSD iter $(t + 1)/$(n_iter)] σ₀ = $(round(σ0, digits = 2)) px, " *
-            "median Σ₁/Σ₂ = $(round(median(Σ_ratio_log), sigdigits = 3)), " *
-            "σ_cap = $(_SFJSD_σ_cap) px"
+        verbose &&
+            @info "[SF-JSD iter $(t + 1)/$(n_iter)] σ₀ = $(round(σ0, digits = 2)) px, " *
+                "median Σ₁/Σ₂ = $(round(median(Σ_ratio_log), sigdigits = 3)), " *
+                "σ_cap = $(_SFJSD_σ_cap) px"
         σ0 *= _SFJSD_α
     end
 
@@ -542,6 +577,5 @@ function apply_sino_sfjsd_denoise(
 
     return [p_lo_d, p_hi_d]
 end
-
 
 export apply_sino_sfjsd_denoise

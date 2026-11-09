@@ -35,3 +35,6 @@ docs/notebooks/data/
 # macOS
 .DS_Store
 __pycache__/
+
+# The scatter library (gigabytes) ships outside git; see lib/BasisMonteCarlo/scripts/split_scatter_library.jl
+lib/BasisMonteCarlo/tables/scatter_library_*

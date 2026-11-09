@@ -117,8 +117,10 @@
 
 import AcceleratedKernels as AK
 
-export siddon_forward_project!, siddon_forward_project,
-    siddon_fused_poly_project!, siddon_fused_spectral_project!
+export siddon_forward_project!,
+    siddon_forward_project,
+    siddon_fused_poly_project!,
+    siddon_fused_spectral_project!
 
 # =============================================================================
 # Single Ray Trace (inlined into the main loop)
@@ -192,15 +194,26 @@ The algorithm computes the line integral L = Σᵢ μᵢ × lᵢ by:
 - [`siddon_forward_project`](@ref): Allocating projection
 """
 @inline function siddon_trace_ray(
-        volume::AbstractArray{T, 3},
-        src_x::T, src_y::T, src_z::T,
-        det_x::T, det_y::T, det_z::T,
-        vol_min_x::T, vol_min_y::T, vol_min_z::T,
-        vol_max_x::T, vol_max_y::T, vol_max_z::T,
-        voxel_size_x::T, voxel_size_y::T, voxel_size_z::T,
-        nx::Int32, ny::Int32, nz::Int32
-    ) where {T}
-
+    volume::AbstractArray{T, 3},
+    src_x::T,
+    src_y::T,
+    src_z::T,
+    det_x::T,
+    det_y::T,
+    det_z::T,
+    vol_min_x::T,
+    vol_min_y::T,
+    vol_min_z::T,
+    vol_max_x::T,
+    vol_max_y::T,
+    vol_max_z::T,
+    voxel_size_x::T,
+    voxel_size_y::T,
+    voxel_size_z::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+) where {T}
     # Ray direction (not normalized - we use parametric form)
     ray_x = det_x - src_x
     ray_y = det_y - src_y
@@ -303,7 +316,12 @@ The algorithm computes the line integral L = Σᵢ μᵢ × lᵢ by:
         iter += Int32(1)
 
         # Check bounds
-        if ix < Int32(0) || ix >= nx || iy < Int32(0) || iy >= ny || iz < Int32(0) || iz >= nz
+        if ix < Int32(0) ||
+                ix >= nx ||
+                iy < Int32(0) ||
+                iy >= ny ||
+                iz < Int32(0) ||
+                iz >= nz
             break
         end
 
@@ -454,26 +472,24 @@ siddon_forward_project!(sinogram_gpu, phantom_gpu, geom)
 - [`siddon_fused_poly_project!`](@ref): Spectral projection with energy dependence
 - [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
 """
-function siddon_forward_project!(
-        sinogram::AbstractArray{T, 3},
-        volume::AbstractArray{T, 3},
-        geom::CTGeometry;
-        # Pre-allocated geometry arrays (optional — allocate internally if not provided)
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        # Override volume bounds (use phantom's physical extent instead of geom.fov)
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
-    ) where {T <: AbstractFloat}
-
+function siddon_forward_project!(sinogram::AbstractArray{T, 3}, volume::AbstractArray{
+    T,
+    3,
+}, geom::CTGeometry;
+    # Pre-allocated geometry arrays (optional — allocate internally if not provided)
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    # Override volume bounds (use phantom's physical extent instead of geom.fov)
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
+) where {T <: AbstractFloat}
     # Get dimensions as Int32 for GPU compatibility
     nx = Int32(size(volume, 1))
     ny = Int32(size(volume, 2))
     nz = Int32(size(volume, 3))
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
-    n_angles = Int32(size(sinogram, 3))
 
     # Pre-compute volume parameters (typed constants for GPU)
     # Use volume_extent (phantom's physical dimensions) if provided,
@@ -493,7 +509,7 @@ function siddon_forward_project!(
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
     arc_det = is_arc(geom)
-    dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
+    dγ = T(geom.pixel_size / geom.SAD) # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
 
     # Pre-compute detector center offset for GPU
@@ -567,26 +583,43 @@ function siddon_forward_project!(
             cin_x = dcx - src_x
             cin_y = dcy - src_y
             Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
-            sγ = sin(γ); cγ = cos(γ)
-            (src_x + cγ * cin_x + sγ * Lsd * dux,
-             src_y + cγ * cin_y + sγ * Lsd * duy,
-             dcz + v_offset * dvz)
+            sγ = sin(γ)
+            cγ = cos(γ)
+            (
+                src_x + cγ * cin_x + sγ * Lsd * dux,
+                src_y + cγ * cin_y + sγ * Lsd * duy,
+                dcz + v_offset * dvz,
+            )
         else
             u_offset = (T(col) - col_center) * pixel_size * magnification
-            (dcx + u_offset * dux + v_offset * dvx,
-             dcy + u_offset * duy + v_offset * dvy,
-             dcz + u_offset * duz + v_offset * dvz)
+            (
+                dcx + u_offset * dux + v_offset * dvx,
+                dcy + u_offset * duy + v_offset * dvy,
+                dcz + u_offset * duz + v_offset * dvz,
+            )
         end
 
         # Trace ray and store result
         sinogram[idx] = siddon_trace_ray(
             volume,
-            src_x, src_y, src_z,
-            det_x, det_y, det_z,
-            vol_min_x, vol_min_y, vol_min_z,
-            vol_max_x, vol_max_y, vol_max_z,
-            voxel_size_x, voxel_size_y, voxel_size_z,
-            nx, ny, nz
+            src_x,
+            src_y,
+            src_z,
+            det_x,
+            det_y,
+            det_z,
+            vol_min_x,
+            vol_min_y,
+            vol_min_z,
+            vol_max_x,
+            vol_max_y,
+            vol_max_z,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            nx,
+            ny,
+            nz,
         )
     end
 
@@ -676,11 +709,10 @@ version [`siddon_forward_project!`](@ref) to avoid repeated allocations.
 - [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
 """
 function siddon_forward_project(
-        volume::AbstractArray{T, 3},
-        geom::CTGeometry;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
-    ) where {T <: AbstractFloat}
-
+    volume::AbstractArray{T, 3},
+    geom::CTGeometry;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+) where {T <: AbstractFloat}
     # Allocate output on same device as input
     sinogram = similar(volume, T, geom.n_cols, geom.n_rows, geom.n_angles)
     fill!(sinogram, zero(T))
@@ -714,7 +746,12 @@ end
 @generated helper: accumulate path_length × μ for all energies.
 Expands at compile time to: tuple(accums[1] + μ_tbl[mat,1]*pl, accums[2] + μ_tbl[mat,2]*pl, ...)
 """
-@generated function _fused_accum_energies(accums::NTuple{N, T}, μ_tbl, mat::Int32, pl::T) where {N, T}
+@generated function _fused_accum_energies(
+    accums::NTuple{N, T},
+    μ_tbl,
+    mat::Int32,
+    pl::T,
+) where {N, T}
     exprs = [:(accums[$i] + @inbounds(μ_tbl[mat, $i]) * pl) for i in 1:N]
     return :(tuple($(exprs...)))
 end
@@ -744,14 +781,25 @@ end
 bt_base = col + (row-1)*nc, ncnr = n_cols*n_rows.
 Returns Σ_e wη[e] * bt[bt_base + (e-1)*ncnr] * exp(-accums[e]).
 """
-@generated function _fused_beer_lambert_bt(accums::NTuple{N, T}, wη, bt, bt_base::Int32, ncnr::Int32) where {N, T}
+@generated function _fused_beer_lambert_bt(
+    accums::NTuple{N, T},
+    wη,
+    bt,
+    bt_base::Int32,
+    ncnr::Int32,
+) where {N, T}
     if N == 0
         return :(zero(T))
     end
     # Chain binary + to avoid varargs allocation on GPU
     ex = :((@inbounds wη[1]) * (@inbounds bt[bt_base + Int32(0) * ncnr]) * exp(-accums[1]))
     for i in 2:N
-        ex = :($ex + (@inbounds wη[$i]) * (@inbounds bt[bt_base + Int32($(i - 1)) * ncnr]) * exp(-accums[$i]))
+        ex = :(
+            $ex +
+                (@inbounds wη[$i]) *
+                    (@inbounds bt[bt_base + Int32($(i - 1)) * ncnr]) *
+                    exp(-accums[$i])
+        )
     end
     return ex
 end
@@ -786,27 +834,25 @@ read once per voxel, and μ values for all energies are looked up from a
   on GPU. If nothing, no bowtie correction applied.
 """
 function siddon_fused_poly_project!(
-        sinogram::AbstractArray{T, 3},
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        μ_table_gpu::AbstractArray{T, 2},
-        wη_gpu::AbstractArray{T, 1},
-        ::Val{N_E};
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        ws_bowtie_spectral = nothing
-    ) where {T <: AbstractFloat, N_E}
-
+    sinogram::AbstractArray{T, 3},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    wη_gpu::AbstractArray{T, 1},
+    ::Val{N_E};
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing,
+) where {T <: AbstractFloat, N_E}
     # Volume dimensions (Int32 for GPU)
     nx = Int32(size(mask, 1))
     ny = Int32(size(mask, 2))
     nz = Int32(size(mask, 3))
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
-    n_angles = Int32(size(sinogram, 3))
 
     # Volume bounds (use phantom extent if provided, else recon FOV)
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
@@ -823,7 +869,7 @@ function siddon_fused_poly_project!(
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
     arc_det = is_arc(geom)
-    dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
+    dγ = T(geom.pixel_size / geom.SAD) # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
     col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -867,16 +913,37 @@ function siddon_fused_poly_project!(
     _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     # Capture all variables in let block for GPU closure correctness
-    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu, arc_det = arc_det, dγ = dγ,
-            sp = source_positions, dc = detector_centers, du = detector_u, dv = detector_v,
-            bt = _bt,
-            vmx = vol_min_x, vmy = vol_min_y, vmz = vol_min_z,
-            vMx = vol_max_x, vMy = vol_max_y, vMz = vol_max_z,
-            vsx = voxel_size_x, vsy = voxel_size_y, vsz = voxel_size_z,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
-            mag = magnification, ps = pixel_size, prs = pixel_row_size,
-            cc = col_center, rc = row_center, ncnr = nc_nr, hbt = has_bowtie
-
+    let mask = mask,
+        μ_tbl = μ_table_gpu,
+        wη = wη_gpu,
+        arc_det = arc_det,
+        dγ = dγ,
+        sp = source_positions,
+        dc = detector_centers,
+        du = detector_u,
+        dv = detector_v,
+        bt = _bt,
+        vmx = vol_min_x,
+        vmy = vol_min_y,
+        vmz = vol_min_z,
+        vMx = vol_max_x,
+        vMy = vol_max_y,
+        vMz = vol_max_z,
+        vsx = voxel_size_x,
+        vsy = voxel_size_y,
+        vsz = voxel_size_z,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = n_cols,
+        nr = n_rows,
+        mag = magnification,
+        ps = pixel_size,
+        prs = pixel_row_size,
+        cc = col_center,
+        rc = row_center,
+        ncnr = nc_nr,
+        hbt = has_bowtie
         AK.foreachindex(sinogram) do idx
             # ─── Index decomposition (mod/div, no CartesianIndices) ───
             idx_0 = Int32(idx - 1)
@@ -891,9 +958,15 @@ function siddon_fused_poly_project!(
             src_z = sp[3, angle]
 
             # ─── Detector pixel position ───
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
-            dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
+            dcx = dc[1, angle]
+            dcy = dc[2, angle]
+            dcz = dc[3, angle]
+            dux = du[1, angle]
+            duy = du[2, angle]
+            duz = du[3, angle]
+            dvx = dv[1, angle]
+            dvy = dv[2, angle]
+            dvz = dv[3, angle]
 
             v_offset = (T(row) - rc) * prs * mag
             det_x, det_y, det_z = if arc_det
@@ -901,15 +974,20 @@ function siddon_fused_poly_project!(
                 cin_x = dcx - src_x
                 cin_y = dcy - src_y
                 Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
-                sγ = sin(γa); cγ = cos(γa)
-                (src_x + cγ * cin_x + sγ * Lsd * dux,
-                 src_y + cγ * cin_y + sγ * Lsd * duy,
-                 dcz + v_offset * dvz)
+                sγ = sin(γa)
+                cγ = cos(γa)
+                (
+                    src_x + cγ * cin_x + sγ * Lsd * dux,
+                    src_y + cγ * cin_y + sγ * Lsd * duy,
+                    dcz + v_offset * dvz,
+                )
             else
                 u_offset = (T(col) - cc) * ps * mag
-                (dcx + u_offset * dux + v_offset * dvx,
-                 dcy + u_offset * duy + v_offset * dvy,
-                 dcz + u_offset * duz + v_offset * dvz)
+                (
+                    dcx + u_offset * dux + v_offset * dvx,
+                    dcy + u_offset * duy + v_offset * dvy,
+                    dcz + u_offset * duz + v_offset * dvz,
+                )
             end
 
             # ═══════════════════════════════════════════════════════════
@@ -1017,7 +1095,12 @@ function siddon_fused_poly_project!(
                 iter += Int32(1)
 
                 # Bounds check
-                if ix < Int32(0) || ix >= nx || iy < Int32(0) || iy >= ny || iz < Int32(0) || iz >= nz
+                if ix < Int32(0) ||
+                        ix >= nx ||
+                        iy < Int32(0) ||
+                        iy >= ny ||
+                        iz < Int32(0) ||
+                        iz >= nz
                     break
                 end
 
@@ -1026,7 +1109,8 @@ function siddon_fused_poly_project!(
 
                 if path_length > eps
                     # Read material index from mask (UInt8 or UInt16 → Int32)
-                    mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) + Int32(1)
+                    mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) +
+                        Int32(1)
 
                     # Accumulate line integrals for ALL energies (@generated unroll)
                     accums = _fused_accum_energies(accums, μ_tbl, mat, path_length)
@@ -1096,8 +1180,12 @@ Used by the tiled spectral PCCT projector (`siddon_fused_spectral_project!`)
 to push K Float32 accumulators into GPU registers per ray.
 """
 @generated function _tiled_accum_energies(
-        accums::NTuple{K, T}, μ_tbl, mat::Int32, pl::T, ts::Int32,
-    ) where {K, T}
+    accums::NTuple{K, T},
+    μ_tbl,
+    mat::Int32,
+    pl::T,
+    ts::Int32,
+) where {K, T}
     exprs = [:(accums[$i] + @inbounds(μ_tbl[mat, ts + Int32($(i - 1))]) * pl) for i in 1:K]
     return :(tuple($(exprs...)))
 end
@@ -1110,7 +1198,12 @@ using K tiled energy accumulators starting at energy index `ts` in W.
 
 Returns Σ_e W[ts+e-1, b] * exp(-accums[e]) for e=1:K.
 """
-@generated function _tiled_beer_lambert_col(accums::NTuple{K, T}, W, b::Int32, ts::Int32) where {K, T}
+@generated function _tiled_beer_lambert_col(
+    accums::NTuple{K, T},
+    W,
+    b::Int32,
+    ts::Int32,
+) where {K, T}
     if K == 0
         return :(zero(T))
     end
@@ -1127,14 +1220,31 @@ end
 @generated helper: multi-output Beer-Lambert sum with source spectral modulation.
 Returns Σ_e W[ts+e-1, b] * bt[bt_base + (ts+e-2)*ncnr] * exp(-accums[e]).
 """
-@generated function _tiled_beer_lambert_col_bt(accums::NTuple{K, T}, W, b::Int32, ts::Int32, bt, bt_base::Int32, ncnr::Int32) where {K, T}
+@generated function _tiled_beer_lambert_col_bt(
+    accums::NTuple{K, T},
+    W,
+    b::Int32,
+    ts::Int32,
+    bt,
+    bt_base::Int32,
+    ncnr::Int32,
+) where {K, T}
     if K == 0
         return :(zero(T))
     end
     # Clamp exp(-accum) to avoid Inf × 0 = NaN when bt ≈ 0 in Float32
-    ex = :((@inbounds W[ts, b]) * (@inbounds bt[bt_base + (ts - Int32(1)) * ncnr]) * min(exp(-accums[1]), T(1.0e30)))
+    ex = :(
+        (@inbounds W[ts, b]) *
+            (@inbounds bt[bt_base + (ts - Int32(1)) * ncnr]) *
+            min(exp(-accums[1]), T(1.0e30))
+    )
     for i in 2:K
-        ex = :($ex + (@inbounds W[ts + Int32($(i - 1)), b]) * (@inbounds bt[bt_base + (ts + Int32($(i - 2))) * ncnr]) * min(exp(-accums[$i]), T(1.0e30)))
+        ex = :(
+            $ex +
+                (@inbounds W[ts + Int32($(i - 1)), b]) *
+                    (@inbounds bt[bt_base + (ts + Int32($(i - 2))) * ncnr]) *
+                    min(exp(-accums[$i]), T(1.0e30))
+        )
     end
     return ex
 end
@@ -1172,31 +1282,30 @@ bin.
   Pre-allocated geometry arrays on GPU.
 """
 function siddon_fused_spectral_project!(
-        pilot::AbstractArray{T, 3},
-        outputs_flat::AbstractArray{T, 1},
-        n_bins::Int32,
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        μ_table_gpu::AbstractArray{T, 2},
-        W_gpu::AbstractArray{T, 2},
-        ::Val{K},
-        tile_start::Int32;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        ws_bowtie_spectral = nothing
-    ) where {T <: AbstractFloat, K}
-
+    pilot::AbstractArray{T, 3},
+    outputs_flat::AbstractArray{T, 1},
+    n_bins::Int32,
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    W_gpu::AbstractArray{T, 2},
+    ::Val{K},
+    tile_start::Int32;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing,
+) where {T <: AbstractFloat, K}
     # Volume dimensions (Int32 for GPU)
     nx = Int32(size(mask, 1))
     ny = Int32(size(mask, 2))
     nz = Int32(size(mask, 3))
     n_cols = Int32(size(pilot, 1))
     n_rows = Int32(size(pilot, 2))
-    n_angles = Int32(size(pilot, 3))
-    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
+    # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
+    n_elem = length(pilot)
 
     # Volume bounds
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
@@ -1213,7 +1322,7 @@ function siddon_fused_spectral_project!(
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
     arc_det = is_arc(geom)
-    dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
+    dγ = T(geom.pixel_size / geom.SAD) # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
     col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -1255,17 +1364,41 @@ function siddon_fused_spectral_project!(
     _bt = has_source_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     # Capture all variables in let block for GPU closure correctness
-    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = tile_start, arc_det = arc_det, dγ = dγ,
-            sp = source_positions, dc = detector_centers, du = detector_u, dv = detector_v,
-            vmx = vol_min_x, vmy = vol_min_y, vmz = vol_min_z,
-            vMx = vol_max_x, vMy = vol_max_y, vMz = vol_max_z,
-            vsx = voxel_size_x, vsy = voxel_size_y, vsz = voxel_size_z,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows, na = n_angles,
-            mag = magnification, ps = pixel_size, prs = pixel_row_size,
-            cc = col_center, rc = row_center,
-            ne = n_elem, nb = n_bins, oflat = outputs_flat,
-            bt = _bt, ncnr = nc_nr, hbt = has_source_spectral
-
+    let mask = mask,
+        μ_tbl = μ_table_gpu,
+        W = W_gpu,
+        ts = tile_start,
+        arc_det = arc_det,
+        dγ = dγ,
+        sp = source_positions,
+        dc = detector_centers,
+        du = detector_u,
+        dv = detector_v,
+        vmx = vol_min_x,
+        vmy = vol_min_y,
+        vmz = vol_min_z,
+        vMx = vol_max_x,
+        vMy = vol_max_y,
+        vMz = vol_max_z,
+        vsx = voxel_size_x,
+        vsy = voxel_size_y,
+        vsz = voxel_size_z,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = n_cols,
+        nr = n_rows,
+        mag = magnification,
+        ps = pixel_size,
+        prs = pixel_row_size,
+        cc = col_center,
+        rc = row_center,
+        ne = n_elem,
+        nb = n_bins,
+        oflat = outputs_flat,
+        bt = _bt,
+        ncnr = nc_nr,
+        hbt = has_source_spectral
         AK.foreachindex(pilot) do idx
             # ─── Index decomposition (mod/div, no CartesianIndices) ───
             idx_0 = Int32(idx - 1)
@@ -1280,9 +1413,15 @@ function siddon_fused_spectral_project!(
             src_z = sp[3, angle]
 
             # ─── Detector pixel position ───
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
-            dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
+            dcx = dc[1, angle]
+            dcy = dc[2, angle]
+            dcz = dc[3, angle]
+            dux = du[1, angle]
+            duy = du[2, angle]
+            duz = du[3, angle]
+            dvx = dv[1, angle]
+            dvy = dv[2, angle]
+            dvz = dv[3, angle]
 
             v_offset = (T(row) - rc) * prs * mag
             det_x, det_y, det_z = if arc_det
@@ -1290,15 +1429,20 @@ function siddon_fused_spectral_project!(
                 cin_x = dcx - src_x
                 cin_y = dcy - src_y
                 Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
-                sγ = sin(γa); cγ = cos(γa)
-                (src_x + cγ * cin_x + sγ * Lsd * dux,
-                 src_y + cγ * cin_y + sγ * Lsd * duy,
-                 dcz + v_offset * dvz)
+                sγ = sin(γa)
+                cγ = cos(γa)
+                (
+                    src_x + cγ * cin_x + sγ * Lsd * dux,
+                    src_y + cγ * cin_y + sγ * Lsd * duy,
+                    dcz + v_offset * dvz,
+                )
             else
                 u_offset = (T(col) - cc) * ps * mag
-                (dcx + u_offset * dux + v_offset * dvx,
-                 dcy + u_offset * duy + v_offset * dvy,
-                 dcz + u_offset * duz + v_offset * dvz)
+                (
+                    dcx + u_offset * dux + v_offset * dvx,
+                    dcy + u_offset * duy + v_offset * dvy,
+                    dcz + u_offset * duz + v_offset * dvz,
+                )
             end
 
             # ═══════════════════════════════════════════════════════════
@@ -1387,7 +1531,12 @@ function siddon_fused_spectral_project!(
                 while t_current < t_exit && iter < max_iter
                     iter += Int32(1)
 
-                    if ix < Int32(0) || ix >= nx || iy < Int32(0) || iy >= ny || iz < Int32(0) || iz >= nz
+                    if ix < Int32(0) ||
+                            ix >= nx ||
+                            iy < Int32(0) ||
+                            iy >= ny ||
+                            iz < Int32(0) ||
+                            iz >= nz
                         break
                     end
 
@@ -1395,7 +1544,8 @@ function siddon_fused_spectral_project!(
                     path_length = (t_next - t_current) * ray_length
 
                     if path_length > eps
-                        mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) + Int32(1)
+                        mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) +
+                            Int32(1)
                         accums = _tiled_accum_energies(accums, μ_tbl, mat, path_length, ts)
                     end
 
@@ -1421,7 +1571,15 @@ function siddon_fused_spectral_project!(
             if hbt
                 bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
                 for b in Int32(1):nb
-                    I_partial = _tiled_beer_lambert_col_bt(accums, W, b, ts, bt, bt_base, ncnr)
+                    I_partial = _tiled_beer_lambert_col_bt(
+                        accums,
+                        W,
+                        b,
+                        ts,
+                        bt,
+                        bt_base,
+                        ncnr,
+                    )
                     oflat[idx + (b - Int32(1)) * ne] += I_partial
                 end
             else

@@ -14,10 +14,14 @@ import BasisSimulator as BS
 
 function _offset_geom(offset; shape = :arc, n_cols = 96, n_angles = 48, fov_cm = 8.0)
     scanner = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_rows = 3, detector_cols = n_cols,
-        detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_col_offset = offset, detector_shape = shape,
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 3,
+        detector_cols = n_cols,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_col_offset = offset,
+        detector_shape = shape,
     )
     return BS.CTGeometry(scanner; n_angles, fov_cm, z_cm = 0.3)
 end
@@ -26,7 +30,8 @@ end
 function _disk_volume(n; cx, cy, r)
     v = zeros(Float64, n, n, 3)
     for i in 1:n, j in 1:n
-        x = (i - (n + 1) / 2); y = (j - (n + 1) / 2)
+        x = (i - (n + 1) / 2)
+        y = (j - (n + 1) / 2)
         hypot(x - cx, y - cy) <= r && (v[i, j, :] .= 1.0)
     end
     return v
@@ -67,26 +72,32 @@ end
             px = 8.0 / n
             truth = (20.0 * px, -12.0 * px)
             cx_ok, cy_ok = centroid_xy(ok)
-            cx_bad, cy_bad = centroid_xy(bad)
+            cx_bad, _ = centroid_xy(bad)
             @test isapprox(cx_ok, truth[1]; atol = 0.25px)
             @test isapprox(cy_ok, truth[2]; atol = 0.25px)
             # the mismatched pair is wrong in the way a one-sided offset is wrong: on a full
             # rotation opposite views push opposite ways, so the disk does not move, its edge
             # blurs by the quarter column (measured: 3.14 → 3.26 px, both shapes)
             function edge_width(img)
-                rs = Float64[]; vs = Float64[]
+                rs = Float64[]
+                vs = Float64[]
                 for i in 1:n, j in 1:n
                     r = hypot(i - (n + 1) / 2 - 20.0, j - (n + 1) / 2 + 12.0)
                     5 <= r <= 13 && (push!(rs, r); push!(vs, img[i, j, 2]))
                 end
                 bins = 5:0.5:13
                 prof = [mean(vs[(rs .>= b) .& (rs .< b + 0.5)]) for b in bins[1:(end - 1)]]
-                hi = mean(prof[1:4]); lo = mean(prof[(end - 3):end]); q = (prof .- lo) ./ (hi - lo)
-                cross(v) = (k = findfirst(<(v), q); bins[k - 1] + (q[k - 1] - v) / (q[k - 1] - q[k]) * 0.5)
+                hi = mean(prof[1:4])
+                lo = mean(prof[(end - 3):end])
+                q = (prof .- lo) ./ (hi - lo)
+                cross(v) = (
+                    k = findfirst(<(v), q);
+                    bins[k - 1] + (q[k - 1] - v) / (q[k - 1] - q[k]) * 0.5
+                )
                 return cross(0.1) - cross(0.9)
             end
-            @test isapprox(cx_bad, truth[1]; atol = 0.25px)      # not shifted
-            @test edge_width(bad) > 1.02 * edge_width(ok)        # blurred
+            @test isapprox(cx_bad, truth[1]; atol = 0.25px) # not shifted
+            @test edge_width(bad) > 1.02 * edge_width(ok)   # blurred
         end
 
         @testset "$shape: opposing rays interleave" begin
@@ -94,12 +105,17 @@ end
             # union of the two views' column positions, seen from the isocentre, has a spacing
             # of half a column.  Without the offset the two views coincide.
             for (g, expect_half) in ((gq, true), (g0, false))
-                k1 = 1; k2 = g.n_angles ÷ 2 + 1   # θ and θ + π
+                k1 = 1
+                k2 = g.n_angles ÷ 2 + 1 # θ and θ + π
                 # column positions along u for a ray through isocentre, in column units
-                u(k, c) = (c - (g.n_cols + 1) / 2 - BS.column_offset(g)) * (k == k1 ? 1 : -1)
-                pos = sort(vcat([u(k1, c) for c in 1:g.n_cols], [u(k2, c) for c in 1:g.n_cols]))
+                u(k, c) = (c - (g.n_cols + 1) / 2 - BS.column_offset(g)) *
+                    (k == k1 ? 1 : -1)
+                pos = sort(vcat(
+                    [u(k1, c) for c in 1:g.n_cols],
+                    [u(k2, c) for c in 1:g.n_cols],
+                ))
                 gaps = diff(pos)
-                interleaved = all(isapprox.(gaps, 0.5; atol = 1e-9))
+                interleaved = all(isapprox.(gaps, 0.5; atol = 1.0e-9))
                 @test interleaved == expect_half
             end
         end
@@ -116,7 +132,8 @@ end
     for offset in (0.0, 0.25), shape in (:arc, :flat)
         g = _offset_geom(offset; shape, n_cols = 128, n_angles = 96, fov_cm = 8.0)
         nfine = 256
-        fine = _disk_volume(nfine; cx = 44.0, cy = -30.0, r = 12.0)   # a 0.75 mm-pixel object
+        # a 0.75 mm-pixel object
+        fine = _disk_volume(nfine; cx = 44.0, cy = -30.0, r = 12.0)
         dx = 8.0 / nfine
         origin = (-4.0 + dx / 2, -4.0 + dx / 2, -0.15 + 0.1 / 2)
         n = 128
@@ -129,7 +146,8 @@ end
             xs = ((1:n) .- (n + 1) / 2) * (8.0 / n)
             (sum(w .* xs) / sum(w), sum(w .* xs') / sum(w))
         end
-        cl = centroid_xy(label); ci = centroid_xy(image)
+        cl = centroid_xy(label)
+        ci = centroid_xy(image)
         px = 8.0 / n
         @test isapprox(cl[1], ci[1]; atol = 0.1px)
         @test isapprox(cl[2], ci[2]; atol = 0.1px)
@@ -146,41 +164,57 @@ end
 using LinearAlgebra
 @testset "offset through every projector path" begin
     function analytic_col(g, p, k)
-        s = g.source_positions[:, k]; d = g.detector_centers[:, k]; u = g.detector_u[:, k]
-        ray = p .- s; cen = d .- s
+        s = g.source_positions[:, k]
+        d = g.detector_centers[:, k]
+        u = g.detector_u[:, k]
+        ray = p .- s
+        cen = d .- s
         if BS.is_arc(g)
             γ = atan(dot(ray, u), dot(ray, cen) / norm(cen))
             return BS.column_center(Float64, g) + γ / (g.pixel_size / g.SAD)
         else
-            nrm = cen / norm(cen); t = dot(d .- s, nrm) / dot(ray, nrm)
+            nrm = cen / norm(cen)
+            t = dot(d .- s, nrm) / dot(ray, nrm)
             hit = s .+ t .* ray
-            return BS.column_center(Float64, g) + dot(hit .- d, u) / (g.pixel_size * g.SDD / g.SAD)
+            return BS.column_center(Float64, g) +
+                dot(hit .- d, u) / (g.pixel_size * g.SDD / g.SAD)
         end
     end
     for shape in (:arc, :flat), offset in (0.0, 0.25, -0.25, 3.7)
         g = _offset_geom(offset; shape, n_cols = 64, n_angles = 36, fov_cm = 8.0)
         rng = MersenneTwister(11)
-        x = rand(rng, 48, 48, 3); y = rand(rng, g.n_cols, g.n_rows, g.n_angles)
-        Ax = zeros(g.n_cols, g.n_rows, g.n_angles); BS.dd_forward_project!(Ax, x, g)
-        Aty = zeros(48, 48, 3); BS.dd_backproject!(Aty, y, g)
-        @test abs(dot(Ax, y) - dot(x, Aty)) / abs(dot(Ax, y)) < 1e-12
+        x = rand(rng, 48, 48, 3)
+        y = rand(rng, g.n_cols, g.n_rows, g.n_angles)
+        Ax = zeros(g.n_cols, g.n_rows, g.n_angles)
+        BS.dd_forward_project!(Ax, x, g)
+        Aty = zeros(48, 48, 3)
+        BS.dd_backproject!(Aty, y, g)
+        @test abs(dot(Ax, y) - dot(x, Aty)) / abs(dot(Ax, y)) < 1.0e-12
         if shape === :arc
-            Ax2 = zeros(size(Ax)); BS._dd_forward_project_arc_rowtile4!(Ax2, x, g)
-            @test maximum(abs, Ax2 .- Ax) < 1e-12
+            Ax2 = zeros(size(Ax))
+            BS._dd_forward_project_arc_rowtile4!(Ax2, x, g)
+            @test maximum(abs, Ax2 .- Ax) < 1.0e-12
         end
         # a point object lands in the predicted column for both projectors
         gp = _offset_geom(offset; shape, n_cols = 96, n_angles = 24, fov_cm = 8.0)
-        nx = 64; px = 8.0 / nx; xp = zeros(nx, nx, 3); i0, j0 = 50, 21; xp[i0, j0, :] .= 1.0
+        nx = 64
+        px = 8.0 / nx
+        xp = zeros(nx, nx, 3)
+        i0, j0 = 50, 21
+        xp[i0, j0, :] .= 1.0
         p = [(i0 - (nx + 1) / 2) * px, (j0 - (nx + 1) / 2) * px, 0.0]
         for f! in (BS.dd_forward_project!, BS.siddon_forward_project!)
-            s = zeros(gp.n_cols, gp.n_rows, gp.n_angles); f!(s, xp, gp)
+            s = zeros(gp.n_cols, gp.n_rows, gp.n_angles)
+            f!(s, xp, gp)
             errs = Float64[]
             for k in 1:gp.n_angles
-                prof = s[:, 2, k]; sum(prof) > 0 || continue
+                prof = s[:, 2, k]
+                sum(prof) > 0 || continue
                 push!(errs, sum(prof .* (1:gp.n_cols)) / sum(prof) - analytic_col(gp, p, k))
             end
             @test abs(mean(errs)) < 0.03
-            @test maximum(abs, errs) < 0.4          # one voxel's footprint spans a column or so
+            # one voxel's footprint spans a column or so
+            @test maximum(abs, errs) < 0.4
         end
     end
 end

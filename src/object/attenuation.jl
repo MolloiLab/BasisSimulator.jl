@@ -51,7 +51,6 @@ function compute_mass_μ_at_energy(material, energy_keV::Float64)
     return ustrip(u"cm^2/g", μ_ρ_unitful)
 end
 
-
 # =============================================================================
 # HU Conversion
 # =============================================================================
@@ -117,7 +116,6 @@ end
 #
 # Source: DukeSim team pre-calculated values
 # =============================================================================
-
 
 """
     get_reference_μ_water(energy_keV::Float64=60.0)
@@ -194,10 +192,10 @@ recon_hu = to_hounsfield(recon)
   referenced to water at each target energy; it needs no `to_hounsfield`.
 """
 function to_hounsfield(
-        reconstruction::AbstractArray{T};
-        water_mask::Union{Nothing, AbstractArray{Bool}} = nothing,
-        μ_water::Union{Nothing, Real} = nothing
-    ) where {T}
+    reconstruction::AbstractArray{T};
+    water_mask::Union{Nothing, AbstractArray{Bool}} = nothing,
+    μ_water::Union{Nothing, Real} = nothing,
+) where {T}
     # Determine μ_water for calibration
     if water_mask !== nothing
         # Empirical calibration from water region

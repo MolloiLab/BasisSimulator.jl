@@ -60,14 +60,16 @@ function notebook_slugs()
     isdir(NOTEBOOKS_DIR) || return String[]
     return [
         splitext(f)[1]
-            for f in sort(readdir(NOTEBOOKS_DIR))
-            if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
+        for f in sort(readdir(NOTEBOOKS_DIR))
+        if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
     ]
 end
 
 """SHA-256 of the source .jl content."""
-source_hash(slug::AbstractString) =
-    bytes2hex(sha256(read(joinpath(NOTEBOOKS_DIR, "$(slug).jl"))))
+source_hash(slug::AbstractString) = bytes2hex(sha256(read(joinpath(
+    NOTEBOOKS_DIR,
+    "$(slug).jl",
+))))
 
 # The repository's own packages, whose `version` lines a lockfile records (BasisSimulator and
 # BasisMonteCarlo by path): a release bumps them without changing what a notebook renders.
@@ -95,10 +97,13 @@ data_input_hash() = bytes2hex(sha256(read(DATA_PROVENANCE)))
 provenance declaration. Missing files are allowed: CI consumes the committed
 exports and does not need private/large rendering inputs."""
 function verify_local_data!()
-    isfile(DATA_PROVENANCE) || error("missing committed data provenance: $(DATA_PROVENANCE)")
-    configured_roots = Dict(
-        "xcat" => get(ENV, "BASISSIM_XCAT_DIR", joinpath(DATA_DIR, "xcat")),
-    )
+    isfile(DATA_PROVENANCE) ||
+        error("missing committed data provenance: $(DATA_PROVENANCE)")
+    configured_roots = Dict("xcat" => get(
+        ENV,
+        "BASISSIM_XCAT_DIR",
+        joinpath(DATA_DIR, "xcat"),
+    ))
     for raw_line in eachline(DATA_PROVENANCE)
         line = strip(raw_line)
         (isempty(line) || startswith(line, '#')) && continue
@@ -129,20 +134,25 @@ function export_fingerprint(slug::AbstractString)
     snapshot_tree = string(Pkg.dependencies()[SNAPSHOT_UUID].tree_hash)
     build_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "build_env", "Manifest.toml"))))
     # every docs lockfile: one per Julia minor version (Manifest-v1.12.toml, Manifest-v1.13.toml)
-    docs_locks = sort([name for name in readdir(@__DIR__) if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)])
-    docs_lock = bytes2hex(
-        sha256(
-            join(
-                ["$(name):$(lock_input_hash(joinpath(@__DIR__, name)))" for name in docs_locks],
-                '\0',
-            )
-        )
-    )
+    docs_locks = sort([
+        name
+        for name in readdir(@__DIR__)
+        if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)
+    ])
+    docs_lock = bytes2hex(sha256(join(
+        ["$(name):$(lock_input_hash(joinpath(@__DIR__, name)))" for name in docs_locks],
+        '\0',
+    )))
     payload = join(
         (
-            source_hash(slug), data_input_hash(), snapshot_tree,
-            build_lock, docs_lock, EXPORT_CONTRACT,
-        ), '\0'
+            source_hash(slug),
+            data_input_hash(),
+            snapshot_tree,
+            build_lock,
+            docs_lock,
+            EXPORT_CONTRACT,
+        ),
+        '\0',
     )
     return bytes2hex(sha256(payload))
 end
@@ -153,10 +163,7 @@ function cached_hash(slug::AbstractString)::Union{String, Nothing}
     out = joinpath(STATIC_OUT, "$(slug).html")
     isfile(out) || return nothing
     html = read(out, String)
-    m = match(
-        Regex("<meta\\s+name=\"$(HASH_META)\"\\s+content=\"([0-9a-f]+)\""),
-        html
-    )
+    m = match(Regex("<meta\\s+name=\"$(HASH_META)\"\\s+content=\"([0-9a-f]+)\""), html)
     return m === nothing ? nothing : m.captures[1]
 end
 
@@ -178,26 +185,25 @@ notebook writes, but belt-and-suspenders: whatever lands on disk is what
 we key the cache on).
 """
 function render_notebook!(
-        session::Pluto.ServerSession,
-        src_path::AbstractString,
-        dst_path::AbstractString
-    )
+    session::Pluto.ServerSession,
+    src_path::AbstractString,
+    dst_path::AbstractString,
+)
     slug = splitext(basename(src_path))[1]
-    html_path = export_notebook(
-        src_path;
+    html_path = export_notebook(src_path;
         output_dir = dirname(dst_path),
-        therapy = true,           # lean page: SSR cells + islands, NO statefile
-        fragment = true,          # native inline component for Therapy docs (no iframe)
+        therapy = true, # lean page: SSR cells + islands, NO statefile
+        fragment = true, # native inline component for Therapy docs (no iframe)
         assets_base = "__BASISSIM_NOTEBOOKS_BASE__",
-        islands = true,           # compile @bind groups to wasm where possible
-        verify = true,            # oracle-check compiled islands (node)
+        islands = true, # compile @bind groups to wasm where possible
+        verify = true, # oracle-check compiled islands (node)
         optimize = :size,
         # These controls drive native Cairo/GPU simulation volumes whose
         # closures are intentionally outside WasmTarget's current scope.
         # Keep Pluto interactive; publish the rendered result with an honest,
         # disabled control instead of spending unbounded time in inference.
         force_fallback_bonds = get(FORCE_FALLBACK_BONDS, slug, ()),
-        env_dir = @__DIR__,       # notebook imports resolve from docs/Project.toml
+        env_dir = @__DIR__, # notebook imports resolve from docs/Project.toml
         session = session
     )
     post_hash = source_hash(slug)
@@ -205,16 +211,18 @@ function render_notebook!(
     # Embed the source+exporter fingerprint for the rebuild cache.
     meta = """<meta name="$(HASH_META)" content="$(fingerprint)">"""
     html = read(html_path, String)
-    html = occursin("<head>", html) ? replace(html, "<head>" => "<head>" * meta; count = 1) :
+    html = occursin("<head>", html) ?
+        replace(html, "<head>" => "<head>" * meta; count = 1) :
         html * "\n" * meta * "\n"
     write(html_path, html)
     # export_notebook names the file after the notebook stem == our slug, so
     # html_path and dst_path coincide; assert so a future rename can't desync.
     abspath(html_path) == abspath(dst_path) ||
         error("export wrote $(html_path) but the gallery expects $(dst_path)")
-    compress_page_images!(html_path)   # embedded figure PNGs → WebP q90 (~90% smaller)
+    compress_page_images!(html_path) # embedded figure PNGs → WebP q90 (~90% smaller)
     fragment_path = replace(html_path, r"\.html$" => ".fragment.html")
-    isfile(fragment_path) || error("Snapshot did not emit expected fragment: $(fragment_path)")
+    isfile(fragment_path) ||
+        error("Snapshot did not emit expected fragment: $(fragment_path)")
     fragment = read(fragment_path, String)
     marker = "<!-- $(HASH_META): $(fingerprint) -->"
     write(fragment_path, marker * "\n" * fragment)
@@ -227,7 +235,9 @@ list).  Comma-separated env var.  Example:
     BASISSIM_SKIP_NOTEBOOKS=06_catsim_vs_basissim julia --project=docs docs/app.jl build
 """
 function skipped_slugs()
-    return Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
+    return Set(
+        strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)),
+    )
 end
 
 """Walk every notebook (or `only`), rendering only those whose export fingerprint doesn't
@@ -238,17 +248,20 @@ function export_notebooks(only = nothing)
     slugs = notebook_slugs()
     if only !== nothing
         unknown = setdiff(only, slugs)
-        isempty(unknown) || error("no notebook named $(join(unknown, ", ")) in $(NOTEBOOKS_DIR)")
+        isempty(unknown) ||
+            error("no notebook named $(join(unknown, ", ")) in $(NOTEBOOKS_DIR)")
         slugs = filter(in(only), slugs)
     end
     skip = skipped_slugs()
     if !isempty(skip)
         kept = filter(s -> !(s in skip), slugs)
         dropped = filter(s -> s in skip, slugs)
-        isempty(dropped) || println("[notebooks] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
+        isempty(dropped) ||
+            println("[notebooks] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
         slugs = kept
     end
-    isempty(slugs) && (println("[notebooks] no .jl files in $(NOTEBOOKS_DIR)"); return slugs)
+    isempty(slugs) &&
+        (println("[notebooks] no .jl files in $(NOTEBOOKS_DIR)"); return slugs)
 
     isdir(STATIC_OUT) || mkpath(STATIC_OUT)
 
@@ -256,13 +269,16 @@ function export_notebooks(only = nothing)
     to_render = force ? slugs : filter(needs_rebuild, slugs)
 
     if isempty(to_render)
-        println("[notebooks] all $(length(slugs)) cached (export fingerprint matches) — no rebuild")
+        println(
+            "[notebooks] all $(length(slugs)) cached (export fingerprint matches) — no rebuild",
+        )
         return slugs
     end
 
     println(
         "[notebooks] rendering $(length(to_render))/$(length(slugs)) " *
-            (force ? "(forced)" : "(source changed)") * "…"
+            (force ? "(forced)" : "(source changed)") *
+            "…",
     )
 
     session = render_session()
@@ -274,9 +290,9 @@ end
 # source .jl during open() — that's the root of the "every run re-renders"
 # loop (Pluto normalizes the source bytes between hash-pre-render and
 # hash-post-render).  See render_notebook! for the second safeguard.
-render_session() = Pluto.ServerSession(;
-    options = Pluto.Configuration.from_flat_kwargs(disable_writing_notebook_files = true)
-)
+render_session() = Pluto.ServerSession(; options = Pluto.Configuration.from_flat_kwargs(
+    disable_writing_notebook_files = true,
+))
 
 function render_slug!(session, slug)
     src = joinpath(NOTEBOOKS_DIR, "$(slug).jl")
@@ -286,7 +302,9 @@ function render_slug!(session, slug)
     t0 = time()
     post_hash = render_notebook!(session, src, dst)
     if post_hash != pre_hash
-        println("    ⚠ Pluto normalized source: hash $(first(pre_hash, 12))… → $(first(post_hash, 12))… (embedding post-render hash so cache stays consistent)")
+        println(
+            "    ⚠ Pluto normalized source: hash $(first(pre_hash, 12))… → $(first(post_hash, 12))… (embedding post-render hash so cache stays consistent)",
+        )
     end
     kb = round(filesize(dst) / 1024; digits = 1)
     println("    ✓ $(round(time() - t0; digits = 1))s  →  $(kb) KB")
@@ -306,7 +324,6 @@ function render_queue(queue::AbstractString)
         render_slug!(session, slug)
         rm(joinpath(queue, "$(slug).claimed.$(getpid())"))
     end
-    return
 end
 
 function claim_next(queue::AbstractString)

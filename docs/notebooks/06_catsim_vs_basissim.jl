@@ -72,9 +72,15 @@ import CairoMakie as Mke
 # ╠═╡ show_logs = false
 # PythonCall, loaded so that a missing Python environment degrades to "CatSim skipped"
 PC = try
-    Base.require(Base.PkgId(Base.UUID("6099a3de-0909-46bc-b1f4-468b9a2dfc0d"), "PythonCall"))
+    Base.require(Base.PkgId(
+        Base.UUID("6099a3de-0909-46bc-b1f4-468b9a2dfc0d"),
+        "PythonCall",
+    ))
 catch err
-    @warn "PythonCall could not be loaded; the CatSim cells will skip" exception = (err, catch_backtrace())
+    @warn "PythonCall could not be loaded; the CatSim cells will skip" exception = (
+        err,
+        catch_backtrace(),
+    )
     nothing
 end;
 
@@ -87,7 +93,8 @@ PlutoUI.TableOfContents()
 # ╔═╡ 06000001-0000-4000-8000-000000000040
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()   # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
+    # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
@@ -98,19 +105,24 @@ md"""
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000060
-const HAS_GECATSIM = PC !== nothing && try
-    PC.pyimport("gecatsim")
-    true
-catch err
-    @warn "gecatsim is not importable; the CatSim cells will skip" exception = err
-    false
-end;
+const HAS_GECATSIM = PC !== nothing &&
+    try
+        PC.pyimport("gecatsim")
+        true
+    catch err
+        @warn "gecatsim is not importable; the CatSim cells will skip" exception = err
+        false
+    end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000070
-HAS_GECATSIM ? Markdown.parse("""
+HAS_GECATSIM ?
+    Markdown.parse(
+        """
     **gecatsim** $(PC.pyconvert(String, PC.pyimport("importlib.metadata").version("gecatsim"))) loaded
     (Python $(PC.pyconvert(String, PC.pyimport("platform").python_version()))): the CatSim cells run.
-    """) : md"""
+    """,
+    ) :
+    md"""
     !!! warning "gecatsim not available: CatSim cells skipped"
         `import PythonCall` or `pyimport("gecatsim")` failed. Instantiate `docs/` so that CondaPkg
         can install the Python environment (see `docs/CondaPkg.toml`), then re-run. The
@@ -126,23 +138,28 @@ HAS_GECATSIM ? Markdown.parse("""
 # does not ship (only `C_DD3Proj*.py`). Without them the FDK reconstruction cannot even be
 # imported. We write a stub of each missing module into the installed package: its function
 # raises if called, which FDK never does. Idempotent: re-running is a no-op once they exist.
-gecatsim_patched = !HAS_GECATSIM ? false : let
-    spec = PC.pyimport("importlib.util").find_spec("gecatsim")
-    pyfiles_dir = joinpath(dirname(PC.pyconvert(String, spec.origin)), "pyfiles")
-    wrote = String[]
-    for name in ("C_DD3Back", "C_DD3WBack")
-        path = joinpath(pyfiles_dir, "$(name).py")
-        isfile(path) && continue
-        write(path, """
+gecatsim_patched = !HAS_GECATSIM ?
+    false :
+    let
+        spec = PC.pyimport("importlib.util").find_spec("gecatsim")
+        pyfiles_dir = joinpath(dirname(PC.pyconvert(String, spec.origin)), "pyfiles")
+        wrote = String[]
+        for name in ("C_DD3Back", "C_DD3WBack")
+            path = joinpath(pyfiles_dir, "$(name).py")
+            isfile(path) && continue
+            write(
+                path,
+                """
             # Stub written by BasisSimulator.jl docs notebook 06: the fork does not ship this module.
             def $(replace(name, "C_" => ""))(*args, **kwargs):
                 raise NotImplementedError("$(name) is a stub; FDK does not need it, iterative recons do.")
-            """)
-        push!(wrote, name)
-    end
-    @info "[gecatsim] import stubs: $(isempty(wrote) ? "already present" : "wrote " * join(wrote, ", "))"
-    true
-end;
+            """,
+            )
+            push!(wrote, name)
+        end
+        @info "[gecatsim] import stubs: $(isempty(wrote) ? "already present" : "wrote " * join(wrote, ", "))"
+        true
+    end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000090
 # Two runtime patches for CatSim inside Pluto.
@@ -154,9 +171,11 @@ end;
 # 2. Output: `run_all()` and `recon()` print hundreds of lines. Under PythonCall in a Pluto worker
 #    that flood can block the captured stdout pipe, so both are wrapped in
 #    `contextlib.redirect_stdout`.
-gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
-    PC.pyexec(
-        """
+gecatsim_fdk_patched = !HAS_GECATSIM ?
+    false :
+    let
+        PC.pyexec(
+            """
         import ctypes, contextlib, io
         import numpy as np
         import gecatsim as _gecatsim
@@ -206,10 +225,10 @@ gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
             _recon_mod.recon = _quiet_recon
             _recon_mod._basissim_quiet = True
         """,
-        Main,
-    )
-    true
-end;
+            Main,
+        )
+        true
+    end;
 
 # ╔═╡ 060000f1-0000-4000-8000-000000000001
 md"""
@@ -240,7 +259,9 @@ let s = scanner, constant = BS.REVOLUTION_APEX
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -254,7 +275,7 @@ let s = scanner, constant = BS.REVOLUTION_APEX
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
@@ -290,8 +311,11 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 06000003-0000-4000-8000-000000000020
 sim_opts = BS.SimOptions(
-    seed = 1234, projector = :dd_fast,
-    use_noise = false, use_scatter = false, use_heel_effect = false,
+    seed = 1234,
+    projector = :dd_fast,
+    use_noise = false,
+    use_scatter = false,
+    use_heel_effect = false,
 );
 
 # ╔═╡ 06000003-0000-4000-8000-000000000030
@@ -332,7 +356,10 @@ function catsim_init()
     if isempty(_catsim_state)
         _catsim_state[:xc] = PC.pyimport("gecatsim")
         _catsim_state[:recon] = PC.pyimport("gecatsim.reconstruction.pyfiles.recon")
-        origin = PC.pyconvert(String, PC.pyimport("importlib.util").find_spec("gecatsim").origin)
+        origin = PC.pyconvert(
+            String,
+            PC.pyimport("importlib.util").find_spec("gecatsim").origin,
+        )
         _catsim_state[:cfg] = joinpath(dirname(origin), "examples", "cfg")
     end
     return _catsim_state[:xc], _catsim_state[:recon], _catsim_state[:cfg]
@@ -351,19 +378,21 @@ end;
 # ╔═╡ 06000004-0000-4000-8000-000000000040
 function catsim_configure_scanner!(ct, scanner, protocol)
     magnification = scanner.source_to_detector / scanner.source_to_isocenter
-    n_rows = protocol.collimation_mm === nothing ? scanner.detector_rows :
+    n_rows = protocol.collimation_mm === nothing ?
+        scanner.detector_rows :
         round(Int, protocol.collimation_mm / scanner.detector_row_size)
 
     ct.scanner.sid = scanner.source_to_isocenter
     ct.scanner.sdd = scanner.source_to_detector
     ct.scanner.detectorColCount = scanner.detector_cols
     ct.scanner.detectorRowCount = n_rows
-    ct.scanner.detectorColSize = scanner.detector_col_size * magnification   # isocentre → face
+    # isocentre → face
+    ct.scanner.detectorColSize = scanner.detector_col_size * magnification
     ct.scanner.detectorRowSize = scanner.detector_row_size * magnification
     ct.scanner.detectorColOffset = scanner.detector_col_offset
-    ct.scanner.detectorColsPerMod = 1          # every column its own module …
+    ct.scanner.detectorColsPerMod = 1 # every column its own module …
     ct.scanner.detectorRowsPerMod = n_rows
-    ct.scanner.detectorColSkip = 0.0           # … with no inter-module gap
+    ct.scanner.detectorColSkip = 0.0 # … with no inter-module gap
     ct.scanner.detectorRowSkip = 0.0
 
     ct.scanner.targetAngle = scanner.target_angle
@@ -388,18 +417,24 @@ function catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm)
     scanner.bowtie_filter in (:ge_revolution_large, :large_body) ||
         error("this wrapper maps only the large-body bowtie")
     ct.protocol.bowtie = "large.txt"
-    catsim_name(m) = Dict("aluminum" => "Al", "Al" => "Al", "copper" => "Cu", "Cu" => "Cu")[string(m)]
+    catsim_name(m) = Dict(
+        "aluminum" => "Al",
+        "Al" => "Al",
+        "copper" => "Cu",
+        "Cu" => "Cu",
+    )[string(m)]
     filters = Any[catsim_name(scanner.flat_filter_material), scanner.flat_filter_thickness]
     for (m, t) in protocol.additional_filters
         push!(filters, catsim_name(m), t)
     end
     ct.protocol.flatFilter = PC.pylist(filters)
 
-    ct.physics.viewSampleCount = 1      # point views, like BasisSimulator's view_samples = 1
+    # point views, like BasisSimulator's view_samples = 1
+    ct.physics.viewSampleCount = 1
     ct.physics.enableQuantumNoise = 0
     ct.physics.enableElectronicNoise = 0
-    ct.physics.callback_post_log = "Prep_BHC_Accurate"   # CatSim's water BHC
-    ct.physics.EffectiveMu = μ_water_cm                   # cm⁻¹, the mono target of the fit
+    ct.physics.callback_post_log = "Prep_BHC_Accurate" # CatSim's water BHC
+    ct.physics.EffectiveMu = μ_water_cm                # cm⁻¹, the mono target of the fit
     ct.physics.BHC_poly_order = 5
     ct.physics.BHC_max_length_mm = 500
     ct.physics.BHC_length_step_mm = 10
@@ -418,7 +453,7 @@ function catsim_configure_recon!(ct, recon_opts; μ_water_cm)
     ct.recon.reconType = "fdk_equiAngle"
     ct.recon.kernelType = "standard"
     ct.recon.unit = "HU"
-    ct.recon.mu = μ_water_cm / 10.0           # cm⁻¹ → mm⁻¹
+    ct.recon.mu = μ_water_cm / 10.0 # cm⁻¹ → mm⁻¹
     ct.recon.huOffset = -1000
     return ct
 end;
@@ -466,12 +501,22 @@ hard-segmented mask each map is the indicator `mask .== label`.
 
 # ╔═╡ 06000005-0000-4000-8000-000000000010
 const REGION_TO_CATSIM = Dict{Int, String}(
-    1 => "water", 2 => "water", 3 => "water",     # air region label 1 is empty in this phantom
-    10 => "Gammex472_Ca_50", 11 => "Gammex472_Ca_100", 12 => "Gammex472_Ca_200",
-    13 => "Gammex472_Ca_300", 14 => "Gammex472_Ca_400", 15 => "Gammex472_Ca_500",
+    1 => "water",
+    2 => "water",
+    3 => "water", # air region label 1 is empty in this phantom
+    10 => "Gammex472_Ca_50",
+    11 => "Gammex472_Ca_100",
+    12 => "Gammex472_Ca_200",
+    13 => "Gammex472_Ca_300",
+    14 => "Gammex472_Ca_400",
+    15 => "Gammex472_Ca_500",
     16 => "Gammex472_Ca_600",
-    20 => "Gammex472_I_2_0", 21 => "Gammex472_I_2_5", 22 => "Gammex472_I_5_0",
-    23 => "Gammex472_I_7_5", 24 => "Gammex472_I_10_0", 25 => "Gammex472_I_15_0",
+    20 => "Gammex472_I_2_0",
+    21 => "Gammex472_I_2_5",
+    22 => "Gammex472_I_5_0",
+    23 => "Gammex472_I_7_5",
+    24 => "Gammex472_I_10_0",
+    25 => "Gammex472_I_15_0",
     26 => "Gammex472_I_20_0",
 );
 
@@ -479,7 +524,7 @@ const REGION_TO_CATSIM = Dict{Int, String}(
 function export_phantom_for_catsim(phantom, output_dir, name)
     mask = Array(phantom.mask)
     nx, ny, nz = size(mask)
-    vx, vy, vz = phantom.voxel_size .* 10.0          # cm → mm
+    vx, vy, vz = phantom.voxel_size .* 10.0 # cm → mm
     mkpath(output_dir)
     entries = NamedTuple[]
     for lbl in sort(unique(mask))
@@ -557,9 +602,11 @@ geom_inspect = BS.CTGeometry(
 bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = geom_inspect);
 
 # ╔═╡ 06000007-0000-4000-8000-000000000030
-Markdown.parse("""
+Markdown.parse(
+    """
 **Water reference:** $(round(bhc.reference_energy_keV; digits = 1)) keV, water μ = $(round(bhc.μ_water_ref; digits = 5)) cm⁻¹
-""")
+""",
+)
 
 # ╔═╡ 060000f2-0000-4000-8000-000000000001
 md"""
@@ -578,23 +625,25 @@ md"""
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
 # ╠═╡ show_logs = false
-catsim_result = !HAS_GECATSIM ? nothing : let
-    work_dir = mktempdir(; prefix = "basissim_catsim_06_")
-    tag = joinpath(work_dir, "gammex472")
-    local recon
-    elapsed = @elapsed begin
-        json = export_phantom_for_catsim(phantom_cpu, work_dir, "gammex472")
-        ct = catsim_create_simulation()
-        catsim_configure_phantom!(ct, json)
-        catsim_configure_scanner!(ct, scanner, protocol)
-        catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm = bhc.μ_water_ref)
-        catsim_configure_recon!(ct, recon_opts; μ_water_cm = bhc.μ_water_ref)
-        catsim_forward_project(ct; results_name = tag)
-        recon = catsim_reconstruct_fdk(ct; results_name = tag)
-    end
-    rm(work_dir; recursive = true, force = true)
-    (recon = recon, elapsed = elapsed)
-end;
+catsim_result = !HAS_GECATSIM ?
+    nothing :
+    let
+        work_dir = mktempdir(; prefix = "basissim_catsim_06_")
+        tag = joinpath(work_dir, "gammex472")
+        local recon
+        elapsed = @elapsed begin
+            json = export_phantom_for_catsim(phantom_cpu, work_dir, "gammex472")
+            ct = catsim_create_simulation()
+            catsim_configure_phantom!(ct, json)
+            catsim_configure_scanner!(ct, scanner, protocol)
+            catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm = bhc.μ_water_ref)
+            catsim_configure_recon!(ct, recon_opts; μ_water_cm = bhc.μ_water_ref)
+            catsim_forward_project(ct; results_name = tag)
+            recon = catsim_reconstruct_fdk(ct; results_name = tag)
+        end
+        rm(work_dir; recursive = true, force = true)
+        (recon = recon, elapsed = elapsed)
+    end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000001
 md"""
@@ -614,14 +663,20 @@ function basissim_pipeline(phantom)
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol, sim_opts; report_dose = false)
     sino = BS.apply_bhc_water(ws.sinogram, bhc)
-    ws_fdk = BS.create_fdk_recon_workspace(sino, ws.geom, recon_opts.matrix_size; filter = :standard)
+    ws_fdk = BS.create_fdk_recon_workspace(
+        sino,
+        ws.geom,
+        recon_opts.matrix_size;
+        filter = :standard,
+    )
     μ = Array(BS.reconstruct!(ws_fdk, sino, ws.geom))
     return Float32.(BS.to_hounsfield(μ; μ_water = bhc.μ_water_ref))
 end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000010
 basissim_cpu_result = let
-    basissim_pipeline(phantom_cpu); GC.gc(true)                 # compile, untimed
+    basissim_pipeline(phantom_cpu)
+    GC.gc(true) # compile, untimed
     elapsed = @elapsed recon = basissim_pipeline(phantom_cpu)
     GC.gc(true)
     (recon = recon, elapsed = elapsed)
@@ -629,7 +684,8 @@ end;
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000010
 basissim_gpu_result = let
-    basissim_pipeline(phantom_gpu); GC.gc(true)                 # compile, untimed
+    basissim_pipeline(phantom_gpu)
+    GC.gc(true) # compile, untimed
     elapsed = @elapsed recon = basissim_pipeline(phantom_gpu)
     GC.gc(true)
     (recon = recon, elapsed = elapsed)
@@ -653,25 +709,38 @@ interiors are what the per-rod table below measures.
 """
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000005
-catsim_aligned = catsim_result === nothing ? nothing : let
-    ref = basissim_gpu_result.recon
-    k = size(ref, 3) ÷ 2 + 1
-    cands = [
-        ("as written", identity),
-        ("x reversed", v -> reverse(v; dims = 1)),
-        ("y reversed", v -> reverse(v; dims = 2)),
-        ("x and y reversed", v -> reverse(v; dims = (1, 2))),
-        ("transposed", v -> permutedims(v, (2, 1, 3))),
-        ("transposed, x reversed", v -> reverse(permutedims(v, (2, 1, 3)); dims = 1)),
-        ("transposed, y reversed", v -> reverse(permutedims(v, (2, 1, 3)); dims = 2)),
-        ("transposed, x and y reversed", v -> reverse(permutedims(v, (2, 1, 3)); dims = (1, 2))),
-    ]
-    a = vec(Float64.(ref[:, :, k]))
-    corr(b) = (x = a .- mean(a); y = b .- mean(b); sum(x .* y) / sqrt(sum(x .^ 2) * sum(y .^ 2)))
-    scores = [corr(vec(Float64.(f(catsim_result.recon)[:, :, k]))) for (_, f) in cands]
-    i = argmax(scores)
-    (recon = cands[i][2](catsim_result.recon), transform = cands[i][1], correlation = scores[i])
-end;
+catsim_aligned = catsim_result === nothing ?
+    nothing :
+    let
+        ref = basissim_gpu_result.recon
+        k = size(ref, 3) ÷ 2 + 1
+        cands = [
+            ("as written", identity),
+            ("x reversed", v -> reverse(v; dims = 1)),
+            ("y reversed", v -> reverse(v; dims = 2)),
+            ("x and y reversed", v -> reverse(v; dims = (1, 2))),
+            ("transposed", v -> permutedims(v, (2, 1, 3))),
+            ("transposed, x reversed", v -> reverse(permutedims(v, (2, 1, 3)); dims = 1)),
+            ("transposed, y reversed", v -> reverse(permutedims(v, (2, 1, 3)); dims = 2)),
+            (
+                "transposed, x and y reversed",
+                v -> reverse(permutedims(v, (2, 1, 3)); dims = (1, 2)),
+            ),
+        ]
+        a = vec(Float64.(ref[:, :, k]))
+        corr(b) = (
+            x = a .- mean(a);
+            y = b .- mean(b);
+            sum(x .* y) / sqrt(sum(x.^2) * sum(y.^2))
+        )
+        scores = [corr(vec(Float64.(f(catsim_result.recon)[:, :, k]))) for (_, f) in cands]
+        i = argmax(scores)
+        (
+            recon = cands[i][2](catsim_result.recon),
+            transform = cands[i][1],
+            correlation = scores[i],
+        )
+    end;
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000010
 let
@@ -680,15 +749,39 @@ let
     fmt(t) = @sprintf("%.2f s", t)
     panels = Any[]
     catsim_aligned === nothing ||
-        push!(panels, ("CatSim", "Python + C · $(fmt(catsim_result.elapsed))", catsim_aligned.recon))
-    push!(panels, ("BasisSimulator.jl (CPU)", "Julia · $(fmt(basissim_cpu_result.elapsed))", basissim_cpu_result.recon))
-    push!(panels, ("BasisSimulator.jl ($(GPU_BACKEND.name))", "Julia · $(fmt(basissim_gpu_result.elapsed))", basissim_gpu_result.recon))
+        push!(
+            panels,
+            ("CatSim", "Python + C · $(fmt(catsim_result.elapsed))", catsim_aligned.recon),
+        )
+    push!(
+        panels,
+        (
+            "BasisSimulator.jl (CPU)",
+            "Julia · $(fmt(basissim_cpu_result.elapsed))",
+            basissim_cpu_result.recon,
+        ),
+    )
+    push!(
+        panels,
+        (
+            "BasisSimulator.jl ($(GPU_BACKEND.name))",
+            "Julia · $(fmt(basissim_gpu_result.elapsed))",
+            basissim_gpu_result.recon,
+        ),
+    )
 
     n = length(panels)
     fig = Mke.Figure(size = (n * 480 + 100, catsim_aligned === nothing ? 560 : 1040))
     local hm
     for (c, (title, sub, vol)) in enumerate(panels)
-        ax = Mke.Axis(fig[1, c]; title, subtitle = sub, aspect = Mke.DataAspect(), titlesize = 24, subtitlesize = 18)
+        ax = Mke.Axis(
+            fig[1, c];
+            title,
+            subtitle = sub,
+            aspect = Mke.DataAspect(),
+            titlesize = 24,
+            subtitlesize = 18,
+        )
         hm = Mke.heatmap!(ax, vol[:, :, k]; colormap = :grays, colorrange = win)
         Mke.hidedecorations!(ax)
     end
@@ -696,20 +789,44 @@ let
     if catsim_aligned !== nothing
         local hd
         for (c, (title, _, vol)) in enumerate(panels[2:end])
-            ax = Mke.Axis(fig[2, c + 1]; title = "$(title) − CatSim", aspect = Mke.DataAspect(), titlesize = 20)
+            ax = Mke.Axis(
+                fig[2, c + 1];
+                title = "$(title) − CatSim",
+                aspect = Mke.DataAspect(),
+                titlesize = 20,
+            )
             d = vol[:, :, k] .- catsim_aligned.recon[:, :, k]
             nx, ny = size(d)
-            d = [(i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <= (min(nx, ny) / 2 - 1)^2 ? d[i, j] : NaN32
-                 for i in 1:nx, j in 1:ny]   # inside the reconstruction circle only
-            hd = Mke.heatmap!(ax, d; colormap = :RdBu, colorrange = (-100, 100), nan_color = :white)
+            d = [
+                (i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <= (min(nx, ny) / 2 - 1)^2 ?
+                    d[i, j] :
+                    NaN32
+                for i in 1:nx, j in 1:ny
+            ] # inside the reconstruction circle only
+            hd = Mke.heatmap!(
+                ax,
+                d;
+                colormap = :RdBu,
+                colorrange = (-100, 100),
+                nan_color = :white,
+            )
             Mke.hidedecorations!(ax)
         end
         Mke.Colorbar(fig[2, n + 1], hd; label = "ΔHU", width = 14, labelsize = 18)
-        Mke.Label(fig[2, 1], "CatSim image: $(catsim_aligned.transform)\ncorrelation with BasisSim $(round(catsim_aligned.correlation; digits = 4))";
-            fontsize = 18, tellwidth = false, tellheight = false)
+        Mke.Label(
+            fig[2, 1],
+            "CatSim image: $(catsim_aligned.transform)\ncorrelation with BasisSim $(round(catsim_aligned.correlation; digits = 4))";
+            fontsize = 18,
+            tellwidth = false,
+            tellheight = false,
+        )
         Mke.rowsize!(fig.layout, 2, Mke.Aspect(2, 1.0))
     end
-    Mke.save(joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_mosaic.png"), fig; px_per_unit = 2)
+    Mke.save(
+        joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_mosaic.png"),
+        fig;
+        px_per_unit = 2,
+    )
     fig
 end
 
@@ -726,14 +843,24 @@ it). What this table tests is whether the two simulators agree with each other.
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000030
 let
-    labels = BS.resample_to_recon(phantom_cpu, geom_inspect, recon_opts.matrix_size; method = :nearest)
+    labels = BS.resample_to_recon(
+        phantom_cpu,
+        geom_inspect,
+        recon_opts.matrix_size;
+        method = :nearest,
+    )
     k = size(labels, 3) ÷ 2 + 1
     nx, ny = size(labels, 1), size(labels, 2)
     refE, μw = bhc.reference_energy_keV, bhc.μ_water_ref
-    roi(lab) = [CartesianIndex(i, j, k) for j in 2:(ny - 1), i in 2:(nx - 1)
-                if all(labels[i + di, j + dj, k] == lab for di in -1:1, dj in -1:1)]
+    roi(lab) = [
+        CartesianIndex(i, j, k)
+        for j in 2:(ny - 1), i in 2:(nx - 1)
+        if all(labels[i + di, j + dj, k] == lab for di in -1:1, dj in -1:1)
+    ]
     cs = catsim_aligned === nothing ? nothing : catsim_aligned.recon
-    rows = String[]; diffs = Float64[]; rel = Float64[]
+    rows = String[]
+    diffs = Float64[]
+    rel = Float64[]
     for lab in [3; 10:16; 20:26]
         idx = roi(UInt8(lab))
         length(idx) < 5 && continue
@@ -743,20 +870,32 @@ let
         c = cs === nothing ? NaN : mean(cs[idx])
         cs === nothing || push!(diffs, bs - c)
         (cs === nothing || lab == 3) || push!(rel, 100 * (bs - c) / theory)
-        push!(rows, "| $(lab == 3 ? "solid water body" : mat.name) | $(length(idx)) | $(round(theory; digits = 0)) | " *
-                    (cs === nothing ? "—" : "$(round(c; digits = 1))") * " | $(round(bs; digits = 1)) | " *
-                    (cs === nothing ? "—" : "$(round(bs - c; digits = 1))") * " | " *
-                    (cs === nothing || lab == 3 ? "" : "$(round(100 * (bs - c) / theory; digits = 1)) %") * " |")
+        push!(
+            rows,
+            "| $(lab == 3 ? "solid water body" : mat.name) | $(length(idx)) | $(round(theory; digits = 0)) | " *
+                (cs === nothing ? "—" : "$(round(c; digits = 1))") *
+                " | $(round(bs; digits = 1)) | " *
+                (cs === nothing ? "—" : "$(round(bs - c; digits = 1))") *
+                " | " *
+                (
+                    cs === nothing || lab == 3 ?
+                        "" :
+                        "$(round(100 * (bs - c) / theory; digits = 1)) %"
+                ) *
+                " |",
+        )
     end
     cpu_gpu = maximum(abs.(basissim_cpu_result.recon .- basissim_gpu_result.recon))
-    summary = isempty(diffs) ? "CatSim skipped." :
+    summary = isempty(diffs) ?
+        "CatSim skipped." :
         "Water: BasisSim − CatSim = $(round(diffs[1]; digits = 1)) HU. Over the $(length(rel)) rods the difference is " *
-        "$(round(minimum(rel); digits = 1)) to $(round(maximum(rel); digits = 1)) % of the rod's theoretical HU. " *
-        "Both simulators read every dense rod below its theory, and they differ mainly in how far: " *
-        "the two use independent source-spectrum models (IPEM tables in BasisSimulator, CatSim's own " *
-        "tungsten spectra) and independently fitted water corrections, and a spectrum difference " *
-        "would show exactly there, in the beam-hardening residual that grows with rod density."
-    Markdown.parse("""
+            "$(round(minimum(rel); digits = 1)) to $(round(maximum(rel); digits = 1)) % of the rod's theoretical HU. " *
+            "Both simulators read every dense rod below its theory, and they differ mainly in how far: " *
+            "the two use independent source-spectrum models (IPEM tables in BasisSimulator, CatSim's own " *
+            "tungsten spectra) and independently fitted water corrections, and a spectrum difference " *
+            "would show exactly there, in the beam-hardening residual that grows with rod density."
+    Markdown.parse(
+        """
     | region | voxels | theory (HU) | CatSim (HU) | BasisSim (HU) | BasisSim − CatSim | ÷ theory |
     |:--|--:|--:|--:|--:|--:|--:|
     $(join(rows, "\n"))
@@ -764,7 +903,8 @@ let
     $(summary) BasisSimulator CPU vs GPU: largest voxel difference $(@sprintf("%.3g", cpu_gpu)) HU
     over the whole volume (the same code on two backends; floating-point summation order is all
     that differs).
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000001
@@ -779,29 +919,69 @@ BasisSimulator is built for. This page was rendered on an NVIDIA RTX PRO 6000 (C
 # ╔═╡ 0600000c-0000-4000-8000-000000000005
 let
     rows = [
-        ("CatSim\n(Python + C)", catsim_result === nothing ? NaN : catsim_result.elapsed, Mke.RGBf(0.4, 0.4, 0.45)),
+        (
+            "CatSim\n(Python + C)",
+            catsim_result === nothing ? NaN : catsim_result.elapsed,
+            Mke.RGBf(0.4, 0.4, 0.45),
+        ),
         ("BasisSimulator.jl\nCPU", basissim_cpu_result.elapsed, Mke.RGBf(0.95, 0.55, 0.1)),
-        ("BasisSimulator.jl\n$(GPU_BACKEND.name)", basissim_gpu_result.elapsed, Mke.RGBf(0.13, 0.59, 0.85)),
+        (
+            "BasisSimulator.jl\n$(GPU_BACKEND.name)",
+            basissim_gpu_result.elapsed,
+            Mke.RGBf(0.13, 0.59, 0.85),
+        ),
     ]
     ok = findall(r -> !isnan(r[2]), rows)
     ref_t = catsim_result === nothing ? nothing : catsim_result.elapsed
     fig = Mke.Figure(size = (1180, 620))
-    ax = Mke.Axis(fig[1, 1];
+    ax = Mke.Axis(
+        fig[1, 1];
         title = "End-to-end time: forward projection + BHC + FDK",
         subtitle = "120 kVp · 200 mA · 500 views · noise-free · Gammex 472 at 128² × 8 → 256² × 8",
-        ylabel = "wall-clock (s)", xticks = (1:3, [r[1] for r in rows]), yscale = log10,
-        titlesize = 30, subtitlesize = 20, ylabelsize = 22, xticklabelsize = 20, yticklabelsize = 16)
-    Mke.barplot!(ax, ok, [rows[i][2] for i in ok]; color = [rows[i][3] for i in ok],
-        strokecolor = :black, strokewidth = 1, width = 0.65)
+        ylabel = "wall-clock (s)",
+        xticks = (1:3, [r[1] for r in rows]),
+        yscale = log10,
+        titlesize = 30,
+        subtitlesize = 20,
+        ylabelsize = 22,
+        xticklabelsize = 20,
+        yticklabelsize = 16,
+    )
+    Mke.barplot!(
+        ax,
+        ok,
+        [rows[i][2] for i in ok];
+        color = [rows[i][3] for i in ok],
+        strokecolor = :black,
+        strokewidth = 1,
+        width = 0.65,
+    )
     for i in ok
         t = rows[i][2]
-        label = ref_t === nothing ? @sprintf("%.2f s", t) :
-            (t == ref_t ? @sprintf("%.2f s\n(reference)", t) : @sprintf("%.2f s\n(%.1f× faster)", t, ref_t / t))
-        Mke.text!(ax, i, t * 1.18; text = label, align = (:center, :bottom), fontsize = 20, font = :bold)
+        label = ref_t === nothing ?
+            @sprintf("%.2f s", t) :
+            (
+                t == ref_t ?
+                    @sprintf("%.2f s\n(reference)", t) :
+                    @sprintf("%.2f s\n(%.1f× faster)", t, ref_t / t)
+            )
+        Mke.text!(
+            ax,
+            i,
+            t * 1.18;
+            text = label,
+            align = (:center, :bottom),
+            fontsize = 20,
+            font = :bold,
+        )
     end
     ys = [rows[i][2] for i in ok]
     Mke.ylims!(ax, minimum(ys) * 0.7, maximum(ys) * 3.5)
-    Mke.save(joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_runtime_bar.png"), fig; px_per_unit = 2)
+    Mke.save(
+        joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_runtime_bar.png"),
+        fig;
+        px_per_unit = 2,
+    )
     fig
 end
 
@@ -809,13 +989,15 @@ end
 let
     t_cs = catsim_result === nothing ? nothing : catsim_result.elapsed
     speed(t) = t_cs === nothing ? "—" : @sprintf("%.1f×", t_cs / t)
-    Markdown.parse("""
+    Markdown.parse(
+        """
     | pipeline | wall-clock | speed-up vs CatSim |
     |:--|--:|--:|
     | CatSim (voxelized projector, Python + C) | $(t_cs === nothing ? "— (skipped)" : @sprintf("%.2f s", t_cs)) | $(t_cs === nothing ? "—" : "1.0× (reference)") |
     | BasisSimulator.jl, CPU ($(Threads.nthreads()) Julia threads) | $(@sprintf("%.2f s", basissim_cpu_result.elapsed)) | $(speed(basissim_cpu_result.elapsed)) |
     | BasisSimulator.jl, $(GPU_BACKEND.name) | $(@sprintf("%.2f s", basissim_gpu_result.elapsed)) | $(speed(basissim_gpu_result.elapsed)) |
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 0600000d-0000-4000-8000-000000000001

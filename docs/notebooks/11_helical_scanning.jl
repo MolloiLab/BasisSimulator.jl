@@ -41,13 +41,15 @@ import CairoMakie as Mke
 # ╔═╡ 11000001-0000-4000-8000-000000000006
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end
 
 # ╔═╡ 11000002-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 # 11 · Helical Scanning · Narrow Collimation, Long Coverage
 
 **One new kwarg — `pitch` — turns any protocol into a spiral scan.**
@@ -82,7 +84,8 @@ the simulated counts. Each `simulate!` also reports its dose, so the two acquisi
 compared in CTDIvol and DLP as well as in image quality.
 
 **Backend detected:** $(GPU_BACKEND.name)
-""")
+""",
+)
 
 # ╔═╡ 11000002-0000-4000-8000-000000000002
 md"""
@@ -114,15 +117,15 @@ different. Second, **no high-Z inserts**: beam hardening is its own topic
 
 # ╔═╡ 11000003-0000-4000-8000-000000000002
 phantom_data = let
-    n = 128                          # in-plane grid
-    nz = 180                         # 2 mm z-voxels → 36 cm slab
-    fov = 30.0                       # cm, in-plane phantom extent
-    zext = 36.0                      # cm, phantom z extent
+    n = 128     # in-plane grid
+    nz = 180    # 2 mm z-voxels → 36 cm slab
+    fov = 30.0  # cm, in-plane phantom extent
+    zext = 36.0 # cm, phantom z extent
     vox = fov / n
     voxz = zext / nz
     mask = zeros(UInt8, n, n, nz)
     c = (n + 1) / 2
-    r_body = 12.0 / vox              # 24 cm water body
+    r_body = 12.0 / vox # 24 cm water body
     for k in 1:nz, j in 1:n, i in 1:n
         if (i - c)^2 + (j - c)^2 <= r_body^2
             mask[i, j, k] = 1
@@ -133,7 +136,7 @@ phantom_data = let
         θ = 2π * (k * voxz) / 12.0
         cx = c + (7.0 / vox) * cos(θ)
         cy = c + (7.0 / vox) * sin(θ)
-        r = 1.0 / vox                # 2 cm diameter rod
+        r = 1.0 / vox # 2 cm diameter rod
         for j in 1:n, i in 1:n
             if (i - cx)^2 + (j - cy)^2 <= r^2 && mask[i, j, k] == 1
                 mask[i, j, k] = 2
@@ -192,9 +195,9 @@ Apex's 625.6 and 1100 mm.
 """
 
 # ╔═╡ 11000004-0000-4000-8000-000000000002
-scanner = BS.EICTScanner(
-    BS.REVOLUTION_APEX;              # 256 × 0.625 mm = 16 cm wide-cone volume scanner
-    detector_cols = 512,             # the notebook's 512 one-millimetre columns, not the Apex's 834
+scanner = BS.EICTScanner(BS.REVOLUTION_APEX; # 256 × 0.625 mm = 16 cm wide-cone volume scanner
+    # the notebook's 512 one-millimetre columns, not the Apex's 834
+    detector_cols = 512,
     detector_col_size = 1.0,
 );
 
@@ -205,7 +208,9 @@ let s = scanner, constant = BS.REVOLUTION_APEX
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -219,25 +224,29 @@ let s = scanner, constant = BS.REVOLUTION_APEX
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
 # ╔═╡ 11000004-0000-4000-8000-000000000003
 begin
     protocol_helical = BS.CTProtocol(
-        kVp = 120.0, mA = 200.0, views = 360,
+        kVp = 120.0,
+        mA = 200.0,
+        views = 360,
         rotation_time = 0.5,
-        collimation_mm = 20.0,       # NARROW: one eighth of the physical detector
-        pitch = 1.0,                 # ← the one helical kwarg
-        n_rotations = 16,            # 16 × 2 cm = 32 cm table travel
+        collimation_mm = 20.0, # NARROW: one eighth of the physical detector
+        pitch = 1.0,           # ← the one helical kwarg
+        n_rotations = 16,      # 16 × 2 cm = 32 cm table travel
     )
     protocol_axial = BS.CTProtocol(
         # Three 160 mm stations match 16 × 20 mm helical rotations when
         # weighted by tube current: 3 × 160 × 133⅓ = 16 × 20 × 200.
-        kVp = 120.0, mA = 400.0 / 3.0, views = 360,
+        kVp = 120.0,
+        mA = 400.0 / 3.0,
+        views = 360,
         rotation_time = 0.5,
-        collimation_mm = 160.0,      # WIDE: the full 16 cm detector, volume mode
+        collimation_mm = 160.0, # WIDE: the full 16 cm detector, volume mode
     )
     # use_heel_effect = false: the anode heel is a per-ROW spectral gradient.
     # An axial slice keeps its rows, but a helical scan sweeps every row past
@@ -246,13 +255,21 @@ begin
     # off here and the comparison isolates the geometry.
     # view_samples = 5: each view integrates over the arc the gantry turns while the detector
     # reads it (notebook 01); on a helix every sub-view also advances by its share of the feed.
-    sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast, view_samples = 5,
-        use_heel_effect = false)
+    sim_opts = BS.SimOptions(
+        seed = 42,
+        projector = :dd_fast,
+        view_samples = 5,
+        use_heel_effect = false,
+    )
     recon_opts = BS.ReconOptions(matrix_size = (160, 160, 150), fov_cm = 30.0, z_cm = 30.0)
     # A 16 cm *physical* detector cannot reconstruct a full 16 cm axial
     # cylinder at 30 cm transverse FOV: cone magnification requires 338 rows.
     # Ten centimetres requires 212 guarded rows and fits the 256-row scanner.
-    recon_opts_station = BS.ReconOptions(matrix_size = (160, 160, 50), fov_cm = 30.0, z_cm = 10.0)
+    recon_opts_station = BS.ReconOptions(
+        matrix_size = (160, 160, 50),
+        fov_cm = 30.0,
+        z_cm = 10.0,
+    )
 end;
 
 # ╔═╡ 11000005-0000-4000-8000-000000000001
@@ -304,8 +321,8 @@ end;
 
 # ╔═╡ 11000006-0000-4000-8000-000000000003
 sns_result = let
-    station_zs = [-10.0, 0.0, 10.0]             # 3 stations × 10 cm, back to back
-    n_slab = 50                                 # 10 cm at 2 mm recon slices
+    station_zs = [-10.0, 0.0, 10.0] # 3 stations × 10 cm, back to back
+    n_slab = 50                     # 10 cm at 2 mm recon slices
     hu = zeros(Float32, 160, 160, 150)
     t_total = 0.0
     bhc_ax = nothing
@@ -313,30 +330,61 @@ sns_result = let
     for (s, z0) in enumerate(station_zs)
         # move the "table": phantom window (±10 cm) centred on this station
         k0 = round(Int, 90 + z0 / phantom_data.voxz)
-        requested = (k0 - 49):(k0 + 50)         # 100 slices = 20 cm (covers the cone)
+        requested = (k0 - 49):(k0 + 50) # 100 slices = 20 cm (covers the cone)
         available = max(first(requested), 1):min(last(requested), phantom_data.nz)
         # End stations extend beyond the finite source phantom. Keep their
         # isocentres fixed and pad the missing exterior with material 0 (air),
         # rather than clamping the window and shifting anatomy toward isocentre.
-        station_mask = zeros(eltype(phantom_data.mask), size(phantom_data.mask, 1),
-            size(phantom_data.mask, 2), length(requested))
-        destination = ((first(available) - first(requested) + 1):
-            (last(available) - first(requested) + 1))
+        station_mask = zeros(
+            eltype(phantom_data.mask),
+            size(phantom_data.mask, 1),
+            size(phantom_data.mask, 2),
+            length(requested),
+        )
+        destination = (
+            (first(available) - first(requested) + 1):(
+                    last(available) - first(requested) + 1
+                )
+        )
         station_mask[:, :, destination] .= phantom_data.mask[:, :, available]
         ph_st = BS.Phantom(
             to_gpu(station_mask),
             phantom_materials,
             (phantom_data.vox, phantom_data.vox, phantom_data.voxz),
         )
-        ws = BS.create_workspace(scanner, protocol_axial, sim_opts, recon_opts_station, ph_st)
-        t_total += @elapsed (sim = BS.simulate!(ws, ph_st, protocol_axial, sim_opts;
-            dose_kwargs = (; table_increment_mm = 100.0)))
+        ws = BS.create_workspace(
+            scanner,
+            protocol_axial,
+            sim_opts,
+            recon_opts_station,
+            ph_st,
+        )
+        t_total += @elapsed (
+            sim = BS.simulate!(
+                ws,
+                ph_st,
+                protocol_axial,
+                sim_opts;
+                dose_kwargs = (; table_increment_mm = 100.0),
+            )
+        )
         push!(doses, sim.dose)
         if bhc_ax === nothing
-            bhc_ax = BS.calibrate_bhc_water(sim_opts, protocol_axial; scanner, geom = ws.geom)
+            bhc_ax = BS.calibrate_bhc_water(
+                sim_opts,
+                protocol_axial;
+                scanner,
+                geom = ws.geom,
+            )
         end
-        t_total += @elapsed (hu_st = corrected_recon(
-            ws.sinogram, ws.geom, recon_opts_station.matrix_size, bhc_ax))
+        t_total += @elapsed (
+            hu_st = corrected_recon(
+                ws.sinogram,
+                ws.geom,
+                recon_opts_station.matrix_size,
+                bhc_ax,
+            )
+        )
         ws = nothing
         GC.gc()
         # station slab → global z index: each station covers z0 ± 5 cm.
@@ -352,7 +400,8 @@ let
     h = helical_result.dose
     a = sns_result.doses
     dlp_ax = sum(d.dlp_mGy_cm for d in a)
-    Markdown.parse("""
+    Markdown.parse(
+        """
     **Dose of each acquisition** (CTDI from a Monte Carlo of the simulated beam in the 32 cm body phantom)
 
     | acquisition | N·T (mm) | mAs / rotation | rotations | CTDIvol (mGy) | DLP (mGy·cm) |
@@ -365,7 +414,8 @@ let
     exposure is spread over different lengths: $(round(h.scan_length_cm; digits = 1)) cm of helical
     travel against three $(round(a[1].table_increment_mm / 10; digits = 1)) cm table increments for the
     axial stations, whose overlapping $(a[1].nominal_collimation_mm) mm beams$(a[1].wide_beam_reference_mm === nothing ? "" : " are dosed with the IEC wide-beam rule (reference $(a[1].wide_beam_reference_mm) mm)").
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000001
@@ -386,10 +436,15 @@ from this scan's measured CTDIvol and its 20 mm collimation.
 const HELICAL_INPUTS = (10.31, 20.0, 0.5);
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000006
-let measured = (Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),
-                Float64(helical_result.dose.nominal_collimation_mm), Float64(protocol_helical.rotation_time))
+let measured = (
+    Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),
+    Float64(helical_result.dose.nominal_collimation_mm),
+    Float64(protocol_helical.rotation_time),
+)
     all(isapprox.(HELICAL_INPUTS, measured; rtol = 0.01)) ||
-        error("HELICAL_INPUTS = $(HELICAL_INPUTS) no longer match this scan, $(measured): update them")
+        error(
+            "HELICAL_INPUTS = $(HELICAL_INPUTS) no longer match this scan, $(measured): update them",
+        )
     nothing
 end
 
@@ -401,8 +456,13 @@ end
 helical_plan = let p = pitch_x100 / 100
     feed = HELICAL_INPUTS[2] * p
     rotations = 300.0 / feed
-    (p, round(feed; digits = 1), round(HELICAL_INPUTS[1] / p; digits = 2),
-     round(rotations; digits = 1), round(rotations * HELICAL_INPUTS[3]; digits = 1))
+    (
+        p,
+        round(feed; digits = 1),
+        round(HELICAL_INPUTS[1] / p; digits = 2),
+        round(rotations; digits = 1),
+        round(rotations * HELICAL_INPUTS[3]; digits = 1),
+    )
 end;
 
 # ╔═╡ 1100000b-0000-4000-8000-000000000005
@@ -433,29 +493,67 @@ let
 
     # Super-title.  tellwidth = false so the spanning label cannot stretch the
     # columns (Makie FAQ: elements with tellwidth = true resize their column).
-    Mke.Label(fig[0, 1:3], "z = $(round(z_cm; digits = 1)) cm  (slice $(z_idx)/150)";
-        fontsize = 32, font = :bold, tellwidth = false)
+    Mke.Label(
+        fig[0, 1:3],
+        "z = $(round(z_cm; digits = 1)) cm  (slice $(z_idx)/150)";
+        fontsize = 32,
+        font = :bold,
+        tellwidth = false,
+    )
 
     # ── Row 1: phantom ground truth, CATEGORICAL colours + labels ──
-    cat_colors = Mke.cgrad([:gray10, :steelblue, :darkorange, :seagreen]; categorical = true)
-    ax1 = Mke.Axis(fig[1, 1:2]; title = "Phantom ground truth", titlesize = 24,
-        aspect = Mke.DataAspect())
-    hm1 = Mke.heatmap!(ax1, Float32.(phantom_data.mask[:, :, kp]);
-        colormap = cat_colors, colorrange = (-0.5, 3.5))
+    cat_colors = Mke.cgrad(
+        [:gray10, :steelblue, :darkorange, :seagreen];
+        categorical = true,
+    )
+    ax1 = Mke.Axis(
+        fig[1, 1:2];
+        title = "Phantom ground truth",
+        titlesize = 24,
+        aspect = Mke.DataAspect(),
+    )
+    hm1 = Mke.heatmap!(
+        ax1,
+        Float32.(phantom_data.mask[:, :, kp]);
+        colormap = cat_colors,
+        colorrange = (-0.5, 3.5),
+    )
     Mke.hidedecorations!(ax1)
-    Mke.Colorbar(fig[1, 3], hm1;
+    Mke.Colorbar(
+        fig[1, 3],
+        hm1;
         ticks = (0:3, ["air", "water body", "lung rod", "adipose cone"]),
-        ticklabelsize = 18, tellheight = false)
+        ticklabelsize = 18,
+        tellheight = false,
+    )
 
     # ── Row 2: the two reconstructions (HU grayscale) ──
-    ax2 = Mke.Axis(fig[2, 1]; title = "Helical · 20 mm collim, pitch 1.0", titlesize = 24,
-        aspect = Mke.DataAspect())
-    hm2 = Mke.heatmap!(ax2, helical_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
+    ax2 = Mke.Axis(
+        fig[2, 1];
+        title = "Helical · 20 mm collim, pitch 1.0",
+        titlesize = 24,
+        aspect = Mke.DataAspect(),
+    )
+    hm2 = Mke.heatmap!(
+        ax2,
+        helical_result.hu[:, :, z_idx];
+        colormap = :grays,
+        colorrange = (-500, 100),
+    )
     Mke.hidedecorations!(ax2)
 
-    ax3 = Mke.Axis(fig[2, 2]; title = "Volume axial · 3 × 10 cm", titlesize = 24,
-        aspect = Mke.DataAspect())
-    Mke.heatmap!(ax3, sns_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
+    ax3 = Mke.Axis(
+        fig[2, 2];
+        title = "Volume axial · 3 × 10 cm",
+        titlesize = 24,
+        aspect = Mke.DataAspect(),
+    )
+    Mke.heatmap!(
+        ax3,
+        sns_result.hu[:, :, z_idx];
+        colormap = :grays,
+        colorrange = (-500, 100),
+    )
     Mke.hidedecorations!(ax3)
 
     Mke.Colorbar(fig[2, 3], hm2; label = "HU", labelsize = 22, ticklabelsize = 16)
@@ -475,19 +573,32 @@ reduces the profiles to numbers.
 
 # ╔═╡ 11000008-0000-4000-8000-000000000002
 z_profile_fig = let
-    xr, yr = 25:36, 73:88            # 9.4 cm left of centre: clear of rod ring & cone
+    xr, yr = 25:36, 73:88 # 9.4 cm left of centre: clear of rod ring & cone
     zs = [-15.0 + (k - 0.5) * 0.2 for k in 1:150]
     prof_hel = [mean(helical_result.hu[xr, yr, k]) for k in 1:150]
     prof_sns = [mean(sns_result.hu[xr, yr, k]) for k in 1:150]
 
     fig = Mke.Figure(size = (1400, 600))
-    ax = Mke.Axis(fig[1, 1];
-        title = "Water HU vs z", titlesize = 32,
+    ax = Mke.Axis(
+        fig[1, 1];
+        title = "Water HU vs z",
+        titlesize = 32,
         subtitle = "helical (20 mm collim) vs volume axial (160 mm collim), matched beam-width–current product",
         subtitlesize = 24,
-        xlabel = "z (cm)", ylabel = "mean HU (water ROI)",
-        xlabelsize = 22, ylabelsize = 22, xticklabelsize = 18, yticklabelsize = 18)
-    Mke.lines!(ax, zs, prof_hel; linewidth = 4, label = "helical · 20 mm, pitch 1.0 × 16 rot")
+        xlabel = "z (cm)",
+        ylabel = "mean HU (water ROI)",
+        xlabelsize = 22,
+        ylabelsize = 22,
+        xticklabelsize = 18,
+        yticklabelsize = 18,
+    )
+    Mke.lines!(
+        ax,
+        zs,
+        prof_hel;
+        linewidth = 4,
+        label = "helical · 20 mm, pitch 1.0 × 16 rot",
+    )
     Mke.lines!(ax, zs, prof_sns; linewidth = 4, label = "volume axial · 3 × 10 cm stations")
     Mke.hlines!(ax, [0.0]; color = :gray, linestyle = :dash, linewidth = 2)
     Mke.vlines!(ax, [-5.0, 5.0]; color = (:orange, 0.5), linestyle = :dot, linewidth = 3)
@@ -498,7 +609,7 @@ end
 
 # ╔═╡ 11000008-0000-4000-8000-000000000004
 let
-    xr, yr = 25:36, 73:88                        # the water ROI of the profile plot
+    xr, yr = 25:36, 73:88 # the water ROI of the profile plot
     zs = [-15.0 + (k - 0.5) * 0.2 for k in 1:150]
     prof(v) = [mean(v[xr, yr, k]) for k in 1:150]
     noise(v) = mean(std(v[xr, yr, k]) for k in 1:150)
@@ -506,17 +617,22 @@ let
     rows = String[]
     for (name, r) in (("helical", helical_result), ("volume axial", sns_result))
         p = prof(r.hu)
-        push!(rows, "| $(name) | $(round(mean(p); digits = 1)) | $(round(minimum(p); digits = 1)) … $(round(maximum(p); digits = 1)) | " *
-                    "$(round(std(p); digits = 1)) | $(round(step_at(p, -5.0); digits = 1)) / $(round(step_at(p, 5.0); digits = 1)) | $(round(noise(r.hu); digits = 1)) |")
+        push!(
+            rows,
+            "| $(name) | $(round(mean(p); digits = 1)) | $(round(minimum(p); digits = 1)) … $(round(maximum(p); digits = 1)) | " *
+                "$(round(std(p); digits = 1)) | $(round(step_at(p, -5.0); digits = 1)) / $(round(step_at(p, 5.0); digits = 1)) | $(round(noise(r.hu); digits = 1)) |",
+        )
     end
-    Markdown.parse("""
+    Markdown.parse(
+        """
     | acquisition | mean water HU over z | range over z | σ over z | step at z = −5 / +5 cm | pixel noise σ (HU) |
     |:--|--:|--:|--:|--:|--:|
     $(join(rows, "\n"))
 
     "Step" is the change in the ROI mean between the two slices either side of a station boundary;
     "pixel noise" is the within-ROI standard deviation averaged over the slices.
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 11000008-0000-4000-8000-000000000003
@@ -524,7 +640,12 @@ coronal_fig = let
     yc = 80
     fig = Mke.Figure(size = (1400, 640))
     ax1 = Mke.Axis(fig[1, 1]; title = "Helical — coronal", titlesize = 24)
-    hm = Mke.heatmap!(ax1, helical_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
+    hm = Mke.heatmap!(
+        ax1,
+        helical_result.hu[:, yc, :];
+        colormap = :grays,
+        colorrange = (-500, 100),
+    )
     Mke.hidedecorations!(ax1)
     ax2 = Mke.Axis(fig[1, 2]; title = "Volume axial (3 × 10 cm) — coronal", titlesize = 24)
     Mke.heatmap!(ax2, sns_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
@@ -535,7 +656,8 @@ coronal_fig = let
 end
 
 # ╔═╡ 11000009-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 ## Verification and Scope
 
 - **`:dd_fast` needed zero changes for helical.** The projectors consume
@@ -563,7 +685,8 @@ Markdown.parse("""
   ($(helical_result.n_views) views, simulation + corrections + WFBP)
   $(round(helical_result.t; digits = 1)) s; volume axial (3 stations × $(protocol_axial.views) views)
   $(round(sns_result.t; digits = 1)) s. Both include first-call compilation.
-""")
+""",
+)
 
 # ╔═╡ 1100000a-0000-4000-8000-000000000001
 md"""

@@ -102,8 +102,8 @@ ws = create_fdk_recon_workspace(sino, geom, recon_size; filter = f)
 ```
 """
 struct CustomFilter{N} <: FilterType
-    control_x::NTuple{N,Float64}
-    control_y::NTuple{N,Float64}
+    control_x::NTuple{N, Float64}
+    control_y::NTuple{N, Float64}
 end
 
 # =============================================================================
@@ -128,9 +128,13 @@ represent reaches the backprojector, where it would alias into the image as fine
 With `bandlimit = 1` — a detector no finer than the grid — the kernel is the classical one.
 """
 function create_spatial_kernel(
-        n::Int, filter_type::FilterType, pixel_size::T; bandlimit::Real = 1.0,
-    ) where T <: AbstractFloat
-    0 < bandlimit <= 1 || throw(ArgumentError("bandlimit must be in (0, 1], got $(bandlimit)"))
+    n::Int,
+    filter_type::FilterType,
+    pixel_size::T;
+    bandlimit::Real = 1.0,
+) where {T <: AbstractFloat}
+    0 < bandlimit <= 1 ||
+        throw(ArgumentError("bandlimit must be in (0, 1], got $(bandlimit)"))
     kernel = zeros(T, n)
     center = n ÷ 2 + 1
     Δ = pixel_size
@@ -159,8 +163,10 @@ detector no finer than the grid, and the `bandlimit` every reconstruction here p
 [`create_spatial_kernel`](@ref).
 """
 function grid_bandlimit(
-        geom::CTGeometry, volume_size::NTuple{3, Int}; ray_spacing::Real = geom.pixel_size,
-    )
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    ray_spacing::Real = geom.pixel_size,
+)
     grid_pixel = max(geom.fov[1] / volume_size[1], geom.fov[2] / volume_size[2])
     return min(1.0, Float64(ray_spacing) / grid_pixel)
 end
@@ -173,12 +179,13 @@ The apodization window of `filter` against frequency normalised to its cutoff: `
 Hamming: `0.54 + 0.46·cos(πf)`. Hann: `½(1 + cos(πf))`. The CatSim kernels — standard, soft, bone
 and a `CustomFilter` — interpolate their control points (`createHSP.py`).
 """
-frequency_window(::RampFilter, f::T) where T = one(T)
-frequency_window(::SheppLoganFilter, f::T) where T =
-    f == 0 ? one(T) : T(sin(π * f / 2) / (π * f / 2))
-frequency_window(::CosineFilter, f::T) where T = T(cos(π * f / 2))
-frequency_window(::HammingFilter, f::T) where T = T(0.54 + 0.46 * cos(π * f))
-frequency_window(::HannFilter, f::T) where T = T(0.5 * (1 + cos(π * f)))
+frequency_window(::RampFilter, f::T) where {T} = one(T)
+frequency_window(::SheppLoganFilter, f::T) where {T} = f == 0 ?
+    one(T) :
+    T(sin(π * f / 2) / (π * f / 2))
+frequency_window(::CosineFilter, f::T) where {T} = T(cos(π * f / 2))
+frequency_window(::HammingFilter, f::T) where {T} = T(0.54 + 0.46 * cos(π * f))
+frequency_window(::HannFilter, f::T) where {T} = T(0.5 * (1 + cos(π * f)))
 
 # ---------------------------------------------------------------------------
 # CatSim-compatible filters (Standard, Soft, Bone, Custom): control-point windows from
@@ -193,32 +200,44 @@ using piecewise quadratic interpolation (matching scipy interp1d kind='quadratic
 
 Returns the window value (0 to 1).
 """
-function _catsim_apodization_window(f_norm::T, control_x, control_y) where T
+function _catsim_apodization_window(f_norm::T, control_x, control_y) where {T}
     # Clamp to [0, 1]
     f = clamp(f_norm, zero(T), one(T))
 
     # Find the interval
     n = length(control_x)
-    for i in 1:(n-1)
-        if f <= T(control_x[i+1]) || i == n-1
+    for i in 1:(n - 1)
+        if f <= T(control_x[i + 1]) || i == n - 1
             # Linear interpolation (close enough for 5 control points;
             # the quadratic difference is < 1% in noise)
-            t = (f - T(control_x[i])) / (T(control_x[i+1]) - T(control_x[i]))
-            return T(control_y[i]) * (one(T) - t) + T(control_y[i+1]) * t
+            t = (f - T(control_x[i])) / (T(control_x[i + 1]) - T(control_x[i]))
+            return T(control_y[i]) * (one(T) - t) + T(control_y[i + 1]) * t
         end
     end
     return T(control_y[end])
 end
 
 const _CATSIM_CONTROL_X = (0.0, 0.25, 0.5, 0.75, 1.0)
-frequency_window(::StandardFilter, f::T) where T =
-    _catsim_apodization_window(f, _CATSIM_CONTROL_X, (1.0, 0.9338, 0.7441, 0.4425, 0.0531))
-frequency_window(::SoftFilter, f::T) where T =
-    _catsim_apodization_window(f, _CATSIM_CONTROL_X, (1.0, 0.815, 0.4564, 0.1636, 0.0))
-frequency_window(::BoneFilter, f::T) where T =
-    _catsim_apodization_window(f, _CATSIM_CONTROL_X, (1.0, 1.0485, 1.17, 1.2202, 0.9201))
-frequency_window(filt::CustomFilter, f::T) where T =
-    _catsim_apodization_window(f, filt.control_x, filt.control_y)
+frequency_window(::StandardFilter, f::T) where {T} = _catsim_apodization_window(
+    f,
+    _CATSIM_CONTROL_X,
+    (1.0, 0.9338, 0.7441, 0.4425, 0.0531),
+)
+frequency_window(::SoftFilter, f::T) where {T} = _catsim_apodization_window(
+    f,
+    _CATSIM_CONTROL_X,
+    (1.0, 0.815, 0.4564, 0.1636, 0.0),
+)
+frequency_window(::BoneFilter, f::T) where {T} = _catsim_apodization_window(
+    f,
+    _CATSIM_CONTROL_X,
+    (1.0, 1.0485, 1.17, 1.2202, 0.9201),
+)
+frequency_window(filt::CustomFilter, f::T) where {T} = _catsim_apodization_window(
+    f,
+    filt.control_x,
+    filt.control_y,
+)
 
 """
     apply_frequency_window!(kernel, filter, bandlimit) -> kernel
@@ -227,7 +246,11 @@ Multiply the spatial kernel's spectrum by `frequency_window(filter, f / bandlimi
 `f ≤ bandlimit` and by zero above, `f` being the frequency normalised to the sampling Nyquist:
 FFT → window → IFFT. One path for every filter type.
 """
-function apply_frequency_window!(kernel::Vector{T}, filter::FilterType, bandlimit::T) where T
+function apply_frequency_window!(
+    kernel::Vector{T},
+    filter::FilterType,
+    bandlimit::T,
+) where {T}
     n = length(kernel)
     center = n ÷ 2 + 1
     # fftshift: the kernel's centre tap to index 1
@@ -240,7 +263,9 @@ function apply_frequency_window!(kernel::Vector{T}, filter::FilterType, bandlimi
     for k in 0:(n - 1)
         f_idx = k <= n ÷ 2 ? k : n - k
         f_norm = T(f_idx) / T(nyquist)
-        freq[k + 1] *= f_norm <= bandlimit ? frequency_window(filter, f_norm / bandlimit) : zero(T)
+        freq[k + 1] *= f_norm <= bandlimit ?
+            frequency_window(filter, f_norm / bandlimit) :
+            zero(T)
     end
     spatial = ifft(freq)
     for i in 1:n
@@ -248,7 +273,6 @@ function apply_frequency_window!(kernel::Vector{T}, filter::FilterType, bandlimi
     end
     return kernel
 end
-
 
 # =============================================================================
 # Symbol-to-FilterType conversion
@@ -263,15 +287,25 @@ Supported symbols: `:ram_lak`, `:shepp_logan`, `:cosine`, `:hamming`, `:hann`,
 `:standard`, `:soft`, `:bone`.
 """
 function filter_from_symbol(sym::Symbol)::FilterType
-    sym === :ram_lak     ? RampFilter() :
-    sym === :shepp_logan ? SheppLoganFilter() :
-    sym === :cosine      ? CosineFilter() :
-    sym === :hamming     ? HammingFilter() :
-    sym === :hann        ? HannFilter() :
-    sym === :standard    ? StandardFilter() :
-    sym === :soft        ? SoftFilter() :
-    sym === :bone        ? BoneFilter() :
-    error("Unknown filter symbol: $sym. Use :ram_lak, :shepp_logan, :cosine, :hamming, :hann, :standard, :soft, or :bone.")
+    sym === :ram_lak ?
+        RampFilter() :
+        sym === :shepp_logan ?
+            SheppLoganFilter() :
+            sym === :cosine ?
+                CosineFilter() :
+                sym === :hamming ?
+                    HammingFilter() :
+                    sym === :hann ?
+                        HannFilter() :
+                        sym === :standard ?
+                            StandardFilter() :
+                            sym === :soft ?
+                                SoftFilter() :
+                                sym === :bone ?
+                                    BoneFilter() :
+                                    error(
+                                        "Unknown filter symbol: $sym. Use :ram_lak, :shepp_logan, :cosine, :hamming, :hann, :standard, :soft, or :bone.",
+                                    )
 end
 
 export filter_from_symbol
@@ -318,11 +352,8 @@ function equiangular_kernel_scale!(kernel_cpu::AbstractVector{T}, dγ::Real) whe
     return kernel_cpu
 end
 
-function cosine_weight!(
-    sinogram::AbstractArray{T, 3},
-    geom::CTGeometry
-) where T <: AbstractFloat
-
+function cosine_weight!(sinogram::AbstractArray{T, 3}, geom::CTGeometry) where {T <:
+    AbstractFloat}
     # Get dimensions as Int32 for GPU compatibility
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
@@ -405,12 +436,10 @@ function filter_sinogram!(
     ws_filter_kernel = nothing,
     apply_cosine::Bool = true,
     ray_spacing::Union{Nothing, Real} = nothing,
-    bandlimit::Real = 1.0
-) where T <: AbstractFloat
-
+    bandlimit::Real = 1.0,
+) where {T <: AbstractFloat}
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
-    n_angles = Int32(size(sinogram, 3))
 
     # Step 1: Cosine weighting (skipped for rebinned-parallel WFBP data,
     # which is filtered as plain parallel rows)
@@ -505,9 +534,14 @@ function filter_sinogram(
     geom::CTGeometry;
     filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0,
-    bandlimit::Real = 1.0
-) where T <: AbstractFloat
-
+    bandlimit::Real = 1.0,
+) where {T <: AbstractFloat}
     filtered = copy(sinogram)
-    return filter_sinogram!(filtered, geom; filter=filter, cutoff=cutoff, bandlimit=bandlimit)
+    return filter_sinogram!(
+        filtered,
+        geom;
+        filter = filter,
+        cutoff = cutoff,
+        bandlimit = bandlimit,
+    )
 end

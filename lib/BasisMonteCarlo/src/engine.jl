@@ -8,11 +8,11 @@
 # =============================================================================
 
 # What left the detector, by kind (the `kind` column of the escape tally)
-const ESCAPE_TRANSMITTED = 0x01   # the primary photon, never interacted
-const ESCAPE_SCATTERED = 0x02     # the primary photon after Compton or Rayleigh scattering
-const ESCAPE_FLUORESCENCE = 0x03  # a characteristic x ray (K or L fluorescence)
+const ESCAPE_TRANSMITTED = 0x01  # the primary photon, never interacted
+const ESCAPE_SCATTERED = 0x02    # the primary photon after Compton or Rayleigh scattering
+const ESCAPE_FLUORESCENCE = 0x03 # a characteristic x ray (K or L fluorescence)
 const ESCAPE_BREMSSTRAHLUNG = 0x04
-const ESCAPE_ELECTRON = 0x05      # an electron (photo-, Compton or Auger) that got out
+const ESCAPE_ELECTRON = 0x05 # an electron (photo-, Compton or Auger) that got out
 const ESCAPE_KINDS = (:transmitted, :scattered, :fluorescence, :bremsstrahlung, :electron)
 
 # The processes that count as the primary photon interacting
@@ -57,7 +57,13 @@ function Base.empty!(d::DepositLog)
     return d
 end
 
-Base.copy(d::DepositLog) = DepositLog(copy(d.event), copy(d.x_mm), copy(d.y_mm), copy(d.z_mm), copy(d.energy_keV))
+Base.copy(d::DepositLog) = DepositLog(
+    copy(d.event),
+    copy(d.x_mm),
+    copy(d.y_mm),
+    copy(d.z_mm),
+    copy(d.energy_keV),
+)
 
 # The photon scatterings logged by `VertexLog` (its `process` column)
 const VERTEX_COMPTON = 0x01
@@ -79,7 +85,14 @@ struct VertexLog
     direction::Vector{NTuple{3, Float32}}
 end
 
-VertexLog() = VertexLog(Int32[], UInt8[], BitVector(), NTuple{3, Float32}[], Float32[], NTuple{3, Float32}[])
+VertexLog() = VertexLog(
+    Int32[],
+    UInt8[],
+    BitVector(),
+    NTuple{3, Float32}[],
+    Float32[],
+    NTuple{3, Float32}[],
+)
 
 Base.length(v::VertexLog) = length(v.event)
 
@@ -161,11 +174,11 @@ RunData() = RunData(
 )
 
 function reset!(
-        d::RunData;
-        recording::Bool = false,
-        recording_deposits::Bool = false,
-        recording_vertices::Bool = false,
-    )
+    d::RunData;
+    recording::Bool = false,
+    recording_deposits::Bool = false,
+    recording_vertices::Bool = false,
+)
     d.event = 0
     empty!(d.edeps)
     empty!(d.interacted_flags)
@@ -190,10 +203,12 @@ end
 # -----------------------------------------------------------------------------
 
 mutable struct BeamData <: G4JLGeneratorData
-    energy::Float64                    # Geant4 units; the last photon's, when drawn from a spectrum
+    # Geant4 units; the last photon's, when drawn from a spectrum
+    energy::Float64
     beam::Beam
-    rng::Xoshiro                       # entry points and spectrum draws; reseeded for every run
-    spectrum_keV::Vector{Float64}      # bin centres of the spectrum (empty: monoenergetic)
+    # entry points and spectrum draws; reseeded for every run
+    rng::Xoshiro
+    spectrum_keV::Vector{Float64} # bin centres of the spectrum (empty: monoenergetic)
     spectrum_cdf::Vector{Float64}
     spectrum_bin_keV::Float64
     gamma::CxxPtr{G4ParticleDefinition}
@@ -221,7 +236,10 @@ function beam_generator()
                 searchsortedfirst(data.spectrum_cdf, rand(data.rng)),
                 length(data.spectrum_keV),
             )
-            data.energy = (data.spectrum_keV[k] + (rand(data.rng) - 0.5) * data.spectrum_bin_keV) * keV
+            data.energy = (
+                data.spectrum_keV[k] + (rand(data.rng) - 0.5) * data.spectrum_bin_keV
+            ) *
+                keV
         end
         (x, y, z), u = beam_ray(data.beam, data.rng)
         # momentum = E along the beam direction
@@ -264,7 +282,9 @@ function particle_kind(d::RunData, track)
     def = GetDefinition(track).cpp_object
     def == d.electron && return :electron
     def == d.gamma || return :other
-    return process_name(GetCreatorProcess(track)) == "eBrem" ? :bremsstrahlung : :fluorescence
+    return process_name(GetCreatorProcess(track)) == "eBrem" ?
+        :bremsstrahlung :
+        :fluorescence
 end
 
 function begin_event(::G4Event, app::G4JLApplication)::Nothing
@@ -298,10 +318,11 @@ function stepping(step::G4Step, app::G4JLApplication)::Nothing
     in_crystal && (d.edep += edep)
 
     # Did the primary photon interact in the detector?
-    if tid == 1 && !d.interacted && in_crystal
-        if process_name(GetProcessDefinedStep(post)) in PHOTON_INTERACTIONS
-            d.interacted = true
-        end
+    if tid == 1 &&
+            !d.interacted &&
+            in_crystal &&
+            process_name(GetProcessDefinedStep(post)) in PHOTON_INTERACTIONS
+        d.interacted = true
     end
 
     # Leaving the detector: tally what escaped
@@ -331,7 +352,9 @@ function stepping(step::G4Step, app::G4JLApplication)::Nothing
     # Every photon scattering, for forced detection (the energy and direction it arrived with)
     if d.recording_vertices && in_crystal && GetDefinition(track).cpp_object == d.gamma
         process = process_name(GetProcessDefinedStep(post))
-        code = process == "compt" ? VERTEX_COMPTON : process == "Rayl" ? VERTEX_RAYLEIGH : 0x00
+        code = process == "compt" ?
+            VERTEX_COMPTON :
+            process == "Rayl" ? VERTEX_RAYLEIGH : 0x00
         if code != 0x00
             push!(d.vertices.event, d.event)
             push!(d.vertices.process, code)
@@ -444,7 +467,7 @@ function engine(detector::AbstractDetector, physics::PhysicsSettings)
             """
             Geant4 physics is fixed for the life of the process; this session runs
             $(e.physics). Restart Julia to use $(physics).
-            """
+            """,
         )
 
         # Different geometry: re-initialise and rebuild the tables for the new material

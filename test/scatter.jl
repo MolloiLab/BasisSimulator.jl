@@ -9,7 +9,14 @@
 
 # A water cylinder (diameter in cm) or ellipse on a 0.25 cm grid, centred or moved across x; with
 # `lungs`, two lungs (0.26 g/cm³) either side of a water mediastinum.
-function _scatter_phantom(; a_cm, b_cm = a_cm, shift_cm = 0.0, lungs = false, n = 160, nz = 8)
+function _scatter_phantom(;
+    a_cm,
+    b_cm = a_cm,
+    shift_cm = 0.0,
+    lungs = false,
+    n = 160,
+    nz = 8,
+)
     vox = (0.25, 0.25, 0.25)
     mask = zeros(UInt8, n, n, nz)
     c = (n + 1) / 2
@@ -17,7 +24,9 @@ function _scatter_phantom(; a_cm, b_cm = a_cm, shift_cm = 0.0, lungs = false, n 
         x, y = (i - c) * vox[1] - shift_cm, (j - c) * vox[2]
         (x / (a_cm / 2))^2 + (y / (b_cm / 2))^2 <= 1 || continue
         mask[i, j, k] = 0x01
-        lungs && ((abs(x) - a_cm / 4) / (a_cm / 7))^2 + (y / (b_cm / 3))^2 <= 1 && (mask[i, j, k] = 0x02)
+        lungs &&
+            ((abs(x) - a_cm / 4) / (a_cm / 7))^2 + (y / (b_cm / 3))^2 <= 1 &&
+            (mask[i, j, k] = 0x02)
     end
     materials = Dict{Int, Any}(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water)
     lungs && (materials[2] = BS.XA.Materials.lung)
@@ -44,7 +53,11 @@ const _SCATTER_EICT = BS.EICTScanner(
     use_lag = false,
     scatter_kernels = _SCATTER_TEST_ENTRY,
 )
-const _SCATTER_RECON = BS.ReconOptions(; matrix_size = (128, 128, 1), fov_cm = 36.0, z_cm = 0.5)
+const _SCATTER_RECON = BS.ReconOptions(;
+    matrix_size = (128, 128, 1),
+    fov_cm = 36.0,
+    z_cm = 0.5,
+)
 
 # The EICT scan's S₁ (signal relative to the air beam, as exp(-sinogram) before the air
 # calibration) with and without scatter, noise-free, read off the workspace.
@@ -62,7 +75,8 @@ end
     A = header["arrays"][_SCATTER_TEST_ENTRY]
     @test size(A["scatter"]) == (25, 11, 21, 6, 5, 3)
     bump, single = _SCATTER_TEST_LIBRARY.bump, _SCATTER_TEST_LIBRARY.single
-    @test A["scatter"] ≈ Float32.(bump .+ dropdims(sum(single; dims = 7); dims = 7)) rtol = 1.0e-6
+    @test A["scatter"] ≈
+        Float32.(bump .+ dropdims(sum(single; dims = 7); dims = 7)) rtol = 1.0e-6
     @test A["forward"] ≈ Float32.(0.1 .* bump .+ single[:, :, :, :, :, :, 3]) rtol = 1.0e-6
     @test header["arrays"]["elements"]["scattering"][8, 1, 3, 70] ≈ 1.0f0 + 0.08f0 + 0.3f0
     # water's angular tables: per steradian, each normalised over the sphere
@@ -73,18 +87,26 @@ end
     @test sort(collect(keys(only_entry["arrays"]))) == ["BS test counter", "elements"]
 
     k = BS.scatter_kernels(_SCATTER_TEST_ENTRY)
-    @test k isa BS.ScatterKernels && k.energy_weighted && k.path == abspath(_SCATTER_TEST_HEADER)
-    @test BS.scatter_kernels(_SCATTER_TEST_ENTRY) === k                         # cached
-    @test k.grid === :both && k.grid_opening_mm == (0.94, 1.01) && k.detector_depth_mm == 1.4
-    @test k.single_scatter == (depths = 32, points_per_column = 4, points_per_row = 2, columns_each_side = 8)
+    @test k isa BS.ScatterKernels &&
+        k.energy_weighted &&
+        k.path == abspath(_SCATTER_TEST_HEADER)
+    @test BS.scatter_kernels(_SCATTER_TEST_ENTRY) === k # cached
+    @test k.grid === :both &&
+        k.grid_opening_mm == (0.94, 1.01) &&
+        k.detector_depth_mm == 1.4
+    @test k.single_scatter ==
+        (depths = 32, points_per_column = 4, points_per_row = 2, columns_each_side = 8)
     # Compton, wide Rayleigh and forward Rayleigh, the multiple scatter of each (its single scatter
     # taken out: the synthetic bump), all of it their sum, and the columns' moments of what is left
     for (p, share) in enumerate((0.75, 0.15, 0.1))
-        left = permutedims(k.kernels[:, :, :, p, :, :, :], (2, 1, 4, 5, 6, 3))         # (row, column) first
+        # (row, column) first
+        left = permutedims(k.kernels[:, :, :, p, :, :, :], (2, 1, 4, 5, 6, 3))
         @test maximum(abs.(left .- share .* bump)) < 1.0e-4 * maximum(bump)
     end
-    @test k.kernels[:, :, :, 4, :, :, :] ≈ dropdims(sum(k.kernels[:, :, :, 1:3, :, :, :]; dims = 4); dims = 4)
-    @test k.moments[:, 1, 2, 1, 2, 3, 1] ≈ vec(sum(k.kernels[:, :, 2, 1, 2, 3, 1]; dims = 1))
+    @test k.kernels[:, :, :, 4, :, :, :] ≈
+        dropdims(sum(k.kernels[:, :, :, 1:3, :, :, :]; dims = 4); dims = 4)
+    @test k.moments[:, 1, 2, 1, 2, 3, 1] ≈
+        vec(sum(k.kernels[:, :, 2, 1, 2, 3, 1]; dims = 1))
     # a water that does not scatter takes nothing out
     as_made = BS.scatter_kernels(_SCATTER_AS_MADE_ENTRY)
     @test as_made.kernels[:, :, 2, 4, 2, 3, 1] ≈ transpose(A["scatter"][:, :, 2, 3, 1, 2])
@@ -97,8 +119,13 @@ end
     catch e
         e
     end
-    @test err isa ArgumentError && occursin("single_scatter", err.msg) && occursin("elements/water_pdf", err.msg)
-    @test_throws ArgumentError BS.scatter_kernels("No such scanner"; path = _SCATTER_TEST_HEADER)
+    @test err isa ArgumentError &&
+        occursin("single_scatter", err.msg) &&
+        occursin("elements/water_pdf", err.msg)
+    @test_throws ArgumentError BS.scatter_kernels(
+        "No such scanner";
+        path = _SCATTER_TEST_HEADER,
+    )
     @test_throws ArgumentError BS.scatter_kernels("SOMATOM Force; not an entry")
 end
 
@@ -115,9 +142,12 @@ end
         @test q32 ≈ q rtol = 1.0e-5
     end
     edge = BS._kernel_chord(a, b, 1 - 1.0e-8)
-    @test BS._kernel_impact(Float32(a), Float32(b), Float32(edge))[2] ≈ BS._kernel_impact(a, b, edge)[2] rtol = 1.0e-5
-    @test BS._kernel_impact(a, b, 400.0) == (0.0, 1.0)                          # longer than the axis ray
-    @test BS._kernel_impact(a, b, 2a * (1 - 1.0e-10)) == (0.0, 1.0)             # as long, to rounding
+    @test BS._kernel_impact(Float32(a), Float32(b), Float32(edge))[2] ≈
+        BS._kernel_impact(a, b, edge)[2] rtol = 1.0e-5
+    # longer than the axis ray
+    @test BS._kernel_impact(a, b, 400.0) == (0.0, 1.0)
+    # as long, to rounding
+    @test BS._kernel_impact(a, b, 2a * (1 - 1.0e-10)) == (0.0, 1.0)
     @test BS._kernel_offset(a, b, 1.0) > BS._kernel_offset(a, b, 0.5) > 0
     # clamped linear interpolation
     @test BS._bracket([1.0, 2.0, 4.0], 3.0) == (2, 3, 0.5)
@@ -142,13 +172,15 @@ end
         lo, hi = big(0.0), big(1.0)
         for _ in 1:200
             mid = (lo + hi) / 2
-            BS._kernel_chord(big(a), big(b), sqrt(1 - mid^2), mid) < L ? (lo = mid) : (hi = mid)
+            BS._kernel_chord(big(a), big(b), sqrt(1 - mid^2), mid) < L ?
+                (lo = mid) :
+                (hi = mid)
         end
         q_exact = (lo + hi) / 2
         u, q = BS._kernel_impact(a, b, L)
         @test q ≈ q_exact rtol = 1.0e-12
         @test u ≈ sqrt(1 - q_exact^2) rtol = 1.0e-15
-        u32, q32 = BS._kernel_impact(Float32(a), Float32(b), Float32(L))
+        _, q32 = BS._kernel_impact(Float32(a), Float32(b), Float32(L))
         @test q32 ≈ q_exact rtol = 1.0e-6
     end
 end
@@ -161,9 +193,17 @@ end
         rows = k.row_edges_mm,
         sdd = k.source_to_detector_mm,
         energies = k.energies_keV,
-        water = (mu = k.water_mu_per_mm, compton = k.water_compton_per_mm, rayleigh = k.water_rayleigh_per_mm),
+        water = (
+            mu = k.water_mu_per_mm,
+            compton = k.water_compton_per_mm,
+            rayleigh = k.water_rayleigh_per_mm,
+        ),
         water_pdf = k.water_pdf,
-        detector = (efficiency = k.efficiency, mu = k.detector_mu_per_mm, depth = k.detector_depth_mm),
+        detector = (
+            efficiency = k.efficiency,
+            mu = k.detector_mu_per_mm,
+            depth = k.detector_depth_mm,
+        ),
         energy_weighted = k.energy_weighted,
         grid = k.grid,
         grid_height = k.grid_height_mm,
@@ -175,21 +215,43 @@ end
 
     # The quadrature in a kernel's water ellipse, and through the strips that ellipse's own rays
     # (every 0.1°) describe: the same, but for the strips' width at a grazing ray
-    for (T, aspect, u) in ((300.0, 1.0, 0.0), (300.0, 1.0, 0.5), (140.0, 2.5, 0.5), (500.0, 0.6, 0.5))
+    for (T, aspect, u) in (
+            (300.0, 1.0, 0.0),
+            (300.0, 1.0, 0.5),
+            (140.0, 2.5, 0.5),
+            (500.0, 0.6, 0.5),
+        )
         a, b = T / 2, BS._kernel_half_width(T, aspect)
         angle = asind(BS._kernel_offset(a, b, u) / sid)
         ellipse, strips = zeros(11, 25, 3, 3), zeros(11, 25, 3, 3)
         BS._single_scatter!(ellipse, BS._WaterEllipse(a, b, sid), angle, tables)
         γs = collect(-40.0:0.1:40.0)
-        chord(γ) = BS._exit_wet(BS._WaterEllipse(a, b, sid), (BS._dd(0.0), BS._dd(0.0)), (BS._dd(sind(γ)), BS._dd(cosd(γ))))
+        chord(γ) = BS._exit_wet(
+            BS._WaterEllipse(a, b, sid),
+            (BS._dd(0.0), BS._dd(0.0)),
+            (BS._dd(sind(γ)), BS._dd(cosd(γ))),
+        )
         wet = reshape(chord.(γs), :, 1, 1)
         pairs, boundaries = BS._ray_pairs(Float64, γs, sid)
         described = zeros(4, length(γs))
-        BS._scatter_strips!(described, pairs, wet, wet, BS._pair(Float64, sid), BS._pair(Float64, Float64(π)))
-        BS._single_scatter!(strips, BS._RayStrips(described, boundaries, 0, length(γs), γs[1], 0.1), angle, tables)
+        BS._scatter_strips!(
+            described,
+            pairs,
+            wet,
+            wet,
+            BS._pair(Float64, sid),
+            BS._pair(Float64, Float64(π)),
+        )
+        BS._single_scatter!(
+            strips,
+            BS._RayStrips(described, boundaries, 0, length(γs), γs[1], 0.1),
+            angle,
+            tables,
+        )
         @test sum(ellipse) > 0
         @test sum(strips) ≈ sum(ellipse) rtol = 0.02
-        @test strips[:, :, :, 3] ≈ ellipse[:, :, :, 3] rtol = 0.02                 # the forward peak, bin by bin
+        # the forward peak, bin by bin
+        @test strips[:, :, :, 3] ≈ ellipse[:, :, :, 3] rtol = 0.02
     end
 
     # A water patient that is its kernels' water: the same field as kernels that keep their own
@@ -200,7 +262,13 @@ end
     as_made = BS.EICTScanner(_SCATTER_EICT; scatter_kernels = _SCATTER_AS_MADE_ENTRY)
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 36)
     function field(scanner, phantom)
-        p = BS.create_workspace(scanner, protocol, _scatter_opts(), _SCATTER_RECON, phantom).scatter
+        p = BS.create_workspace(
+            scanner,
+            protocol,
+            _scatter_opts(),
+            _SCATTER_RECON,
+            phantom,
+        ).scatter
         BS._scatter_forward!(p, phantom)
         return Array(p.field)[:, :, 1, 1]
     end
@@ -224,24 +292,42 @@ end
     # to its side of it, so their mirror image matters there too. The two sides are mirror images.
     air = _scatter_phantom(; a_cm = 0.0, n = 8)
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 100.0, views = 8)
-    plan = BS.create_workspace(_SCATTER_EICT, protocol, _scatter_opts(), _SCATTER_RECON, air).scatter
+    plan = BS.create_workspace(
+        _SCATTER_EICT,
+        protocol,
+        _scatter_opts(),
+        _SCATTER_RECON,
+        air,
+    ).scatter
     sid = plan.kernels.source_to_isocenter_mm
     T = eltype(plan.scratch.wet)
     function scan(side)
         s = plan.scratch
-        wet = [abs(sid * sind(γ)) < 120 ? 2 * sqrt(120^2 - (sid * sind(γ))^2) : 0.0 for γ in plan.angle_deg]
+        wet = [
+            abs(sid * sind(γ)) < 120 ? 2 * sqrt(120^2 - (sid * sind(γ))^2) : 0.0
+            for γ in plan.angle_deg
+        ]
         i = argmin(abs.(plan.angle_deg .- 6.0 * side))
         wet[i] = 330.0
         copyto!(s.wet, repeat(T.(wet), 1, size(s.wet, 2), size(s.wet, 3)))
         fill!(s.plain, true)
-        out = similar(plan.field, size(plan.field, 1), size(plan.field, 2), 1, size(plan.field, 4))
+        out = similar(
+            plan.field,
+            size(plan.field, 1),
+            size(plan.field, 2),
+            1,
+            size(plan.field, 4),
+        )
         for (v0, n_v) in BS._scatter_chunks(plan)
             BS._superpose!(out, plan, (s.wet,), s.wet, v0, n_v)
         end
         return (; out = Array(out), shape = Array(s.shapes[1])[:, i])
     end
     left, right = scan(-1), scan(1)
-    @test left.shape[3] == 0 && left.shape[4] == -1 && right.shape[3] == 0 && right.shape[4] == 1
+    @test left.shape[3] == 0 &&
+        left.shape[4] == -1 &&
+        right.shape[3] == 0 &&
+        right.shape[4] == 1
     @test left.out ≈ reverse(right.out; dims = 1) rtol = 1.0e-4
 end
 
@@ -256,14 +342,24 @@ end
         e
     end
     @test err isa ArgumentError
-    @test occursin("SOMATOM_FORCE", sprint(showerror, err)) && occursin("use_scatter = false", sprint(showerror, err))
+    @test occursin("SOMATOM_FORCE", sprint(showerror, err)) &&
+        occursin("use_scatter = false", sprint(showerror, err))
     # copies of a clinical scanner keep its kernels
-    @test BS.SOMATOM_FORCE_B.scatter_kernels == BS.SOMATOM_FORCE.scatter_kernels == "SOMATOM Force"
+    @test BS.SOMATOM_FORCE_B.scatter_kernels ==
+        BS.SOMATOM_FORCE.scatter_kernels ==
+        "SOMATOM Force"
     @test BS.NAEOTOM_ALPHA_UHR.scatter_kernels == "NAEOTOM Alpha"
     @test BS.EICTScanner().scatter_kernels == ""
-    @test BS.SimOptions().use_scatter                                            # on by default
+    # on by default
+    @test BS.SimOptions().use_scatter
     # so the default options on a scanner without kernels throw the same clear error
-    @test_throws ArgumentError BS.create_workspace(plain, protocol, BS.SimOptions(), _SCATTER_RECON, phantom)
+    @test_throws ArgumentError BS.create_workspace(
+        plain,
+        protocol,
+        BS.SimOptions(),
+        _SCATTER_RECON,
+        phantom,
+    )
 end
 
 @testset "superposition: symmetry, linearity in mAs, units" begin
@@ -274,7 +370,10 @@ end
     field = Array(plan.field)
 
     # a centred water cylinder: every view alike (to its voxels), the profile symmetric across the fan
-    @test all(isapprox(field[:, :, :, v], field[:, :, :, 1]; rtol = 0.01) for v in axes(field, 4))
+    @test all(
+        isapprox(field[:, :, :, v], field[:, :, :, 1]; rtol = 0.01)
+        for v in axes(field, 4)
+    )
     profile = field[:, (size(field, 2) + 1) ÷ 2, 1, 1]
     @test profile ≈ reverse(profile) rtol = 1.0e-4
     @test maximum(profile) > 0
@@ -290,22 +389,39 @@ end
     S1(ws) = exp.(-Array(ws.sinogram))
     p4 = BS.CTProtocol(; kVp = 120.0, mAs = 200.0, views = 36)
     ws_a = BS.create_workspace(_SCATTER_EICT, p4, _scatter_opts(), _SCATTER_RECON, phantom)
-    ws_b = BS.create_workspace(_SCATTER_EICT, BS.CTProtocol(p4; mAs = 400.0), _scatter_opts(), _SCATTER_RECON, phantom)
+    ws_b = BS.create_workspace(
+        _SCATTER_EICT,
+        BS.CTProtocol(p4; mAs = 400.0),
+        _scatter_opts(),
+        _SCATTER_RECON,
+        phantom,
+    )
     BS.simulate!(ws_a, phantom, p4, _scatter_opts(); report_dose = false)
-    BS.simulate!(ws_b, phantom, BS.CTProtocol(p4; mAs = 400.0), _scatter_opts(); report_dose = false)
+    BS.simulate!(
+        ws_b,
+        phantom,
+        BS.CTProtocol(p4; mAs = 400.0),
+        _scatter_opts();
+        report_dose = false,
+    )
     @test Array(ws_a.scatter.field) ≈ Array(ws_b.scatter.field)
     @test Array(ws_a.sinogram) ≈ Array(ws_b.sinogram) rtol = 1.0e-5
 
     # the energy integrator's units: S₁ in E_ref and S₂ as m₂/m₁ at each energy
     k = BS.scatter_kernels(_SCATTER_TEST_ENTRY)
-    @test plan.channels[:, 1] ≈ fill(1 / sum(on.ws.weights_norm .* on.ws.m1), length(on.ws.energies)) rtol = 1.0e-5
-    @test plan.channels[:, 2] ./ plan.channels[:, 1] ≈ (on.ws.m2 ./ on.ws.m1) ./ sum(on.ws.weights_norm .* on.ws.m1) rtol = 1.0e-5
+    @test plan.channels[:, 1] ≈
+        fill(1 / sum(on.ws.weights_norm .* on.ws.m1), length(on.ws.energies)) rtol = 1.0e-5
+    @test plan.channels[:, 2] ./ plan.channels[:, 1] ≈
+        (on.ws.m2 ./ on.ws.m1) ./ sum(on.ws.weights_norm .* on.ws.m1) rtol = 1.0e-5
 end
 
 @testset "the energy integrator's scatter correction, on and off" begin
     phantom = _scatter_phantom(; a_cm = 30.0)
     corrected = _eict_scatter_scan(_SCATTER_EICT, phantom)
-    kept = _eict_scatter_scan(BS.EICTScanner(_SCATTER_EICT; scatter_correction = false), phantom)
+    kept = _eict_scatter_scan(
+        BS.EICTScanner(_SCATTER_EICT; scatter_correction = false),
+        phantom,
+    )
     free = _eict_scatter_scan(_SCATTER_EICT, phantom; use_scatter = false)
     @test corrected.ws.scatter_correction && !kept.ws.scatter_correction
     # the same scatter reaches the detector either way
@@ -338,14 +454,20 @@ end
         return BS.Phantom(mask, materials, small.voxel_size)
     end
     ref = _eict_scatter_scan(_SCATTER_EICT, small)
-    for n in (8, 300)                                          # one lane per material; the orthonormal lanes
+    # one lane per material; the orthonormal lanes
+    for n in (8, 300)
         big = _eict_scatter_scan(_SCATTER_EICT, copies(n))
         lanes = big.ws.scatter.rays
         # one lane per material up to 16 (air is one), else water and lung: rank 2 beyond the exact three
-        @test n < 16 ? lanes.lanes_Ct === nothing : size(lanes.lanes_Ct, 1) == 8   # 3 + 2, padded to 4k
+        # 3 + 2, padded to 4k
+        @test n < 16 ? lanes.lanes_Ct === nothing : size(lanes.lanes_Ct, 1) == 8
         # to rounding, but for the few rays whose rounding tips a discrete choice (a kernel's
         # nearest grid node): 3e-4 there, inside the library's own Monte Carlo precision
-        @test isapprox(Array(big.ws.scatter.field), Array(ref.ws.scatter.field); rtol = 1.0e-3)
+        @test isapprox(
+            Array(big.ws.scatter.field),
+            Array(ref.ws.scatter.field);
+            rtol = 1.0e-3,
+        )
         @test isapprox(big.sinogram, ref.sinogram; rtol = 1.0e-5)
     end
 end
@@ -353,14 +475,26 @@ end
 @testset "the scatter's lanes reproduce every feature" begin
     rng = MersenneTwister(855)
     nb, nE = 4, 10
-    features(kind, wet, dmu, ratio) = (s = kind .!= 0; hcat(wet .* s, Float64.(s), Float64.(kind .== 2), dmu .* s, reshape(ratio, length(kind), :) .* s))
+    features(kind, wet, dmu, ratio) = (
+        s = kind .!= 0;
+        hcat(
+            wet .* s,
+            Float64.(s),
+            Float64.(kind .== 2),
+            dmu .* s,
+            reshape(ratio, length(kind), :) .* s,
+        )
+    )
     function check(kind, wet, dmu, ratio)
         l = BS._scatter_feature_lanes(kind, wet, dmu, ratio)
         F = features(kind, wet, dmu, ratio)
-        rebuilt = l.G === nothing ? permutedims(l.Ct) : l.Ct === nothing ? l.G : permutedims(l.Ct) * l.G
+        rebuilt = l.G === nothing ?
+            permutedims(l.Ct) :
+            l.Ct === nothing ? l.G : permutedims(l.Ct) * l.G
         scale = [max(maximum(abs, c), 1.0e-300) for c in eachcol(F)]
         @test maximum(abs.(rebuilt .- F) ./ scale') <= 1.0e-7
-        @test rebuilt[:, 3] == F[:, 3]                         # the water test's lane is exact
+        # the water test's lane is exact
+        @test rebuilt[:, 3] == F[:, 3]
         return l
     end
     kinds(n) = Int32[k == 1 ? 0 : (isodd(k) ? 1 : 2) for k in 1:n]
@@ -369,7 +503,12 @@ end
     for n in (10, 300)
         w = rand(rng, n, 4)
         w ./= sum(w; dims = 2)
-        l = check(kinds(n), w * base[1], w * base[2], reshape(w * reshape(base[3], 4, :), n, nE, 3))
+        l = check(
+            kinds(n),
+            w * base[1],
+            w * base[2],
+            reshape(w * reshape(base[3], 4, :), n, nE, 3),
+        )
         @test n <= 16 ? l.Ct === nothing && size(l.G, 1) == n : size(l.Ct, 1) == 3 + 4
     end
     # features of a rank no 64 lanes hold: a lane per material (no more materials than features)
@@ -394,17 +533,32 @@ end
 @testset "outside the grid: the nearest kernels, scaled below the thinnest" begin
     air = _scatter_phantom(; a_cm = 0.0, n = 8)
     protocol = BS.CTProtocol(; kVp = 120.0, mAs = 100.0, views = 8)
-    plan = BS.create_workspace(_SCATTER_EICT, protocol, _scatter_opts(), _SCATTER_RECON, air).scatter
+    plan = BS.create_workspace(
+        _SCATTER_EICT,
+        protocol,
+        _scatter_opts(),
+        _SCATTER_RECON,
+        air,
+    ).scatter
     sid = plan.kernels.source_to_isocenter_mm
     T = eltype(plan.scratch.wet)
 
     # a centred water cylinder of radius R (mm) on every coarse ray, superposed as the correction's
     # water patient
     scan(R) = let s = plan.scratch
-        wet = [abs(sid * sind(γ)) < R ? 2 * sqrt(R^2 - (sid * sind(γ))^2) : 0.0 for γ in plan.angle_deg]
+        wet = [
+            abs(sid * sind(γ)) < R ? 2 * sqrt(R^2 - (sid * sind(γ))^2) : 0.0
+            for γ in plan.angle_deg
+        ]
         copyto!(s.wet, repeat(T.(wet), 1, size(s.wet, 2), size(s.wet, 3)))
         fill!(s.plain, true)
-        out = similar(plan.field, size(plan.field, 1), size(plan.field, 2), 1, size(plan.field, 4))
+        out = similar(
+            plan.field,
+            size(plan.field, 1),
+            size(plan.field, 2),
+            1,
+            size(plan.field, 4),
+        )
         fill!(s.clamped, Int32(0))
         for (v0, n_v) in BS._scatter_chunks(plan)
             BS._superpose!(out, plan, (s.wet,), s.wet, v0, n_v)
@@ -413,8 +567,9 @@ end
     end
     thin, inside, thickest = scan(35.0), scan(80.0), scan(400.0)
     @test thin.n > 0 && thickest.n > 0 && inside.n == 0
-    @test 0 < sum(thin.out) < sum(inside.out)               # less water, less scatter
-    @test all(isfinite, thickest.out) && sum(thickest.out) > 0          # the thickest kernels stand in
+    @test 0 < sum(thin.out) < sum(inside.out) # less water, less scatter
+    # the thickest kernels stand in
+    @test all(isfinite, thickest.out) && sum(thickest.out) > 0
 end
 
 @testset "photon counter: each bin's counts, corrected from the counts" begin
@@ -437,7 +592,10 @@ end
     scan(scanner; kw...) = let opts = _scatter_opts(; kw...)
         ws = BS.create_workspace(scanner, protocol, opts, _SCATTER_RECON, phantom)
         r = BS.simulate!(ws, phantom, protocol, opts; report_dose = false)
-        (; ws, counts = [Float64.(Array(c)) for c in r.raw_counts], bins = [Array(b) for b in r.pcct_sino.bins])
+        (; ws, counts = [Float64.(Array(c)) for c in r.raw_counts], bins = [
+            Array(b)
+            for b in r.pcct_sino.bins
+        ])
     end
     on = scan(base)
     off = scan(base; use_scatter = false)
@@ -451,9 +609,11 @@ end
     E = on.ws.energies[e]
     n_R = size(on.ws.R, 1)
     ri = clamp(round(Int, (E - 1) / (on.ws.kVp - 1) * (n_R - 1)) + 1, 1, n_R)
-    @test plan.channels[e, :] ≈ on.ws.R[ri, :] ./ BS.quantum_efficiency(det.material, det.thickness_mm, E)
+    @test plan.channels[e, :] ≈
+        on.ws.R[ri, :] ./ BS.quantum_efficiency(det.material, det.thickness_mm, E)
     @test size(corrected.ws.scatter.estimate, 3) == 4
-    @test isempty(plan.estimate) && isempty(plan.measured)          # no correction, no buffers for it
+    # no correction, no buffers for it
+    @test isempty(plan.estimate) && isempty(plan.measured)
 
     # the counts the scatter adds, bin by bin, at the centre of the detector
     photons = BS.compute_detector_I0(on.ws.geom, protocol, sum(on.ws.weights))
@@ -479,7 +639,11 @@ end
         water = _scatter_phantom(; a_cm = 30.0, b_cm = 20.0, shift_cm = 2.0)
         mask = copy(water.mask)
         mask[70:80, 75:85, :] .= 0x02
-        materials = Dict{Int, Any}(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water, 2 => BS.XA.Materials.corticalbone)
+        materials = Dict{Int, Any}(
+            0 => BS.XA.Materials.air,
+            1 => BS.XA.Materials.water,
+            2 => BS.XA.Materials.corticalbone,
+        )
         cpu_phantom = BS.Phantom(mask, materials, water.voxel_size)
         gpu_phantom = BS.Phantom(to_gpu(mask), materials, water.voxel_size)
         cpu = _eict_scatter_scan(_SCATTER_EICT, cpu_phantom)

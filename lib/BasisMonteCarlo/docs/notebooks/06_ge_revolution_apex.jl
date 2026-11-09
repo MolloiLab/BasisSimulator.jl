@@ -54,36 +54,77 @@ detector in Geant4, one piece at a time, and
 let
     Mke.set_theme!(THEME)
     night, ink, sub = MATERIALS.night, Mke.RGBf(0.93, 0.94, 0.96), Mke.RGBf(0.6, 0.63, 0.68)
-    fig = Mke.Figure(size = (1500, 600), backgroundcolor = night, figure_padding = (10, 10, 10, 10))
+    fig = Mke.Figure(
+        size = (1500, 600),
+        backgroundcolor = night,
+        figure_padding = (10, 10, 10, 10),
+    )
 
     # (1) The gantry, to scale: one tube and its wide detector arc, the 80 cm bore
     ax1 = canvas(fig[1, 1]; background = night)
     R_iso, R_det = apex.source_to_isocenter_mm, apex.source_to_detector_mm
-    half_fan_deg = rad2deg(apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2)
+    half_fan_deg = rad2deg(
+        apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2,
+    )
     θ = range(0, 2π; length = 200)
-    Mke.poly!(ax1, Mke.Point2f.(820 .* cos.(θ), 820 .* sin.(θ)); color = MATERIALS.night_ring)
+    Mke.poly!(
+        ax1,
+        Mke.Point2f.(820 .* cos.(θ), 820 .* sin.(θ));
+        color = MATERIALS.night_ring,
+    )
     Mke.poly!(ax1, Mke.Point2f.(400 .* cos.(θ), 400 .* sin.(θ)); color = night)
     Mke.lines!(ax1, 640 .* cos.(θ), 640 .* sin.(θ); color = (:white, 0.06), linewidth = 1)
     # a patient: a water ellipse with a spine and two lungs
-    Mke.poly!(ax1, Mke.Point2f.(170 .* cos.(θ), 120 .* sin.(θ) .- 20); color = Mke.RGBf(0.42, 0.45, 0.5))
+    Mke.poly!(
+        ax1,
+        Mke.Point2f.(170 .* cos.(θ), 120 .* sin.(θ) .- 20);
+        color = Mke.RGBf(0.42, 0.45, 0.5),
+    )
     for x in (-75, 75)
-        Mke.poly!(ax1, Mke.Point2f.(x .+ 50 .* cos.(θ), 10 .+ 60 .* sin.(θ)); color = Mke.RGBf(0.16, 0.18, 0.21))
+        Mke.poly!(
+            ax1,
+            Mke.Point2f.(x .+ 50 .* cos.(θ), 10 .+ 60 .* sin.(θ));
+            color = Mke.RGBf(0.16, 0.18, 0.21),
+        )
     end
-    Mke.poly!(ax1, Mke.Point2f.(22 .* cos.(θ), -105 .+ 20 .* sin.(θ)); color = Mke.RGBf(0.85, 0.85, 0.82))
+    Mke.poly!(
+        ax1,
+        Mke.Point2f.(22 .* cos.(θ), -105 .+ 20 .* sin.(θ));
+        color = Mke.RGBf(0.85, 0.85, 0.82),
+    )
     function tube!(angle_deg, half_fan_deg, alpha, label)
         a = deg2rad(angle_deg)
         src = Mke.Point2f(R_iso * cos(a), R_iso * sin(a))
         toward = -Mke.Point2f(cos(a), sin(a))
         φ = range(-deg2rad(half_fan_deg), deg2rad(half_fan_deg); length = 80)
-        rot(v, t) = Mke.Point2f(v[1] * cos(t) - v[2] * sin(t), v[1] * sin(t) + v[2] * cos(t))
+        rot(v, t) = Mke.Point2f(
+            v[1] * cos(t) - v[2] * sin(t),
+            v[1] * sin(t) + v[2] * cos(t),
+        )
         arc = [src + R_det * rot(toward, t) for t in φ]
         Mke.poly!(ax1, Mke.Point2f.(vcat([src], arc)); color = (MATERIALS.beam, alpha))
         inner = [src + (R_det + 8) * rot(toward, t) for t in φ]
         outer = [src + (R_det + 50) * rot(toward, t) for t in φ]
-        Mke.poly!(ax1, Mke.Point2f.(vcat(inner, reverse(outer))); color = Mke.RGBf(0.78, 0.82, 0.88))
-        Mke.poly!(ax1, Mke.Rect2f(src[1] - 45, src[2] - 45, 90, 90); color = Mke.RGBf(0.8, 0.83, 0.88))
+        Mke.poly!(
+            ax1,
+            Mke.Point2f.(vcat(inner, reverse(outer)));
+            color = Mke.RGBf(0.78, 0.82, 0.88),
+        )
+        Mke.poly!(
+            ax1,
+            Mke.Rect2f(src[1] - 45, src[2] - 45, 90, 90);
+            color = Mke.RGBf(0.8, 0.83, 0.88),
+        )
         Mke.scatter!(ax1, [src]; color = MATERIALS.beam, markersize = 12)
-        Mke.text!(ax1, src + Mke.Point2f(0, 85); text = label, color = ink, fontsize = 17, font = :bold, align = (:center, :center))
+        Mke.text!(
+            ax1,
+            src + Mke.Point2f(0, 85);
+            text = label,
+            color = ink,
+            fontsize = 17,
+            font = :bold,
+            align = (:center, :center),
+        )
         return nothing
     end
     tube!(90, half_fan_deg, 0.22, "X-Ray Tube")
@@ -101,23 +142,51 @@ let
     append!(blocks, walls)
     rays = map([(3.5, 0.5), (5.5, 1.5), (4.5, 2.5)]) do (i, j)
         c = (i * p[1], j * p[2])
-        a, b = project(cam, (c..., d + grid.height_mm + 2.5)), project(cam, (c..., d + 0.15))
-        (dot3((c..., d), cam.toward) + 1, ax -> arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 12))
+        a, b = project(cam, (c..., d + grid.height_mm + 2.5)),
+            project(cam, (c..., d + 0.15))
+        (
+            dot3((c..., d), cam.toward) + 1,
+            ax -> arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 12),
+        )
     end
-    draw_blocks!(ax2, cam, blocks; extras = rays, edge = Mke.RGBf(0.05, 0.06, 0.08), edge_alpha = 0.5)
+    draw_blocks!(
+        ax2,
+        cam,
+        blocks;
+        extras = rays,
+        edge = Mke.RGBf(0.05, 0.06, 0.08),
+        edge_alpha = 0.5,
+    )
 
     # (3) One dexel's stack, taken apart
     ax3 = canvas(fig[1, 3]; background = night)
-    draw_blocks!(ax3, camera(-56, 30), exploded_detector(1, 1; gap = 0.75).blocks; edge = Mke.RGBf(0.05, 0.06, 0.08), edge_alpha = 0.5)
+    draw_blocks!(
+        ax3,
+        camera(-56, 30),
+        exploded_detector(1, 1; gap = 0.75).blocks;
+        edge = Mke.RGBf(0.05, 0.06, 0.08),
+        edge_alpha = 0.5,
+    )
 
-    for (k, (title, subtitle)) in enumerate(
+    for (k, (title, subtitle)) in enumerate((
             (
-                ("One Tube, a 160 mm Wide Detector", "The Revolution Apex, to Scale: 80 cm Bore"),
-                ("Dexels Under GE's 3D Collimator", "Gemstone Garnet, White Reflector, Tungsten Walls"),
-                ("One Dexel, Taken Apart", "Grid, Garnet, Backlit Photodiode, Electronics"),
-            )
+                "One Tube, a 160 mm Wide Detector",
+                "The Revolution Apex, to Scale: 80 cm Bore",
+            ),
+            (
+                "Dexels Under GE's 3D Collimator",
+                "Gemstone Garnet, White Reflector, Tungsten Walls",
+            ),
+            ("One Dexel, Taken Apart", "Grid, Garnet, Backlit Photodiode, Electronics"),
+        ))
+        Mke.Label(
+            fig[2, k],
+            title;
+            color = ink,
+            fontsize = 26,
+            font = :bold,
+            tellwidth = false,
         )
-        Mke.Label(fig[2, k], title; color = ink, fontsize = 26, font = :bold, tellwidth = false)
         Mke.Label(fig[3, k], subtitle; color = sub, fontsize = 18, tellwidth = false)
     end
     Mke.rowgap!(fig.layout, 1, 8)
@@ -153,7 +222,10 @@ let
     rays = map([(0, 0), (1, 0), (2, 0), (3, 0)]) do (i, j)
         c = ((i + 0.5) * p[1], (j + 0.5) * p[2])
         a, b = project(cam, (c..., top + 3.0)), project(cam, (c..., top + 0.35))
-        (dot3((c..., top), cam.toward) + 50, ax -> arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3.5, head = 15))
+        (
+            dot3((c..., top), cam.toward) + 50,
+            ax -> arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3.5, head = 15),
+        )
     end
     draw_blocks!(ax, cam, blocks; extras = rays)
 
@@ -161,7 +233,13 @@ let
     i, j = nx - 1, 0
     for (key, (z0, z1)) in levels
         key === :board && continue
-        outline!(ax, cam, (i * p[1], j * p[2], z0), ((i + 1) * p[1], (j + 1) * p[2], z1); linewidth = 3.5)
+        outline!(
+            ax,
+            cam,
+            (i * p[1], j * p[2], z0),
+            ((i + 1) * p[1], (j + 1) * p[2], z1);
+            linewidth = 3.5,
+        )
     end
     Mke.Label(
         fig[2, 1],
@@ -174,22 +252,49 @@ let
     )
 
     rows = (
-        (:grid, "GE's 3D Collimator", "2-D Tungsten Walls, One Cell per Dexel\n(8 mm Tall in GE's Patent; Drawn Short Here)", true),
-        (:ceramic, "Gemstone Garnet, Cut into Dexels", "One Block of (Tb,Lu)₃Al₅O₁₂:Ce per Dexel, 3.0 mm Deep;\nWhite Reflector Between (TiO₂ Assumed)", true),
-        (:photodiode, "Backlit Photodiode, One per Dexel", "\"Low Capacitance Backlit Photodiode\" (K213715):\nLight → Charge", false),
-        (:cmos, "Readout Electronics", "Digitizes Each Dexel; GE Does Not Publish\nHow or Where (Drawn Generic)", false),
-        (:board, "Detector Module", "Focally Aligned Sub-Modules (K133705),\nCooled by the Detector Thermal System", false),
+        (
+            :grid,
+            "GE's 3D Collimator",
+            "2-D Tungsten Walls, One Cell per Dexel\n(8 mm Tall in GE's Patent; Drawn Short Here)",
+            true,
+        ),
+        (
+            :ceramic,
+            "Gemstone Garnet, Cut into Dexels",
+            "One Block of (Tb,Lu)₃Al₅O₁₂:Ce per Dexel, 3.0 mm Deep;\nWhite Reflector Between (TiO₂ Assumed)",
+            true,
+        ),
+        (
+            :photodiode,
+            "Backlit Photodiode, One per Dexel",
+            "\"Low Capacitance Backlit Photodiode\" (K213715):\nLight → Charge",
+            false,
+        ),
+        (
+            :cmos,
+            "Readout Electronics",
+            "Digitizes Each Dexel; GE Does Not Publish\nHow or Where (Drawn Generic)",
+            false,
+        ),
+        (
+            :board,
+            "Detector Module",
+            "Focally Aligned Sub-Modules (K133705),\nCooled by the Detector Thermal System",
+            false,
+        ),
     )
     x_text = maximum(project(cam, (nx * p[1], y, 0))[1] for y in (0, ny * p[2])) + 2.4
     entries = [
         (
-                anchor = project(cam, (nx * p[1], ny * p[2] * 0.62, sum(levels[key]) / 2)),
-                title = name,
-                detail,
-                color = PALETTE.ink,
-                tag = simulated ? ("In Geant4", TAGS.geant4) : ("Not Simulated", TAGS.not_simulated),
-            )
-            for (key, name, detail, simulated) in rows
+            anchor = project(cam, (nx * p[1], ny * p[2] * 0.62, sum(levels[key]) / 2)),
+            title = name,
+            detail,
+            color = PALETTE.ink,
+            tag = simulated ?
+                ("In Geant4", TAGS.geant4) :
+                ("Not Simulated", TAGS.not_simulated),
+        )
+        for (key, name, detail, simulated) in rows
     ]
     labels_right!(ax, entries, x_text; spacing = 1.45, tag_width = 122)
     Mke.xlims!(ax, nothing, x_text + 8.6)
@@ -207,14 +312,39 @@ let
     y_board, y_cmos, y_pd = -1.35, -0.8, -0.16
     rect!(ax, -1.5p, y_board, 3p, 0.3, MATERIALS.board)
     rect!(ax, -1.5p, y_cmos, 3p, 0.42, MATERIALS.cmos)
-    Mke.text!(ax, 0, y_cmos + 0.21; text = "Readout Electronics (Not Published)", color = :white, fontsize = 13, align = (:center, :center), font = :bold)
+    Mke.text!(
+        ax,
+        0,
+        y_cmos + 0.21;
+        text = "Readout Electronics (Not Published)",
+        color = :white,
+        fontsize = 13,
+        align = (:center, :center),
+        font = :bold,
+    )
     for i in -1:1
         rect!(ax, i * p - (p - s) / 2, y_pd, p - s, 0.14, MATERIALS.photodiode)
     end
     # garnet and reflector
-    rect!(ax, -1.5p, 0, 3p, d, MATERIALS.reflector; strokecolor = (:black, 0.25), strokewidth = 1)
+    rect!(
+        ax,
+        -1.5p,
+        0,
+        3p,
+        d,
+        MATERIALS.reflector;
+        strokecolor = (:black, 0.25),
+        strokewidth = 1,
+    )
     for i in -1:1
-        rect!(ax, i * p - (p - s) / 2, 0, p - s, d, i == 0 ? Mke.RGBf(0.8, 0.95, 0.82) : MATERIALS.scintillator)
+        rect!(
+            ax,
+            i * p - (p - s) / 2,
+            0,
+            p - s,
+            d,
+            i == 0 ? Mke.RGBf(0.8, 0.95, 0.82) : MATERIALS.scintillator,
+        )
     end
     # grid walls, cut short (wavy break)
     for i in -1:2
@@ -224,39 +354,131 @@ let
 
     # (1) the x ray, (2) stops in the middle dexel, (3) light, (4) photodiode, (5) the electronics
     hit = Mke.Point2f(0.12, d - 1.1)
-    photon!(ax, (0.12, d + 2.6), hit; cycles = 9, amplitude = 0.02, color = MATERIALS.beam, linewidth = 3.5)
-    Mke.scatter!(ax, [hit]; marker = :star5, markersize = 30, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.5)
+    photon!(
+        ax,
+        (0.12, d + 2.6),
+        hit;
+        cycles = 9,
+        amplitude = 0.02,
+        color = MATERIALS.beam,
+        linewidth = 3.5,
+    )
+    Mke.scatter!(
+        ax,
+        [hit];
+        marker = :star5,
+        markersize = 30,
+        color = Mke.RGBf(0.98, 0.95, 0.6),
+        strokecolor = MATERIALS.beam,
+        strokewidth = 1.5,
+    )
     # light rays: straight down, and bouncing off the reflector walls
     half = (p - s) / 2
-    for (dx, bounce) in ((0.0, false), (-1.0, true), (1.0, true), (-0.35, false), (0.4, false))
+    for (dx, bounce) in (
+            (0.0, false),
+            (-1.0, true),
+            (1.0, true),
+            (-0.35, false),
+            (0.4, false),
+        )
         if bounce
             wall = Mke.Point2f(dx < 0 ? -half : half, hit[2] + 0.28)
             bottom = Mke.Point2f(dx < 0 ? -0.15 : 0.32, 0.0)
-            Mke.lines!(ax, Mke.Point2f[hit, wall, bottom]; color = (MATERIALS.light, 0.95), linewidth = 2.2)
+            Mke.lines!(
+                ax,
+                Mke.Point2f[hit, wall, bottom];
+                color = (MATERIALS.light, 0.95),
+                linewidth = 2.2,
+            )
         else
-            Mke.lines!(ax, Mke.Point2f[hit, Mke.Point2f(hit[1] + dx * 0.5, 0.0)]; color = (MATERIALS.light, 0.95), linewidth = 2.2)
+            Mke.lines!(
+                ax,
+                Mke.Point2f[hit, Mke.Point2f(hit[1] + dx * 0.5, 0.0)];
+                color = (MATERIALS.light, 0.95),
+                linewidth = 2.2,
+            )
         end
     end
     # the number out
-    arrow!(ax, (0.0, y_cmos), (0.0, y_board - 0.35); color = PALETTE.ink, linewidth = 2, head = 12)
-    Mke.text!(ax, 0.0, y_board - 0.45; text = "One Number per Dexel per Reading", align = (:center, :top), fontsize = 16, color = PALETTE.ink)
+    arrow!(
+        ax,
+        (0.0, y_cmos),
+        (0.0, y_board - 0.35);
+        color = PALETTE.ink,
+        linewidth = 2,
+        head = 12,
+    )
+    Mke.text!(
+        ax,
+        0.0,
+        y_board - 0.45;
+        text = "One Number per Dexel per Reading",
+        align = (:center, :top),
+        fontsize = 16,
+        color = PALETTE.ink,
+    )
 
     # the five steps, labelled on the right
     entries = [
-        (anchor = (0.12, d + 1.9), title = "1  An X Ray Arrives", detail = "Down Its Channel in the Grid", color = Mke.RGBf(0.85, 0.5, 0.05), tag = nothing),
-        (anchor = hit, title = "2  The Garnet Stops It", detail = "Its Energy Is Left in the Dexel", color = Mke.RGBf(0.7, 0.55, 0.05), tag = nothing),
-        (anchor = (half - 0.02, hit[2] + 0.28), title = "3  The Garnet Glows", detail = "Light ∝ Energy Left; the White Reflector Keeps It In", color = Mke.RGBf(0.2, 0.6, 0.25), tag = nothing),
-        (anchor = (0.4, y_pd + 0.07), title = "4  The Backlit Photodiode Collects the Light", detail = "Light → Charge, Summed over the Reading", color = MATERIALS.photodiode, tag = nothing),
-        (anchor = (0.5, y_cmos + 0.21), title = "5  The Electronics Digitize the Charge", detail = "Where and How: Not Published by GE", color = PALETTE.ink, tag = nothing),
+        (
+            anchor = (0.12, d + 1.9),
+            title = "1  An X Ray Arrives",
+            detail = "Down Its Channel in the Grid",
+            color = Mke.RGBf(0.85, 0.5, 0.05),
+            tag = nothing,
+        ),
+        (
+            anchor = hit,
+            title = "2  The Garnet Stops It",
+            detail = "Its Energy Is Left in the Dexel",
+            color = Mke.RGBf(0.7, 0.55, 0.05),
+            tag = nothing,
+        ),
+        (
+            anchor = (half - 0.02, hit[2] + 0.28),
+            title = "3  The Garnet Glows",
+            detail = "Light ∝ Energy Left; the White Reflector Keeps It In",
+            color = Mke.RGBf(0.2, 0.6, 0.25),
+            tag = nothing,
+        ),
+        (
+            anchor = (0.4, y_pd + 0.07),
+            title = "4  The Backlit Photodiode Collects the Light",
+            detail = "Light → Charge, Summed over the Reading",
+            color = MATERIALS.photodiode,
+            tag = nothing,
+        ),
+        (
+            anchor = (0.5, y_cmos + 0.21),
+            title = "5  The Electronics Digitize the Charge",
+            detail = "Where and How: Not Published by GE",
+            color = PALETTE.ink,
+            tag = nothing,
+        ),
     ]
     xr = 1.5p + 0.75
     labels_right!(ax, entries, xr; spacing = 0.62)
-    Mke.text!(ax, 1.5p + 0.15, d + 1.2; text = "Grid Walls\n(Cut Short)", fontsize = 14, color = PALETTE.muted, align = (:left, :top))
+    Mke.text!(
+        ax,
+        1.5p + 0.15,
+        d + 1.2;
+        text = "Grid Walls\n(Cut Short)",
+        fontsize = 14,
+        color = PALETTE.muted,
+        align = (:left, :top),
+    )
 
     # what Geant4 simulates, and what is assumed
     xl = -1.5p - 0.15
     side_bracket!(ax, xl, 0.0, d + 1.2, "Geant4\nSimulates"; color = TAGS.geant4)
-    side_bracket!(ax, xl, y_board, -0.04, "Not Simulated:\nSignal ∝ Energy\nLeft in the Garnet"; color = TAGS.not_simulated)
+    side_bracket!(
+        ax,
+        xl,
+        y_board,
+        -0.04,
+        "Not Simulated:\nSignal ∝ Energy\nLeft in the Garnet";
+        color = TAGS.not_simulated,
+    )
     Mke.limits!(ax, -1.5p - 1.75, xr + 5.2, y_board - 0.75, d + 2.75)
     fig
 end
@@ -289,11 +511,27 @@ let
     cam = camera(-56, 32)
     amber = MATERIALS.beam
     cases = (
-        ("Pencil Beam", "Into the Centre of One Dexel:\nHow the v0.15.1 Table Was Made", :pencil),
-        ("Uniform on One Dexel", "Over Its Garnet; Every Dexel\nRead Out (Sections 3–5)", :ceramic),
-        ("Uniform on One Cell", "Garnet and Its Reflector,\nUnder the Grid (Section 6)", :cell),
+        (
+            "Pencil Beam",
+            "Into the Centre of One Dexel:\nHow the v0.15.1 Table Was Made",
+            :pencil,
+        ),
+        (
+            "Uniform on One Dexel",
+            "Over Its Garnet; Every Dexel\nRead Out (Sections 3–5)",
+            :ceramic,
+        ),
+        (
+            "Uniform on One Cell",
+            "Garnet and Its Reflector,\nUnder the Grid (Section 6)",
+            :cell,
+        ),
         ("Flat Field", "Every Dexel Lit, as in a Scan:\nWhat Each Dexel Collects", :flat),
-        ("From the Focal Spot", "The Whole Arc, Real Angles;\nClinical Spectra (Sections 7, 10)", :focal),
+        (
+            "From the Focal Spot",
+            "The Whole Arc, Real Angles;\nClinical Spectra (Sections 7, 10)",
+            :focal,
+        ),
     )
     for (k, (title, detail, kind)) in enumerate(cases)
         ax = canvas(fig[1, k]; title, titlesize = 20)
@@ -305,23 +543,75 @@ let
         extras = Any[]
         # the beam: amber columns (translucent boxes) or lines, drawn after the blocks
         if kind === :pencil
-            a, b = project(cam, (1.5p[1], 1.5p[2], d + 4.5)), project(cam, (1.5p[1], 1.5p[2], d))
-            push!(extras, (1.0e3, ax -> arrow!(ax, a, b; color = amber, linewidth = 4, head = 14)))
+            a, b = project(cam, (1.5p[1], 1.5p[2], d + 4.5)),
+                project(cam, (1.5p[1], 1.5p[2], d))
+            push!(
+                extras,
+                (1.0e3, ax -> arrow!(ax, a, b; color = amber, linewidth = 4, head = 14)),
+            )
         elseif kind in (:ceramic, :cell, :flat)
-            lo = kind === :ceramic ? (p[1] + s / 2, p[2] + s / 2) : kind === :cell ? (p[1], p[2]) : (0.0, 0.0)
-            hi = kind === :ceramic ? (2p[1] - s / 2, 2p[2] - s / 2) : kind === :cell ? (2p[1], 2p[2]) : (3p[1], 3p[2])
-            beam = Block((lo..., top), (hi..., top + 4.0), amber; alpha = 0.28, stroke = 0.0)
+            lo = kind === :ceramic ?
+                (p[1] + s / 2, p[2] + s / 2) :
+                kind === :cell ? (p[1], p[2]) : (0.0, 0.0)
+            hi = kind === :ceramic ?
+                (2p[1] - s / 2, 2p[2] - s / 2) :
+                kind === :cell ? (2p[1], 2p[2]) : (3p[1], 3p[2])
+            beam = Block(
+                (lo..., top),
+                (hi..., top + 4.0),
+                amber;
+                alpha = 0.28,
+                stroke = 0.0,
+            )
             push!(extras, (1.0e3, ax -> draw_blocks!(ax, cam, [beam]; edge_alpha = 0.0)))
         else
             focal = (1.5p[1], 1.5p[2], d + 9.0)
-            for (x, y) in ((0.2, 0.2), (2.8, 0.2), (0.2, 2.8), (2.8, 2.8), (1.5, 1.5), (0.9, 2.1), (2.2, 0.8))
+            for (x, y) in (
+                    (0.2, 0.2),
+                    (2.8, 0.2),
+                    (0.2, 2.8),
+                    (2.8, 2.8),
+                    (1.5, 1.5),
+                    (0.9, 2.1),
+                    (2.2, 0.8),
+                )
                 from, to = project(cam, focal), project(cam, (x * p[1], y * p[2], d))
-                push!(extras, (1.0e3, ax -> arrow!(ax, from, to; color = amber, linewidth = 2.2, head = 10)))
+                push!(
+                    extras,
+                    (
+                        1.0e3,
+                        ax -> arrow!(
+                            ax,
+                            from,
+                            to;
+                            color = amber,
+                            linewidth = 2.2,
+                            head = 10,
+                        ),
+                    ),
+                )
             end
-            push!(extras, (1.0e3 + 1, ax -> Mke.scatter!(ax, [project(cam, focal)]; color = PALETTE.ink, markersize = 12)))
+            push!(
+                extras,
+                (
+                    1.0e3 + 1,
+                    ax -> Mke.scatter!(
+                        ax,
+                        [project(cam, focal)];
+                        color = PALETTE.ink,
+                        markersize = 12,
+                    ),
+                ),
+            )
         end
         draw_blocks!(ax, cam, blocks; extras)
-        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+        Mke.Label(
+            fig[2, k],
+            detail;
+            fontsize = 16,
+            color = PALETTE.muted,
+            tellwidth = false,
+        )
     end
     fig
 end
@@ -411,16 +701,16 @@ workers = MC.start_workers(8)
 # One colour per kind of particle, used by every figure
 PALETTE = (
     photon = Mke.RGBf(0.13, 0.36, 0.66),  # the incident photon
-    xray = Mke.RGBf(0.9, 0.45, 0.05),  # characteristic x rays
-    electron = Mke.RGBf(0.7, 0.12, 0.17),  # electrons, and the light they make
-    kept = Mke.RGBf(0.27, 0.55, 0.34),  # the signal
+    xray = Mke.RGBf(0.9, 0.45, 0.05),     # characteristic x rays
+    electron = Mke.RGBf(0.7, 0.12, 0.17), # electrons, and the light they make
+    kept = Mke.RGBf(0.27, 0.55, 0.34),    # the signal
     slab = Mke.RGBAf(0.45, 0.52, 0.62, 0.3),
     slab_edge = Mke.RGBf(0.3, 0.36, 0.44),
     reflector = Mke.RGBf(0.85, 0.83, 0.7),
     ceramic = Mke.RGBf(0.9, 0.92, 0.95),
     ceramic_hit = Mke.RGBf(0.78, 0.85, 0.95),
     tungsten = Mke.RGBf(0.25, 0.25, 0.3),
-    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator v0.15.1's table
+    reference = Mke.RGBf(0.55, 0.2, 0.6), # BasisSimulator v0.15.1's table
     ink = Mke.RGBf(0.13, 0.13, 0.16),
     muted = Mke.RGBf(0.42, 0.42, 0.46),
 )
@@ -455,15 +745,8 @@ THEME = Mke.Theme(
         yticklabelsize = 15,
         zticklabelsize = 15,
     ),
-    Legend = (
-        labelsize = 17,
-        framevisible = false,
-        patchsize = (30, 14),
-        rowgap = 8,
-    ),
-    Lines = (
-        linewidth = 2.5,
-    ),
+    Legend = (labelsize = 17, framevisible = false, patchsize = (30, 14), rowgap = 8),
+    Lines = (linewidth = 2.5,),
 )
 
 # ╔═╡ 4551bbf4-0c6f-558d-8dd3-19061afbeee1
@@ -471,16 +754,16 @@ THEME = Mke.Theme(
 An in-figure annotation on a translucent rounded background, so it never fights the data.
 """
 function note!(
-        ax,
-        x,
-        y,
-        text;
-        align = (:left, :center),
-        color = PALETTE.ink,
-        fontsize = 16,
-        offset = (0, 0),
-        alpha = 0.85,
-    )
+    ax,
+    x,
+    y,
+    text;
+    align = (:left, :center),
+    color = PALETTE.ink,
+    fontsize = 16,
+    offset = (0, 0),
+    alpha = 0.85,
+)
     return Mke.textlabel!(
         ax,
         Mke.Point2f(x, y);
@@ -524,19 +807,19 @@ TiO₂ reflector, grey tungsten, dark-blue silicon photodiodes, amber x rays.
 
 # ╔═╡ 0ed04217-4dc3-4912-ad84-aff29fa419f3
 MATERIALS = (
-    scintillator = Mke.RGBf(0.74, 0.84, 0.93),  # the Gemstone garnet
-    scintillator_lit = Mke.RGBf(0.55, 0.9, 0.62),  # the garnet glowing
-    reflector = Mke.RGBf(0.97, 0.97, 0.95),  # TiO₂ epoxy: white
+    scintillator = Mke.RGBf(0.74, 0.84, 0.93),    # the Gemstone garnet
+    scintillator_lit = Mke.RGBf(0.55, 0.9, 0.62), # the garnet glowing
+    reflector = Mke.RGBf(0.97, 0.97, 0.95),       # TiO₂ epoxy: white
     tungsten = Mke.RGBf(0.42, 0.44, 0.5),
-    photodiode = Mke.RGBf(0.24, 0.27, 0.55),  # back-illuminated silicon
-    cmos = Mke.RGBf(0.2, 0.22, 0.27),  # the readout electronics
-    gold = Mke.RGBf(0.86, 0.66, 0.2),  # vias and stud bumps
+    photodiode = Mke.RGBf(0.24, 0.27, 0.55), # back-illuminated silicon
+    cmos = Mke.RGBf(0.2, 0.22, 0.27),        # the readout electronics
+    gold = Mke.RGBf(0.86, 0.66, 0.2),        # vias and stud bumps
     substrate = Mke.RGBf(0.86, 0.83, 0.76),  # ceramics substrate
-    board = Mke.RGBf(0.13, 0.4, 0.29),  # circuit board
+    board = Mke.RGBf(0.13, 0.4, 0.29),       # circuit board
     water = Mke.RGBf(0.62, 0.78, 0.92),
-    beam = Mke.RGBf(0.98, 0.7, 0.25),  # x rays, as in the lab's banner
+    beam = Mke.RGBf(0.98, 0.7, 0.25),   # x rays, as in the lab's banner
     light = Mke.RGBf(0.45, 0.9, 0.45),  # the garnet's light (yellow-green)
-    night = Mke.RGBf(0.05, 0.06, 0.08),  # the dark backdrop of the lab's banner
+    night = Mke.RGBf(0.05, 0.06, 0.08), # the dark backdrop of the lab's banner
     night_ring = Mke.RGBf(0.11, 0.13, 0.16),
 )
 
@@ -551,7 +834,12 @@ begin
         stroke::Float64 = 0.6
     end
 
-    Block(lo, hi, color; kw...) = Block(; lo = Float64.(Tuple(lo)), hi = Float64.(Tuple(hi)), color, kw...)
+    Block(lo, hi, color; kw...) = Block(;
+        lo = Float64.(Tuple(lo)),
+        hi = Float64.(Tuple(hi)),
+        color,
+        kw...,
+    )
 end
 
 # ╔═╡ a9830f78-b3ee-499b-a95a-4bbb68c74dd4
@@ -607,7 +895,14 @@ Draw `blocks` back to front (the painter's way), each with its visible faces sha
 `extras` (functions drawing lines or arrows, with their depth) in their place among them.
 Blocks should be of similar size (split long walls into pieces) for the order to be right.
 """
-function draw_blocks!(ax, cam, blocks; extras = [], edge = Mke.RGBf(0.1, 0.12, 0.16), edge_alpha = 0.35)
+function draw_blocks!(
+    ax,
+    cam,
+    blocks;
+    extras = [],
+    edge = Mke.RGBf(0.1, 0.12, 0.16),
+    edge_alpha = 0.35,
+)
     items = Any[(dot3(map(+, b.lo, b.hi) ./ 2, cam.toward), b) for b in blocks]
     append!(items, extras)
     sort!(items; by = first)
@@ -637,7 +932,8 @@ function draw_blocks!(ax, cam, blocks; extras = [], edge = Mke.RGBf(0.1, 0.12, 0
                 # a seam between tiles of one layer is drawn in the face's own colour
                 push!(
                     strokes,
-                    item.stroke > 0 ? Mke.RGBAf(edge.r, edge.g, edge.b, edge_alpha * item.alpha) :
+                    item.stroke > 0 ?
+                        Mke.RGBAf(edge.r, edge.g, edge.b, edge_alpha * item.alpha) :
                         Mke.RGBAf(c.r, c.g, c.b, item.alpha),
                 )
             end
@@ -652,31 +948,99 @@ end
 
 # ╔═╡ 6359c896-d676-492c-a544-425666580d1d
 """A dexel array's blocks: ceramic in each cell, reflector walls between (in pieces), from z0 to z1."""
-function dexel_blocks(nx, ny, pitch, gap, z0, z1; ceramic = MATERIALS.scintillator, lit = nothing)
+function dexel_blocks(
+    nx,
+    ny,
+    pitch,
+    gap,
+    z0,
+    z1;
+    ceramic = MATERIALS.scintillator,
+    lit = nothing,
+)
     blocks = Block[]
     p, s = pitch, gap
     for i in 0:(nx - 1), j in 0:(ny - 1)
         x, y = i * p[1], j * p[2]
         color = lit !== nothing && (i, j) in lit ? MATERIALS.scintillator_lit : ceramic
-        push!(blocks, Block((x + s / 2, y + s / 2, z0), (x + p[1] - s / 2, y + p[2] - s / 2, z1), color))
+        push!(
+            blocks,
+            Block(
+                (x + s / 2, y + s / 2, z0),
+                (x + p[1] - s / 2, y + p[2] - s / 2, z1),
+                color,
+            ),
+        )
         # the reflector on this cell's low-x and low-y sides, and the corner post
-        push!(blocks, Block((x - s / 2, y + s / 2, z0), (x + s / 2, y + p[2] - s / 2, z1), MATERIALS.reflector))
-        push!(blocks, Block((x + s / 2, y - s / 2, z0), (x + p[1] - s / 2, y + s / 2, z1), MATERIALS.reflector))
-        push!(blocks, Block((x - s / 2, y - s / 2, z0), (x + s / 2, y + s / 2, z1), MATERIALS.reflector))
+        push!(
+            blocks,
+            Block(
+                (x - s / 2, y + s / 2, z0),
+                (x + s / 2, y + p[2] - s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
+        push!(
+            blocks,
+            Block(
+                (x + s / 2, y - s / 2, z0),
+                (x + p[1] - s / 2, y + s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
+        push!(
+            blocks,
+            Block(
+                (x - s / 2, y - s / 2, z0),
+                (x + s / 2, y + s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
     end
     # the far walls
     X, Y = nx * p[1], ny * p[2]
     for j in 0:(ny - 1)
         y = j * p[2]
-        push!(blocks, Block((X - s / 2, y + s / 2, z0), (X + s / 2, y + p[2] - s / 2, z1), MATERIALS.reflector))
-        push!(blocks, Block((X - s / 2, y - s / 2, z0), (X + s / 2, y + s / 2, z1), MATERIALS.reflector))
+        push!(
+            blocks,
+            Block(
+                (X - s / 2, y + s / 2, z0),
+                (X + s / 2, y + p[2] - s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
+        push!(
+            blocks,
+            Block(
+                (X - s / 2, y - s / 2, z0),
+                (X + s / 2, y + s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
     end
     for i in 0:(nx - 1)
         x = i * p[1]
-        push!(blocks, Block((x + s / 2, Y - s / 2, z0), (x + p[1] - s / 2, Y + s / 2, z1), MATERIALS.reflector))
-        push!(blocks, Block((x - s / 2, Y - s / 2, z0), (x + s / 2, Y + s / 2, z1), MATERIALS.reflector))
+        push!(
+            blocks,
+            Block(
+                (x + s / 2, Y - s / 2, z0),
+                (x + p[1] - s / 2, Y + s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
+        push!(
+            blocks,
+            Block(
+                (x - s / 2, Y - s / 2, z0),
+                (x + s / 2, Y + s / 2, z1),
+                MATERIALS.reflector,
+            ),
+        )
     end
-    push!(blocks, Block((X - s / 2, Y - s / 2, z0), (X + s / 2, Y + s / 2, z1), MATERIALS.reflector))
+    push!(
+        blocks,
+        Block((X - s / 2, Y - s / 2, z0), (X + s / 2, Y + s / 2, z1), MATERIALS.reflector),
+    )
     return blocks
 end
 
@@ -687,11 +1051,17 @@ function grid_blocks(nx, ny, pitch, wall, z0, z1; color = MATERIALS.tungsten)
     p, w = pitch, wall
     for i in 0:nx, j in 0:(ny - 1)
         x, y = i * p[1], j * p[2]
-        push!(blocks, Block((x - w / 2, y + w / 2, z0), (x + w / 2, y + p[2] - w / 2, z1), color))
+        push!(
+            blocks,
+            Block((x - w / 2, y + w / 2, z0), (x + w / 2, y + p[2] - w / 2, z1), color),
+        )
     end
     for i in 0:(nx - 1), j in 0:ny
         x, y = i * p[1], j * p[2]
-        push!(blocks, Block((x + w / 2, y - w / 2, z0), (x + p[1] - w / 2, y + w / 2, z1), color))
+        push!(
+            blocks,
+            Block((x + w / 2, y - w / 2, z0), (x + p[1] - w / 2, y + w / 2, z1), color),
+        )
     end
     for i in 0:nx, j in 0:ny
         x, y = i * p[1], j * p[2]
@@ -705,12 +1075,13 @@ end
 function layer_blocks(nx, ny, pitch, z0, z1, color; inset = 0.0)
     return [
         Block(
-                (i * pitch[1] + inset, j * pitch[2] + inset, z0),
-                ((i + 1) * pitch[1] - inset, (j + 1) * pitch[2] - inset, z1),
-                color;
-                stroke = inset > 0 ? 0.6 : 0.0,
-            )
-            for i in 0:(nx - 1) for j in 0:(ny - 1)
+            (i * pitch[1] + inset, j * pitch[2] + inset, z0),
+            ((i + 1) * pitch[1] - inset, (j + 1) * pitch[2] - inset, z1),
+            color;
+            stroke = inset > 0 ? 0.6 : 0.0,
+        )
+        for i in 0:(nx - 1)
+        for j in 0:(ny - 1)
     ]
 end
 
@@ -720,17 +1091,17 @@ A label with a leader line: a dot at `anchor`, a line to `at`, and the text ther
 translucent rounded background.
 """
 function callout!(
-        ax,
-        anchor,
-        at,
-        text;
-        color = Mke.RGBf(0.13, 0.13, 0.16),
-        align = (:left, :center),
-        fontsize = 17,
-        background = (:white, 0.9),
-        line = (Mke.RGBf(0.3, 0.3, 0.35), 0.8),
-        font = :regular,
-    )
+    ax,
+    anchor,
+    at,
+    text;
+    color = Mke.RGBf(0.13, 0.13, 0.16),
+    align = (:left, :center),
+    fontsize = 17,
+    background = (:white, 0.9),
+    line = (Mke.RGBf(0.3, 0.3, 0.35), 0.8),
+    font = :regular,
+)
     Mke.lines!(ax, Mke.Point2f[anchor, at]; color = line, linewidth = 1.3)
     Mke.scatter!(ax, [anchor]; color = line, markersize = 7)
     return Mke.textlabel!(
@@ -768,15 +1139,27 @@ end
 A photon drawn as a wave from `a` to `b` (2-D), with `cycles` oscillations (more for a higher
 energy) and an arrowhead at `b`.
 """
-function photon!(ax, a, b; color = MATERIALS.beam, cycles = 6, amplitude = 0.06, linewidth = 3, head = 14)
+function photon!(
+    ax,
+    a,
+    b;
+    color = MATERIALS.beam,
+    cycles = 6,
+    amplitude = 0.06,
+    linewidth = 3,
+    head = 14,
+)
     a, b = Mke.Point2f(a), Mke.Point2f(b)
     d = b - a
     L = sqrt(d[1]^2 + d[2]^2)
     t = d / L
     n = Mke.Point2f(-t[2], t[1])
     s = range(0, 1; length = 240)
-    ramp(u) = min(1, 8u, 8(1 - u))  # the wave starts and ends on the line
-    points = Mke.Point2f[a + u * d + amplitude * L * ramp(u) * sin(2π * cycles * u) * n for u in s]
+    ramp(u) = min(1, 8u, 8(1 - u)) # the wave starts and ends on the line
+    points = Mke.Point2f[
+        a + u * d + amplitude * L * ramp(u) * sin(2π * cycles * u) * n
+        for u in s
+    ]
     Mke.lines!(ax, points[1:(end - 6)]; color, linewidth)
     Mke.scatter!(
         ax,
@@ -791,11 +1174,26 @@ end
 
 # ╔═╡ 32fe7f10-9fa0-4cd7-9cb3-51751c3e6f5a
 """A straight arrow from `a` to `b` (2-D)."""
-function arrow!(ax, a, b; color = MATERIALS.beam, linewidth = 3, head = 14, linestyle = :solid)
+function arrow!(
+    ax,
+    a,
+    b;
+    color = MATERIALS.beam,
+    linewidth = 3,
+    head = 14,
+    linestyle = :solid,
+)
     a, b = Mke.Point2f(a), Mke.Point2f(b)
     t = (b - a) / sqrt(sum(abs2, b - a))
     Mke.lines!(ax, Mke.Point2f[a, b - 0.5 * head / 100 * t]; color, linewidth, linestyle)
-    Mke.scatter!(ax, [b]; marker = :utriangle, markersize = head, rotation = atan(t[2], t[1]) - π / 2, color)
+    Mke.scatter!(
+        ax,
+        [b];
+        marker = :utriangle,
+        markersize = head,
+        rotation = atan(t[2], t[1]) - π / 2,
+        color,
+    )
     return nothing
 end
 
@@ -809,7 +1207,15 @@ Spread labels down the right of a drawing: each `entry` is `(; anchor, title, de
 (`tag` is `nothing` or `(text, color)`). Labels keep at least `spacing` apart (data units), in the
 order of their anchors, and a bent leader line runs from each anchor to its label at `x`.
 """
-function labels_right!(ax, entries, x; spacing = 1.0, tag_width = 0.0, title_size = 19, detail_size = 15.5)
+function labels_right!(
+    ax,
+    entries,
+    x;
+    spacing = 1.0,
+    tag_width = 0.0,
+    title_size = 19,
+    detail_size = 15.5,
+)
     order = sortperm([e.anchor[2] for e in entries]; rev = true)
     ys = Float64[]
     for k in order
@@ -823,15 +1229,56 @@ function labels_right!(ax, entries, x; spacing = 1.0, tag_width = 0.0, title_siz
     for (k, y) in zip(order, ys)
         e = entries[k]
         elbow = Mke.Point2f(x - 0.35 * spacing, y)
-        Mke.lines!(ax, Mke.Point2f[e.anchor, Mke.Point2f(elbow[1] - 0.3 * spacing, e.anchor[2]), elbow, Mke.Point2f(x, y)]; color = (:black, 0.32), linewidth = 1.2)
+        Mke.lines!(
+            ax,
+            Mke.Point2f[
+                e.anchor,
+                Mke.Point2f(elbow[1] - 0.3 * spacing, e.anchor[2]),
+                elbow,
+                Mke.Point2f(x, y),
+            ];
+            color = (:black, 0.32),
+            linewidth = 1.2,
+        )
         Mke.scatter!(ax, [Mke.Point2f(e.anchor)]; color = (:black, 0.55), markersize = 7)
         at = Mke.Point2f(x, y)
         if e.tag !== nothing
-            Mke.textlabel!(ax, at; text = e.tag[1], text_align = (:left, :center), text_color = :white, font = :bold, fontsize = 13, offset = (6, 0), background_color = e.tag[2], strokewidth = 0, padding = (8, 8, 3, 3), cornerradius = 9)
+            Mke.textlabel!(
+                ax,
+                at;
+                text = e.tag[1],
+                text_align = (:left, :center),
+                text_color = :white,
+                font = :bold,
+                fontsize = 13,
+                offset = (6, 0),
+                background_color = e.tag[2],
+                strokewidth = 0,
+                padding = (8, 8, 3, 3),
+                cornerradius = 9,
+            )
         end
         dx = e.tag === nothing ? 6 : 6 + tag_width
-        Mke.text!(ax, at; text = e.title, font = :bold, fontsize = title_size, align = (:left, :bottom), offset = (dx, 1), color = e.color)
-        e.detail == "" || Mke.text!(ax, at; text = e.detail, fontsize = detail_size, align = (:left, :top), offset = (dx, -3), color = Mke.RGBf(0.42, 0.42, 0.46))
+        Mke.text!(
+            ax,
+            at;
+            text = e.title,
+            font = :bold,
+            fontsize = title_size,
+            align = (:left, :bottom),
+            offset = (dx, 1),
+            color = e.color,
+        )
+        e.detail == "" ||
+            Mke.text!(
+                ax,
+                at;
+                text = e.detail,
+                fontsize = detail_size,
+                align = (:left, :top),
+                offset = (dx, -3),
+                color = Mke.RGBf(0.42, 0.42, 0.46),
+            )
     end
     return nothing
 end
@@ -839,8 +1286,23 @@ end
 # ╔═╡ c6d7d774-ef13-4f99-83cd-6465fc1f6888
 """A vertical bracket at `x` from `y0` to `y1`, with `text` to its left."""
 function side_bracket!(ax, x, y0, y1, text; color, fontsize = 16, tick = 0.08)
-    Mke.lines!(ax, Mke.Point2f[(x + tick, y0), (x, y0), (x, y1), (x + tick, y1)]; color, linewidth = 2)
-    return Mke.text!(ax, x - tick, (y0 + y1) / 2; text, color, fontsize, font = :bold, align = (:right, :center), justification = :right)
+    Mke.lines!(
+        ax,
+        Mke.Point2f[(x + tick, y0), (x, y0), (x, y1), (x + tick, y1)];
+        color,
+        linewidth = 2,
+    )
+    return Mke.text!(
+        ax,
+        x - tick,
+        (y0 + y1) / 2;
+        text,
+        color,
+        fontsize,
+        font = :bold,
+        align = (:right, :center),
+        justification = :right,
+    )
 end
 
 # ╔═╡ 08ed4a29-4109-490b-b791-5987c138c173
@@ -935,9 +1397,28 @@ end
 
 # ╔═╡ 71976bd4-43a7-4cca-8bd7-9e41c3071263
 """Outline a box (lo, hi) as seen by `cam`: the edge of its silhouette."""
-function outline!(ax, cam, lo, hi; color = MATERIALS.beam, linewidth = 3, linestyle = :solid)
-    corners = [(x, y, z) for x in (lo[1], hi[1]) for y in (lo[2], hi[2]) for z in (lo[3], hi[3])]
-    return Mke.lines!(ax, hull([project(cam, c) for c in corners]); color, linewidth, linestyle)
+function outline!(
+    ax,
+    cam,
+    lo,
+    hi;
+    color = MATERIALS.beam,
+    linewidth = 3,
+    linestyle = :solid,
+)
+    corners = [
+        (x, y, z)
+        for x in (lo[1], hi[1])
+        for y in (lo[2], hi[2])
+        for z in (lo[3], hi[3])
+    ]
+    return Mke.lines!(
+        ax,
+        hull([project(cam, c) for c in corners]);
+        color,
+        linewidth,
+        linestyle,
+    )
 end
 
 # ╔═╡ 6d118872-a994-4622-87a2-2a4d2c452d93
@@ -949,7 +1430,12 @@ this one's lit. `focus` is one of `:tube`, `:arc`, `:grid`, `:ceramic`, `:photod
 """
 function locator!(position, focus; note = "")
     amber, dim = MATERIALS.beam, Mke.RGBf(0.82, 0.83, 0.86)
-    Mke.Box(position; color = Mke.RGBf(0.965, 0.965, 0.975), strokevisible = false, cornerradius = 14)
+    Mke.Box(
+        position;
+        color = Mke.RGBf(0.965, 0.965, 0.975),
+        strokevisible = false,
+        cornerradius = 14,
+    )
     layout = Mke.GridLayout(position; halign = :center, tellwidth = false)
 
     # The gantry, small: tube A, its fan, the detector arc, the one dexel below
@@ -959,14 +1445,37 @@ function locator!(position, focus; note = "")
     half_fan = apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2
     lit(k) = focus === k || focus === :whole
     Mke.lines!(ax, 800 .* cos.(θ), 800 .* sin.(θ); color = dim, linewidth = 1.5)
-    Mke.poly!(ax, Mke.Point2f.(170 .* cos.(θ), 120 .* sin.(θ) .- 20); color = (PALETTE.muted, 0.25))
+    Mke.poly!(
+        ax,
+        Mke.Point2f.(170 .* cos.(θ), 120 .* sin.(θ) .- 20);
+        color = (PALETTE.muted, 0.25),
+    )
     src = Mke.Point2f(0, R_iso)
     φ = range(-half_fan, half_fan; length = 60)
     arc = [src + R_det * Mke.Point2f(sin(t), -cos(t)) for t in φ]
     Mke.poly!(ax, Mke.Point2f.(vcat([src], arc)); color = (amber, lit(:tube) ? 0.45 : 0.12))
-    Mke.lines!(ax, Mke.Point2f.(arc); color = lit(:arc) ? PALETTE.ink : dim, linewidth = lit(:arc) ? 7 : 4)
-    Mke.scatter!(ax, [src]; marker = :rect, markersize = 16, color = lit(:tube) ? PALETTE.ink : dim)
-    Mke.scatter!(ax, [arc[30]]; marker = :rect, markersize = 9, color = amber, strokecolor = PALETTE.ink, strokewidth = 1)
+    Mke.lines!(
+        ax,
+        Mke.Point2f.(arc);
+        color = lit(:arc) ? PALETTE.ink : dim,
+        linewidth = lit(:arc) ? 7 : 4,
+    )
+    Mke.scatter!(
+        ax,
+        [src];
+        marker = :rect,
+        markersize = 16,
+        color = lit(:tube) ? PALETTE.ink : dim,
+    )
+    Mke.scatter!(
+        ax,
+        [arc[30]];
+        marker = :rect,
+        markersize = 9,
+        color = amber,
+        strokecolor = PALETTE.ink,
+        strokewidth = 1,
+    )
     Mke.limits!(ax, -880, 880, -720, 880)
 
     # One dexel's stack, exploded; the focus lit and outlined, the rest faded
@@ -989,13 +1498,33 @@ function locator!(position, focus; note = "")
     p = pitch_mm
     for key in on
         z0, z1 = ex.levels[key]
-        outline!(axs, cam, (-0.06, -0.06, z0 - 0.06), (p[1] + 0.06, p[2] + 0.06, z1 + 0.06); linewidth = 2.5)
+        outline!(
+            axs,
+            cam,
+            (-0.06, -0.06, z0 - 0.06),
+            (p[1] + 0.06, p[2] + 0.06, z1 + 0.06);
+            linewidth = 2.5,
+        )
     end
 
     # Where we are, in words, and the dexel's five steps with this one's lit
     text = Mke.GridLayout(layout[1, 3]; valign = :center)
-    Mke.Label(text[1, 1], "Where We Are"; font = :bold, fontsize = 20, color = PALETTE.ink, halign = :left)
-    Mke.Label(text[2, 1], note; fontsize = 17, color = PALETTE.ink, halign = :left, justification = :left)
+    Mke.Label(
+        text[1, 1],
+        "Where We Are";
+        font = :bold,
+        fontsize = 20,
+        color = PALETTE.ink,
+        halign = :left,
+    )
+    Mke.Label(
+        text[2, 1],
+        note;
+        fontsize = 17,
+        color = PALETTE.ink,
+        halign = :left,
+        justification = :left,
+    )
     steps = (
         (:grid, "1  The Grid"),
         (:ceramic, "2  The Garnet Stops It"),
@@ -1023,37 +1552,78 @@ end
 
 # ╔═╡ 8cec9efb-82c7-4a73-a60c-6a2f4e2d48b9
 """Side view of three dexels (x across, depth down as negative y), at x offsets; returns nothing."""
-function side_dexels!(ax; n = 3, lit = nothing, depth = depth_mm, ceramic = MATERIALS.scintillator)
+function side_dexels!(
+    ax;
+    n = 3,
+    lit = nothing,
+    depth = depth_mm,
+    ceramic = MATERIALS.scintillator,
+)
     p, s = pitch_mm[1], septum_mm
     half = (n - 1) / 2
-    rect!(ax, -(half + 0.5) * p, -depth, n * p, depth, MATERIALS.reflector; strokecolor = (:black, 0.3), strokewidth = 1)
+    rect!(
+        ax,
+        -(half + 0.5) * p,
+        -depth,
+        n * p,
+        depth,
+        MATERIALS.reflector;
+        strokecolor = (:black, 0.3),
+        strokewidth = 1,
+    )
     for i in 0:(n - 1)
         x = (i - half) * p
-        rect!(ax, x - (p - s) / 2, -depth, p - s, depth, lit !== nothing && i == lit ? Mke.RGBf(0.82, 0.95, 0.84) : ceramic)
+        rect!(
+            ax,
+            x - (p - s) / 2,
+            -depth,
+            p - s,
+            depth,
+            lit !== nothing && i == lit ? Mke.RGBf(0.82, 0.95, 0.84) : ceramic,
+        )
     end
     return nothing
 end
 
 # ╔═╡ a2d50813-d2e4-4a26-8004-7cfbbd80c8bc
 """A curved strip (part of a cylinder about the z axis at the focal spot), as quads with depth, for the painter."""
-function arc_quads(cam, R, half_angle, half_z; columns = 46, thickness = 18.0, color = MATERIALS.scintillator)
+function arc_quads(
+    cam,
+    R,
+    half_angle,
+    half_z;
+    columns = 46,
+    thickness = 18.0,
+    color = MATERIALS.scintillator,
+)
     quads = Any[]
     for k in 1:columns
         a0 = -half_angle + (k - 1) * 2half_angle / columns
         a1 = a0 + 2half_angle / columns
         for (r, normal_sign) in ((R, -1), (R + thickness, 1))
-            corners = [(r * sin(a), -r * cos(a), z) for (a, z) in ((a0, -half_z), (a1, -half_z), (a1, half_z), (a0, half_z))]
+            corners = [
+                (r * sin(a), -r * cos(a), z)
+                for (a, z) in ((a0, -half_z), (a1, -half_z), (a1, half_z), (a0, half_z))
+            ]
             mid = (a0 + a1) / 2
             n = (normal_sign * sin(mid), -normal_sign * cos(mid), 0.0)
             depth = dot3(corners[1] .+ corners[3], cam.toward) / 2
             push!(
-                quads, (
-                    depth, ax -> begin
+                quads,
+                (
+                    depth,
+                    ax -> begin
                         dot3(n, cam.toward) > 0 || return
                         c = shade(color, n, cam)
-                        Mke.poly!(ax, [project(cam, q) for q in corners]; color = c, strokecolor = (:black, 0.25), strokewidth = 0.5)
+                        Mke.poly!(
+                            ax,
+                            [project(cam, q) for q in corners];
+                            color = c,
+                            strokecolor = (:black, 0.25),
+                            strokewidth = 0.5,
+                        )
                     end,
-                )
+                ),
             )
         end
     end
@@ -1065,7 +1635,13 @@ end
 function atom!(ax, c, r; color = Mke.RGBf(0.45, 0.47, 0.55))
     θ = range(0, 2π; length = 100)
     for (k, rr) in enumerate((0.55r, r))
-        Mke.lines!(ax, c[1] .+ rr .* cos.(θ), c[2] .+ rr .* sin.(θ); color = (color, 0.55), linewidth = 1.5)
+        Mke.lines!(
+            ax,
+            c[1] .+ rr .* cos.(θ),
+            c[2] .+ rr .* sin.(θ);
+            color = (color, 0.55),
+            linewidth = 1.5,
+        )
     end
     Mke.scatter!(ax, [Mke.Point2f(c)]; color, markersize = 18)
     return nothing
@@ -1155,14 +1731,14 @@ mu_energies = 10.0:0.25:150.0
 # Geant4's attenuation of Gemstone, per process, in 1/mm
 mu_geant4 = Dict(
     p.kind => [MC.geant4_attenuation(gemstone, E; kind = p.kind) for E in mu_energies]
-        for p in processes
+    for p in processes
 )
 
 # ╔═╡ 7b39f748-54d2-5a67-977a-b81bf47b6b27
 # NIST XCOM's, for comparison
 mu_xcom = Dict(
     p.kind => [MC.linear_attenuation(gemstone, E; kind = p.kind) for E in mu_energies]
-        for p in processes
+    for p in processes
 )
 
 # ╔═╡ 74cea183-7970-4071-ae47-c9a7a199c514
@@ -1174,31 +1750,125 @@ let
 
     red, blue, grey = PALETTE.electron, PALETTE.photon, PALETTE.muted
     panels = (
-        ("Photon Absorbed", "Photoelectric: It Vanishes; an Electron and Often\na Tb (44.5 keV) or Lu (54.1 keV) X Ray Leave", red),
-        ("Bounces Off, Loses Energy", "Compton: a Weaker Photon Leaves,\nan Electron Recoils", blue),
-        ("Bounces Off, Keeps Energy", "Rayleigh: Same Energy,\na Small Change of Direction", grey),
+        (
+            "Photon Absorbed",
+            "Photoelectric: It Vanishes; an Electron and Often\na Tb (44.5 keV) or Lu (54.1 keV) X Ray Leave",
+            red,
+        ),
+        (
+            "Bounces Off, Loses Energy",
+            "Compton: a Weaker Photon Leaves,\nan Electron Recoils",
+            blue,
+        ),
+        (
+            "Bounces Off, Keeps Energy",
+            "Rayleigh: Same Energy,\na Small Change of Direction",
+            grey,
+        ),
     )
     for (k, (title, detail, color)) in enumerate(panels)
         ax = canvas(fig[1, k]; title, titlecolor = color, titlesize = 21)
         Mke.limits!(ax, -1.25, 1.25, -1.05, 0.95)
         atom!(ax, (0, 0), 0.32)
-        photon!(ax, (-1.2, 0.0), (-0.36, 0.0); cycles = 6, amplitude = 0.07, color = MATERIALS.beam)
+        photon!(
+            ax,
+            (-1.2, 0.0),
+            (-0.36, 0.0);
+            cycles = 6,
+            amplitude = 0.07,
+            color = MATERIALS.beam,
+        )
         if k == 1
             arrow!(ax, (0.12, 0.1), (0.62, 0.55); color = red, linewidth = 3)
-            Mke.text!(ax, 0.66, 0.6; text = "Electron", color = red, fontsize = 16, align = (:left, :bottom))
-            photon!(ax, (0.2, -0.24), (1.0, -0.62); cycles = 4, amplitude = 0.07, color = PALETTE.xray)
-            Mke.text!(ax, 0.98, -0.75; text = "Tb or Lu X Ray", color = PALETTE.xray, fontsize = 16, align = (:right, :top))
+            Mke.text!(
+                ax,
+                0.66,
+                0.6;
+                text = "Electron",
+                color = red,
+                fontsize = 16,
+                align = (:left, :bottom),
+            )
+            photon!(
+                ax,
+                (0.2, -0.24),
+                (1.0, -0.62);
+                cycles = 4,
+                amplitude = 0.07,
+                color = PALETTE.xray,
+            )
+            Mke.text!(
+                ax,
+                0.98,
+                -0.75;
+                text = "Tb or Lu X Ray",
+                color = PALETTE.xray,
+                fontsize = 16,
+                align = (:right, :top),
+            )
         elseif k == 2
-            photon!(ax, (0.3, -0.18), (1.1, -0.72); cycles = 3.5, amplitude = 0.07, color = blue)
-            Mke.text!(ax, 1.05, -0.86; text = "Weaker Photon", color = blue, fontsize = 16, align = (:right, :top))
+            photon!(
+                ax,
+                (0.3, -0.18),
+                (1.1, -0.72);
+                cycles = 3.5,
+                amplitude = 0.07,
+                color = blue,
+            )
+            Mke.text!(
+                ax,
+                1.05,
+                -0.86;
+                text = "Weaker Photon",
+                color = blue,
+                fontsize = 16,
+                align = (:right, :top),
+            )
             arrow!(ax, (0.2, 0.2), (0.62, 0.55); color = red, linewidth = 2.5)
-            Mke.text!(ax, 0.66, 0.6; text = "Electron", color = red, fontsize = 16, align = (:left, :bottom))
+            Mke.text!(
+                ax,
+                0.66,
+                0.6;
+                text = "Electron",
+                color = red,
+                fontsize = 16,
+                align = (:left, :bottom),
+            )
         else
-            photon!(ax, (0.35, 0.05), (1.2, 0.28); cycles = 6, amplitude = 0.07, color = MATERIALS.beam)
-            Mke.text!(ax, 1.2, 0.42; text = "Same Energy", color = grey, fontsize = 16, align = (:right, :bottom))
+            photon!(
+                ax,
+                (0.35, 0.05),
+                (1.2, 0.28);
+                cycles = 6,
+                amplitude = 0.07,
+                color = MATERIALS.beam,
+            )
+            Mke.text!(
+                ax,
+                1.2,
+                0.42;
+                text = "Same Energy",
+                color = grey,
+                fontsize = 16,
+                align = (:right, :bottom),
+            )
         end
-        Mke.text!(ax, 0, -0.42; text = "Tb or Lu Atom", color = Mke.RGBf(0.4, 0.42, 0.5), fontsize = 15, align = (:center, :top))
-        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+        Mke.text!(
+            ax,
+            0,
+            -0.42;
+            text = "Tb or Lu Atom",
+            color = Mke.RGBf(0.4, 0.42, 0.5),
+            fontsize = 15,
+            align = (:center, :top),
+        )
+        Mke.Label(
+            fig[2, k],
+            detail;
+            fontsize = 16,
+            color = PALETTE.muted,
+            tellwidth = false,
+        )
     end
 
     # How far a photon goes, on average, in Gemstone: 1/μ, against the crystal's depth
@@ -1213,11 +1883,26 @@ let
         xlabelsize = 16,
     )
     Mke.vspan!(ax, 0, depth_mm; color = (MATERIALS.scintillator, 0.6))
-    Mke.text!(ax, depth_mm / 2, 4.5; text = "The $(depth_mm) mm Crystal", align = (:center, :bottom), fontsize = 15, color = PALETTE.slab_edge)
+    Mke.text!(
+        ax,
+        depth_mm / 2,
+        4.5;
+        text = "The $(depth_mm) mm Crystal",
+        align = (:center, :bottom),
+        fontsize = 15,
+        color = PALETTE.slab_edge,
+    )
     for (k, E) in enumerate((40.0, 60.0, 100.0, 140.0))
         L = 1 / μ_per_mm(E)
         Mke.barplot!(ax, [k], [L]; direction = :x, color = MATERIALS.beam, width = 0.5)
-        Mke.text!(ax, L, k; text = " $(round(L; digits = 2)) mm", align = (:left, :center), fontsize = 15)
+        Mke.text!(
+            ax,
+            L,
+            k;
+            text = " $(round(L; digits = 2)) mm",
+            align = (:left, :center),
+            fontsize = 15,
+        )
     end
     Mke.colsize!(fig.layout, 4, Mke.Relative(0.24))
     locator!(fig[0, :], :ceramic; note = "Step 2 · The Garnet\nStops the X Ray")
@@ -1281,13 +1966,7 @@ let
         fontsize = 15,
         color = PALETTE.muted,
     )
-    Mke.Legend(
-        fig[2, 1],
-        ax;
-        orientation = :horizontal,
-        nbanks = 2,
-        tellheight = true,
-    )
+    Mke.Legend(fig[2, 1], ax; orientation = :horizontal, nbanks = 2, tellheight = true)
     fig
 end
 
@@ -1300,7 +1979,7 @@ let
         Geant4 and XCOM agree on the total attenuation to within **$(round(100total; digits = 1)) %** from 10 to
         150 keV. They differ most on Rayleigh scattering (up to $(round(100rayleigh; digits = 0)) %), which Geant4
         computes with anomalous scattering near the K-edge; Rayleigh is a small part of the total.
-        """
+        """,
     )
 end
 
@@ -1321,7 +2000,7 @@ The values were read from the vector figure, a smoothed schematic good to about 
 # Siemens' LuTAG curve, read from the vector figure (reference_data/siemens_lutag_1p4mm_absorption.csv)
 siemens_curve = let
     path = joinpath(@__DIR__, "..", "reference_data", "siemens_lutag_1p4mm_absorption.csv")
-    data, header = DelimitedFiles.readdlm(path, ','; comments = true, header = true)
+    data, _ = DelimitedFiles.readdlm(path, ','; comments = true, header = true)
     (energy_keV = Float64.(data[:, 1]), absorption = Float64.(data[:, 2]))
 end
 
@@ -1333,46 +2012,83 @@ siemens_depth_mm = 1.4
 # The probability a photon interacts in 1.4 mm of each candidate garnet
 interaction_curves = [
     (
-            label = label,
-            color = color,
-            curve = [1 - exp(-MC.geant4_attenuation(material, E) * siemens_depth_mm) for E in mu_energies],
-        )
-        for (label, color, material) in (
-            (
-                "BasisSimulator v0.15.1: Even Split, 7.0 g/cm³ (Impossible)",
-                PALETTE.reference,
-                gemstone_basis,
-            ),
-            ("Even Split, 6.40 g/cm³ (Used Here)", PALETTE.photon, gemstone),
-            ("Tb-Rich (GE's Patent), 6.24 g/cm³", PALETTE.kept, gemstone_tb_rich),
-        )
+        label = label,
+        color = color,
+        curve = [
+            1 - exp(-MC.geant4_attenuation(material, E) * siemens_depth_mm)
+            for E in mu_energies
+        ],
+    )
+    for (label, color, material) in (
+        (
+            "BasisSimulator v0.15.1: Even Split, 7.0 g/cm³ (Impossible)",
+            PALETTE.reference,
+            gemstone_basis,
+        ),
+        ("Even Split, 6.40 g/cm³ (Used Here)", PALETTE.photon, gemstone),
+        ("Tb-Rich (GE's Patent), 6.24 g/cm³", PALETTE.kept, gemstone_tb_rich),
+    )
 ]
 
 # ╔═╡ 24709fa8-0823-4f19-bcd6-ca2794d35249
 let
     μ_per_mm(E) = MC.interpolate_linear(collect(mu_energies), mu_geant4[:total], E)
 
-    d = siemens_depth_mm  # the depth of Siemens' figure
+    d = siemens_depth_mm # the depth of Siemens' figure
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1400, 500))
     N = 30
     for (k, E) in enumerate((45.0, 90.0, 140.0))
         μ = μ_per_mm(E)
         stopped = 1 - exp(-μ * d)
-        ax = canvas(fig[1, k]; title = "$(Int(E)) keV: $(round(Int, 100stopped)) % Stopped", titlesize = 21)
-        rect!(ax, 0, 0, 1.6, d, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+        ax = canvas(
+            fig[1, k];
+            title = "$(Int(E)) keV: $(round(Int, 100stopped)) % Stopped",
+            titlesize = 21,
+        )
+        rect!(
+            ax,
+            0,
+            0,
+            1.6,
+            d,
+            MATERIALS.scintillator;
+            strokecolor = PALETTE.slab_edge,
+            strokewidth = 1.5,
+        )
         # N photons; photon i stops at the depth that the i-th of N quantiles of exp(−μx) gives
         for i in 1:N
             x = 1.6 * (i - 0.5) / N
             depth = -log(1 - (mod(i * 0.618034, 1.0))) / μ
             if depth < d
-                Mke.lines!(ax, [x, x], [d + 0.55, d - depth]; color = MATERIALS.beam, linewidth = 2)
+                Mke.lines!(
+                    ax,
+                    [x, x],
+                    [d + 0.55, d - depth];
+                    color = MATERIALS.beam,
+                    linewidth = 2,
+                )
                 Mke.scatter!(ax, [x], [d - depth]; color = PALETTE.electron, markersize = 9)
             else
-                arrow!(ax, (x, d + 0.55), (x, -0.5); color = (MATERIALS.beam, 0.6), linewidth = 2, head = 10)
+                arrow!(
+                    ax,
+                    (x, d + 0.55),
+                    (x, -0.5);
+                    color = (MATERIALS.beam, 0.6),
+                    linewidth = 2,
+                    head = 10,
+                )
             end
         end
-        Mke.text!(ax, 1.65, d / 2; text = "1.4 mm of\nGemstone,\n6.40 g/cm³", align = (:left, :center), fontsize = 15, color = PALETTE.slab_edge)
+        Mke.text!(
+            ax,
+            1.65,
+            d / 2;
+            text = "1.4 mm of\nGemstone,\n6.40 g/cm³",
+            align = (:left, :center),
+            fontsize = 15,
+            color = PALETTE.slab_edge,
+        )
         Mke.limits!(ax, -0.05, 2.45, -0.62, d + 0.65)
     end
     Mke.Label(
@@ -1432,9 +2148,13 @@ let
     rms(c) = sqrt(
         sum(
             abs2,
-            [MC.interpolate_linear(collect(mu_energies), c.curve, E) for E in siemens_curve.energy_keV[high]] .-
+            [
+                MC.interpolate_linear(collect(mu_energies), c.curve, E)
+                for E in siemens_curve.energy_keV[high]
+            ] .-
                 siemens_curve.absorption[high],
-        ) / count(high),
+        ) /
+            count(high),
     )
     rows = ["| $(c.label) | $(round(rms(c); digits = 3)) |" for c in interaction_curves]
     Markdown.parse(
@@ -1447,7 +2167,7 @@ let
         lighter the garnet, the closer it comes: BasisSimulator v0.15.1's 7.0 g/cm³ is furthest. LuTAG's own composition and
         depth are not published, so this does not pin Gemstone down, but it points the same way as the density limits:
         a lutetium-terbium garnet absorbs less than BasisSimulator v0.15.1's Gemstone.
-        """
+        """,
     )
 end
 
@@ -1504,7 +2224,7 @@ let
         the garnet block inside it $(round(crystal_mm[1]; digits = 3)) × $(round(crystal_mm[2]; digits = 3)) mm: the crystal
         covers $(round(fill[1]; digits = 3)) × $(round(fill[2]; digits = 3)) of the face, the fill factor of 0.9 × 0.9 that BasisSimulator v0.15.1 uses.
         The assumed reflector and that fill factor are the same detector.
-        """
+        """,
     )
 end
 
@@ -1544,15 +2264,14 @@ cell_beam = MC.AreaBeam(; width_mm = pitch_mm[1], height_mm = pitch_mm[2], start
 # ╔═╡ 0df4a950-2c66-5f98-827e-d647b3db7d5c
 # Each dexel collects the energy left in its own block of garnet (the reflector keeps the light
 # in); the dexel the photons land on and its eight neighbours are recorded
-readout = MC.DexelEnergyReadout(
-    MC.DexelReadout(;
-        pitch_x_mm = pitch_mm[1],
-        pitch_y_mm = pitch_mm[2],
-        neighborhood = 3,
-        cloud_sigma_um = 0.01,
-        transport = nothing,  # a scintillator: each dexel keeps the energy left in its own ceramic
-    ),
-)
+readout = MC.DexelEnergyReadout(MC.DexelReadout(;
+    pitch_x_mm = pitch_mm[1],
+    pitch_y_mm = pitch_mm[2],
+    neighborhood = 3,
+    cloud_sigma_um = 0.01,
+    # a scintillator: each dexel keeps the energy left in its own ceramic
+    transport = nothing,
+))
 
 # ╔═╡ 3a51adf8-1bd6-5027-a06e-b288b5ea7b6e
 let
@@ -1560,16 +2279,51 @@ let
     p, s, d = pitch_mm, septum_mm, depth_mm
     fig = Mke.Figure(size = (1600, 930))
 
-
     # (a) the Geant4 model: 13 × 13 dexels, the middle one and its eight neighbours read out
-    ax = canvas(fig[1, 1]; title = "(a) What Geant4 Builds: 13 × 13 Dexels, to Scale", titlesize = 20)
+    ax = canvas(
+        fig[1, 1];
+        title = "(a) What Geant4 Builds: 13 × 13 Dexels, to Scale",
+        titlesize = 20,
+    )
     cam = camera(-50, 30)
     blocks = dexel_blocks(13, 13, p, s, 0.0, d; lit = Set([(6, 6)]))
-    beam = Block((6p[1] + s / 2, 6p[2] + s / 2, d), (7p[1] - s / 2, 7p[2] - s / 2, d + 5.0), MATERIALS.beam; alpha = 0.3, stroke = 0.0)
-    draw_blocks!(ax, cam, blocks; extras = [(1.0e3, a -> draw_blocks!(a, cam, [beam]; edge_alpha = 0.0))], edge_alpha = 0.25)
-    outline!(ax, cam, (5p[1], 5p[2], 0), (8p[1], 8p[2], d); color = PALETTE.photon, linewidth = 2.5, linestyle = :dash)
-    callout!(ax, project(cam, (6.5p[1], 6.5p[2], d + 5.0)), project(cam, (6.5p[1], 6.5p[2], d + 5.0)) + Mke.Point2f(2.6, 0.4), "Photons Land Uniformly\non the Middle Dexel"; fontsize = 15)
-    callout!(ax, project(cam, (8p[1], 5p[2], 0)), project(cam, (8p[1], 5p[2], 0)) + Mke.Point2f(2.2, -1.6), "Read Out: the Middle\nDexel and Its 8\nNeighbours (Dashed)"; fontsize = 15)
+    beam = Block(
+        (6p[1] + s / 2, 6p[2] + s / 2, d),
+        (7p[1] - s / 2, 7p[2] - s / 2, d + 5.0),
+        MATERIALS.beam;
+        alpha = 0.3,
+        stroke = 0.0,
+    )
+    draw_blocks!(
+        ax,
+        cam,
+        blocks;
+        extras = [(1.0e3, a -> draw_blocks!(a, cam, [beam]; edge_alpha = 0.0))],
+        edge_alpha = 0.25,
+    )
+    outline!(
+        ax,
+        cam,
+        (5p[1], 5p[2], 0),
+        (8p[1], 8p[2], d);
+        color = PALETTE.photon,
+        linewidth = 2.5,
+        linestyle = :dash,
+    )
+    callout!(
+        ax,
+        project(cam, (6.5p[1], 6.5p[2], d + 5.0)),
+        project(cam, (6.5p[1], 6.5p[2], d + 5.0)) + Mke.Point2f(2.6, 0.4),
+        "Photons Land Uniformly\non the Middle Dexel";
+        fontsize = 15,
+    )
+    callout!(
+        ax,
+        project(cam, (8p[1], 5p[2], 0)),
+        project(cam, (8p[1], 5p[2], 0)) + Mke.Point2f(2.2, -1.6),
+        "Read Out: the Middle\nDexel and Its 8\nNeighbours (Dashed)";
+        fontsize = 15,
+    )
 
     # (b) seen from the beam, 3 × 3, with dimensions
     axb = Mke.Axis(
@@ -1580,14 +2334,71 @@ let
         aspect = Mke.DataAspect(),
         limits = ((-1.6p[1], 2.3p[1]), (-2.3p[2], 1.9p[2])),
     )
-    rect!(axb, -1.5p[1], -1.5p[2], 3p[1], 3p[2], Mke.RGBf(0.93, 0.93, 0.9); strokecolor = (:black, 0.25), strokewidth = 1)
+    rect!(
+        axb,
+        -1.5p[1],
+        -1.5p[2],
+        3p[1],
+        3p[2],
+        Mke.RGBf(0.93, 0.93, 0.9);
+        strokecolor = (:black, 0.25),
+        strokewidth = 1,
+    )
     for i in -1:1, j in -1:1
-        rect!(axb, i * p[1] - (p[1] - s) / 2, j * p[2] - (p[2] - s) / 2, p[1] - s, p[2] - s, i == 0 && j == 0 ? Mke.RGBf(0.82, 0.95, 0.84) : MATERIALS.scintillator; strokecolor = PALETTE.slab_edge, strokewidth = 1)
+        rect!(
+            axb,
+            i * p[1] - (p[1] - s) / 2,
+            j * p[2] - (p[2] - s) / 2,
+            p[1] - s,
+            p[2] - s,
+            i == 0 && j == 0 ? Mke.RGBf(0.82, 0.95, 0.84) : MATERIALS.scintillator;
+            strokecolor = PALETTE.slab_edge,
+            strokewidth = 1,
+        )
     end
-    Mke.bracket!(axb, -0.5p[1], -1.6p[2], 0.5p[1], -1.6p[2]; text = "Pitch $(round(p[1]; digits = 3)) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
-    Mke.bracket!(axb, 1.6p[1], -0.5p[2], 1.6p[1], 0.5p[2]; text = "$(round(p[2]; digits = 3)) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
-    note!(axb, 0, 0, "One Dexel"; align = (:center, :center), color = Mke.RGBf(0.15, 0.45, 0.2), fontsize = 15)
-    note!(axb, 1.5p[1], 1.5p[2], "White Reflector, $(round(Int, 1000s)) µm"; align = (:right, :bottom), offset = (0, 6), fontsize = 14, color = PALETTE.muted)
+    Mke.bracket!(
+        axb,
+        -0.5p[1],
+        -1.6p[2],
+        0.5p[1],
+        -1.6p[2];
+        text = "Pitch $(round(p[1]; digits = 3)) mm",
+        orientation = :down,
+        fontsize = 15,
+        color = PALETTE.ink,
+        textcolor = PALETTE.ink,
+    )
+    Mke.bracket!(
+        axb,
+        1.6p[1],
+        -0.5p[2],
+        1.6p[1],
+        0.5p[2];
+        text = "$(round(p[2]; digits = 3)) mm",
+        orientation = :down,
+        fontsize = 15,
+        color = PALETTE.ink,
+        textcolor = PALETTE.ink,
+    )
+    note!(
+        axb,
+        0,
+        0,
+        "One Dexel";
+        align = (:center, :center),
+        color = Mke.RGBf(0.15, 0.45, 0.2),
+        fontsize = 15,
+    )
+    note!(
+        axb,
+        1.5p[1],
+        1.5p[2],
+        "White Reflector, $(round(Int, 1000s)) µm";
+        align = (:right, :bottom),
+        offset = (0, 6),
+        fontsize = 14,
+        color = PALETTE.muted,
+    )
 
     # (c) side view with the depth
     axc = Mke.Axis(
@@ -1601,9 +2412,24 @@ let
     )
     side_dexels!(axc; lit = 1)
     Mke.lines!(axc, [0.1, 0.1], [0.7, -0.5]; color = MATERIALS.beam, linewidth = 3)
-    Mke.bracket!(axc, 1.6p[1], -d, 1.6p[1], 0; text = "$(d) mm", orientation = :up, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
+    Mke.bracket!(
+        axc,
+        1.6p[1],
+        -d,
+        1.6p[1],
+        0;
+        text = "$(d) mm",
+        orientation = :up,
+        fontsize = 15,
+        color = PALETTE.ink,
+        textcolor = PALETTE.ink,
+    )
     Mke.colsize!(fig.layout, 1, Mke.Relative(0.38))
-    locator!(fig[0, :], :ceramic; note = "Steps 2–3 · The Garnet,\nOne Dexel and Its\nNeighbours")
+    locator!(
+        fig[0, :],
+        :ceramic;
+        note = "Steps 2–3 · The Garnet,\nOne Dexel and Its\nNeighbours",
+    )
     fig
 end
 
@@ -1631,17 +2457,27 @@ tracks = MC.record_tracks(
 # row, so the side view shows it), one whose x ray leaves through the front face without stopping
 followed = let
     in_ceramic(z) = 0 <= z <= depth_mm
-    xray_steps(event) = [s for s in tracks.steps if s.event == event && s.particle === :fluorescence]
+    xray_steps(event) = [
+        s
+        for s in tracks.steps
+        if s.event == event && s.particle === :fluorescence
+    ]
     events = unique(s.event for s in tracks.steps if s.particle === :fluorescence)
 
     across(s) = abs(s.stop[1]) > pitch_mm[1] / 2 && abs(s.stop[2]) < crystal_mm[2] / 2
     next_door = [
-        e for e in events
-            if any(s.process == "phot" && in_ceramic(s.stop[3]) && across(s) for s in xray_steps(e))
+        e
+        for e in events
+        if any(
+            s.process == "phot" && in_ceramic(s.stop[3]) && across(s)
+            for s in xray_steps(e)
+        )
     ]
     front = [
-        e for e in events
-            if !any(s.process == "phot" for s in xray_steps(e)) && any(s.stop[3] < -0.01 for s in xray_steps(e))
+        e
+        for e in events
+        if !any(s.process == "phot" for s in xray_steps(e)) &&
+            any(s.stop[3] < -0.01 for s in xray_steps(e))
     ]
     (next_door = first(next_door), front = first(front))
 end
@@ -1763,10 +2599,31 @@ let
     Mke.set_theme!(THEME)
     p, s, d = pitch_mm[1], septum_mm, depth_mm
     fig = Mke.Figure(size = (1600, 600))
-    function base!(ax; septum_color = MATERIALS.reflector, septum = s, walls_through = false)
-        rect!(ax, -1.5p, -d, 3p, d, septum_color; strokecolor = (:black, 0.3), strokewidth = 1)
+    function base!(
+        ax;
+        septum_color = MATERIALS.reflector,
+        septum = s,
+        walls_through = false,
+    )
+        rect!(
+            ax,
+            -1.5p,
+            -d,
+            3p,
+            d,
+            septum_color;
+            strokecolor = (:black, 0.3),
+            strokewidth = 1,
+        )
         for i in -1:1
-            rect!(ax, i * p - (p - septum) / 2, -d, p - septum, d, i == 0 ? Mke.RGBf(0.82, 0.95, 0.84) : MATERIALS.scintillator)
+            rect!(
+                ax,
+                i * p - (p - septum) / 2,
+                -d,
+                p - septum,
+                d,
+                i == 0 ? Mke.RGBf(0.82, 0.95, 0.84) : MATERIALS.scintillator,
+            )
         end
         for i in -1:2
             x = (i - 0.5) * p
@@ -1774,31 +2631,98 @@ let
             walls_through && rect!(ax, x - septum / 2, -d, septum, d, MATERIALS.tungsten)
         end
         for i in -1:1
-            rect!(ax, i * p - (p - septum) / 2, -d - 0.16, p - septum, 0.12, MATERIALS.photodiode)
+            rect!(
+                ax,
+                i * p - (p - septum) / 2,
+                -d - 0.16,
+                p - septum,
+                0.12,
+                MATERIALS.photodiode,
+            )
         end
         return
     end
     hit = Mke.Point2f(0.18, -0.5)
-    star!(ax) = Mke.scatter!(ax, [hit]; marker = :star5, markersize = 24, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.2)
+    star!(ax) = Mke.scatter!(
+        ax,
+        [hit];
+        marker = :star5,
+        markersize = 24,
+        color = Mke.RGBf(0.98, 0.95, 0.6),
+        strokecolor = MATERIALS.beam,
+        strokewidth = 1.2,
+    )
 
-    ax1 = canvas(fig[1, 1]; title = "As Built Here: Grid Above, White Reflector Between", titlesize = 20)
+    ax1 = canvas(
+        fig[1, 1];
+        title = "As Built Here: Grid Above, White Reflector Between",
+        titlesize = 20,
+    )
     base!(ax1)
     photon!(ax1, (0.18, 1.6), hit; cycles = 6, amplitude = 0.02)
     half = (p - s) / 2
-    Mke.lines!(ax1, Mke.Point2f[hit, (half, -0.15), (0.3, -d)]; color = MATERIALS.light, linewidth = 2.5)
-    Mke.lines!(ax1, Mke.Point2f[hit, (-half, -0.3), (-0.25, -d)]; color = MATERIALS.light, linewidth = 2.5)
-    photon!(ax1, hit, (1.15p, -1.0); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 11)
+    Mke.lines!(
+        ax1,
+        Mke.Point2f[hit, (half, -0.15), (0.3, -d)];
+        color = MATERIALS.light,
+        linewidth = 2.5,
+    )
+    Mke.lines!(
+        ax1,
+        Mke.Point2f[hit, (-half, -0.3), (-0.25, -d)];
+        color = MATERIALS.light,
+        linewidth = 2.5,
+    )
+    photon!(
+        ax1,
+        hit,
+        (1.15p, -1.0);
+        cycles = 3,
+        amplitude = 0.05,
+        color = PALETTE.xray,
+        head = 11,
+    )
     star!(ax1)
-    Mke.Label(fig[2, 1], "Light (Green): Bounces Off the Reflector, Stays in Its Dexel\nTb or Lu X Ray (Orange, 44.5 or 54.1 keV): Passes Through the Thin, Light Reflector"; fontsize = 16, color = PALETTE.ink, tellwidth = false)
+    Mke.Label(
+        fig[2, 1],
+        "Light (Green): Bounces Off the Reflector, Stays in Its Dexel\nTb or Lu X Ray (Orange, 44.5 or 54.1 keV): Passes Through the Thin, Light Reflector";
+        fontsize = 16,
+        color = PALETTE.ink,
+        tellwidth = false,
+    )
     Mke.limits!(ax1, -1.65p, 1.65p, -d - 0.3, 1.75)
 
-    ax2 = canvas(fig[1, 2]; title = "Hypothetical: Tungsten Walls Down Through the Garnet", titlesize = 20)
+    ax2 = canvas(
+        fig[1, 2];
+        title = "Hypothetical: Tungsten Walls Down Through the Garnet",
+        titlesize = 20,
+    )
     base!(ax2; septum = 0.16, walls_through = true)
     photon!(ax2, (0.18, 1.6), hit; cycles = 6, amplitude = 0.02)
-    photon!(ax2, hit, (half + 0.02, -0.82); cycles = 2, amplitude = 0.05, color = PALETTE.xray, head = 11)
-    Mke.scatter!(ax2, [Mke.Point2f(half + 0.06, -0.85)]; marker = :xcross, markersize = 18, color = PALETTE.xray)
+    photon!(
+        ax2,
+        hit,
+        (half + 0.02, -0.82);
+        cycles = 2,
+        amplitude = 0.05,
+        color = PALETTE.xray,
+        head = 11,
+    )
+    Mke.scatter!(
+        ax2,
+        [Mke.Point2f(half + 0.06, -0.85)];
+        marker = :xcross,
+        markersize = 18,
+        color = PALETTE.xray,
+    )
     star!(ax2)
-    Mke.Label(fig[2, 2], "Stops the Tb or Lu X Ray, but: Wider Cuts Leave Less Garnet per Dexel,\nTungsten Adds Its Own X Rays (59 and 67 keV), and It Must Be Built In"; fontsize = 16, color = PALETTE.ink, tellwidth = false)
+    Mke.Label(
+        fig[2, 2],
+        "Stops the Tb or Lu X Ray, but: Wider Cuts Leave Less Garnet per Dexel,\nTungsten Adds Its Own X Rays (59 and 67 keV), and It Must Be Built In";
+        fontsize = 16,
+        color = PALETTE.ink,
+        tellwidth = false,
+    )
     Mke.limits!(ax2, -1.65p, 1.65p, -d - 0.3, 1.75)
     fig
 end
@@ -1819,55 +2743,126 @@ Compton-scatters once and leaves. Three energies show the regimes: 50 keV (below
 # 100 000 photons at each energy, every energy deposit recorded
 signal_runs = Dict(
     E => MC.simulate_monoenergetic(
-            dexel_array(depth_mm),
-            E;
-            n = 100_000,
-            beam = crystal_beam,
-            seed = 5,
-            record_deposits = true,
-        )
-        for E in (50.0, 70.0, 120.0)
+        dexel_array(depth_mm),
+        E;
+        n = 100_000,
+        beam = crystal_beam,
+        seed = 5,
+        record_deposits = true,
+    )
+    for E in (50.0, 70.0, 120.0)
 )
 
 # ╔═╡ d465f476-4b7a-5a26-8485-e167450cf6e3
 # The energy the dexel they landed on collected from each photon
 own_signal = Dict(
     E => vec(MC.dexel_response(run, readout.readout).dexel_energy_keV[:, 2, 2])
-        for (E, run) in signal_runs
+    for (E, run) in signal_runs
 )
 
 # ╔═╡ 2c48c3e8-a7a4-496c-85c1-674afac1c9d1
 let
     Mke.set_theme!(THEME)
-    p, d = pitch_mm[1], depth_mm
+    d = depth_mm
     fig = Mke.Figure(size = (1600, 810))
 
-    kα = 43.0
     cases = (
-        ("Everything Stays", "The Tb or Lu X Ray Is Reabsorbed\nin the Same Dexel → a Peak at E", PALETTE.kept),
-        ("Its X Ray Escapes", "44.5 (Tb) or 54.1 (Lu) keV Leave → Peaks\nat E − 44.5 and E − 54.1 keV", PALETTE.xray),
-        ("It Lands Next Door", "The Energy Is Split Between\nTwo Dexels (Both See Part)", Mke.RGBf(0.45, 0.3, 0.6)),
-        ("A Compton Photon Leaves", "Only the Electron's Energy\nStays → the Low Tail", PALETTE.photon),
+        (
+            "Everything Stays",
+            "The Tb or Lu X Ray Is Reabsorbed\nin the Same Dexel → a Peak at E",
+            PALETTE.kept,
+        ),
+        (
+            "Its X Ray Escapes",
+            "44.5 (Tb) or 54.1 (Lu) keV Leave → Peaks\nat E − 44.5 and E − 54.1 keV",
+            PALETTE.xray,
+        ),
+        (
+            "It Lands Next Door",
+            "The Energy Is Split Between\nTwo Dexels (Both See Part)",
+            Mke.RGBf(0.45, 0.3, 0.6),
+        ),
+        (
+            "A Compton Photon Leaves",
+            "Only the Electron's Energy\nStays → the Low Tail",
+            PALETTE.photon,
+        ),
     )
     for (k, (title, detail, color)) in enumerate(cases)
         ax = canvas(fig[1, k]; title, titlecolor = color, titlesize = 20)
         side_dexels!(ax; lit = 1)
         hit = Mke.Point2f(0.05, -0.45)
         photon!(ax, (0.05, 1.3), hit; cycles = 5, amplitude = 0.03, color = MATERIALS.beam)
-        Mke.scatter!(ax, [hit]; marker = :star5, markersize = 22, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.2)
+        Mke.scatter!(
+            ax,
+            [hit];
+            marker = :star5,
+            markersize = 22,
+            color = Mke.RGBf(0.98, 0.95, 0.6),
+            strokecolor = MATERIALS.beam,
+            strokewidth = 1.2,
+        )
         if k == 1
-            photon!(ax, hit, (0.33, -1.05); cycles = 2, amplitude = 0.06, color = PALETTE.xray, head = 10)
-            Mke.scatter!(ax, [Mke.Point2f(0.33, -1.05)]; color = PALETTE.electron, markersize = 10)
+            photon!(
+                ax,
+                hit,
+                (0.33, -1.05);
+                cycles = 2,
+                amplitude = 0.06,
+                color = PALETTE.xray,
+                head = 10,
+            )
+            Mke.scatter!(
+                ax,
+                [Mke.Point2f(0.33, -1.05)];
+                color = PALETTE.electron,
+                markersize = 10,
+            )
         elseif k == 2
-            photon!(ax, hit, (-0.55, 1.2); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 12)
+            photon!(
+                ax,
+                hit,
+                (-0.55, 1.2);
+                cycles = 3,
+                amplitude = 0.05,
+                color = PALETTE.xray,
+                head = 12,
+            )
         elseif k == 3
-            photon!(ax, hit, (0.85, -0.95); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 10)
-            Mke.scatter!(ax, [Mke.Point2f(0.98, -0.95)]; color = PALETTE.electron, markersize = 10)
+            photon!(
+                ax,
+                hit,
+                (0.85, -0.95);
+                cycles = 3,
+                amplitude = 0.05,
+                color = PALETTE.xray,
+                head = 10,
+            )
+            Mke.scatter!(
+                ax,
+                [Mke.Point2f(0.98, -0.95)];
+                color = PALETTE.electron,
+                markersize = 10,
+            )
         else
-            photon!(ax, hit, (1.6, 0.6); cycles = 3, amplitude = 0.05, color = PALETTE.photon, head = 12)
+            photon!(
+                ax,
+                hit,
+                (1.6, 0.6);
+                cycles = 3,
+                amplitude = 0.05,
+                color = PALETTE.photon,
+                head = 12,
+            )
         end
         Mke.limits!(ax, -1.75, 1.75, -d - 0.25, 1.45)
-        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+        Mke.Label(
+            fig[2, k],
+            detail;
+            fontsize = 16,
+            color = PALETTE.muted,
+            tellwidth = false,
+        )
     end
     locator!(fig[0, :], :ceramic; note = "Step 2 · Where One\nPhoton's Energy Goes")
     fig
@@ -1947,12 +2942,16 @@ budget_energies = 15.0:5.0:140.0
 
 # ╔═╡ c1642d2c-c743-50d8-8fa0-b307a93526da
 budgets = [
-    MC.energy_budget(run) for run in MC.simulate_sweep(
-            [(MC.SlabDetector(gemstone, depth_mm; width_mm = 16.0), E) for E in budget_energies];
-            n = 50_000,
-            beam = crystal_beam,
-            seed = 9,
-        )
+    MC.energy_budget(run)
+    for run in MC.simulate_sweep(
+        [
+            (MC.SlabDetector(gemstone, depth_mm; width_mm = 16.0), E)
+            for E in budget_energies
+        ];
+        n = 50_000,
+        beam = crystal_beam,
+        seed = 9,
+    )
 ]
 
 # ╔═╡ d6c44cff-e7b9-4790-b287-f784595829ce
@@ -1961,17 +2960,63 @@ let
     d = depth_mm
     fig = Mke.Figure(size = (1400, 470))
     ax = canvas(fig[1, 1])
-    rect!(ax, -6, -d, 12, d, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
-    Mke.text!(ax, 0, -d - 0.12; text = "One Continuous Slab of Gemstone, $(d) mm Deep (No Reflector, So What Leaves Is Gone)", fontsize = 15, color = PALETTE.slab_edge, align = (:center, :top))
+    rect!(
+        ax,
+        -6,
+        -d,
+        12,
+        d,
+        MATERIALS.scintillator;
+        strokecolor = PALETTE.slab_edge,
+        strokewidth = 1.5,
+    )
+    Mke.text!(
+        ax,
+        0,
+        -d - 0.12;
+        text = "One Continuous Slab of Gemstone, $(d) mm Deep (No Reflector, So What Leaves Is Gone)",
+        fontsize = 15,
+        color = PALETTE.slab_edge,
+        align = (:center, :top),
+    )
     xs = (-4.5, -1.5, 1.5, 4.5)
     for x in xs
-        photon!(ax, (x, 1.6), (x, x == 4.5 ? -d - 1.4 : -0.6); cycles = 5, amplitude = 0.012, color = MATERIALS.beam)
+        photon!(
+            ax,
+            (x, 1.6),
+            (x, x == 4.5 ? -d - 1.4 : -0.6);
+            cycles = 5,
+            amplitude = 0.012,
+            color = MATERIALS.beam,
+        )
     end
     for x in xs[1:3]
-        Mke.scatter!(ax, [Mke.Point2f(x, -0.6)]; marker = :star5, markersize = 24, color = Mke.RGBf(0.98, 0.95, 0.6), strokecolor = MATERIALS.beam, strokewidth = 1.2)
+        Mke.scatter!(
+            ax,
+            [Mke.Point2f(x, -0.6)];
+            marker = :star5,
+            markersize = 24,
+            color = Mke.RGBf(0.98, 0.95, 0.6),
+            strokecolor = MATERIALS.beam,
+            strokewidth = 1.2,
+        )
     end
-    photon!(ax, (-1.5, -0.6), (-2.6, 1.3); cycles = 3, amplitude = 0.04, color = PALETTE.xray)
-    photon!(ax, (1.5, -0.6), (2.7, -d - 1.3); cycles = 3, amplitude = 0.04, color = PALETTE.photon)
+    photon!(
+        ax,
+        (-1.5, -0.6),
+        (-2.6, 1.3);
+        cycles = 3,
+        amplitude = 0.04,
+        color = PALETTE.xray,
+    )
+    photon!(
+        ax,
+        (1.5, -0.6),
+        (2.7, -d - 1.3);
+        cycles = 3,
+        amplitude = 0.04,
+        color = PALETTE.photon,
+    )
     labels = (
         (-4.5, "Stays in\nthe Garnet", PALETTE.kept),
         (-1.5, "Leaves as a Tb\nor Lu X Ray", PALETTE.xray),
@@ -1979,7 +3024,16 @@ let
         (4.5, "Passes Straight\nThrough", PALETTE.muted),
     )
     for (x, text, color) in labels
-        Mke.text!(ax, x, 1.75; text, color, fontsize = 18, font = :bold, align = (:center, :bottom))
+        Mke.text!(
+            ax,
+            x,
+            1.75;
+            text,
+            color,
+            fontsize = 18,
+            font = :bold,
+            align = (:center, :bottom),
+        )
     end
     Mke.limits!(ax, -6.3, 6.3, -d - 1.6, 2.75)
     fig
@@ -2048,7 +3102,7 @@ let
         as Tb or Lu x rays and $(round(100b.absorbed; digits = 1)) % stays. Gemstone is $(depth_mm) mm deep, so far fewer photons pass
         straight through than in the thinner Siemens ceramics. The energy balance closes to within
         $(round(100closure; digits = 2)) % at every energy.
-        """
+        """,
     )
 end
 
@@ -2102,23 +3156,68 @@ let
     function top!(ax, lit)
         rect!(ax, -2.5p[1], -2.5p[2], 5p[1], 5p[2], Mke.RGBf(0.93, 0.93, 0.9))
         for i in -2:2, j in -2:2
-            rect!(ax, i * p[1] - (p[1] - s) / 2, j * p[2] - (p[2] - s) / 2, p[1] - s, p[2] - s, lit(i, j) ? lit_colour : MATERIALS.scintillator; strokecolor = (PALETTE.slab_edge, 0.5), strokewidth = 1)
+            rect!(
+                ax,
+                i * p[1] - (p[1] - s) / 2,
+                j * p[2] - (p[2] - s) / 2,
+                p[1] - s,
+                p[2] - s,
+                lit(i, j) ? lit_colour : MATERIALS.scintillator;
+                strokecolor = (PALETTE.slab_edge, 0.5),
+                strokewidth = 1,
+            )
         end
         return
     end
     ax1 = canvas(fig[1, 1]; title = "One Dexel Lit", titlesize = 20)
     top!(ax1, (i, j) -> i == 0 && j == 0)
     for (dx, dy) in ((1, 0), (0, 1), (-1, 0), (0, -1))
-        photon!(ax1, (0.15dx * p[1], 0.15dy * p[2]), (0.95dx * p[1], 0.95dy * p[2]); cycles = 2, amplitude = 0.06, color = PALETTE.xray, head = 11)
+        photon!(
+            ax1,
+            (0.15dx * p[1], 0.15dy * p[2]),
+            (0.95dx * p[1], 0.95dy * p[2]);
+            cycles = 2,
+            amplitude = 0.06,
+            color = PALETTE.xray,
+            head = 11,
+        )
     end
-    Mke.Label(fig[2, 1], "Its Tb and Lu X Rays Land in the Neighbours:\nLost to This Dexel (the Dashed Curve Below)"; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    Mke.Label(
+        fig[2, 1],
+        "Its Tb and Lu X Rays Land in the Neighbours:\nLost to This Dexel (the Dashed Curve Below)";
+        fontsize = 16,
+        color = PALETTE.muted,
+        tellwidth = false,
+    )
     ax2 = canvas(fig[1, 2]; title = "Every Dexel Lit (Flat Field)", titlesize = 20)
     top!(ax2, (i, j) -> true)
     for (dx, dy) in ((1, 0), (0, 1), (-1, 0), (0, -1))
-        photon!(ax2, (0.15dx * p[1], 0.15dy * p[2] + 0.12), (0.95dx * p[1], 0.95dy * p[2] + 0.12); cycles = 2, amplitude = 0.05, color = PALETTE.xray, head = 10)
-        photon!(ax2, (0.95dx * p[1], 0.95dy * p[2] - 0.12), (0.15dx * p[1], 0.15dy * p[2] - 0.12); cycles = 2, amplitude = 0.05, color = PALETTE.xray, head = 10)
+        photon!(
+            ax2,
+            (0.15dx * p[1], 0.15dy * p[2] + 0.12),
+            (0.95dx * p[1], 0.95dy * p[2] + 0.12);
+            cycles = 2,
+            amplitude = 0.05,
+            color = PALETTE.xray,
+            head = 10,
+        )
+        photon!(
+            ax2,
+            (0.95dx * p[1], 0.95dy * p[2] - 0.12),
+            (0.15dx * p[1], 0.15dy * p[2] - 0.12);
+            cycles = 2,
+            amplitude = 0.05,
+            color = PALETTE.xray,
+            head = 10,
+        )
     end
-    Mke.Label(fig[2, 2], "What It Loses, It Gets Back from Them:\nWhat a Scan Sees (the Green Curve)"; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+    Mke.Label(
+        fig[2, 2],
+        "What It Loses, It Gets Back from Them:\nWhat a Scan Sees (the Green Curve)";
+        fontsize = 16,
+        color = PALETTE.muted,
+        tellwidth = false,
+    )
 
     # Swank: the same photon energy, different signals
     ax3 = Mke.Axis(
@@ -2131,9 +3230,27 @@ let
         limits = ((0.3, 10.7), (0, 66)),
     )
     signals = [60, 60, 17, 60, 60, 60, 17, 60, 9, 60]
-    Mke.barplot!(ax3, 1:10, signals; color = [v == 60 ? PALETTE.kept : v == 17 ? PALETTE.xray : PALETTE.photon for v in signals])
-    Mke.Label(fig[2, 3], "The Spread Adds Noise: the Swank Factor\nI = 1 When Every Photon Gives the Same"; fontsize = 16, color = PALETTE.muted, tellwidth = false)
-    locator!(fig[0, :], :ceramic; note = "Steps 2–3 · The Whole\nGarnet Layer, Many\nDexels at Once")
+    Mke.barplot!(
+        ax3,
+        1:10,
+        signals;
+        color = [
+            v == 60 ? PALETTE.kept : v == 17 ? PALETTE.xray : PALETTE.photon
+            for v in signals
+        ],
+    )
+    Mke.Label(
+        fig[2, 3],
+        "The Spread Adds Noise: the Swank Factor\nI = 1 When Every Photon Gives the Same";
+        fontsize = 16,
+        color = PALETTE.muted,
+        tellwidth = false,
+    )
+    locator!(
+        fig[0, :],
+        :ceramic;
+        note = "Steps 2–3 · The Whole\nGarnet Layer, Many\nDexels at Once",
+    )
     fig
 end
 
@@ -2240,7 +3357,7 @@ let
         dexel loses to its neighbours, it gets back from them. The Swank factor there is $(round(efficiency.swank[k70]; digits = 3)).
         At 140 keV the photon interacts with probability $(round(efficiency.interaction[k140]; digits = 3)) (Beer–Lambert:
         $(round(beer; digits = 3))), and the flat-field efficiency is $(round(efficiency.flat_field[k140]; digits = 3)).
-        """
+        """,
     )
 end
 
@@ -2255,24 +3372,38 @@ at 3.0 mm for the even split (6.40 g/cm³, used here), for the Tb-rich garnet of
 
 # ╔═╡ ee6081a3-7bb9-5320-a338-909cf1251027
 composition_runs = Dict(
-    label => MC.energy_absorption_efficiency.(
-            MC.simulate_sweep(
-                [(dexel_array(depth_mm; material), E) for E in energies];
-                n = 50_000,
-                beam = crystal_beam,
-                seed = 23,
-                readout,
-            ),
-        )
-        for (label, material) in (("Tb-rich, 6.24", gemstone_tb_rich), ("even split, 7.0", gemstone_basis))
+    label =>
+        MC.energy_absorption_efficiency.(MC.simulate_sweep(
+            [(dexel_array(depth_mm; material), E) for E in energies];
+            n = 50_000,
+            beam = crystal_beam,
+            seed = 23,
+            readout,
+        ))
+    for (label, material) in (
+        ("Tb-rich, 6.24", gemstone_tb_rich),
+        ("even split, 7.0", gemstone_basis),
+    )
 )
 
 # ╔═╡ 739e2f06-3ac1-41ba-b800-c95f4274a083
 let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1400, 430))
-    elements = (("Tb", 65), ("Lu", 71), ("Al", 13), ("O", 8), ("Ce", 58))  # mass fractions are keyed by Z
-    colors = (PALETTE.xray, PALETTE.electron, Mke.RGBf(0.75, 0.77, 0.8), PALETTE.photon, PALETTE.kept)
+    elements = (
+        ("Tb", 65),
+        ("Lu", 71),
+        ("Al", 13),
+        ("O", 8),
+        ("Ce", 58),
+    ) # mass fractions are keyed by Z
+    colors = (
+        PALETTE.xray,
+        PALETTE.electron,
+        Mke.RGBf(0.75, 0.77, 0.8),
+        PALETTE.photon,
+        PALETTE.kept,
+    )
     garnets = (
         ("Even Split, 6.40 g/cm³", gemstone, "Used Here"),
         ("Tb-Rich (GE's Patent), 6.24 g/cm³", gemstone_tb_rich, "The Bracket"),
@@ -2291,11 +3422,35 @@ let
         for ((element, Z), color) in zip(elements, colors)
             f = get(material.mass_fractions, Z, 0.0)
             f > 0 || continue
-            Mke.poly!(ax, Mke.Rect2f(left, k - 0.3, f, 0.6); color, strokecolor = :white, strokewidth = 1.5)
-            f > 0.06 && Mke.text!(ax, left + f / 2, k; text = element, align = (:center, :center), fontsize = 16, font = :bold, color = :white)
+            Mke.poly!(
+                ax,
+                Mke.Rect2f(left, k - 0.3, f, 0.6);
+                color,
+                strokecolor = :white,
+                strokewidth = 1.5,
+            )
+            f > 0.06 &&
+                Mke.text!(
+                    ax,
+                    left + f / 2,
+                    k;
+                    text = element,
+                    align = (:center, :center),
+                    fontsize = 16,
+                    font = :bold,
+                    color = :white,
+                )
             left += f
         end
-        note!(ax, 0.99, k - 0.42, note; align = (:right, :center), fontsize = 14, color = PALETTE.muted)
+        note!(
+            ax,
+            0.99,
+            k - 0.42,
+            note;
+            align = (:right, :center),
+            fontsize = 14,
+            color = PALETTE.muted,
+        )
     end
     Mke.Label(
         fig[2, 1],
@@ -2350,7 +3505,6 @@ end
 
 # ╔═╡ 208a44d2-987f-5887-b584-1f976fcc90a5
 let
-    E = collect(energies)
     spread = maximum(abs.(composition_runs["Tb-rich, 6.24"] .- efficiency.flat_field))
     density = maximum(abs.(composition_runs["even split, 7.0"] .- efficiency.flat_field))
     Markdown.parse(
@@ -2358,7 +3512,7 @@ let
         Between the two possible garnets the flat-field efficiency differs by at most **$(round(spread; digits = 3))**
         (largest where the Tb and Lu edges sit); BasisSimulator v0.15.1's impossible density moves it by up to
         $(round(density; digits = 3)). Both possible garnets are saved with the table.
-        """
+        """,
     )
 end
 
@@ -2409,13 +3563,28 @@ boone = let
     dep, esc = run.deposits, run.escapes
     radius(k) = hypot(dep.x_mm[k], dep.y_mm[k])
     (
-        primary = sum(dep.energy_keV[k] for k in eachindex(dep.event) if radius(k) <= 0.1) / incident,
-        lateral = sum(dep.energy_keV[k] for k in eachindex(dep.event) if 0.1 < radius(k) <= 4.5) / incident,
-        backward = sum(esc.energy_keV[i] for i in eachindex(esc.kind) if esc.backward[i]) / incident,
+        primary = sum(dep.energy_keV[k] for k in eachindex(dep.event) if radius(k) <= 0.1) /
+            incident,
+        lateral = sum(
+            dep.energy_keV[k]
+            for k in eachindex(dep.event)
+            if 0.1 < radius(k) <= 4.5
+        ) /
+            incident,
+        backward = sum(esc.energy_keV[i] for i in eachindex(esc.kind) if esc.backward[i]) /
+            incident,
         forward = sum(
-            esc.energy_keV[i] for i in eachindex(esc.kind) if !esc.backward[i] && esc.kind[i] !== :transmitted
-        ) / incident,
-        transmitted = sum(esc.energy_keV[i] for i in eachindex(esc.kind) if esc.kind[i] === :transmitted) / incident,
+            esc.energy_keV[i]
+            for i in eachindex(esc.kind)
+            if !esc.backward[i] && esc.kind[i] !== :transmitted
+        ) /
+            incident,
+        transmitted = sum(
+            esc.energy_keV[i]
+            for i in eachindex(esc.kind)
+            if esc.kind[i] === :transmitted
+        ) /
+            incident,
     )
 end
 
@@ -2424,26 +3593,135 @@ let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1400, 470))
     ax = canvas(fig[1, 1]; title = "Side View (Not to Scale)", titlesize = 20)
-    rect!(ax, -3, -0.12, 6, 0.24, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
-    Mke.text!(ax, 3.05, 0; text = "Gd₂O₂S Screen,\n90 mg/cm²", align = (:left, :center), fontsize = 15, color = PALETTE.slab_edge)
-    Mke.lines!(ax, [-3, 3], [1.1, 1.1]; color = PALETTE.photon, linewidth = 3, linestyle = :dash)
-    Mke.lines!(ax, [-3, 3], [-1.1, -1.1]; color = PALETTE.photon, linewidth = 3, linestyle = :dash)
-    Mke.text!(ax, -3, 1.2; text = "Ideal Sensor: Energy Carried Back Toward the Tube", fontsize = 15, color = PALETTE.photon, align = (:left, :bottom))
-    Mke.text!(ax, -3, -1.2; text = "Ideal Sensor: Energy Carried Forward", fontsize = 15, color = PALETTE.photon, align = (:left, :top))
+    rect!(
+        ax,
+        -3,
+        -0.12,
+        6,
+        0.24,
+        MATERIALS.scintillator;
+        strokecolor = PALETTE.slab_edge,
+        strokewidth = 1.5,
+    )
+    Mke.text!(
+        ax,
+        3.05,
+        0;
+        text = "Gd₂O₂S Screen,\n90 mg/cm²",
+        align = (:left, :center),
+        fontsize = 15,
+        color = PALETTE.slab_edge,
+    )
+    Mke.lines!(
+        ax,
+        [-3, 3],
+        [1.1, 1.1];
+        color = PALETTE.photon,
+        linewidth = 3,
+        linestyle = :dash,
+    )
+    Mke.lines!(
+        ax,
+        [-3, 3],
+        [-1.1, -1.1];
+        color = PALETTE.photon,
+        linewidth = 3,
+        linestyle = :dash,
+    )
+    Mke.text!(
+        ax,
+        -3,
+        1.2;
+        text = "Ideal Sensor: Energy Carried Back Toward the Tube",
+        fontsize = 15,
+        color = PALETTE.photon,
+        align = (:left, :bottom),
+    )
+    Mke.text!(
+        ax,
+        -3,
+        -1.2;
+        text = "Ideal Sensor: Energy Carried Forward",
+        fontsize = 15,
+        color = PALETTE.photon,
+        align = (:left, :top),
+    )
     photon!(ax, (0, 2.0), (0, 0.0); cycles = 6, amplitude = 0.03, color = MATERIALS.beam)
-    Mke.text!(ax, 0.1, 1.75; text = "55 keV Pencil Beam", fontsize = 15, color = Mke.RGBf(0.8, 0.5, 0.05), align = (:left, :center))
-    photon!(ax, (0, 0), (-1.3, 1.05); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 10)
-    photon!(ax, (0, 0), (1.4, -1.05); cycles = 3, amplitude = 0.05, color = PALETTE.xray, head = 10)
-    photon!(ax, (0, 0), (0.9, 0.0); cycles = 2, amplitude = 0.08, color = PALETTE.xray, head = 10)
+    Mke.text!(
+        ax,
+        0.1,
+        1.75;
+        text = "55 keV Pencil Beam",
+        fontsize = 15,
+        color = Mke.RGBf(0.8, 0.5, 0.05),
+        align = (:left, :center),
+    )
+    photon!(
+        ax,
+        (0, 0),
+        (-1.3, 1.05);
+        cycles = 3,
+        amplitude = 0.05,
+        color = PALETTE.xray,
+        head = 10,
+    )
+    photon!(
+        ax,
+        (0, 0),
+        (1.4, -1.05);
+        cycles = 3,
+        amplitude = 0.05,
+        color = PALETTE.xray,
+        head = 10,
+    )
+    photon!(
+        ax,
+        (0, 0),
+        (0.9, 0.0);
+        cycles = 2,
+        amplitude = 0.08,
+        color = PALETTE.xray,
+        head = 10,
+    )
     Mke.limits!(ax, -3.2, 4.6, -1.7, 2.3)
 
     ax2 = canvas(fig[1, 2]; title = "Seen from the Beam: the Tallies", titlesize = 20)
     θ = range(0, 2π; length = 120)
-    Mke.poly!(ax2, Mke.Point2f.(4.5 .* cos.(θ), 4.5 .* sin.(θ)); color = (MATERIALS.scintillator, 0.6), strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+    Mke.poly!(
+        ax2,
+        Mke.Point2f.(4.5 .* cos.(θ), 4.5 .* sin.(θ));
+        color = (MATERIALS.scintillator, 0.6),
+        strokecolor = PALETTE.slab_edge,
+        strokewidth = 1.5,
+    )
     Mke.poly!(ax2, Mke.Point2f.(0.45 .* cos.(θ), 0.45 .* sin.(θ)); color = PALETTE.kept)
-    Mke.text!(ax2, 0, 0.6; text = "Within 0.1 mm:\n\"Absorbed as Primary\"", align = (:center, :bottom), fontsize = 15, color = PALETTE.kept)
-    Mke.text!(ax2, 0, -3.3; text = "0.1 to 4.5 mm: \"Lateral\"\n(Reabsorbed Fluorescence)", align = (:center, :center), fontsize = 15, color = PALETTE.slab_edge)
-    Mke.text!(ax2, 4.6, 3.6; text = "(Circle Enlarged)", align = (:left, :center), fontsize = 13, color = PALETTE.muted)
+    Mke.text!(
+        ax2,
+        0,
+        0.6;
+        text = "Within 0.1 mm:\n\"Absorbed as Primary\"",
+        align = (:center, :bottom),
+        fontsize = 15,
+        color = PALETTE.kept,
+    )
+    Mke.text!(
+        ax2,
+        0,
+        -3.3;
+        text = "0.1 to 4.5 mm: \"Lateral\"\n(Reabsorbed Fluorescence)",
+        align = (:center, :center),
+        fontsize = 15,
+        color = PALETTE.slab_edge,
+    )
+    Mke.text!(
+        ax2,
+        4.6,
+        3.6;
+        text = "(Circle Enlarged)",
+        align = (:left, :center),
+        fontsize = 13,
+        color = PALETTE.muted,
+    )
     Mke.limits!(ax2, -5, 7, -5, 5)
     fig
 end
@@ -2477,7 +3755,7 @@ let
         for Gd₂O₂S to a few thousandths (Hajdok et al., notebook 02), and those depend directly on how much fluorescence
         escapes; the difference most likely lies in the 1999 code's atomic data rather than in this screen, but that is an
         inference, not a demonstration.
-        """
+        """,
     )
 end
 
@@ -2520,22 +3798,54 @@ let
     N = 30
     E = 140.0
     cases = (
-        (gemstone_basis, "7.0 g/cm³: BasisSimulator v0.15.1's Garnet", "Denser Than Any\n(Tb,Lu)₃Al₅O₁₂ Can Be"),
+        (
+            gemstone_basis,
+            "7.0 g/cm³: BasisSimulator v0.15.1's Garnet",
+            "Denser Than Any\n(Tb,Lu)₃Al₅O₁₂ Can Be",
+        ),
         (gemstone, "6.40 g/cm³: the Same Garnet, a Density It Can Have", "Used Here"),
     )
     for (k, (material, title, note)) in enumerate(cases)
         μ = MC.geant4_attenuation(material, E)
         stopped = 1 - exp(-μ * depth_mm)
         ax = canvas(fig[1, k]; title, titlesize = 20)
-        rect!(ax, 0, 0, 1.6, depth_mm, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+        rect!(
+            ax,
+            0,
+            0,
+            1.6,
+            depth_mm,
+            MATERIALS.scintillator;
+            strokecolor = PALETTE.slab_edge,
+            strokewidth = 1.5,
+        )
         for i in 1:N
             x = 1.6 * (i - 0.5) / N
             z = -log(1 - mod(i * 0.618034, 1.0)) / μ
             if z < depth_mm
-                Mke.lines!(ax, [x, x], [depth_mm + 0.55, depth_mm - z]; color = MATERIALS.beam, linewidth = 2)
-                Mke.scatter!(ax, [x], [depth_mm - z]; color = PALETTE.electron, markersize = 9)
+                Mke.lines!(
+                    ax,
+                    [x, x],
+                    [depth_mm + 0.55, depth_mm - z];
+                    color = MATERIALS.beam,
+                    linewidth = 2,
+                )
+                Mke.scatter!(
+                    ax,
+                    [x],
+                    [depth_mm - z];
+                    color = PALETTE.electron,
+                    markersize = 9,
+                )
             else
-                arrow!(ax, (x, depth_mm + 0.55), (x, -0.5); color = (MATERIALS.beam, 0.6), linewidth = 2, head = 10)
+                arrow!(
+                    ax,
+                    (x, depth_mm + 0.55),
+                    (x, -0.5);
+                    color = (MATERIALS.beam, 0.6),
+                    linewidth = 2,
+                    head = 10,
+                )
             end
         end
         Mke.text!(
@@ -2631,7 +3941,7 @@ let
         Unlike the Siemens tables, this one stays under its ceiling at every energy (closest at $(Int(E[argmin(ceiling .- table_at.(E))])) keV,
         $(round(margin; digits = 3)) below it): it can describe a 3.0 mm crystal of its material. But it sits below Geant4's
         flat field above the K-edges, the signature of one dexel under a pencil beam. Which crystal does it describe?
-        """
+        """,
     )
 end
 
@@ -2658,7 +3968,8 @@ pencil_scan = reshape(
     MC.simulate_sweep(
         [
             (dexel_array(depth; material = gemstone_basis), E)
-                for depth in scan_depths for E in scan_energies
+            for depth in scan_depths
+            for E in scan_energies
         ];
         n = 50_000,
         beam = MC.PencilBeam(; start_mm = 12.0),
@@ -2673,7 +3984,7 @@ pencil_scan = reshape(
 # How far one depth's pencil-beam efficiencies are from the table, after the best constant factor
 function misfit(runs, target)
     ours = MC.dexel_efficiency.(runs)
-    scale = sum(ours .* target) / sum(ours .^ 2)
+    scale = sum(ours .* target) / sum(ours.^2)
     rms = sqrt(sum(abs2, scale .* ours .- target) / length(target))
     return (scale = scale, rms = rms)
 end
@@ -2805,7 +4116,7 @@ let
 
         So the v0.15.1 table is BasisSimulator v0.15.1's documented detector, with two problems: **⚠ its density is impossible**
         (section 1), and it is one dexel under a pencil beam rather than the flat field a scan sees (section 4).
-        """
+        """,
     )
 end
 
@@ -2839,26 +4150,81 @@ let
     H, w = grid.height_mm, grid.wall_mm
     fig = Mke.Figure(size = (1600, 1050))
 
-
     # (a) to scale, the near corner cut away
-    ax = canvas(fig[1, 1]; title = "(a) The 3D Collimator over the Dexels, to Scale", titlesize = 20)
+    ax = canvas(
+        fig[1, 1];
+        title = "(a) The 3D Collimator over the Dexels, to Scale",
+        titlesize = 20,
+    )
     cam = camera(-52, 24)
     nx, ny = 6, 5
     blocks = dexel_blocks(nx, ny, p, s, 0.0, d)
-    append!(blocks, filter(b -> !(b.lo[1] > 2.4p[1] && b.lo[2] < 2.4p[2]), grid_blocks(nx, ny, p, w, d, d + H)))
+    append!(
+        blocks,
+        filter(
+            b -> !(b.lo[1] > 2.4p[1] && b.lo[2] < 2.4p[2]),
+            grid_blocks(nx, ny, p, w, d, d + H),
+        ),
+    )
     straight = ((4.5p[1], 0.5p[2], d + H + 3.5), (4.5p[1], 0.5p[2], d))
     tilt = tand(20)
     stop_z = d + H - (0.5p[1] - w / 2) / tilt
     angled = ((3.0p[1] + 0.02, 1.5p[2], d + H + 2.0), (4.0p[1] - w / 2, 1.5p[2], stop_z))
     extras = [
-        (1.0e3, a -> arrow!(a, project(cam, straight[1]), project(cam, straight[2]); color = MATERIALS.beam, linewidth = 3.5)),
-        (1.0e3, a -> Mke.lines!(a, [project(cam, angled[1]), project(cam, angled[2])]; color = PALETTE.xray, linewidth = 3.5)),
-        (1.0e3, a -> Mke.scatter!(a, [project(cam, angled[2])]; marker = :xcross, markersize = 20, color = PALETTE.xray)),
+        (
+            1.0e3,
+            a -> arrow!(
+                a,
+                project(cam, straight[1]),
+                project(cam, straight[2]);
+                color = MATERIALS.beam,
+                linewidth = 3.5,
+            ),
+        ),
+        (
+            1.0e3,
+            a -> Mke.lines!(
+                a,
+                [project(cam, angled[1]), project(cam, angled[2])];
+                color = PALETTE.xray,
+                linewidth = 3.5,
+            ),
+        ),
+        (
+            1.0e3,
+            a -> Mke.scatter!(
+                a,
+                [project(cam, angled[2])];
+                marker = :xcross,
+                markersize = 20,
+                color = PALETTE.xray,
+            ),
+        ),
     ]
     draw_blocks!(ax, cam, blocks; extras)
-    callout!(ax, project(cam, (4.5p[1], 0.5p[2], d + H + 2.5)), project(cam, (4.5p[1], 0.5p[2], d + H + 2.5)) + Mke.Point2f(3.0, 1.2), "From the Focal Spot:\nStraight Down a Channel"; color = Mke.RGBf(0.8, 0.5, 0.05), fontsize = 15)
-    callout!(ax, project(cam, angled[2]), project(cam, angled[2]) + Mke.Point2f(3.6, -2.2), "Scattered in the Patient:\nStopped by a Wall"; color = PALETTE.xray, fontsize = 15)
-    callout!(ax, project(cam, (nx * p[1], ny * p[2], d + H / 2)), project(cam, (nx * p[1], ny * p[2], d + H / 2)) + Mke.Point2f(1.4, 4.2), "Tungsten Walls\n$(round(Int, 1000w)) µm Thick,\n$(round(Int, H)) mm Tall"; fontsize = 15)
+    callout!(
+        ax,
+        project(cam, (4.5p[1], 0.5p[2], d + H + 2.5)),
+        project(cam, (4.5p[1], 0.5p[2], d + H + 2.5)) + Mke.Point2f(3.0, 1.2),
+        "From the Focal Spot:\nStraight Down a Channel";
+        color = Mke.RGBf(0.8, 0.5, 0.05),
+        fontsize = 15,
+    )
+    callout!(
+        ax,
+        project(cam, angled[2]),
+        project(cam, angled[2]) + Mke.Point2f(3.6, -2.2),
+        "Scattered in the Patient:\nStopped by a Wall";
+        color = PALETTE.xray,
+        fontsize = 15,
+    )
+    callout!(
+        ax,
+        project(cam, (nx * p[1], ny * p[2], d + H / 2)),
+        project(cam, (nx * p[1], ny * p[2], d + H / 2)) + Mke.Point2f(1.4, 4.2),
+        "Tungsten Walls\n$(round(Int, 1000w)) µm Thick,\n$(round(Int, H)) mm Tall";
+        fontsize = 15,
+    )
     Mke.xlims!(ax, nothing, project(cam, (nx * p[1], 0, 0))[1] + 9.5)
 
     # (b) side view, to scale, with the angle and the shadow a wall casts
@@ -2870,7 +4236,15 @@ let
         ylabel = "Height Above the Garnet (mm)",
         limits = ((-0.75p[1], 1.05p[1]), (-d - 0.2, H + 1.4)),
     )
-    rect!(axb, -0.5p[1], -d, p[1], d, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge)
+    rect!(
+        axb,
+        -0.5p[1],
+        -d,
+        p[1],
+        d,
+        MATERIALS.scintillator;
+        strokecolor = PALETTE.slab_edge,
+    )
     for x in (-0.5p[1], 0.5p[1])
         rect!(axb, x - w / 2, 0, w, H, MATERIALS.tungsten)
     end
@@ -2878,7 +4252,11 @@ let
     # photons at θ enter the opening evenly; those entering within H tan θ of the far wall hit it
     xl, xr = -0.5p[1] + w / 2, 0.5p[1] - w / 2
     reach = H * tand(θ)
-    Mke.poly!(axb, Mke.Point2f[(xr - reach, H), (xr, H), (xr, 0)]; color = (PALETTE.xray, 0.2))
+    Mke.poly!(
+        axb,
+        Mke.Point2f[(xr - reach, H), (xr, H), (xr, 0)];
+        color = (PALETTE.xray, 0.2),
+    )
     for x_in in range(xl + 0.03, xr - 0.03; length = 7)
         x_out = x_in + reach
         if x_out <= xr
@@ -2886,12 +4264,47 @@ let
         else
             y_hit = H - (xr - x_in) / tand(θ)
             Mke.lines!(axb, [x_in, xr], [H, y_hit]; color = PALETTE.xray, linewidth = 2)
-            Mke.scatter!(axb, [xr], [y_hit]; marker = :xcross, markersize = 12, color = PALETTE.xray)
+            Mke.scatter!(
+                axb,
+                [xr],
+                [y_hit];
+                marker = :xcross,
+                markersize = 12,
+                color = PALETTE.xray,
+            )
         end
     end
-    Mke.bracket!(axb, xr - reach, H + 0.1, xr, H + 0.1; text = "H tan θ: These Hit the Wall", orientation = :up, fontsize = 14, color = PALETTE.xray, textcolor = PALETTE.xray)
-    Mke.bracket!(axb, 0.5p[1] + 0.12, 0, 0.5p[1] + 0.12, H; text = "H = $(round(Int, H)) mm", orientation = :down, fontsize = 15, color = PALETTE.ink, textcolor = PALETTE.ink)
-    Mke.Label(fig[2, 2], "Photons Arriving θ = $(round(Int, θ))° off the Channel's Axis:\nThe Fraction 1 − H tan θ / Opening Reaches the Garnet"; fontsize = 15, color = PALETTE.ink, tellwidth = false)
+    Mke.bracket!(
+        axb,
+        xr - reach,
+        H + 0.1,
+        xr,
+        H + 0.1;
+        text = "H tan θ: These Hit the Wall",
+        orientation = :up,
+        fontsize = 14,
+        color = PALETTE.xray,
+        textcolor = PALETTE.xray,
+    )
+    Mke.bracket!(
+        axb,
+        0.5p[1] + 0.12,
+        0,
+        0.5p[1] + 0.12,
+        H;
+        text = "H = $(round(Int, H)) mm",
+        orientation = :down,
+        fontsize = 15,
+        color = PALETTE.ink,
+        textcolor = PALETTE.ink,
+    )
+    Mke.Label(
+        fig[2, 2],
+        "Photons Arriving θ = $(round(Int, θ))° off the Channel's Axis:\nThe Fraction 1 − H tan θ / Opening Reaches the Garnet";
+        fontsize = 15,
+        color = PALETTE.ink,
+        tellwidth = false,
+    )
     Mke.colsize!(fig.layout, 2, Mke.Relative(0.32))
     locator!(fig[0, :], :grid; note = "Step 1 · GE's 3D Collimator\nIn Front of the Garnet")
     fig
@@ -3038,9 +4451,14 @@ end
 
 # ╔═╡ 9af6dffc-d99a-54bf-97cf-dd20156bbe48
 let
-    straight = MC.energy_absorption_efficiency.(grid_runs.with) ./ MC.energy_absorption_efficiency.(grid_runs.without)
+    straight = MC.energy_absorption_efficiency.(grid_runs.with) ./
+        MC.energy_absorption_efficiency.(grid_runs.without)
     reference = MC.energy_absorption_efficiency(first(angle_runs.without))
-    at(angle) = MC.energy_absorption_efficiency(angle_runs.with[findfirst(==(angle), collect(angles_deg))]) / reference
+    at(angle) = MC.energy_absorption_efficiency(angle_runs.with[findfirst(
+        ==(angle),
+        collect(angles_deg),
+    )]) /
+        reference
     Markdown.parse(
         """
         Straight from the focal spot the grid changes the collected energy by $(round(100(minimum(straight) - 1); digits = 1)) to
@@ -3050,7 +4468,7 @@ let
         (Above 69.5 keV the walls' own x rays add a little.)
         At an angle it is a filter: at 3° it passes $(round(100at(3.0); digits = 0)) % of what arrives, at 6° $(round(100at(6.0); digits = 0)) %. A
         photon that scatters in the patient arrives from anywhere, so most of it is stopped.
-        """
+        """,
     )
 end
 
@@ -3102,7 +4520,11 @@ let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1600, 990))
 
-    ax = canvas(fig[1, 1]; title = "The Whole Detector, from the Focal Spot (Depth Exaggerated)", titlesize = 20)
+    ax = canvas(
+        fig[1, 1];
+        title = "The Whole Detector, from the Focal Spot (Depth Exaggerated)",
+        titlesize = 20,
+    )
     cam = camera(-62, 26)
     R = apex.source_to_detector_mm
     half = apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2
@@ -3111,38 +4533,102 @@ let
     items = arc_quads(cam, R, half, half_z; thickness = 25.0)
     # the beam: fan × cone, translucent, from the focal spot
     focal = (0.0, 0.0, 0.0)
-    corners = [(R * sin(a), -R * cos(a), z) for (a, z) in ((-half, -half_z), (half, -half_z), (half, half_z), (-half, half_z))]
+    corners = [
+        (R * sin(a), -R * cos(a), z)
+        for (a, z) in ((-half, -half_z), (half, -half_z), (half, half_z), (-half, half_z))
+    ]
     push!(
-        items, (
-            1.0e4, a -> begin
+        items,
+        (
+            1.0e4,
+            a -> begin
                 for (c1, c2) in zip(corners, circshift(corners, -1))
-                    Mke.poly!(a, Mke.Point2f[project(cam, focal), project(cam, c1), project(cam, c2)]; color = (amber, 0.1))
+                    Mke.poly!(
+                        a,
+                        Mke.Point2f[
+                            project(cam, focal),
+                            project(cam, c1),
+                            project(cam, c2),
+                        ];
+                        color = (amber, 0.1),
+                    )
                 end
-                Mke.lines!(a, [project(cam, c) for c in vcat([focal], corners[1:1])]; color = (amber, 0.7), linewidth = 1.5)
+                Mke.lines!(
+                    a,
+                    [project(cam, c) for c in vcat([focal], corners[1:1])];
+                    color = (amber, 0.7),
+                    linewidth = 1.5,
+                )
                 for c in corners
-                    Mke.lines!(a, [project(cam, focal), project(cam, c)]; color = (amber, 0.7), linewidth = 1.5)
+                    Mke.lines!(
+                        a,
+                        [project(cam, focal), project(cam, c)];
+                        color = (amber, 0.7),
+                        linewidth = 1.5,
+                    )
                 end
                 Mke.scatter!(a, [project(cam, focal)]; color = PALETTE.ink, markersize = 14)
                 iso = (0.0, -apex.source_to_isocenter_mm, 0.0)
-                Mke.scatter!(a, [project(cam, iso)]; marker = :cross, markersize = 18, color = PALETTE.ink)
+                Mke.scatter!(
+                    a,
+                    [project(cam, iso)];
+                    marker = :cross,
+                    markersize = 18,
+                    color = PALETTE.ink,
+                )
             end,
-        )
+        ),
     )
     sort!(items; by = first)
     for (_, f) in items
         f(ax)
     end
     iso = (0.0, -apex.source_to_isocenter_mm, 0.0)
-    callout!(ax, project(cam, focal), project(cam, focal) + Mke.Point2f(150, 80), "Focal Spot"; fontsize = 16)
-    callout!(ax, project(cam, iso), project(cam, iso) + Mke.Point2f(260, 60), "Isocentre, $(round(Int, apex.source_to_isocenter_mm)) mm Away"; fontsize = 16)
+    callout!(
+        ax,
+        project(cam, focal),
+        project(cam, focal) + Mke.Point2f(150, 80),
+        "Focal Spot";
+        fontsize = 16,
+    )
+    callout!(
+        ax,
+        project(cam, iso),
+        project(cam, iso) + Mke.Point2f(260, 60),
+        "Isocentre, $(round(Int, apex.source_to_isocenter_mm)) mm Away";
+        fontsize = 16,
+    )
     edge = (R * sin(half), -R * cos(half), half_z)
-    callout!(ax, project(cam, edge), project(cam, edge) + Mke.Point2f(120, 120), "$(apex.columns) Columns Across the Fan ($(round(2rad2deg(half); digits = 1))°)\n× $(apex.rows) Rows Along Z, at $(round(R; digits = 1)) mm"; fontsize = 16)
+    callout!(
+        ax,
+        project(cam, edge),
+        project(cam, edge) + Mke.Point2f(120, 120),
+        "$(apex.columns) Columns Across the Fan ($(round(2rad2deg(half); digits = 1))°)\n× $(apex.rows) Rows Along Z, at $(round(R; digits = 1)) mm";
+        fontsize = 16,
+    )
     low = (R * sin(-half / 2), -R * cos(-half / 2), -half_z)
-    callout!(ax, project(cam, low), project(cam, low) + Mke.Point2f(-120, -160), "The Outer Rows See the Beam\nat the Cone Angle"; fontsize = 16, align = (:right, :center))
+    callout!(
+        ax,
+        project(cam, low),
+        project(cam, low) + Mke.Point2f(-120, -160),
+        "The Outer Rows See the Beam\nat the Cone Angle";
+        fontsize = 16,
+        align = (:right, :center),
+    )
     xs = [project(cam, c)[1] for c in vcat(corners, [focal])]
     ys = [project(cam, c)[2] for c in vcat(corners, [focal])]
-    Mke.limits!(ax, minimum(xs) - 520, maximum(xs) + 620, minimum(ys) - 240, maximum(ys) + 200)
-    locator!(fig[0, :], :arc; note = "The Whole Arc:\n$(apex.columns) × $(apex.rows) Dexels, 160 mm Along Z")
+    Mke.limits!(
+        ax,
+        minimum(xs) - 520,
+        maximum(xs) + 620,
+        minimum(ys) - 240,
+        maximum(ys) + 200,
+    )
+    locator!(
+        fig[0, :],
+        :arc;
+        note = "The Whole Arc:\n$(apex.columns) × $(apex.rows) Dexels, 160 mm Along Z",
+    )
     fig
 end
 
@@ -3174,7 +4660,10 @@ let
             linewidth = 2,
             label = "$(Int(air_energies[k])) keV",
         )
-        slab = MC.energy_absorption_efficiency(grid_runs.with[findfirst(==(air_energies[k]), collect(grid_energies))])
+        slab = MC.energy_absorption_efficiency(grid_runs.with[findfirst(
+            ==(air_energies[k]),
+            collect(grid_energies),
+        )])
         Mke.hlines!(axb, slab; color = colors[k], linestyle = :dash, linewidth = 2)
     end
     note!(
@@ -3224,7 +4713,10 @@ let
     ratios = Float64[]
     for (k, scan) in enumerate(air_scans)
         whole = sum(scan.energy_keV) / scan.photon_keV
-        slab = MC.energy_absorption_efficiency(grid_runs.with[findfirst(==(air_energies[k]), collect(grid_energies))])
+        slab = MC.energy_absorption_efficiency(grid_runs.with[findfirst(
+            ==(air_energies[k]),
+            collect(grid_energies),
+        )])
         push!(ratios, whole / slab)
         push!(
             lines,
@@ -3267,7 +4759,7 @@ let
         $(join(lines, "\n"))
 
         $(verdict)
-        """
+        """,
     )
 end
 
@@ -3357,15 +4849,58 @@ let
     ax = canvas(fig[1, 1])
     amber = MATERIALS.beam
     # tube: envelope, cathode, anode at 10°
-    Mke.poly!(ax, Mke.Rect2f(-0.6, -1.5, 2.4, 3.0); color = Mke.RGBf(0.93, 0.94, 0.96), strokecolor = PALETTE.slab_edge, strokewidth = 1.5)
+    Mke.poly!(
+        ax,
+        Mke.Rect2f(-0.6, -1.5, 2.4, 3.0);
+        color = Mke.RGBf(0.93, 0.94, 0.96),
+        strokecolor = PALETTE.slab_edge,
+        strokewidth = 1.5,
+    )
     rect!(ax, -0.45, -0.25, 0.3, 0.5, PALETTE.slab_edge)
-    Mke.text!(ax, -0.3, -0.45; text = "Cathode", align = (:center, :top), fontsize = 14, color = PALETTE.muted)
-    Mke.poly!(ax, Mke.Point2f[(1.2, -0.9), (1.55, -0.9), (1.55, 0.9), (1.35, 0.9)]; color = Mke.RGBf(0.6, 0.45, 0.3))
-    Mke.text!(ax, 1.42, -1.0; text = "Tungsten Anode, 10°", align = (:center, :top), fontsize = 14, color = PALETTE.muted)
+    Mke.text!(
+        ax,
+        -0.3,
+        -0.45;
+        text = "Cathode",
+        align = (:center, :top),
+        fontsize = 14,
+        color = PALETTE.muted,
+    )
+    Mke.poly!(
+        ax,
+        Mke.Point2f[(1.2, -0.9), (1.55, -0.9), (1.55, 0.9), (1.35, 0.9)];
+        color = Mke.RGBf(0.6, 0.45, 0.3),
+    )
+    Mke.text!(
+        ax,
+        1.42,
+        -1.0;
+        text = "Tungsten Anode, 10°",
+        align = (:center, :top),
+        fontsize = 14,
+        color = PALETTE.muted,
+    )
     arrow!(ax, (-0.1, 0.0), (1.22, 0.0); color = PALETTE.photon, linewidth = 2.5, head = 11)
-    Mke.text!(ax, 0.55, 0.12; text = "Electrons", align = (:center, :bottom), fontsize = 14, color = PALETTE.photon)
+    Mke.text!(
+        ax,
+        0.55,
+        0.12;
+        text = "Electrons",
+        align = (:center, :bottom),
+        fontsize = 14,
+        color = PALETTE.photon,
+    )
     focal = Mke.Point2f(1.28, 0.0)
-    Mke.text!(ax, 0.6, 1.6; text = "X-Ray Tube", align = (:center, :bottom), fontsize = 18, font = :bold, color = PALETTE.ink)
+    Mke.text!(
+        ax,
+        0.6,
+        1.6;
+        text = "X-Ray Tube",
+        align = (:center, :bottom),
+        fontsize = 18,
+        font = :bold,
+        color = PALETTE.ink,
+    )
     # the fan, rightwards
     x_end = 13.5
     Mke.poly!(ax, Mke.Point2f[focal, (x_end, 2.6), (x_end, -2.6)]; color = (amber, 0.13))
@@ -3379,27 +4914,103 @@ let
     for (x, w, c, name, when) in filters
         h = 0.25 + (x - focal[1]) * 2.6 / (x_end - focal[1])
         rect!(ax, x, -h, w, 2h, c; strokecolor = (:black, 0.3))
-        Mke.text!(ax, x + w / 2, h + 0.12; text = name, align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
-        Mke.text!(ax, x + w / 2, -h - 0.12; text = when, align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+        Mke.text!(
+            ax,
+            x + w / 2,
+            h + 0.12;
+            text = name,
+            align = (:center, :bottom),
+            fontsize = 15,
+            font = :bold,
+            color = PALETTE.ink,
+        )
+        Mke.text!(
+            ax,
+            x + w / 2,
+            -h - 0.12;
+            text = when,
+            align = (:center, :top),
+            fontsize = 13,
+            color = PALETTE.muted,
+        )
     end
     # bowtie: thin in the middle, thick at the edges
     xb = 6.3
     hb = 0.25 + (xb - focal[1]) * 2.6 / (x_end - focal[1])
-    Mke.poly!(ax, Mke.Point2f[(xb, -hb), (xb + 0.55, -hb), (xb + 0.08, 0), (xb + 0.55, hb), (xb, hb)]; color = Mke.RGBf(0.75, 0.77, 0.8), strokecolor = (:black, 0.3))
-    Mke.text!(ax, xb + 0.25, hb + 0.12; text = "GE Large Bowtie", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
-    Mke.text!(ax, xb + 0.25, -hb - 0.12; text = "2.5 mm Al\nat the Centre", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
+    Mke.poly!(
+        ax,
+        Mke.Point2f[(xb, -hb), (xb + 0.55, -hb), (xb + 0.08, 0), (xb + 0.55, hb), (xb, hb)];
+        color = Mke.RGBf(0.75, 0.77, 0.8),
+        strokecolor = (:black, 0.3),
+    )
+    Mke.text!(
+        ax,
+        xb + 0.25,
+        hb + 0.12;
+        text = "GE Large Bowtie",
+        align = (:center, :bottom),
+        fontsize = 15,
+        font = :bold,
+        color = PALETTE.ink,
+    )
+    Mke.text!(
+        ax,
+        xb + 0.25,
+        -hb - 0.12;
+        text = "2.5 mm Al\nat the Centre",
+        align = (:center, :top),
+        fontsize = 13,
+        color = PALETTE.muted,
+    )
     # patient and isocentre
     θ = range(0, 2π; length = 100)
     xi = 9.6
-    Mke.poly!(ax, Mke.Point2f.(xi .+ 1.1 .* cos.(θ), 0.8 .* sin.(θ)); color = (MATERIALS.water, 0.6), strokecolor = (PALETTE.photon, 0.5))
-    Mke.scatter!(ax, [Mke.Point2f(xi, 0)]; marker = :cross, markersize = 16, color = PALETTE.ink)
-    Mke.text!(ax, xi, 0.95; text = "Patient (Isocentre, $(apex.source_to_isocenter_mm) mm)", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
+    Mke.poly!(
+        ax,
+        Mke.Point2f.(xi .+ 1.1 .* cos.(θ), 0.8 .* sin.(θ));
+        color = (MATERIALS.water, 0.6),
+        strokecolor = (PALETTE.photon, 0.5),
+    )
+    Mke.scatter!(
+        ax,
+        [Mke.Point2f(xi, 0)];
+        marker = :cross,
+        markersize = 16,
+        color = PALETTE.ink,
+    )
+    Mke.text!(
+        ax,
+        xi,
+        0.95;
+        text = "Patient (Isocentre, $(apex.source_to_isocenter_mm) mm)",
+        align = (:center, :bottom),
+        fontsize = 15,
+        font = :bold,
+        color = PALETTE.ink,
+    )
     # detector with grid
-    rect!(ax, x_end, -2.7, 0.15, 5.4, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge)
+    rect!(
+        ax,
+        x_end,
+        -2.7,
+        0.15,
+        5.4,
+        MATERIALS.scintillator;
+        strokecolor = PALETTE.slab_edge,
+    )
     for y in range(-2.6, 2.6; length = 14)
         rect!(ax, x_end - 0.35, y - 0.01, 0.35, 0.02, MATERIALS.tungsten)
     end
-    Mke.text!(ax, x_end - 0.1, -2.85; text = "3D Collimator\n+ Detector\n($(round(Int, apex.source_to_detector_mm)) mm)", align = (:center, :top), fontsize = 15, font = :bold, color = PALETTE.ink)
+    Mke.text!(
+        ax,
+        x_end - 0.1,
+        -2.85;
+        text = "3D Collimator\n+ Detector\n($(round(Int, apex.source_to_detector_mm)) mm)",
+        align = (:center, :top),
+        fontsize = 15,
+        font = :bold,
+        color = PALETTE.ink,
+    )
     Mke.limits!(ax, -0.8, 14.6, -4.4, 3.4)
     locator!(fig[0, :], :tube; note = "The X-Ray Tube and\nWhat the Beam Passes")
     fig
@@ -3478,27 +5089,93 @@ hvl_check = let
         return MC.half_value_layer(e, w .* exp.(-μ .* bowtie_al_mm))
     end
 
-    [(kVp = k, basis = hvl(k), measured = m) for (k, m) in ((80, 7.08), (120, 9.2), (140, 10.0))]
+    [
+        (kVp = k, basis = hvl(k), measured = m)
+        for (k, m) in ((80, 7.08), (120, 9.2), (140, 10.0))
+    ]
 end
 
 # ╔═╡ 064bfa0d-1a2d-40a9-9f1d-4bf769a5965a
 let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1400, 380))
-    for (k, (al, reading, title)) in enumerate(((0, "100 %", "No Aluminium in the Beam"), (9.2, "50 %", "9.2 mm of Aluminium at 120 kV: Half Is Left")))
+    for (k, (al, reading, title)) in enumerate((
+            (0, "100 %", "No Aluminium in the Beam"),
+            (9.2, "50 %", "9.2 mm of Aluminium at 120 kV: Half Is Left"),
+        ))
         ax = canvas(fig[1, k]; title, titlesize = 20)
-        Mke.scatter!(ax, [Mke.Point2f(0, 0)]; marker = :rect, markersize = 22, color = PALETTE.ink)
-        Mke.text!(ax, 0, -0.45; text = "Tube\n(120 kV, Through\nthe Bowtie's Centre)", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
-        Mke.poly!(ax, Mke.Point2f[(0.1, 0), (6, 0.45), (6, -0.45)]; color = (MATERIALS.beam, 0.25))
+        Mke.scatter!(
+            ax,
+            [Mke.Point2f(0, 0)];
+            marker = :rect,
+            markersize = 22,
+            color = PALETTE.ink,
+        )
+        Mke.text!(
+            ax,
+            0,
+            -0.45;
+            text = "Tube\n(120 kV, Through\nthe Bowtie's Centre)",
+            align = (:center, :top),
+            fontsize = 13,
+            color = PALETTE.muted,
+        )
+        Mke.poly!(
+            ax,
+            Mke.Point2f[(0.1, 0), (6, 0.45), (6, -0.45)];
+            color = (MATERIALS.beam, 0.25),
+        )
         if al > 0
             for i in 0:3
-                rect!(ax, 2.8 + 0.18i, -0.35, 0.12, 0.7, Mke.RGBf(0.75, 0.77, 0.8); strokecolor = (:black, 0.3))
+                rect!(
+                    ax,
+                    2.8 + 0.18i,
+                    -0.35,
+                    0.12,
+                    0.7,
+                    Mke.RGBf(0.75, 0.77, 0.8);
+                    strokecolor = (:black, 0.3),
+                )
             end
-            Mke.text!(ax, 3.1, 0.5; text = "Aluminium Sheets", align = (:center, :bottom), fontsize = 14, color = PALETTE.ink)
+            Mke.text!(
+                ax,
+                3.1,
+                0.5;
+                text = "Aluminium Sheets",
+                align = (:center, :bottom),
+                fontsize = 14,
+                color = PALETTE.ink,
+            )
         end
-        Mke.poly!(ax, Mke.Point2f.(6.0 .+ 0.35 .* cos.(range(0, 2π; length = 60)), 0.35 .* sin.(range(0, 2π; length = 60))); color = Mke.RGBf(0.85, 0.87, 0.9), strokecolor = PALETTE.slab_edge)
-        Mke.text!(ax, 6.0, -0.5; text = "Ion Chamber\nat the Isocentre", align = (:center, :top), fontsize = 13, color = PALETTE.muted)
-        Mke.textlabel!(ax, Mke.Point2f(6.0, 0.75); text = "Air Kerma: $(reading)", text_align = (:center, :bottom), fontsize = 16, font = :bold, text_color = PALETTE.kept, background_color = (:white, 0.9), strokewidth = 0)
+        Mke.poly!(
+            ax,
+            Mke.Point2f.(
+                6.0 .+ 0.35 .* cos.(range(0, 2π; length = 60)),
+                0.35 .* sin.(range(0, 2π; length = 60)),
+            );
+            color = Mke.RGBf(0.85, 0.87, 0.9),
+            strokecolor = PALETTE.slab_edge,
+        )
+        Mke.text!(
+            ax,
+            6.0,
+            -0.5;
+            text = "Ion Chamber\nat the Isocentre",
+            align = (:center, :top),
+            fontsize = 13,
+            color = PALETTE.muted,
+        )
+        Mke.textlabel!(
+            ax,
+            Mke.Point2f(6.0, 0.75);
+            text = "Air Kerma: $(reading)",
+            text_align = (:center, :bottom),
+            fontsize = 16,
+            font = :bold,
+            text_color = PALETTE.kept,
+            background_color = (:white, 0.9),
+            strokewidth = 0,
+        )
         Mke.limits!(ax, -0.8, 7.0, -1.3, 1.3)
     end
     fig
@@ -3561,7 +5238,7 @@ let
         """
         $(verdict) (The measurement is on a Revolution CT with its large bowtie; the Apex shares its tube filtration
         and bowtie family.) The rest of this notebook keeps BasisSimulator's beam, so the two stay comparable.
-        """
+        """,
     )
 end
 
@@ -3576,7 +5253,10 @@ energy left per photon at each energy. Every Apex tube voltage BasisSimulator ca
 """
 
 # ╔═╡ f775068c-2324-5cf4-8811-cd75f968a57d
-scan_protocols = [(label = "$(k) kV", spectrum = apex_spectrum(k)) for k in (80, 100, 120, 140)]
+scan_protocols = [
+    (label = "$(k) kV", spectrum = apex_spectrum(k))
+    for k in (80, 100, 120, 140)
+]
 
 # ╔═╡ 354a335b-59d0-565d-a29c-4a3242eac17c
 # Each protocol's spectrum on the 1-keV grid, then its energy-weighted efficiencies and DQE(0)
@@ -3603,27 +5283,77 @@ let
     fig = Mke.Figure(size = (1600, 760))
 
     photons = ((40, 0.6), (70, 1.6), (110, 2.6))
-    for (k, (title, detail)) in enumerate(
+    for (k, (title, detail)) in enumerate((
+            ("A Photon-Counting Dexel", "Each Photon Counts 1:\nSignal = 3"),
             (
-                ("A Photon-Counting Dexel", "Each Photon Counts 1:\nSignal = 3"),
-                ("This Energy-Integrating Dexel", "Each Photon Adds Its Energy × η(E):\nSignal ∝ 40 η(40) + 70 η(70) + 110 η(110)"),
-            )
-        )
+                "This Energy-Integrating Dexel",
+                "Each Photon Adds Its Energy × η(E):\nSignal ∝ 40 η(40) + 70 η(70) + 110 η(110)",
+            ),
+        ))
         ax = canvas(fig[1, k]; title, titlesize = 20)
-        rect!(ax, 0, -0.6, 3.2, 0.6, MATERIALS.scintillator; strokecolor = PALETTE.slab_edge)
+        rect!(
+            ax,
+            0,
+            -0.6,
+            3.2,
+            0.6,
+            MATERIALS.scintillator;
+            strokecolor = PALETTE.slab_edge,
+        )
         for (E, x) in photons
-            photon!(ax, (x, 2.2), (x, -0.25); cycles = E / 12, amplitude = 0.02, color = MATERIALS.beam, linewidth = 1 + E / 30)
-            Mke.text!(ax, x, 2.3; text = "$(E) keV", align = (:center, :bottom), fontsize = 15, color = PALETTE.ink)
+            photon!(
+                ax,
+                (x, 2.2),
+                (x, -0.25);
+                cycles = E / 12,
+                amplitude = 0.02,
+                color = MATERIALS.beam,
+                linewidth = 1 + E / 30,
+            )
+            Mke.text!(
+                ax,
+                x,
+                2.3;
+                text = "$(E) keV",
+                align = (:center, :bottom),
+                fontsize = 15,
+                color = PALETTE.ink,
+            )
             if k == 1
-                Mke.textlabel!(ax, Mke.Point2f(x, -1.2); text = "+1", text_align = (:center, :center), fontsize = 16, font = :bold, text_color = :white, background_color = PALETTE.photon, strokewidth = 0, cornerradius = 8)
+                Mke.textlabel!(
+                    ax,
+                    Mke.Point2f(x, -1.2);
+                    text = "+1",
+                    text_align = (:center, :center),
+                    fontsize = 16,
+                    font = :bold,
+                    text_color = :white,
+                    background_color = PALETTE.photon,
+                    strokewidth = 0,
+                    cornerradius = 8,
+                )
             else
-                Mke.poly!(ax, Mke.Rect2f(x - 0.18, -1.65, 0.36, 0.28 * E / 40); color = PALETTE.kept)
+                Mke.poly!(
+                    ax,
+                    Mke.Rect2f(x - 0.18, -1.65, 0.36, 0.28 * E / 40);
+                    color = PALETTE.kept,
+                )
             end
         end
         Mke.limits!(ax, -0.4, 3.6, -1.8, 2.8)
-        Mke.Label(fig[2, k], detail; fontsize = 16, color = PALETTE.muted, tellwidth = false)
+        Mke.Label(
+            fig[2, k],
+            detail;
+            fontsize = 16,
+            color = PALETTE.muted,
+            tellwidth = false,
+        )
     end
-    locator!(fig[0, :], :photodiode; note = "Steps 4–5 · Adding Up\nthe Light of Many Photons")
+    locator!(
+        fig[0, :],
+        :photodiode;
+        note = "Steps 4–5 · Adding Up\nthe Light of Many Photons",
+    )
     fig
 end
 
@@ -3684,7 +5414,7 @@ end
 let
     rows = [
         "| $(m.label) | $(round(m.table; digits = 3)) | $(round(m.geant4; digits = 3)) | $(round(100(m.geant4 / m.table - 1); digits = 1)) % | $(round(m.dqe; digits = 3)) |"
-            for m in scan_metrics
+        for m in scan_metrics
     ]
     Markdown.parse(
         """
@@ -3694,7 +5424,7 @@ let
 
         Both are per photon landing on a dexel's garnet; BasisSimulator's fill factor (0.9 × 0.9) applies to both
         alike.
-        """
+        """,
     )
 end
 
@@ -3724,36 +5454,105 @@ let
     Mke.set_theme!(THEME)
     fig = Mke.Figure(size = (1600, 810))
 
-
     # The path: tube, bowtie, water, the arc with its grid
     ax = canvas(fig[1, 1]; title = "The Beam, Photon by Photon", titlesize = 20)
     amber = MATERIALS.beam
     focal = Mke.Point2f(0, 0)
     Mke.scatter!(ax, [focal]; marker = :rect, markersize = 22, color = PALETTE.ink)
-    Mke.text!(ax, focal + Mke.Point2f(0, 0.45); text = "120 kV Tube", align = (:center, :bottom), fontsize = 15, font = :bold, color = PALETTE.ink)
-    φ = range(-(apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2), apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2; length = 60)
+    Mke.text!(
+        ax,
+        focal + Mke.Point2f(0, 0.45);
+        text = "120 kV Tube",
+        align = (:center, :bottom),
+        fontsize = 15,
+        font = :bold,
+        color = PALETTE.ink,
+    )
+    φ = range(
+        -(apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2),
+        apex.columns * apex.column_at_isocenter_mm / apex.source_to_isocenter_mm / 2;
+        length = 60,
+    )
     R = 10.0
     arc = [Mke.Point2f(R * sin(t), -R * cos(t)) for t in φ]
     Mke.poly!(ax, vcat([focal], arc); color = (amber, 0.15))
-    Mke.poly!(ax, Mke.Point2f[(-1.2, -1.6), (1.2, -1.6), (0.15, -2.0), (1.2, -2.4), (-1.2, -2.4), (-0.15, -2.0)]; color = Mke.RGBf(0.75, 0.77, 0.8))
-    Mke.text!(ax, 1.35, -2.0; text = "Bowtie", align = (:left, :center), fontsize = 15, color = PALETTE.ink)
+    Mke.poly!(
+        ax,
+        Mke.Point2f[
+            (-1.2, -1.6),
+            (1.2, -1.6),
+            (0.15, -2.0),
+            (1.2, -2.4),
+            (-1.2, -2.4),
+            (-0.15, -2.0),
+        ];
+        color = Mke.RGBf(0.75, 0.77, 0.8),
+    )
+    Mke.text!(
+        ax,
+        1.35,
+        -2.0;
+        text = "Bowtie",
+        align = (:left, :center),
+        fontsize = 15,
+        color = PALETTE.ink,
+    )
     θ = range(0, 2π; length = 100)
-    Mke.poly!(ax, Mke.Point2f.(2.4 .* cos.(θ), -5.45 .+ 1.6 .* sin.(θ)); color = (MATERIALS.water, 0.7), strokecolor = (PALETTE.photon, 0.5))
-    Mke.text!(ax, 0, -5.45; text = "0, 20 or 35 cm\nof Water", align = (:center, :center), fontsize = 15, color = PALETTE.ink)
+    Mke.poly!(
+        ax,
+        Mke.Point2f.(2.4 .* cos.(θ), -5.45 .+ 1.6 .* sin.(θ));
+        color = (MATERIALS.water, 0.7),
+        strokecolor = (PALETTE.photon, 0.5),
+    )
+    Mke.text!(
+        ax,
+        0,
+        -5.45;
+        text = "0, 20 or 35 cm\nof Water",
+        align = (:center, :center),
+        fontsize = 15,
+        color = PALETTE.ink,
+    )
     inner = [Mke.Point2f((R + 0.05) * sin(t), -(R + 0.05) * cos(t)) for t in φ]
     outer = [Mke.Point2f((R + 0.45) * sin(t), -(R + 0.45) * cos(t)) for t in φ]
-    Mke.poly!(ax, vcat(inner, reverse(outer)); color = MATERIALS.scintillator, strokecolor = PALETTE.slab_edge)
+    Mke.poly!(
+        ax,
+        vcat(inner, reverse(outer));
+        color = MATERIALS.scintillator,
+        strokecolor = PALETTE.slab_edge,
+    )
     for t in range(φ[1], φ[end]; length = 31)
-        Mke.lines!(ax, Mke.Point2f[((R - 0.5) * sin(t), -(R - 0.5) * cos(t)), (R * sin(t), -R * cos(t))]; color = MATERIALS.tungsten, linewidth = 1)
+        Mke.lines!(
+            ax,
+            Mke.Point2f[
+                ((R - 0.5) * sin(t), -(R - 0.5) * cos(t)),
+                (R * sin(t), -R * cos(t)),
+            ];
+            color = MATERIALS.tungsten,
+            linewidth = 1,
+        )
     end
-    Mke.text!(ax, 0, -R - 0.7; text = "The Whole Arc and Its 3D Collimator ($(apex.columns) × $(apex.rows) Dexels)", align = (:center, :top), fontsize = 15, font = :bold, color = PALETTE.ink)
+    Mke.text!(
+        ax,
+        0,
+        -R - 0.7;
+        text = "The Whole Arc and Its 3D Collimator ($(apex.columns) × $(apex.rows) Dexels)",
+        align = (:center, :top),
+        fontsize = 15,
+        font = :bold,
+        color = PALETTE.ink,
+    )
     Mke.limits!(ax, -6.5, 6.5, -R - 1.8, 1.4)
 
     # The three spectra, each as a fraction of its photons per keV: the water hardens the beam
     continuum(e) = !(57 <= e <= 70)
     spectra = [
-        (b.label, b.spectrum.energies_keV, b.spectrum.weights ./ (sum(b.spectrum.weights) * 0.5))
-            for b in clinical_beams
+        (
+            b.label,
+            b.spectrum.energies_keV,
+            b.spectrum.weights ./ (sum(b.spectrum.weights) * 0.5),
+        )
+        for b in clinical_beams
     ]
     top = 1.35 * maximum(maximum(w[continuum.(e)]) for (_, e, w) in spectra)
     axs = Mke.Axis(
@@ -3768,12 +5567,31 @@ let
     colors = (PALETTE.photon, PALETTE.xray, PALETTE.electron)
     for (k, (label, e, w)) in enumerate(spectra)
         mean_E = sum(w .* e) / sum(w)
-        Mke.lines!(axs, e, w; color = colors[k], linewidth = 3, label = "$(label): Mean $(round(mean_E; digits = 1)) keV")
+        Mke.lines!(
+            axs,
+            e,
+            w;
+            color = colors[k],
+            linewidth = 3,
+            label = "$(label): Mean $(round(mean_E; digits = 1)) keV",
+        )
     end
-    note!(axs, 63.5, 0.97top, "Tungsten's K Lines\n(Off Scale)"; align = (:center, :top), fontsize = 14, color = PALETTE.muted)
+    note!(
+        axs,
+        63.5,
+        0.97top,
+        "Tungsten's K Lines\n(Off Scale)";
+        align = (:center, :top),
+        fontsize = 14,
+        color = PALETTE.muted,
+    )
     Mke.axislegend(axs; position = :rt)
     Mke.colsize!(fig.layout, 1, Mke.Relative(0.32))
-    locator!(fig[0, :], :whole; note = "Everything at Once:\nTube, Patient, Grid,\nEvery Dexel")
+    locator!(
+        fig[0, :],
+        :whole;
+        note = "Everything at Once:\nTube, Patient, Grid,\nEvery Dexel",
+    )
     fig
 end
 
@@ -3786,17 +5604,19 @@ clinical_beams = let
     bowtie_al_mm = 10 * bowtie.thickness[centre, findfirst(==("Al"), bowtie.materials)]
     aluminium, water = MC.DetectorMaterial(:Al), MC.DetectorMaterial(:Water)
     e, w = apex_spectrum(120)
-    through_bowtie = w .* exp.(-[MC.linear_attenuation(aluminium, max(E, 1.0)) for E in e] .* bowtie_al_mm)
+    through_bowtie = w .*
+        exp.(-[MC.linear_attenuation(aluminium, max(E, 1.0)) for E in e] .* bowtie_al_mm)
     [
         (
-                label = L == 0 ? "No Patient" : "$(round(Int, L / 10)) cm of Water",
-                water_mm = L,
-                spectrum = MC.Spectrum(
-                    collect(Float64, e),
-                    through_bowtie .* exp.(-[MC.linear_attenuation(water, max(E, 1.0)) for E in e] .* L),
-                ),
-            )
-            for L in (0.0, 200.0, 350.0)
+            label = L == 0 ? "No Patient" : "$(round(Int, L / 10)) cm of Water",
+            water_mm = L,
+            spectrum = MC.Spectrum(
+                collect(Float64, e),
+                through_bowtie .*
+                    exp.(-[MC.linear_attenuation(water, max(E, 1.0)) for E in e] .* L),
+            ),
+        )
+        for L in (0.0, 200.0, 350.0)
     ]
 end
 
@@ -3805,7 +5625,11 @@ end
 # spot over the whole arc and its grid (16 chunks of 200 000)
 clinical_runs = let
     dexel = MC.simulate_sweep(
-        [(dexel_array(depth_mm), b.spectrum, 300 + chunk) for b in clinical_beams for chunk in 1:16];
+        [
+            (dexel_array(depth_mm), b.spectrum, 300 + chunk)
+            for b in clinical_beams
+            for chunk in 1:16
+        ];
         n = 100_000,
         beam = crystal_beam,
         readout,
@@ -3831,20 +5655,24 @@ clinical_check = let
     m2 = [d.crystal2_keV2 / d.n for d in one_dexel]
     cell = MC.energy_absorption_efficiency.(grid_runs.with)
     at(table, x) = MC.interpolate_linear(E, table, x)
-    noise(values) = sqrt(sum(abs2, values .- mean(values)) / (length(values) - 1) / length(values))
+    noise(values) = sqrt(
+        sum(abs2, values .- mean(values)) / (length(values) - 1) / length(values),
+    )
     map(enumerate(clinical_beams)) do (k, b)
         e, w = b.spectrum.energies_keV, b.spectrum.weights
         mean_E = sum(w .* e) / sum(w)
         chunks, arcs = clinical_runs.dexel[k], clinical_runs.arc[k]
         efficiency_of(d) = d.crystal_keV / (d.n * mean_E)
-        dqe_of(cs) = sum(c.crystal_keV for c in cs)^2 / (sum(c.n for c in cs) * sum(c.crystal2_keV2 for c in cs))
+        dqe_of(cs) = sum(c.crystal_keV for c in cs)^2 /
+            (sum(c.n for c in cs) * sum(c.crystal2_keV2 for c in cs))
         arc_of(a) = sum(a.energy_keV) / a.photon_keV
         (
             label = b.label,
             mean_keV = mean_E,
             efficiency = (
                 table = sum(w .* e .* at.(Ref(efficiency.flat_field), e)) / sum(w .* e),
-                direct = sum(c.crystal_keV for c in chunks) / (sum(c.n for c in chunks) * mean_E),
+                direct = sum(c.crystal_keV for c in chunks) /
+                    (sum(c.n for c in chunks) * mean_E),
                 noise = noise(efficiency_of.(chunks)),
             ),
             dqe = (
@@ -3853,7 +5681,19 @@ clinical_check = let
                 noise = noise([dqe_of([c]) for c in chunks]),
             ),
             arc = (
-                table = sum(w .* e .* [MC.interpolate_linear(collect(grid_energies), cell, clamp(x, 20.0, 140.0)) for x in e]) / sum(w .* e),
+                table = sum(
+                    w .*
+                        e .*
+                        [
+                            MC.interpolate_linear(
+                                collect(grid_energies),
+                                cell,
+                                clamp(x, 20.0, 140.0),
+                            )
+                            for x in e
+                        ],
+                ) /
+                    sum(w .* e),
                 direct = arc_of(sum(arcs)),
                 noise = noise(arc_of.(arcs)),
             ),
@@ -3868,9 +5708,17 @@ let
     x = 1:length(clinical_check)
     labels = [c.label for c in clinical_check]
     panels = (
-        (key = :efficiency, title = "(a) Efficiency, One Dexel", ylabel = "Energy-Weighted Efficiency"),
+        (
+            key = :efficiency,
+            title = "(a) Efficiency, One Dexel",
+            ylabel = "Energy-Weighted Efficiency",
+        ),
         (key = :dqe, title = "(b) DQE(0), One Dexel", ylabel = "DQE(0)"),
-        (key = :arc, title = "(c) The Whole Arc and Its Grid", ylabel = "Energy Collected per Photon ÷ E"),
+        (
+            key = :arc,
+            title = "(c) The Whole Arc and Its Grid",
+            ylabel = "Energy Collected per Photon ÷ E",
+        ),
     )
     for (k, panel) in enumerate(panels)
         values = [getfield(c, panel.key) for c in clinical_check]
@@ -3885,9 +5733,32 @@ let
             xticklabelrotation = π / 8,
             limits = ((0.5, length(x) + 0.5), (lo - pad, hi + pad)),
         )
-        Mke.scatter!(ax, x .- 0.08, [v.table for v in values]; color = PALETTE.reference, markersize = 16, marker = :diamond, label = "Table, Weighted by the Spectrum")
-        Mke.errorbars!(ax, x .+ 0.08, [v.direct for v in values], [3v.noise for v in values]; color = PALETTE.kept, whiskerwidth = 10, linewidth = 2)
-        Mke.scatter!(ax, x .+ 0.08, [v.direct for v in values]; color = PALETTE.kept, markersize = 14, label = "Geant4, the Spectrum Itself (± 3σ)")
+        Mke.scatter!(
+            ax,
+            x .- 0.08,
+            [v.table for v in values];
+            color = PALETTE.reference,
+            markersize = 16,
+            marker = :diamond,
+            label = "Table, Weighted by the Spectrum",
+        )
+        Mke.errorbars!(
+            ax,
+            x .+ 0.08,
+            [v.direct for v in values],
+            [3v.noise for v in values];
+            color = PALETTE.kept,
+            whiskerwidth = 10,
+            linewidth = 2,
+        )
+        Mke.scatter!(
+            ax,
+            x .+ 0.08,
+            [v.direct for v in values];
+            color = PALETTE.kept,
+            markersize = 14,
+            label = "Geant4, the Spectrum Itself (± 3σ)",
+        )
         k == 1 && Mke.axislegend(ax; position = :lb)
     end
     fig
@@ -3897,12 +5768,19 @@ end
 let
     rows = String[]
     worst = 0.0
-    for c in clinical_check, (name, v, floor) in (("efficiency, one dexel", c.efficiency, 0.002), ("DQE(0), one dexel", c.dqe, 0.003), ("the whole arc", c.arc, 0.01))
+    for c in clinical_check, (name, v, floor) in (
+            ("efficiency, one dexel", c.efficiency, 0.002),
+            ("DQE(0), one dexel", c.dqe, 0.003),
+            ("the whole arc", c.arc, 0.01),
+        )
         difference = v.direct - v.table
         allowed = 3v.noise + floor
         pass = abs(difference) <= allowed
         worst = max(worst, abs(difference) / allowed)
-        push!(rows, "| $(pass ? "✓" : "✗ **fail**") | $(c.label), $(name) | $(round(v.table; digits = 4)) | $(round(v.direct; digits = 4)) ± $(round(v.noise; digits = 4)) | $(round(difference; digits = 4)) | ≤ $(round(allowed; digits = 4)) |")
+        push!(
+            rows,
+            "| $(pass ? "✓" : "✗ **fail**") | $(c.label), $(name) | $(round(v.table; digits = 4)) | $(round(v.direct; digits = 4)) ± $(round(v.noise; digits = 4)) | $(round(difference; digits = 4)) | ≤ $(round(allowed; digits = 4)) |",
+        )
     end
     passed = count(r -> startswith(r, "| ✓"), rows)
     Markdown.parse(
@@ -3915,7 +5793,7 @@ let
         efficiency and 0.003 for DQE(0) (the table's noise and its 1-keV grid), and 0.01 for the whole arc, whose dexels
         see the beam at the fan and cone angles that one straight dexel does not (section 7). Where they agree, the
         single-energy table, weighted by any spectrum, is the clinical beam: what BasisSimulator does with it is exact.
-        """
+        """,
     )
 end
 
@@ -3990,20 +5868,26 @@ saved = let
         "reproduced_table" => reproduced,
         "reproduced_depth_mm" => fit.depth_mm,
         "reproduced_scale" => fit.scale,
-        "compared_with" => "BasisSimulator v0.15.1, GEMSTONE_MC_EFFICIENCY_LUT (BasisMonteCarlo.BASISSIMULATOR_V0_15_1_EFFICIENCY.gemstone)",
-        "decision" => "use `efficiency`: flat field, BasisSimulator's Gemstone composition at 6.40 g/cm3 (7.0 is impossible for any (Tb,Lu)3Al5O12), 3.0 mm deep; BasisSimulator's fill factor 0.9 x 0.9 unchanged",
-        "definition" => "mean energy collected per photon landing on a dexel's garnet with every dexel illuminated (flat field), divided by the photon energy; BasisSimulator's fill factor applies separately",
+        "compared_with" =>
+            "BasisSimulator v0.15.1, GEMSTONE_MC_EFFICIENCY_LUT (BasisMonteCarlo.BASISSIMULATOR_V0_15_1_EFFICIENCY.gemstone)",
+        "decision" =>
+            "use `efficiency`: flat field, BasisSimulator's Gemstone composition at 6.40 g/cm3 (7.0 is impossible for any (Tb,Lu)3Al5O12), 3.0 mm deep; BasisSimulator's fill factor 0.9 x 0.9 unchanged",
+        "definition" =>
+            "mean energy collected per photon landing on a dexel's garnet with every dexel illuminated (flat field), divided by the photon energy; BasisSimulator's fill factor applies separately",
         "detector" => Dict(
             "scanner" => "GE Revolution Apex (Gemstone Clarity)",
-            "material" => "Gemstone, (Tb,Lu)3Al5O12:Ce, BasisSimulator's mass fractions at 6.40 g/cm3",
+            "material" =>
+                "Gemstone, (Tb,Lu)3Al5O12:Ce, BasisSimulator's mass fractions at 6.40 g/cm3",
             "depth_mm" => depth_mm,
             "pitch_mm" => pitch_mm,
             "reflector" => "0.1 mm TiO2-loaded epoxy (assumed)",
-            "grid" => "2-D tungsten, 0.15 mm walls, 8 mm tall (GE patent example); not in the flat field",
+            "grid" =>
+                "2-D tungsten, 0.15 mm walls, 8 mm tall (GE patent example); not in the flat field",
         ),
         "photons_per_energy" => 100_000,
         "physics" => string(MC.PhysicsSettings()),
-        "source" => "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 06_ge_revolution_apex.jl",
+        "source" =>
+            "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 06_ge_revolution_apex.jl",
     )
     Serialization.serialize(path, contents)
     path
@@ -4045,7 +5929,7 @@ let
           **the whole detector** collects what one dexel's cell does.
         - **The beam:** the installed BasisSimulator's Apex beam $(worst_hvl <= 0.5 ? "agrees with" : "differs from") the measured Revolution CT half-value layers $(worst_hvl <= 0.5 ? "to within" : "by up to") $(round(worst_hvl; digits = 1)) mm of aluminium.
         - **Saved:** `$(basename(saved))`, with both possible garnets and depths 1.5–4.0 mm: the table for BasisSimulator v0.16.0.
-        """
+        """,
     )
 end
 

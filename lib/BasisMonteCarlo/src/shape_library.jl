@@ -29,8 +29,14 @@ The water elliptical cylinder of a v2 kernel, centred at the origin: `thickness_
 (+y), `aspect × thickness_mm` across it (x), but never wider than `2 KERNEL_MAX_HALF_WIDTH_MM`
 ([`kernel_half_width`](@ref)).
 """
-kernel_phantom(thickness_mm::Real, aspect::Real; length_mm::Real = 800.0) =
-    CylinderPhantom(; semi_axes_mm = (kernel_half_width(thickness_mm, aspect), thickness_mm / 2), length_mm = Float64(length_mm))
+kernel_phantom(
+    thickness_mm::Real,
+    aspect::Real;
+    length_mm::Real = 800.0,
+) = CylinderPhantom(;
+    semi_axes_mm = (kernel_half_width(thickness_mm, aspect), thickness_mm / 2),
+    length_mm = Float64(length_mm),
+)
 
 """
 The widest a v2 kernel's ellipse is made (half-width, mm): 70 cm across, wider than any patient. A
@@ -40,7 +46,10 @@ than the focal spot is far from its axis has no ray at its outer impacts; those 
 const KERNEL_MAX_HALF_WIDTH_MM = 350.0
 
 """The half-width (mm) of the kernel ellipse of `thickness_mm` and `aspect`, at most `KERNEL_MAX_HALF_WIDTH_MM`."""
-kernel_half_width(thickness_mm, aspect) = min(aspect * thickness_mm / 2, KERNEL_MAX_HALF_WIDTH_MM)
+kernel_half_width(thickness_mm, aspect) = min(
+    aspect * thickness_mm / 2,
+    KERNEL_MAX_HALF_WIDTH_MM,
+)
 
 """The distance (mm) from a v2 kernel's focal spot to its ellipse's axis."""
 const KERNEL_SOURCE_MM = 600.0
@@ -60,7 +69,10 @@ function kernel_ray(thickness_mm::Real, aspect::Real, impact_fraction::Real)
     a, b = thickness_mm / 2, kernel_half_width(thickness_mm, aspect)
     d = kernel_direction(a, b, impact_fraction)
     t0 = KERNEL_SOURCE_MM - max(a, b) - 10.0
-    return RayBeam(; origin_mm = (t0 * d[1], -KERNEL_SOURCE_MM + t0 * d[2], 0.0), direction = (d[1], d[2], 0.0))
+    return RayBeam(;
+        origin_mm = (t0 * d[1], -KERNEL_SOURCE_MM + t0 * d[2], 0.0),
+        direction = (d[1], d[2], 0.0),
+    )
 end
 
 """
@@ -87,8 +99,12 @@ function kernel_direction(a, b, impact_fraction)
 end
 
 """The chord (mm) of the kernel ray of `impact_fraction` through the ellipse of semi-axes (b, a)."""
-kernel_chord(a, b, impact_fraction) =
-    ellipse_chord((0.0, -KERNEL_SOURCE_MM), kernel_direction(a, b, impact_fraction), (0.0, 0.0), (b, a))
+kernel_chord(a, b, impact_fraction) = ellipse_chord(
+    (0.0, -KERNEL_SOURCE_MM),
+    kernel_direction(a, b, impact_fraction),
+    (0.0, 0.0),
+    (b, a),
+)
 
 """The impact fraction whose kernel ray passes the axis of the ellipse (b, a) `offset_mm` away (bisection)."""
 function kernel_impact_at(a, b, offset_mm)
@@ -163,18 +179,21 @@ Assemble the per-photon kernels from the tallies of the jobs, in the order `for 
 r in aspects, u in impact_fractions, E in energies` (each job's tallies one per scanner).
 """
 function shape_scatter_library(
-        tallies,
-        scanners::Vector{ScatterScanner},
-        thicknesses_mm,
-        aspects,
-        impact_fractions,
-        energies_keV;
-        water_mu_per_mm::Vector{Float64},
-        water_compton_per_mm::Vector{Float64},
-        water_rayleigh_per_mm::Vector{Float64},
-        metadata = Dict{String, Any}(),
-    )
-    nT, nr, nu, nE = length(thicknesses_mm), length(aspects), length(impact_fractions), length(energies_keV)
+    tallies,
+    scanners::Vector{ScatterScanner},
+    thicknesses_mm,
+    aspects,
+    impact_fractions,
+    energies_keV;
+    water_mu_per_mm::Vector{Float64},
+    water_compton_per_mm::Vector{Float64},
+    water_rayleigh_per_mm::Vector{Float64},
+    metadata = Dict{String, Any}(),
+)
+    nT, nr, nu, nE = length(thicknesses_mm),
+        length(aspects),
+        length(impact_fractions),
+        length(energies_keV)
     scatter = Dict{String, Array{Float32, 6}}()
     rayleigh = Dict{String, Array{Float32, 6}}()
     forward = Dict{String, Array{Float32, 6}}()
@@ -207,11 +226,18 @@ function shape_scatter_library(
                 mass[c] > 0 || continue
                 mean_offset = t.column_moments[1, c] / mass[c]
                 O[c, iu, ir, iT, iE] = mean_offset
-                Sd[c, iu, ir, iT, iE] = sqrt(max(t.column_moments[2, c] / mass[c] - mean_offset^2, 0.0))
+                Sd[c, iu, ir, iT, iE] = sqrt(max(
+                    t.column_moments[2, c] / mass[c] - mean_offset^2,
+                    0.0,
+                ))
             end
             by_process = (sum(t.scatter) - sum(t.rayleigh), sum(t.rayleigh))
             for process in 1:2
-                by_process[process] > 0 && (L[process, :, iu, ir, iT, iE] .= t.paths[process, :] ./ by_process[process])
+                by_process[process] > 0 &&
+                    (
+                        L[process, :, iu, ir, iT, iE] .= t.paths[process, :] ./
+                            by_process[process]
+                    )
             end
             A[:, :, iE] .+= t.angles ./ t.n
         end
@@ -255,7 +281,10 @@ grids the nearest kernels are used, and a ray grazing the ellipse beyond the las
 last impact's scatter scaled by its chord, as in version 1.
 """
 function library_kernel(lib::ShapeScatterLibrary, name::String, T, r, u, E)
-    S, Ry, F, P = lib.scatter[name], lib.rayleigh[name], lib.forward[name], lib.primary[name]
+    S, Ry, F, P = lib.scatter[name],
+        lib.rayleigh[name],
+        lib.forward[name],
+        lib.primary[name]
     iT = bracket(lib.thicknesses_mm, T)
     ir = bracket(log.(lib.aspects), log(r))
     iu = bracket(lib.impact_fractions, u)
@@ -264,8 +293,13 @@ function library_kernel(lib::ShapeScatterLibrary, name::String, T, r, u, E)
     rayleigh = zeros(size(S, 1), size(S, 2))
     forward = zeros(size(S, 1), size(S, 2))
     log_primary = 0.0
-    for (t, wt) in ((iT[1], 1 - iT[3]), (iT[2], iT[3])), (a, wa) in ((ir[1], 1 - ir[3]), (ir[2], ir[3])),
-            (b, wb) in ((iu[1], 1 - iu[3]), (iu[2], iu[3])), (e, we) in ((iE[1], 1 - iE[3]), (iE[2], iE[3]))
+    for (t, wt) in ((iT[1], 1 - iT[3]), (iT[2], iT[3])), (a, wa) in (
+            (ir[1], 1 - ir[3]),
+            (ir[2], ir[3]),
+        ), (b, wb) in ((iu[1], 1 - iu[3]), (iu[2], iu[3])), (e, we) in (
+            (iE[1], 1 - iE[3]),
+            (iE[2], iE[3]),
+        )
         w = wt * wa * wb * we
         w == 0 && continue
         scatter .+= w .* view(S, :, :, b, a, t, e)
@@ -296,11 +330,16 @@ moments give it back exactly: its area π a b, its centre, and b²/4 for the spr
 function view_ellipse(rays, sid; length::Symbol = :wet_mm)
     xs = [sid * sind(r.angle_deg) for r in rays]
     ls = [getfield(r, length) for r in rays]
-    dx = [i == 1 ? xs[2] - xs[1] : i == lastindex(xs) ? xs[end] - xs[end - 1] : (xs[i + 1] - xs[i - 1]) / 2 for i in eachindex(xs)]
+    dx = [
+        i == 1 ?
+            xs[2] - xs[1] :
+            i == lastindex(xs) ? xs[end] - xs[end - 1] : (xs[i + 1] - xs[i - 1]) / 2
+        for i in eachindex(xs)
+    ]
     m0 = sum(ls .* dx)
     m0 > 0 || return (thickness_mm = 0.0, width_mm = 0.0, centre_mm = 0.0)
     x0 = sum(xs .* ls .* dx) / m0
-    spread = sum((xs .- x0) .^ 2 .* ls .* dx) / m0
+    spread = sum((xs .- x0).^2 .* ls .* dx) / m0
     b = 2 * sqrt(spread)
     a = m0 / (π * b)
     return (thickness_mm = 2a, width_mm = 2b, centre_mm = x0)
@@ -344,7 +383,13 @@ function angular_factors(materials, profile, energies_keV)
     end
     forward_bins = findall(<=(FORWARD_RAYLEIGH_DEG), SCATTER_ANGLE_EDGES_DEG[2:end])
     wide_bins = setdiff(1:nbins, forward_bins)
-    result = Dict{String, NamedTuple{(:compton, :rayleigh, :rayleigh_forward, :rayleigh_wide), NTuple{4, Vector{Float64}}}}()
+    result = Dict{
+        String,
+        NamedTuple{
+            (:compton, :rayleigh, :rayleigh_forward, :rayleigh_wide),
+            NTuple{4, Vector{Float64}},
+        },
+    }()
     for m in materials
         tables = cached_scattering_tables(m)
         # the profile's average of the material's share over water's, over some of the bins
@@ -353,7 +398,11 @@ function angular_factors(materials, profile, energies_keV)
                 pw, pm = shares(water, process, E), shares(tables, process, E)
                 weight = sum(f[process, b, E] for b in bins)
                 weight > 0 || return 1.0
-                return sum(f[process, b, E] * (pw[b] > 0 ? pm[b] / pw[b] : 1.0) for b in bins) / weight
+                return sum(
+                    f[process, b, E] * (pw[b] > 0 ? pm[b] / pw[b] : 1.0)
+                    for b in bins
+                ) /
+                    weight
             end
         end
         result[m.name] = (
@@ -385,31 +434,56 @@ water-equivalent length is taken, and at every energy for a material that attenu
 does. A detected photon that travelled `ℓ_b` mm of the kernel's water in each band is then
 `exp(−Σ_b ℓ_b delta_mu_per_mm[b])` as likely to get out of the patient.
 """
-function process_ratios(p::CylinderPhantom, origin, direction, attenuation, wet_mm; angular = nothing)
+function process_ratios(
+    p::CylinderPhantom,
+    origin,
+    direction,
+    attenuation,
+    wet_mm;
+    angular = nothing,
+)
     water = attenuation[DETECTOR_MATERIALS[:Water].name]
     lengths = material_lengths(p, origin, direction)
     n = length(water.compton)
     nbands = length(PATH_ENERGY_EDGES_KEV) - 1
-    wet_mm > 0 || return (compton = ones(n), rayleigh = ones(n), rayleigh_forward = ones(n), delta_mu_per_mm = zeros(nbands))
+    wet_mm > 0 || return (
+        compton = ones(n),
+        rayleigh = ones(n),
+        rayleigh_forward = ones(n),
+        delta_mu_per_mm = zeros(nbands),
+    )
     g(m, key, k) = angular === nothing ? 1.0 : getfield(angular[m.name], key)[k]
     ratio(key, angle_key) = [
-        sum(L * getfield(attenuation[m.name], key)[k] * g(m, angle_key, k) for (m, L) in lengths) /
-            (wet_mm * getfield(water, key)[k]) for k in 1:n
+        sum(
+            L * getfield(attenuation[m.name], key)[k] * g(m, angle_key, k)
+            for (m, L) in lengths
+        ) /
+            (wet_mm * getfield(water, key)[k])
+        for k in 1:n
     ]
     # each band's mean attenuation, over its whole keV
     band_keV(b) = max(1, 5(b - 1)):min(n, 5b - 1)
     band_mean(μ, b) = sum(μ[k] for k in band_keV(b)) / length(band_keV(b))
     delta = [
         sum(
-                (L / wet_mm) * (band_mean(attenuation[m.name].total, b) - band_mean(water.total, b) * attenuation[m.name].total[70] / water.total[70])
-                for (m, L) in lengths
-            )
-            for b in 1:nbands
+            (L / wet_mm) *
+                (
+                    band_mean(attenuation[m.name].total, b) -
+                        band_mean(water.total, b) *
+                            attenuation[m.name].total[70] /
+                            water.total[70]
+                )
+            for (m, L) in lengths
+        )
+        for b in 1:nbands
     ]
     return (
         compton = ratio(:compton, :compton),
         rayleigh = ratio(:rayleigh, angular === nothing ? :rayleigh : :rayleigh_wide),
-        rayleigh_forward = ratio(:rayleigh, angular === nothing ? :rayleigh : :rayleigh_forward),
+        rayleigh_forward = ratio(
+            :rayleigh,
+            angular === nothing ? :rayleigh : :rayleigh_forward,
+        ),
         delta_mu_per_mm = delta,
     )
 end
@@ -457,12 +531,19 @@ end
 
 function RayStrips(rays, sid)
     angles = [Float64(r.angle_deg) for r in rays]
-    outline = [hasproperty(r, :outline_mm) ? Float64(r.outline_mm) : Float64(r.wet_mm) for r in rays]
+    outline = [
+        hasproperty(r, :outline_mm) ? Float64(r.outline_mm) : Float64(r.wet_mm)
+        for r in rays
+    ]
     density = [L > 0 ? r.wet_mm / L : 0.0 for (r, L) in zip(rays, outline)]
 
     # where along each ray the outline ellipse centres its chord (the minimum of the ellipse's
     # quadratic form along the ray), and the chord centred there
-    e = view_ellipse([(angle_deg = γ, outline_mm = L) for (γ, L) in zip(angles, outline)], sid; length = :outline_mm)
+    e = view_ellipse(
+        [(angle_deg = γ, outline_mm = L) for (γ, L) in zip(angles, outline)],
+        sid;
+        length = :outline_mm,
+    )
     a, b, x0 = e.thickness_mm / 2, e.width_mm / 2, e.centre_mm
     function middle(γ)
         sγ, cγ = sincosd(γ)
@@ -497,7 +578,12 @@ function ray_segment(m::RayStrips, γ)
 end
 
 """The water-equivalent length (mm) from the in-plane point `P` to the edge of the medium, along the in-plane direction at `φ` degrees from the central ray."""
-exit_wet(m::WaterEllipse, P, φ) = ellipse_chord(P, (sind(φ), cosd(φ)), (0.0, m.axis_mm), (m.b, m.a))
+exit_wet(m::WaterEllipse, P, φ) = ellipse_chord(
+    P,
+    (sind(φ), cosd(φ)),
+    (0.0, m.axis_mm),
+    (m.b, m.a),
+)
 
 function exit_wet(m::RayStrips, P, φ; step_mm = 2.0)
     sφ, cφ = sincosd(φ)
@@ -506,7 +592,9 @@ function exit_wet(m::RayStrips, P, φ; step_mm = 2.0)
         x, y = P[1] + t * sφ, P[2] + t * cφ
         i = nearest_ray(m, atand(x, y))
         r = hypot(x, y)
-        ρ = m.outline_mm[i] > 0 && m.entry_mm[i] <= r <= m.entry_mm[i] + m.outline_mm[i] ? m.density[i] : 0.0
+        ρ = m.outline_mm[i] > 0 && m.entry_mm[i] <= r <= m.entry_mm[i] + m.outline_mm[i] ?
+            m.density[i] :
+            0.0
         ρ > 0 && (inside = true)
         inside && ρ == 0 && break
         total += ρ * step_mm
@@ -541,12 +629,22 @@ the obliquity) and, for an energy-integrating detector, the energy. `water` hold
 attenuation on a 1-keV grid in all and by each process (`total`, `compton`, `rayleigh`) and its
 scattering tables (`tables`). The columns are binned at the medium's angles plus `shift_deg`.
 """
-function single_scatter(medium, s::ScatterScanner, angle_deg, energies_keV, water; shift_deg = 0.0)
+function single_scatter(
+    medium,
+    s::ScatterScanner,
+    angle_deg,
+    energies_keV,
+    water;
+    shift_deg = 0.0,
+)
     cols, rows = column_edges(s), row_edges(s)
     nc, nr = length(cols) - 1, length(rows) - 1
     Δc, Δr = cols[2] - cols[1], rows[2] - rows[1]
     nE = length(energies_keV)
-    out = [(compton = zeros(nc, nr), wide = zeros(nc, nr), forward = zeros(nc, nr)) for _ in 1:nE]
+    out = [
+        (compton = zeros(nc, nr), wide = zeros(nc, nr), forward = zeros(nc, nr))
+        for _ in 1:nE
+    ]
     μT = [on_kev_grid(water.total, E) for E in energies_keV]
     μC = [on_kev_grid(water.compton, E) for E in energies_keV]
     μR = [on_kev_grid(water.rayleigh, E) for E in energies_keV]
@@ -559,7 +657,9 @@ function single_scatter(medium, s::ScatterScanner, angle_deg, energies_keV, wate
     dt = (t_out - t_in) / SINGLE_DEPTHS
     su, cu = sincosd(angle_deg)
     own = clamp(searchsortedlast(cols, angle_deg + shift_deg), 1, nc)
-    window = s.grid === :none ? (1:nc) : (max(1, own - SINGLE_COLUMNS):min(nc, own + SINGLE_COLUMNS))
+    window = s.grid === :none ?
+        (1:nc) :
+        (max(1, own - SINGLE_COLUMNS):min(nc, own + SINGLE_COLUMNS))
     area = D * deg2rad(Δc / n_c) * (Δr / n_r)
     cos_forward = cosd(FORWARD_RAYLEIGH_DEG)
 
@@ -595,10 +695,12 @@ function single_scatter(medium, s::ScatterScanner, angle_deg, energies_keV, wate
                 solid_angle = area * abs(sγ * ω[1] + cγ * ω[2]) / L2
                 α_fan = atan(sγ * ω[2] - cγ * ω[1], sγ * ω[1] + cγ * ω[2])
                 α_z = atan(ω[3], in_plane) - atan(z, D)
-                g = s.grid === :none ? 1.0 :
-                    s.grid === :across ? grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) :
-                    grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) *
-                    grid_acceptance(α_z, s.grid_height_mm, s.grid_opening_mm[2])
+                g = s.grid === :none ?
+                    1.0 :
+                    s.grid === :across ?
+                        grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) :
+                        grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) *
+                            grid_acceptance(α_z, s.grid_height_mm, s.grid_opening_mm[2])
                 g > 0 || continue
                 n3 = (sγ, cγ, z / D) ./ sqrt(1 + (z / D)^2)
                 obliquity = max(1.0e-3, abs(n3[1] * ω[1] + n3[2] * ω[2] + n3[3] * ω[3]))
@@ -606,16 +708,22 @@ function single_scatter(medium, s::ScatterScanner, angle_deg, energies_keV, wate
                 for e in 1:nE
                     E = energies_keV[e]
                     site = ρ * dt * exp(-μT[e] * τ) * solid_angle * g
-                    rayleigh = site * μR[e] * scattering_pdf(water.tables, VERTEX_RAYLEIGH, E, cosθ) *
-                        exp(-μT[e] * path) * efficiency(E, obliquity)
+                    rayleigh = site *
+                        μR[e] *
+                        scattering_pdf(water.tables, VERTEX_RAYLEIGH, E, cosθ) *
+                        exp(-μT[e] * path) *
+                        efficiency(E, obliquity)
                     if cosθ > cos_forward
                         out[e].forward[ci, ri] += rayleigh
                     else
                         out[e].wide[ci, ri] += rayleigh
                     end
                     E′ = E / (1 + E / ELECTRON_REST_KEV * (1 - cosθ))
-                    out[e].compton[ci, ri] += site * μC[e] * scattering_pdf(water.tables, VERTEX_COMPTON, E, cosθ) *
-                        exp(-on_kev_grid(water.total, E′) * path) * efficiency(E′, obliquity)
+                    out[e].compton[ci, ri] += site *
+                        μC[e] *
+                        scattering_pdf(water.tables, VERTEX_COMPTON, E, cosθ) *
+                        exp(-on_kev_grid(water.total, E′) * path) *
+                        efficiency(E′, obliquity)
                 end
             end
         end
@@ -648,31 +756,60 @@ as the rays describe it ([`RayStrips`](@ref)), scaled the same way, where the ra
 ray describes no patient: it stands in its ellipse as its kernels do, and they keep their own.
 """
 function library_scan(
-        lib::ShapeScatterLibrary,
-        name::String,
-        rays;
-        collimation_mm,
-        spectrum,
-        view::Symbol = :wet,
-        impact::Symbol = :matched,
-        ellipse = nothing,
-    )
+    lib::ShapeScatterLibrary,
+    name::String,
+    rays;
+    collimation_mm,
+    spectrum,
+    view::Symbol = :wet,
+    impact::Symbol = :matched,
+    ellipse = nothing,
+)
     if view === :mean
         # Low-density tissue, between its two readings: the geometric mean, bin by bin
-        w = library_scan(lib, name, rays; collimation_mm, spectrum, view = :wet, impact, ellipse)
-        o = library_scan(lib, name, rays; collimation_mm, spectrum, view = :outline, impact, ellipse)
-        return merge(w, (scatter = sqrt.(w.scatter .* o.scatter), ellipse = (wet = w.ellipse, outline = o.ellipse)))
+        w = library_scan(
+            lib,
+            name,
+            rays;
+            collimation_mm,
+            spectrum,
+            view = :wet,
+            impact,
+            ellipse,
+        )
+        o = library_scan(
+            lib,
+            name,
+            rays;
+            collimation_mm,
+            spectrum,
+            view = :outline,
+            impact,
+            ellipse,
+        )
+        return merge(
+            w,
+            (
+                scatter = sqrt.(w.scatter .* o.scatter),
+                ellipse = (wet = w.ellipse, outline = o.ellipse),
+            ),
+        )
     end
     view in (:wet, :outline) || throw(ArgumentError("view must be :wet, :outline or :mean"))
     s = lib.scanners[findfirst(x -> x.name == name, lib.scanners)]
     cols, rows = column_edges(s), row_edges(s)
     nc, nr = length(cols) - 1, length(rows) - 1
     sid = s.source_to_isocenter_mm
-    ellipse = ellipse === nothing ? view_ellipse(rays, sid; length = view === :outline ? :outline_mm : :wet_mm) : ellipse
+    ellipse = ellipse === nothing ?
+        view_ellipse(rays, sid; length = view === :outline ? :outline_mm : :wet_mm) :
+        ellipse
     a, b, x0 = ellipse.thickness_mm / 2, ellipse.width_mm / 2, ellipse.centre_mm
 
     width = collimation_mm * s.source_to_detector_mm / sid
-    overlap = [max(0.0, min(rows[r + 1], width / 2) - max(rows[r], -width / 2)) for r in 1:nr]
+    overlap = [
+        max(0.0, min(rows[r + 1], width / 2) - max(rows[r], -width / 2))
+        for r in 1:nr
+    ]
     beam_share = overlap ./ sum(overlap)
     beam_rows = findall(>(0), beam_share)
 
@@ -704,7 +841,13 @@ function library_scan(
             a_node, b_node = T / 2, kernel_half_width(T, lib.aspects[tr])
             offset_node = kernel_offset(a_node, b_node, lib.impact_fractions[tu])
             node = rad2deg(asin(clamp(offset_node / sid, -1, 1)))
-            single_scatter(WaterEllipse(a_node, b_node, sid), s, node, lib.energies_keV, water)
+            single_scatter(
+                WaterEllipse(a_node, b_node, sid),
+                s,
+                node,
+                lib.energies_keV,
+                water,
+            )
         end
     end
 
@@ -729,7 +872,9 @@ function library_scan(
         aspect = b / a_ray
         cr = hasproperty(ray, :compton_ratio) ? ray.compton_ratio : nothing
         rr = hasproperty(ray, :rayleigh_ratio) ? ray.rayleigh_ratio : nothing
-        fr_ratio = hasproperty(ray, :rayleigh_forward_ratio) ? ray.rayleigh_forward_ratio : rr
+        fr_ratio = hasproperty(ray, :rayleigh_forward_ratio) ?
+            ray.rayleigh_forward_ratio :
+            rr
         δμ = hasproperty(ray, :delta_mu_per_mm) ? ray.delta_mu_per_mm : nothing
 
         # The spectrum, and the ray's material ratios at each of its energies, gathered onto the
@@ -752,13 +897,18 @@ function library_scan(
             forward_weight[g1] += wk * (1 - t) * ff
             forward_weight[g2] += wk * t * ff
             if 1 <= ci <= nc
-                p = exp(-lib.water_mu_per_mm[ke] * ray.wet_mm) * s.efficiency[ke] * (s.energy_weighted ? Ek : 1.0)
+                p = exp(-lib.water_mu_per_mm[ke] * ray.wet_mm) *
+                    s.efficiency[ke] *
+                    (s.energy_weighted ? Ek : 1.0)
                 for r0 in beam_rows
                     primary[ci, r0] += ray.weight * wk * beam_share[r0] * p
                 end
             end
         end
-        used = findall(g -> compton_weight[g] > 0 || rayleigh_weight[g] > 0 || forward_weight[g] > 0, 1:nE)
+        used = findall(
+            g -> compton_weight[g] > 0 || rayleigh_weight[g] > 0 || forward_weight[g] > 0,
+            1:nE,
+        )
 
         # The grid's kernels around the ray (thickness, aspect, impact), each moved so that its own
         # ray lies under this one before they are blended: neighbouring kernels' rays pass at
@@ -768,12 +918,17 @@ function library_scan(
         iu = bracket(lib.impact_fractions, u)
         u_last = last(lib.impact_fractions)
         graze = u > u_last ? sqrt(max(0.0, 1 - min(u, 1.0)^2)) / sqrt(1 - u_last^2) : 1.0
-        S, Ry, F, Lp = lib.scatter[name], lib.rayleigh[name], lib.forward[name], lib.paths[name]
+        S, Ry, F, Lp = lib.scatter[name],
+            lib.rayleigh[name],
+            lib.forward[name],
+            lib.paths[name]
         Om, Sd = lib.offsets[name], lib.spreads[name]
         fill!(escape_compton, 0.0)
         fill!(escape_rayleigh, 0.0)
-        for (tT, wT) in ((iT[1], 1 - iT[3]), (iT[2], iT[3])), (tr, wr) in ((ir[1], 1 - ir[3]), (ir[2], ir[3])),
-                (tu, wu) in ((iu[1], 1 - iu[3]), (iu[2], iu[3]))
+        for (tT, wT) in ((iT[1], 1 - iT[3]), (iT[2], iT[3])), (tr, wr) in (
+                (ir[1], 1 - ir[3]),
+                (ir[2], ir[3]),
+            ), (tu, wu) in ((iu[1], 1 - iu[3]), (iu[2], iu[3]))
             wg = wT * wr * wu
             wg == 0 && continue
             single = swap ? kernel_single(tT, tr, tu) : nothing
@@ -783,22 +938,37 @@ function library_scan(
             kernel = zeros(nc, nr)
             column_mass, first, second = zeros(nc), zeros(nc), zeros(nc)
             for g in used
-                ks, kr, kf = Base.view(S, :, :, tu, tr, tT, g), Base.view(Ry, :, :, tu, tr, tT, g), Base.view(F, :, :, tu, tr, tT, g)
+                ks, kr, kf = Base.view(S, :, :, tu, tr, tT, g),
+                    Base.view(Ry, :, :, tu, tr, tT, g),
+                    Base.view(F, :, :, tu, tr, tT, g)
                 # how much less of each process's scatter gets out of the ray's materials
                 out_c, out_r = if δμ === nothing
                     1.0, 1.0
                 else
-                    exp(-sum(Lp[1, band, tu, tr, tT, g] * δμ[band] for band in eachindex(δμ))),
-                        exp(-sum(Lp[2, band, tu, tr, tT, g] * δμ[band] for band in eachindex(δμ)))
+                    exp(
+                        -sum(
+                            Lp[1, band, tu, tr, tT, g] * δμ[band]
+                            for band in eachindex(δμ)
+                        )
+                    ),
+                        exp(
+                            -sum(
+                                Lp[2, band, tu, tr, tT, g] * δμ[band]
+                                for band in eachindex(δμ)
+                            )
+                        )
                 end
                 escape_compton[g] += wg * out_c
                 escape_rayleigh[g] += wg * out_r
                 part = if swap
-                    (compton_weight[g] * out_c) .* max.(ks .- kr .- single[g].compton, 0.0) .+
-                        (rayleigh_weight[g] * out_r) .* max.(kr .- kf .- single[g].wide, 0.0) .+
+                    (compton_weight[g] * out_c) .*
+                        max.(ks .- kr .- single[g].compton, 0.0) .+
+                        (rayleigh_weight[g] * out_r) .*
+                            max.(kr .- kf .- single[g].wide, 0.0) .+
                         (forward_weight[g] * out_r) .* max.(kf .- single[g].forward, 0.0)
                 else
-                    (compton_weight[g] * out_c) .* (ks .- kr) .+ (rayleigh_weight[g] * out_r) .* (kr .- kf) .+
+                    (compton_weight[g] * out_c) .* (ks .- kr) .+
+                        (rayleigh_weight[g] * out_r) .* (kr .- kf) .+
                         (forward_weight[g] * out_r) .* kf
                 end
                 kernel .+= part
@@ -813,11 +983,17 @@ function library_scan(
             if side < 0
                 # the mirror image: columns reversed, offsets within them negated
                 kernel = reverse(kernel; dims = 1)
-                column_mass, first, second = reverse(column_mass), -reverse(first), reverse(second)
+                column_mass, first, second = reverse(column_mass),
+                    -reverse(first),
+                    reverse(second)
             end
             # this kernel's own ray: its impact of its own half-width, seen from this scanner
             T_node = lib.thicknesses_mm[tT]
-            offset_node = kernel_offset(T_node / 2, kernel_half_width(T_node, lib.aspects[tr]), lib.impact_fractions[tu])
+            offset_node = kernel_offset(
+                T_node / 2,
+                kernel_half_width(T_node, lib.aspects[tr]),
+                lib.impact_fractions[tu],
+            )
             node_angle = rad2deg(asin(clamp(offset_node / sid, -1, 1))) * side
             factor = ray.weight * wg * amount * graze
             # Each column of the kernel moved by the ray's angle from its own, as what it holds: the
@@ -832,8 +1008,13 @@ function library_scan(
                 x = cols[ii] + w_col / 2 + centre + (ray.angle_deg - node_angle)
                 half = min(sqrt(3) * spread, w_col / 2)
                 lo, hi = x - half, x + half
-                for ci in max(1, searchsortedlast(cols, lo)):min(nc, searchsortedlast(cols, hi))
-                    share = hi > lo ? (min(hi, cols[ci + 1]) - max(lo, cols[ci])) / (hi - lo) : 1.0
+                for ci in max(1, searchsortedlast(cols, lo)):min(
+                            nc,
+                            searchsortedlast(cols, hi),
+                        )
+                    share = hi > lo ?
+                        (min(hi, cols[ci + 1]) - max(lo, cols[ci])) / (hi - lo) :
+                        1.0
                     share > 0 || continue
                     for r0 in beam_rows, ri in 1:nr
                         dr = ri - r0 + (nr + 1) ÷ 2
@@ -850,7 +1031,8 @@ function library_scan(
         single = zeros(nc, nr)
         for (k, g) in enumerate(used)
             cw = compton_weight[g] * escape_compton[g]
-            rw, fw = rayleigh_weight[g] * escape_rayleigh[g], forward_weight[g] * escape_rayleigh[g]
+            rw, fw = rayleigh_weight[g] * escape_rayleigh[g],
+                forward_weight[g] * escape_rayleigh[g]
             single .+= cw .* own[k].compton .+ rw .* own[k].wide .+ fw .* own[k].forward
         end
         for ci in 1:nc, r0 in beam_rows, ri in 1:nr

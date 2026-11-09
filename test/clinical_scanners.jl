@@ -2,7 +2,11 @@
 # scanner or protocol is the copy constructor: every parameter copied, the keywords given replaced.
 
 # The fields that differ between two scanners of the same family
-_differing(a, b) = [f for f in (fieldnames(ScannerGeometry)..., fieldnames(typeof(a))[2:end]...) if getproperty(a, f) != getproperty(b, f)]
+_differing(a, b) = [
+    f
+    for f in (fieldnames(ScannerGeometry)..., fieldnames(typeof(a))[2:end]...)
+    if getproperty(a, f) != getproperty(b, f)
+]
 
 @testset "clinical scanners are constants of the scanner structs" begin
     for (s, family) in (
@@ -14,28 +18,43 @@ _differing(a, b) = [f for f in (fieldnames(ScannerGeometry)..., fieldnames(typeo
             (SOMATOM_DEFINITION_FLASH_B, EICTScanner),
         )
         @test s isa family{Float64}
-        @test family(s) == s                       # a copy with nothing replaced is the same scanner
+        # a copy with nothing replaced is the same scanner
+        @test family(s) == s
         @test hash(family(s)) == hash(s)
     end
 
     # the values the documentation's notebooks use
-    @test REVOLUTION_APEX.detector_material == :lumex && REVOLUTION_APEX.detector_rows == 256 && REVOLUTION_APEX.electronic_noise == 3500.0
+    @test REVOLUTION_APEX.detector_material == :lumex &&
+        REVOLUTION_APEX.detector_rows == 256 &&
+        REVOLUTION_APEX.electronic_noise == 3500.0
     # the documented Alpha: pitch 0.37 × 0.40 mm at the isocentre, 1376 columns, 144 × 0.4 mm, 27 ns
-    @test round(NAEOTOM_ALPHA.detector_col_size; digits = 2) == 0.37 && round(NAEOTOM_ALPHA.detector_row_size; digits = 2) == 0.4
-    @test NAEOTOM_ALPHA.detector_cols == 1376 && NAEOTOM_ALPHA.detector_rows == 144 && NAEOTOM_ALPHA.dead_time_ns == 27.0
-    @test NAEOTOM_ALPHA_UHR.detector_rows == 120 && NAEOTOM_ALPHA_UHR.detector_cols == 2752 && NAEOTOM_ALPHA_UHR.binning_factor == 1
-    @test round(NAEOTOM_ALPHA_UHR.detector_row_size * 120; digits = 1) == 23.9 && NAEOTOM_ALPHA_UHR.energy_thresholds == [20.0]
-    @test NAEOTOM_ALPHA.energy_thresholds == [20.0, 35.0, 55.0, 70.0] && NAEOTOM_ALPHA.binning_factor == 2
-    @test NAEOTOM_ALPHA.gain_spread == 0.02 && NAEOTOM_ALPHA.threshold_spread_keV == 0.35   # a realistic unit
-    @test NAEOTOM_ALPHA_UHR.gain_spread == NAEOTOM_ALPHA.gain_spread                     # the same dexels
+    @test round(NAEOTOM_ALPHA.detector_col_size; digits = 2) == 0.37 &&
+        round(NAEOTOM_ALPHA.detector_row_size; digits = 2) == 0.4
+    @test NAEOTOM_ALPHA.detector_cols == 1376 &&
+        NAEOTOM_ALPHA.detector_rows == 144 &&
+        NAEOTOM_ALPHA.dead_time_ns == 27.0
+    @test NAEOTOM_ALPHA_UHR.detector_rows == 120 &&
+        NAEOTOM_ALPHA_UHR.detector_cols == 2752 &&
+        NAEOTOM_ALPHA_UHR.binning_factor == 1
+    @test round(NAEOTOM_ALPHA_UHR.detector_row_size * 120; digits = 1) == 23.9 &&
+        NAEOTOM_ALPHA_UHR.energy_thresholds == [20.0]
+    @test NAEOTOM_ALPHA.energy_thresholds == [20.0, 35.0, 55.0, 70.0] &&
+        NAEOTOM_ALPHA.binning_factor == 2
+    # a realistic unit
+    @test NAEOTOM_ALPHA.gain_spread == 0.02 && NAEOTOM_ALPHA.threshold_spread_keV == 0.35
+    # the same dexels
+    @test NAEOTOM_ALPHA_UHR.gain_spread == NAEOTOM_ALPHA.gain_spread
     @test SOMATOM_FORCE.detector_material == :ufc && SOMATOM_FORCE.detector_cols == 920
-    @test SOMATOM_DEFINITION_FLASH.detector_material == :ufc_flash && SOMATOM_DEFINITION_FLASH.flat_filter_thickness == 8.4
+    @test SOMATOM_DEFINITION_FLASH.detector_material == :ufc_flash &&
+        SOMATOM_DEFINITION_FLASH.flat_filter_thickness == 8.4
 
     # each dual-source scanner's tube/detector B is its A with detector B's smaller field
     @test _differing(SOMATOM_FORCE, SOMATOM_FORCE_B) == [:detector_cols, :scan_diameter]
     @test SOMATOM_FORCE_B.detector_cols == 640 && SOMATOM_FORCE_B.scan_diameter == 355.0
-    @test _differing(SOMATOM_DEFINITION_FLASH, SOMATOM_DEFINITION_FLASH_B) == [:detector_cols, :scan_diameter]
-    @test SOMATOM_DEFINITION_FLASH_B.detector_cols == 480 && SOMATOM_DEFINITION_FLASH_B.scan_diameter == 334.0
+    @test _differing(SOMATOM_DEFINITION_FLASH, SOMATOM_DEFINITION_FLASH_B) ==
+        [:detector_cols, :scan_diameter]
+    @test SOMATOM_DEFINITION_FLASH_B.detector_cols == 480 &&
+        SOMATOM_DEFINITION_FLASH_B.scan_diameter == 334.0
 end
 
 @testset "scanner variants: the copy constructor" begin
@@ -63,16 +82,30 @@ end
 
 @testset "protocol variants: the copy constructor" begin
     low = CTProtocol(
-        kVp = 100, mA = 380.0, views = 1160, rotation_time = 0.5, collimation_mm = 4.8,
-        additional_filters = [("Ti", 0.9)]
+        kVp = 100,
+        mA = 380.0,
+        views = 1160,
+        rotation_time = 0.5,
+        collimation_mm = 4.8,
+        additional_filters = [("Ti", 0.9)],
     )
     @test CTProtocol(low) == low && hash(CTProtocol(low)) == hash(low)
-    high = CTProtocol(low; kVp = 140, mA = 190.0, additional_filters = [("Ti", 0.9), ("Sn", 0.6)])
-    @test high.kVp == 140 && high.mA == 190.0 && high.views == 1160 && high.collimation_mm == 4.8
-    @test high.additional_filters == [("Ti", 0.9), ("Sn", 0.6)] && low.additional_filters == [("Ti", 0.9)]
+    high = CTProtocol(
+        low;
+        kVp = 140,
+        mA = 190.0,
+        additional_filters = [("Ti", 0.9), ("Sn", 0.6)],
+    )
+    @test high.kVp == 140 &&
+        high.mA == 190.0 &&
+        high.views == 1160 &&
+        high.collimation_mm == 4.8
+    @test high.additional_filters == [("Ti", 0.9), ("Sn", 0.6)] &&
+        low.additional_filters == [("Ti", 0.9)]
     # a new mAs sets the current afresh; a variant keeps an axial scan axial
     @test CTProtocol(low; mAs = 100.0).mA == 200.0
-    @test CTProtocol(low; rotation_time = 1.0).mA == 380.0 && CTProtocol(low).pitch === nothing
+    @test CTProtocol(low; rotation_time = 1.0).mA == 380.0 &&
+        CTProtocol(low).pitch === nothing
     @test_throws ArgumentError CTProtocol(low; pitch = -1.0)
     # a variant never shares the added filters with its original
     copied = CTProtocol(low)

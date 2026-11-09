@@ -73,9 +73,9 @@ where tᵢ(θ) is the thickness of material i at angle θ.
 - `name`: Filter name/type
 """
 struct BowtieFilter
-    angles::Vector{Float64}           # Fan angles in radians
-    thickness::Matrix{Float64}        # [n_angles, n_materials] in cm
-    materials::Vector{String}         # Material names
+    angles::Vector{Float64}    # Fan angles in radians
+    thickness::Matrix{Float64} # [n_angles, n_materials] in cm
+    materials::Vector{String}  # Material names
     name::String
 end
 
@@ -108,7 +108,7 @@ end
 No bowtie filter (flat field).
 """
 function bowtie_filter_none()
-    angles = [0.0, 0.5]  # radians
+    angles = [0.0, 0.5] # radians
     thickness = zeros(2, 1)
     materials = ["Al"]
 
@@ -196,7 +196,7 @@ function resolve_bowtie_filter(name::Symbol; kVp::Int = 120)
     error(
         "Unknown bowtie filter: :$name. " *
             "Supported: :large_body, :medium_body, :small_body, :head, :none, " *
-            ":ge_revolution_large, :ge_revolution_medium, :ge_revolution_small"
+            ":ge_revolution_large, :ge_revolution_medium, :ge_revolution_small",
     )
 end
 
@@ -269,7 +269,6 @@ function load_catsim_bowtie(filepath::String; name::String = "catsim")
     return BowtieFilter(angles_rad, thickness, materials[1:n_materials], name)
 end
 
-
 # =============================================================================
 # Material Attenuation Coefficients
 # =============================================================================
@@ -299,7 +298,6 @@ Returns thickness vector in cm for each material.
 """
 function interpolate_thickness(filter::BowtieFilter, fan_angle::Float64)
     abs_angle = abs(fan_angle)
-    n_materials = size(filter.thickness, 2)
 
     # Handle out-of-range angles
     if abs_angle >= filter.angles[end]
@@ -310,7 +308,8 @@ function interpolate_thickness(filter::BowtieFilter, fan_angle::Float64)
     for i in 1:(length(filter.angles) - 1)
         if abs_angle <= filter.angles[i + 1]
             t = (abs_angle - filter.angles[i]) / (filter.angles[i + 1] - filter.angles[i])
-            return filter.thickness[i, :] .+ t .* (filter.thickness[i + 1, :] .- filter.thickness[i, :])
+            return filter.thickness[i, :] .+
+                t .* (filter.thickness[i + 1, :] .- filter.thickness[i, :])
         end
     end
 
@@ -348,10 +347,10 @@ Returns [n_cols, n_rows, n_energies] transmission factors.
 3D array of transmission factors per energy bin.
 """
 function compute_bowtie_attenuation_spectral(
-        filter::BowtieFilter,
-        geom::CTGeometry,
-        energies::Vector{Float64}
-    )
+    filter::BowtieFilter,
+    geom::CTGeometry,
+    energies::Vector{Float64},
+)
     n_cols = geom.n_cols
     n_rows = geom.n_rows
     n_energies = length(energies)
@@ -409,7 +408,6 @@ function compute_bowtie_attenuation_spectral(
 
     return transmission
 end
-
 
 # =============================================================================
 # Exports

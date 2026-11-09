@@ -39,12 +39,13 @@ Base.@kwdef struct CylinderPhantom <: AbstractDetector
     inserts::Vector{PhantomInsert} = PhantomInsert[]
 end
 
-CylinderPhantom(diameter_mm::Real; kw...) =
-    CylinderPhantom(; semi_axes_mm = (diameter_mm / 2, diameter_mm / 2), kw...)
+CylinderPhantom(diameter_mm::Real; kw...) = CylinderPhantom(;
+    semi_axes_mm = (diameter_mm / 2, diameter_mm / 2),
+    kw...,
+)
 
 geometry_key(i::PhantomInsert) = (i.material.name, i.x_mm, i.y_mm, i.semi_axes_mm)
-geometry_key(p::CylinderPhantom) =
-    (
+geometry_key(p::CylinderPhantom) = (
     p.material.name,
     p.semi_axes_mm,
     p.length_mm,
@@ -55,8 +56,11 @@ geometry_key(p::CylinderPhantom) =
 Base.:(==)(a::CylinderPhantom, b::CylinderPhantom) = geometry_key(a) == geometry_key(b)
 same_geometry(a::CylinderPhantom, b::CylinderPhantom) = a == b
 
-world_half_mm(p::CylinderPhantom) =
-    max(hypot(p.centre_mm...) + maximum(p.semi_axes_mm), p.length_mm / 2) + 50
+world_half_mm(p::CylinderPhantom) = max(
+    hypot(p.centre_mm...) + maximum(p.semi_axes_mm),
+    p.length_mm / 2,
+) +
+    50
 
 """An elliptical (or circular) cylinder along z, `length_mm` long."""
 function elliptical_tube(name, semi_axes_mm, length_mm)
@@ -130,7 +134,12 @@ function material_lengths(p::CylinderPhantom, origin, direction)
     lengths = Tuple{DetectorMaterial, Float64}[]
     body = ellipse_chord(origin, direction, p.centre_mm, p.semi_axes_mm)
     for insert in p.inserts
-        L = ellipse_chord(origin, direction, p.centre_mm .+ (insert.x_mm, insert.y_mm), insert.semi_axes_mm)
+        L = ellipse_chord(
+            origin,
+            direction,
+            p.centre_mm .+ (insert.x_mm, insert.y_mm),
+            insert.semi_axes_mm,
+        )
         L > 0 || continue
         push!(lengths, (insert.material, L))
         body -= L
@@ -145,9 +154,17 @@ end
 The ray's water-equivalent length: each material's length times its attenuation over water's at
 `energy_keV`.
 """
-function water_equivalent_length(p::CylinderPhantom, origin, direction; energy_keV::Real = 70.0)
+function water_equivalent_length(
+    p::CylinderPhantom,
+    origin,
+    direction;
+    energy_keV::Real = 70.0,
+)
     μ_water = linear_attenuation(DetectorMaterial(:Water), energy_keV)
-    return sum(L * linear_attenuation(m, energy_keV) / μ_water for (m, L) in material_lengths(p, origin, direction))
+    return sum(
+        L * linear_attenuation(m, energy_keV) / μ_water
+        for (m, L) in material_lengths(p, origin, direction)
+    )
 end
 
 """
@@ -160,19 +177,20 @@ phantom's centre, and `2 √(A_w / π)`. The rays fan out from `origin` over `fa
 direction to the phantom's centre.
 """
 function water_equivalent_diameter(
-        p::CylinderPhantom;
-        origin = (0.0, 0.0),
-        fan_deg::Real = 60.0,
-        rays::Integer = 1201,
-        energy_keV::Real = 70.0,
-    )
+    p::CylinderPhantom;
+    origin = (0.0, 0.0),
+    fan_deg::Real = 60.0,
+    rays::Integer = 1201,
+    energy_keV::Real = 70.0,
+)
     to_centre = p.centre_mm .- origin
     distance = hypot(to_centre...)
     θ0 = atan(to_centre[1], to_centre[2])
     angles = range(-deg2rad(fan_deg) / 2, deg2rad(fan_deg) / 2; length = rays)
     spacing = distance * step(angles)
     area = sum(
-        water_equivalent_length(p, origin, (sin(θ0 + γ), cos(θ0 + γ)); energy_keV) * spacing for γ in angles
+        water_equivalent_length(p, origin, (sin(θ0 + γ), cos(θ0 + γ)); energy_keV) * spacing
+        for γ in angles
     )
     return 2 * sqrt(area / π)
 end

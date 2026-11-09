@@ -24,13 +24,16 @@ total-likelihood filter scores neighbours against.
 - `I0`: `(nc, nr, K)` absolute air counts; `nc`, `nr` may be 1 when every ray shares one value.
 """
 function total_measured_counts(channels::AbstractVector, I0::AbstractArray{<:Real, 3})
-    length(channels) == size(I0, 3) || throw(
-        DimensionMismatch("channels ($(length(channels))) ≠ I0 channels ($(size(I0, 3)))")
-    )
+    length(channels) == size(I0, 3) ||
+        throw(DimensionMismatch(
+            "channels ($(length(channels))) ≠ I0 channels ($(size(I0, 3)))",
+        ))
     n_col, n_row = size(first(channels))[1:2]
     total = zeros(Float32, size(first(channels)))
     for k in eachindex(channels)
-        I0_k = _ray_constant(I0) ? fill(Float64(I0[1, 1, k]), n_col, n_row) : Float64.(I0[:, :, k])
+        I0_k = _ray_constant(I0) ?
+            fill(Float64(I0[1, 1, k]), n_col, n_row) :
+            Float64.(I0[:, :, k])
         # reshape once, outside the broadcast: under `@.` it would be applied per element
         I0_slab = reshape(I0_k, n_col, n_row, 1)
         h = channels[k]
@@ -47,10 +50,13 @@ evaluated at the estimated basis pair. `Φ` is the absolute response `(nc, nr, n
 summed over channels here. The result is floored at `1e-6`.
 """
 function total_expected_counts(
-        sino_iodine::AbstractArray{<:Real, 3}, sino_water::AbstractArray{<:Real, 3},
-        Φ::AbstractArray{<:Real, 4}, μρ_I::AbstractVector, μρ_W::AbstractVector;
-        to_backend = identity,
-    )
+    sino_iodine::AbstractArray{<:Real, 3},
+    sino_water::AbstractArray{<:Real, 3},
+    Φ::AbstractArray{<:Real, 4},
+    μρ_I::AbstractVector,
+    μρ_W::AbstractVector;
+    to_backend = identity,
+)
     Φ_total = dropdims(sum(Float64.(Φ); dims = 4); dims = 4)
     I_dev = to_backend(Float32.(sino_iodine))
     W_dev = to_backend(Float32.(sino_water))
@@ -70,7 +76,7 @@ function total_expected_counts(
             total = 0.0f0
             @inbounds for e in 1:n_energy
                 ϕ = Φ_dev[cΦ, rΦ, e]
-                ϕ > 0.0f0 || continue       # 0 · exp(overflow) would be NaN at a few keV
+                ϕ > 0.0f0 || continue # 0 · exp(overflow) would be NaN at a few keV
                 total += ϕ * exp(-μI_dev[e] * I_dev[idx] - μW_dev[e] * W_dev[idx])
             end
             out_dev[idx] = max(total, 1.0f-6)
@@ -105,11 +111,15 @@ of rows is filtered row by row, each in its own plane — on a single row (what
 filter applied to each.
 """
 function tlbf_denoise(
-        sino_iodine::AbstractArray{<:Real, 3}, sino_water::AbstractArray{<:Real, 3},
-        expected::AbstractArray{<:Real, 3}, measured::AbstractArray{<:Real, 3};
-        alpha1::Real = 0.9, alpha2::Real = 24.635648571666497, radius::Integer = 2,
-        to_backend = identity,
-    )
+    sino_iodine::AbstractArray{<:Real, 3},
+    sino_water::AbstractArray{<:Real, 3},
+    expected::AbstractArray{<:Real, 3},
+    measured::AbstractArray{<:Real, 3};
+    alpha1::Real = 0.9,
+    alpha2::Real = 24.635648571666497,
+    radius::Integer = 2,
+    to_backend = identity,
+)
     n_col, n_row, n_view = size(sino_iodine)
     size(sino_water) == size(sino_iodine) == size(expected) == size(measured) ||
         throw(DimensionMismatch("tlbf_denoise inputs must share one shape"))
@@ -126,7 +136,7 @@ function tlbf_denoise(
     try
         AK.foreachindex(out_I) do idx
             col = Int32(mod1(idx, n_col))
-            row_view = Int32(cld(idx, n_col))        # rows vary fastest after columns
+            row_view = Int32(cld(idx, n_col)) # rows vary fastest after columns
             row = mod1(row_view, Int32(n_row))
             view = cld(row_view, Int32(n_row))
             centre_expected = max(expected_dev[idx], 1.0f-6)
@@ -137,7 +147,8 @@ function tlbf_denoise(
                 neighbour_col = col + dc
                 (neighbour_col < Int32(1) || neighbour_col > Int32(n_col)) && continue
                 neighbour_view = mod1(view + dv, Int32(n_view))
-                neighbour_idx = Int(neighbour_col) + (Int(row) - 1) * n_col +
+                neighbour_idx = Int(neighbour_col) +
+                    (Int(row) - 1) * n_col +
                     (Int(neighbour_view) - 1) * n_col * n_row
                 spatial = exp(-Float32(dc * dc + dv * dv) / (2.0f0 * a1 * a1))
                 likelihood_weight = if isinf(a2)
@@ -160,7 +171,10 @@ function tlbf_denoise(
         end
         return (sino_iodine = Array(out_I), sino_water = Array(out_W))
     finally
-        release_backend!((I_dev, W_dev, expected_dev, measured_dev, out_I, out_W); collect = false)
+        release_backend!(
+            (I_dev, W_dev, expected_dev, measured_dev, out_I, out_W);
+            collect = false,
+        )
     end
 end
 

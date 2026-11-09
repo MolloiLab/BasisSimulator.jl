@@ -60,7 +60,11 @@ number of bins each way, so the central ray and z = 0 fall in the middle of a bi
 function column_edges(s::ScatterScanner)
     n = round(Int, s.fan_deg / s.column_bin_deg)
     n += iseven(n)
-    return collect(range(-n * s.column_bin_deg / 2, n * s.column_bin_deg / 2; length = n + 1))
+    return collect(range(
+        -n * s.column_bin_deg / 2,
+        n * s.column_bin_deg / 2;
+        length = n + 1,
+    ))
 end
 
 function row_edges(s::ScatterScanner)
@@ -132,7 +136,17 @@ const PATH_ENERGY_EDGES_KEV = collect(0.0:5.0:150.0)
 """The band of `PATH_ENERGY_EDGES_KEV` holding `E` keV."""
 path_band(E) = clamp(floor(Int, E / 5) + 1, 1, length(PATH_ENERGY_EDGES_KEV) - 1)
 
-ScatterTally(scanner, n, photon_keV, cols, rows, scatter, primary, spectrum, analog) = ScatterTally(
+ScatterTally(
+    scanner,
+    n,
+    photon_keV,
+    cols,
+    rows,
+    scatter,
+    primary,
+    spectrum,
+    analog,
+) = ScatterTally(
     scanner,
     n,
     photon_keV,
@@ -177,7 +191,8 @@ end
 
 function focal_spot_of(beam::RayBeam, phantom::CylinderPhantom, scanner::ScatterScanner)
     o = (beam.origin_mm[1], beam.origin_mm[2])
-    d = (beam.direction[1], beam.direction[2]) ./ hypot(beam.direction[1], beam.direction[2])
+    d = (beam.direction[1], beam.direction[2]) ./
+        hypot(beam.direction[1], beam.direction[2])
     c = phantom.centre_mm
     q = o .- c
     # |q + s d| = SID, the root behind the patient (smaller s)
@@ -190,7 +205,9 @@ function focal_spot_of(beam::RayBeam, phantom::CylinderPhantom, scanner::Scatter
 end
 
 """Probability of getting through one direction of a focused grid at angle `α` (rad)."""
-grid_acceptance(α, height_mm, opening_mm) = isinf(opening_mm) ? 1.0 : max(0.0, 1 - height_mm * abs(tan(α)) / opening_mm)
+grid_acceptance(α, height_mm, opening_mm) = isinf(opening_mm) ?
+    1.0 :
+    max(0.0, 1 - height_mm * abs(tan(α)) / opening_mm)
 
 """
     scatter_tally(run, readout::ScatterReadout) -> Vector{ScatterTally}
@@ -199,21 +216,23 @@ Take every photon that left the run's [`CylinderPhantom`](@ref) to each scanner'
 """
 function scatter_tally(run::MonoenergeticRun, readout::ScatterReadout)
     phantom = run.detector
-    phantom isa CylinderPhantom || throw(ArgumentError("scatter_tally needs a run on a CylinderPhantom"))
-    esc = run.escapes
+    phantom isa CylinderPhantom ||
+        throw(ArgumentError("scatter_tally needs a run on a CylinderPhantom"))
     drawn = run.photon_energy_keV
-    photon_keV = drawn === nothing || isempty(drawn) ? run.n * run.energy_keV : sum(Float64, drawn)
+    photon_keV = drawn === nothing || isempty(drawn) ?
+        run.n * run.energy_keV :
+        sum(Float64, drawn)
 
     return [tally_for(s, run, phantom, photon_keV) for s in readout.scanners]
 end
 
 """One scanner's [`ScatterTally`](@ref) of a run."""
 function tally_for(
-        s::ScatterScanner,
-        run::MonoenergeticRun,
-        phantom::CylinderPhantom,
-        photon_keV,
-    )
+    s::ScatterScanner,
+    run::MonoenergeticRun,
+    phantom::CylinderPhantom,
+    photon_keV,
+)
     esc = run.escapes
     f, c = focal_spot_of(run.beam, phantom, s)
     cols, rows = column_edges(s), row_edges(s)
@@ -236,7 +255,8 @@ function tally_for(
         t = (-b2 + sqrt(b2^2 - 4a * c0)) / (2a)
         h = (q[1] + t * d[1], q[2] + t * d[2])
         z = p[3] + t * d[3]
-        γ = rad2deg(atan(h[1] * c[2] - h[2] * c[1], c[1] * h[1] + c[2] * h[2]))   # positive toward +x
+        # positive toward +x
+        γ = rad2deg(atan(h[1] * c[2] - h[2] * c[1], c[1] * h[1] + c[2] * h[2]))
         ci = searchsortedlast(cols, γ)
         ri = searchsortedlast(rows, z)
         (1 <= ci < length(cols) && 1 <= ri < length(rows)) || continue
@@ -253,7 +273,17 @@ function tally_for(
             spectrum[k] += gη
         end
     end
-    return ScatterTally(s.name, run.n, photon_keV, cols, rows, scatter, primary, spectrum, scatter)
+    return ScatterTally(
+        s.name,
+        run.n,
+        photon_keV,
+        cols,
+        rows,
+        scatter,
+        primary,
+        spectrum,
+        scatter,
+    )
 end
 
 """
@@ -269,10 +299,12 @@ function detection_weight(s::ScatterScanner, n_xy, z, d, E)
     # The photon's angles to the grid's focused direction
     α_fan = atan(n_xy[1] * d[2] - n_xy[2] * d[1], n_xy[1] * d[1] + n_xy[2] * d[2])
     α_z = atan(d[3], hypot(d[1], d[2])) - atan(z, R)
-    g = s.grid === :none ? 1.0 :
-        s.grid === :across ? grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) :
-        grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) *
-        grid_acceptance(α_z, s.grid_height_mm, s.grid_opening_mm[2])
+    g = s.grid === :none ?
+        1.0 :
+        s.grid === :across ?
+            grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) :
+            grid_acceptance(α_fan, s.grid_height_mm, s.grid_opening_mm[1]) *
+                grid_acceptance(α_z, s.grid_height_mm, s.grid_opening_mm[2])
     k = clamp(round(Int, E), 1, length(s.efficiency))
     g > 0 || return (0.0, k)
 
@@ -340,14 +372,14 @@ order `for D in diameters, u in impact_fractions, E in energies` (each job's tal
 scanner, as [`scatter_tally`](@ref) gives them).
 """
 function scatter_library(
-        tallies,
-        scanners::Vector{ScatterScanner},
-        diameters_mm,
-        impact_fractions,
-        energies_keV;
-        water_mu_per_mm::Vector{Float64},
-        metadata = Dict{String, Any}(),
-    )
+    tallies,
+    scanners::Vector{ScatterScanner},
+    diameters_mm,
+    impact_fractions,
+    energies_keV;
+    water_mu_per_mm::Vector{Float64},
+    metadata = Dict{String, Any}(),
+)
     nD, nu, nE = length(diameters_mm), length(impact_fractions), length(energies_keV)
     scatter = Dict{String, Array{Float32, 5}}()
     primary = Dict{String, Array{Float32, 3}}()
@@ -401,8 +433,10 @@ function library_kernel(lib::ScatterLibrary, name::String, D, u, E)
     iE = bracket(lib.energies_keV, E)
     scatter = zeros(size(S, 1), size(S, 2))
     log_primary = 0.0
-    for (a, wa) in ((iD[1], 1 - iD[3]), (iD[2], iD[3])), (b, wb) in ((iu[1], 1 - iu[3]), (iu[2], iu[3])),
-            (e, we) in ((iE[1], 1 - iE[3]), (iE[2], iE[3]))
+    for (a, wa) in ((iD[1], 1 - iD[3]), (iD[2], iD[3])), (b, wb) in (
+            (iu[1], 1 - iu[3]),
+            (iu[2], iu[3]),
+        ), (e, we) in ((iE[1], 1 - iE[3]), (iE[2], iE[3]))
         w = wa * wb * we
         w == 0 && continue
         scatter .+= w .* view(S, :, :, b, a, e)
@@ -437,23 +471,24 @@ whole (with the library's tally a full detector wide on either side, the whole d
 collimation up to the detector's own).
 """
 function library_scan(
-        lib::ScatterLibrary,
-        name::String,
-        wed_mm,
-        rays;
-        collimation_mm,
-        spectrum,
-    )
+    lib::ScatterLibrary,
+    name::String,
+    wed_mm,
+    rays;
+    collimation_mm,
+    spectrum,
+)
     s = lib.scanners[findfirst(x -> x.name == name, lib.scanners)]
     cols, rows = column_edges(s), row_edges(s)
     nc, nr = length(cols) - 1, length(rows) - 1
-    centres = (cols[1:(end - 1)] .+ cols[2:end]) ./ 2
-    row_centres = (rows[1:(end - 1)] .+ rows[2:end]) ./ 2
     sid = s.source_to_isocenter_mm
 
     # The beam's rows at the detector: each row bin's share of the collimated beam
     width = collimation_mm * s.source_to_detector_mm / sid
-    overlap = [max(0.0, min(rows[r + 1], width / 2) - max(rows[r], -width / 2)) for r in 1:nr]
+    overlap = [
+        max(0.0, min(rows[r + 1], width / 2) - max(rows[r], -width / 2))
+        for r in 1:nr
+    ]
     beam_share = overlap ./ sum(overlap)
     beam_rows = findall(>(0), beam_share)
 
@@ -492,7 +527,9 @@ function library_scan(
             ci = searchsortedlast(cols, ray.angle_deg)
             if 1 <= ci <= nc
                 ke = clamp(round(Int, Ek), 1, length(lib.water_mu_per_mm))
-                p = exp(-lib.water_mu_per_mm[ke] * ray.wet_mm) * s.efficiency[ke] * (s.energy_weighted ? Ek : 1.0)
+                p = exp(-lib.water_mu_per_mm[ke] * ray.wet_mm) *
+                    s.efficiency[ke] *
+                    (s.energy_weighted ? Ek : 1.0)
                 for r0 in beam_rows
                     primary[ci, r0] += ray.weight * wk * beam_share[r0] * p
                 end

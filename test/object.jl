@@ -13,8 +13,20 @@
 @testset "get_material — registry + XA.Materials fallback" begin
     # Gammex inserts via registry.
     for sym in (
-            :Ca_50, :Ca_100, :Ca_200, :Ca_300, :Ca_400, :Ca_500, :Ca_600,
-            :I_2_0, :I_2_5, :I_5_0, :I_7_5, :I_10_0, :I_15_0, :I_20_0,
+            :Ca_50,
+            :Ca_100,
+            :Ca_200,
+            :Ca_300,
+            :Ca_400,
+            :Ca_500,
+            :Ca_600,
+            :I_2_0,
+            :I_2_5,
+            :I_5_0,
+            :I_7_5,
+            :I_10_0,
+            :I_15_0,
+            :I_20_0,
             :solid_water,
         )
         m = BS.get_material(sym)
@@ -65,19 +77,19 @@ end
     # Mass μ = μ / ρ; for water ρ ≈ 1 g/cm³, so the two should be close.
     μ_lin = BS.compute_μ_at_energy(water, 60.0)
     μ_mass = BS.compute_mass_μ_at_energy(water, 60.0)
-    @test abs(μ_lin - μ_mass) < 0.02   # water density = 1.000 g/cm³
+    @test abs(μ_lin - μ_mass) < 0.02 # water density = 1.000 g/cm³
 end
 
 @testset "μ_to_HU + HU_to_μ — round-trip" begin
     μ_water = 0.193
     # Water → 0 HU.
-    @test BS.μ_to_HU(μ_water, μ_water) ≈ 0.0  atol = 1.0e-10
+    @test BS.μ_to_HU(μ_water, μ_water) ≈ 0.0 atol = 1.0e-10
     # 1.5x water → +500 HU.
     @test BS.μ_to_HU(1.5 * μ_water, μ_water) ≈ 500.0
     # Round-trip.
     for hu in (-500.0, 0.0, 100.0, 1000.0)
         μ = BS.HU_to_μ(hu, μ_water)
-        @test BS.μ_to_HU(μ, μ_water) ≈ hu  atol = 1.0e-10
+        @test BS.μ_to_HU(μ, μ_water) ≈ hu atol = 1.0e-10
     end
     # Array overload.
     μs = [0.5μ_water, μ_water, 1.5μ_water]
@@ -90,12 +102,12 @@ end
     μ_70 = BS.get_reference_μ_water(70.0)
     @test 0.15 < μ_60 < 0.25
     @test 0.15 < μ_70 < 0.25
-    @test μ_60 > μ_70   # hardens with E
+    @test μ_60 > μ_70 # hardens with E
 
     @testset "to_hounsfield with manual μ_water" begin
         recon = Float32[1.0 1.5; 2.0 0.5] .* Float32(μ_60)
         hu = BS.to_hounsfield(recon; μ_water = μ_60)
-        @test hu[1, 1] ≈ 0.0   atol = 1.0e-4
+        @test hu[1, 1] ≈ 0.0 atol = 1.0e-4
         @test hu[1, 2] ≈ 500.0 atol = 1.0e-4
         @test hu[2, 1] ≈ 1000.0 atol = 1.0e-4
         @test hu[2, 2] ≈ -500.0 atol = 1.0e-4
@@ -103,17 +115,17 @@ end
 
     @testset "to_hounsfield with water_mask (empirical calibration)" begin
         recon = Float32[1.0 1.5; 2.0 0.5] .* Float32(μ_60)
-        mask = Bool[true false; false true]    # avg(1.0, 0.5) * μ_60 = 0.75 μ_60
+        mask = Bool[true false; false true] # avg(1.0, 0.5) * μ_60 = 0.75 μ_60
         hu = BS.to_hounsfield(recon; water_mask = mask)
         # mean(recon[mask]) → calibrated μ_water = 0.75 μ_60.
         μ_cal = 0.75 * μ_60
-        @test hu[1, 1] ≈ Float32(BS.μ_to_HU(Float64(recon[1, 1]), μ_cal))  atol = 1.0e-3
+        @test hu[1, 1] ≈ Float32(BS.μ_to_HU(Float64(recon[1, 1]), μ_cal)) atol = 1.0e-3
     end
 
     @testset "to_hounsfield default → NIST water at 70 keV" begin
         recon = Float32[1.0;;] .* Float32(BS.get_reference_μ_water(70.0))
         hu = BS.to_hounsfield(recon)
-        @test hu[1, 1] ≈ 0.0  atol = 1.0e-4
+        @test hu[1, 1] ≈ 0.0 atol = 1.0e-4
     end
 end
 
@@ -151,7 +163,8 @@ end
     nx, ny, nz = 4, 4, 2
     labels = reshape(collect(UInt8(0):UInt8(nx * ny * nz - 1)), nx, ny, nz)
     mats = Dict{Int, BS.XA.Material}(
-        i => BS.XA.Materials.water for i in 0:(nx * ny * nz - 1)
+        i => BS.XA.Materials.water
+        for i in 0:(nx * ny * nz - 1)
     )
     ph = BS.Phantom(labels, mats, (0.5, 0.5, 0.5))
     @test size(ph.mask) == (nx, ny, nz)
@@ -182,7 +195,8 @@ end
     @test eltype(μ_vol) == Float32
     # Spot-check label → material mapping per indices above.
     @test μ_vol[1, 1, 1] ≈ Float32(BS.compute_μ_at_energy(BS.XA.Materials.water, 80.0))
-    @test μ_vol[1, 2, 1] ≈ Float32(BS.compute_μ_at_energy(BS.get_material(:solid_water), 80.0))
+    @test μ_vol[1, 2, 1] ≈
+        Float32(BS.compute_μ_at_energy(BS.get_material(:solid_water), 80.0))
     @test μ_vol[2, 1, 1] ≈ Float32(BS.compute_μ_at_energy(BS.get_material(:Ca_100), 80.0))
 end
 
@@ -204,10 +218,7 @@ end
 
 @testset "create_phantom_from_mask — thin wrapper" begin
     labels = reshape(UInt8[1, 2, 2, 1], 2, 1, 2)
-    mats = Dict{Int, BS.XA.Material}(
-        1 => BS.XA.Materials.water,
-        2 => BS.XA.Materials.air,
-    )
+    mats = Dict{Int, BS.XA.Material}(1 => BS.XA.Materials.water, 2 => BS.XA.Materials.air)
     ph = BS.create_phantom_from_mask(labels, mats, (0.5, 0.5, 0.5))
     @test ph isa BS.Phantom
     @test size(ph.mask) == size(labels)
@@ -220,10 +231,14 @@ end
 # intermittently yields an all-zero mask (empty sinogram, blank reconstruction).
 @testset "Phantom reuses an already-typed mask (no copy)" begin
     mask = rand(UInt8(0):UInt8(2), 4, 4, 2)
-    mats = Dict(0 => XA.Materials.air, 1 => XA.Materials.water, 2 => XA.Materials.ncat_muscle)
+    mats = Dict(
+        0 => XA.Materials.air,
+        1 => XA.Materials.water,
+        2 => XA.Materials.ncat_muscle,
+    )
 
     p = BS.Phantom(mask, mats, (0.1, 0.1, 0.1))
-    @test p.mask === mask                       # aliased, not re-broadcast
+    @test p.mask === mask # aliased, not re-broadcast
 
     # a mask needing a widening conversion still converts
     big = fill(UInt16(300), 2, 2, 1)

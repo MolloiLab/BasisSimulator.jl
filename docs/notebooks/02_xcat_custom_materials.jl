@@ -82,15 +82,18 @@ where the pipeline runs.
 # ╔═╡ 02000005-0000-4000-8000-000000000001
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage()
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
 
 # ╔═╡ 02000007-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 **Backend detected:** $(GPU_BACKEND.name)
-""")
+""",
+)
 
 # ╔═╡ 03000000-0000-4000-8000-000000000000
 md"""
@@ -150,17 +153,19 @@ md"""
 
 # ╔═╡ 05000002-0000-4000-8000-000000000002
 let m = BS.XA.Materials.ncat_blood
-    Markdown.parse("""
+    Markdown.parse(
+        """
     **`XA.Materials.ncat_blood`**
 
     | Field         | Value                                    |
     |---------------|------------------------------------------|
     | `name`        | $(m.name)                                |
-    | `ZA_ratio`    | $(round(m.ZA_ratio; digits=4))           |
+    | `ZA_ratio`    | $(round(m.ZA_ratio; digits = 4))           |
     | `I`           | $(m.I)                                   |
     | `density`     | $(m.density)                             |
     | `composition` | $(length(m.composition)) elements (Z = $(sort(collect(keys(m.composition))))) |
-    """)
+    """,
+    )
 end
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
@@ -180,21 +185,23 @@ bolus.  We start from `ncat_blood`'s composition and add elemental iodine.
 # ╔═╡ 05000003-0000-4000-8000-000000000002
 function build_iodine_blood(iodine_mg_per_mL::Real)
     base = BS.XA.Materials.ncat_blood
-    density = base.density                                   # ~1.06 g/cm³
+    density = base.density # ~1.06 g/cm³
     ρ_g_cm3 = ustrip(uconvert(u"g/cm^3", density))
-    f_I = iodine_mg_per_mL / (1000.0 * ρ_g_cm3)          # iodine mass fraction
+    f_I = iodine_mg_per_mL / (1000.0 * ρ_g_cm3) # iodine mass fraction
     scale = 1.0 - f_I
 
     comp = Dict{Int, Float64}()
     for (Z, frac) in base.composition
         comp[Z] = frac * scale
     end
-    comp[53] = get(comp, 53, 0.0) + f_I                       # add iodine
+    comp[53] = get(comp, 53, 0.0) + f_I # add iodine
 
     return BS.XA.Material(
         "Iodine-blood ($(iodine_mg_per_mL) mg/mL)",
-        base.ZA_ratio,                                        # ZA shifts ~negligibly at clinical dose
-        base.I,                                               # likewise for excitation energy
+        # ZA shifts ~negligibly at clinical dose
+        base.ZA_ratio,
+        # likewise for excitation energy
+        base.I,
         density,
         comp,
     )
@@ -217,8 +224,11 @@ back to the loader via `materials =` (§d).
 # ╔═╡ 05000004-0000-4000-8000-0000000000c1
 let m = BS.xcat_default_materials()
     rows = ["| `$(k)` | `$(v.name)` |" for (k, v) in sort(collect(m); by = first)]
-    Markdown.parse("**`BS.xcat_default_materials()`**\n\n" *
-        "| XCIST name | XrayAttenuation material |\n|---|---|\n" * join(rows, "\n"))
+    Markdown.parse(
+        "**`BS.xcat_default_materials()`**\n\n" *
+            "| XCIST name | XrayAttenuation material |\n|---|---|\n" *
+            join(rows, "\n"),
+    )
 end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000008
@@ -233,7 +243,7 @@ loader via `materials =` in §3.
 
 # ╔═╡ 05000004-0000-4000-8000-000000000009
 materials_map = let m = BS.xcat_default_materials()
-    m["ncat_blood"] = iodine_blood        # dope the blood pool with 5 mg/mL iodine contrast
+    m["ncat_blood"] = iodine_blood # dope the blood pool with 5 mg/mL iodine contrast
     m
 end;
 
@@ -250,7 +260,8 @@ docs-friendly compute cost, with no downsampling.
 
 # ╔═╡ 04000004-0000-4000-8000-000000000001
 xcat = try
-    BS.load_xcat_male_slab(; materials = materials_map, quiet = true)   # full-resolution single slab
+    # full-resolution single slab
+    BS.load_xcat_male_slab(; materials = materials_map, quiet = true)
 catch err
     @warn "XCAT download/load failed; the compute cells will skip" exception = err
     nothing
@@ -263,7 +274,8 @@ phantom_labeled = xcat === nothing ? nothing : xcat.mask;
 VOXEL_SIZE_CM = xcat === nothing ? (0.15, 0.15, 0.15) : xcat.voxel_size_cm;
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
-phantom = xcat === nothing ? nothing :
+phantom = xcat === nothing ?
+    nothing :
     BS.Phantom(to_gpu(xcat.mask), xcat.materials, xcat.voxel_size_cm);
 
 # ╔═╡ 04000005-0000-4000-8000-000000000001
@@ -285,7 +297,8 @@ let
                 " voxels of $(join(round.(VOXEL_SIZE_CM .* 10; digits = 3), " × ")) mm" *
                 " · $(n_lbl) labels (colour = label ID)",
             aspect = Mke.DataAspect(),
-            titlesize = 28, subtitlesize = 20,
+            titlesize = 28,
+            subtitlesize = 20,
         )
         hm = Mke.heatmap!(ax, Float32.(slice); colormap = :tab20)
         Mke.hidedecorations!(ax)
@@ -293,7 +306,8 @@ let
 
         Mke.save(
             joinpath(@__DIR__, "..", "assets", "xcat_phantom.png"),
-            fig; px_per_unit = 2
+            fig;
+            px_per_unit = 2,
         )
         fig
     end
@@ -326,7 +340,9 @@ let s = scanner, constant = BS.REVOLUTION_APEX
 
     rows = map(propertynames(s)) do f
         value, standard = getproperty(s, f), getproperty(constant, f)
-        note = isequal(value, standard) ? "" : "changed here (the constant has `$(shown(standard))`)"
+        note = isequal(value, standard) ?
+            "" :
+            "changed here (the constant has `$(shown(standard))`)"
         "| `$(f)` | `$(shown(value))` | $(note) |"
     end
 
@@ -340,7 +356,7 @@ let s = scanner, constant = BS.REVOLUTION_APEX
         | Keyword | Value | |
         |---|---|---|
         $(join(rows, "\n"))
-        """
+        """,
     )
 end
 
@@ -360,18 +376,10 @@ protocol = BS.CTProtocol(
 # the volume and can alias in strongly beam-hardened regions. The Hybrid-IR cell reads
 # `sim_opts.projector`, so its system matrix always matches the operator that made the data.
 # `view_samples = 5`: the detector integrates each view while the gantry turns (notebook 01).
-sim_opts = BS.SimOptions(
-    seed = 1234,
-    projector = :dd_fast,
-    view_samples = 5,
-);
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast, view_samples = 5);
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
-recon_opts = BS.ReconOptions(
-    matrix_size = (512, 512, 8),
-    fov_cm = 35.0,
-    z_cm = 0.5,
-);
+recon_opts = BS.ReconOptions(matrix_size = (512, 512, 8), fov_cm = 35.0, z_cm = 0.5);
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 md"""
@@ -382,7 +390,9 @@ device buffers. `simulate!` returns the acquisition's dose report.
 """
 
 # ╔═╡ 08000002-0000-4000-8000-000000000001
-sim = phantom === nothing ? nothing : let
+sim = phantom === nothing ?
+    nothing :
+    let
         @info "Simulating XCAT body CTA: 120 kVp / 250 mA…"
         ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
         out = BS.simulate!(ws, phantom, protocol, sim_opts)
@@ -393,7 +403,7 @@ sim = phantom === nothing ? nothing : let
         GC.gc(true)
 
         result
-end;
+    end;
 
 # ╔═╡ 08000003-0000-4000-8000-000000000001
 sim === nothing ? md"" : sim.dose
@@ -434,28 +444,30 @@ reconstructions below.
 """
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
-bhc_calibration = sim === nothing ? nothing : let
+bhc_calibration = sim === nothing ?
+    nothing :
+    let
         # Parameter-free water BHC — physics only, no tunables, no thresholds:
         # per-column poly→mono polynomials from the FULL detected spectrum
         # (tube × filters × bowtie × heel × η(E) — whatever sim_opts enabled).
         model = BS.calibrate_bhc_water(
-            sim_opts, protocol;
-            scanner = scanner, geom = sim.geom,
+            sim_opts,
+            protocol;
+            scanner = scanner,
+            geom = sim.geom,
         )
 
-        (
-            model = model,
-            μ_water = model.μ_water_ref,
-            ref_E_keV = model.reference_energy_keV,
-        )
-end;
+        (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
+    end;
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
-Markdown.parse("""
+Markdown.parse(
+    """
 **Calibrated:**
 * ref energy = $(bhc_calibration === nothing ? "—" : round(bhc_calibration.ref_E_keV, digits = 1)) keV,
 * lac water = $(bhc_calibration === nothing ? "—" : round(bhc_calibration.μ_water, digits = 5)) cm⁻¹.
-""")
+""",
+)
 
 # ╔═╡ 09000010-0000-4000-8000-000000000001
 md"""
@@ -465,15 +477,19 @@ Water BHC → FDK with the `:standard` kernel → HU, releasing the device buffe
 """
 
 # ╔═╡ 09000002-0000-4000-8000-000000000001
-hu_fbp = sim === nothing ? nothing : let
-    sino_gpu = BS.apply_bhc_water(to_gpu(sim.sino), bhc_calibration.model)
-    ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, recon_opts.matrix_size)
-    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom)
-    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
-    ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
-    GC.gc(true)
-    hu
-end;
+hu_fbp = sim === nothing ?
+    nothing :
+    let
+        sino_gpu = BS.apply_bhc_water(to_gpu(sim.sino), bhc_calibration.model)
+        ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, recon_opts.matrix_size)
+        recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom)
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+        ws_fdk = nothing
+        sino_gpu = nothing
+        recon_μ = nothing
+        GC.gc(true)
+        hu
+    end;
 
 # ╔═╡ 10000001-0000-4000-8000-000000000001
 md"""
@@ -501,17 +517,25 @@ workspace.
 """
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
-hu_hir = sim === nothing ? nothing : let
-    sino_gpu = BS.apply_bhc_water(to_gpu(sim.sino), bhc_calibration.model)
-    ws_hir = BS.create_hir_recon_workspace(
-        sino_gpu, sim.geom, recon_opts.matrix_size; strength = 60, projector = sim_opts.projector,
-    )
-    recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
-    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
-    ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing
-    GC.gc(true)
-    hu
-end;
+hu_hir = sim === nothing ?
+    nothing :
+    let
+        sino_gpu = BS.apply_bhc_water(to_gpu(sim.sino), bhc_calibration.model)
+        ws_hir = BS.create_hir_recon_workspace(
+            sino_gpu,
+            sim.geom,
+            recon_opts.matrix_size;
+            strength = 60,
+            projector = sim_opts.projector,
+        )
+        recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+        ws_hir = nothing
+        sino_gpu = nothing
+        recon_μ = nothing
+        GC.gc(true)
+        hu
+    end;
 
 # ╔═╡ 11000000-0000-4000-8000-000000000000
 md"""
@@ -545,7 +569,8 @@ let
         mid = size(hu_fbp, 3) ÷ 2
         img_fbp = hu_fbp[:, :, mid]
         img_hir = hu_hir[:, :, mid]
-        colorrng = (-300, 550)   # window W 850 / L 125: soft tissue and the iodinated blood pools
+        # window W 850 / L 125: soft tissue and the iodinated blood pools
+        colorrng = (-300, 550)
         title_kwargs = (titlesize = 28, subtitlesize = 20)
 
         ax_fbp = Mke.Axis(
@@ -572,7 +597,8 @@ let
 
         Mke.save(
             joinpath(@__DIR__, "..", "assets", "xcat_fbp_vs_hir.png"),
-            fig; px_per_unit = 2
+            fig;
+            px_per_unit = 2,
         )
         fig
     end
@@ -589,11 +615,16 @@ let
         # boundary voxels mix two tissues, and their spread is the edge, not the noise
         r = 2
         nx, ny, nz = size(labels)
-        roi = [CartesianIndex(i, j, k) for k in 1:nz, j in (1 + r):(ny - r), i in (1 + r):(nx - r)
-               if all(labels[i + di, j + dj, k] == heart for dj in -r:r, di in -r:r)]
-        σ_fbp = Float64(std(hu_fbp[roi])); σ_hir = Float64(std(hu_hir[roi]))
+        roi = [
+            CartesianIndex(i, j, k)
+            for k in 1:nz, j in (1 + r):(ny - r), i in (1 + r):(nx - r)
+            if all(labels[i + di, j + dj, k] == heart for dj in -r:r, di in -r:r)
+        ]
+        σ_fbp = Float64(std(hu_fbp[roi]))
+        σ_hir = Float64(std(hu_hir[roi]))
         band = BS.get_hir_params(60).target_noise_reduction
-        Markdown.parse("""
+        Markdown.parse(
+            """
         **Noise inside the myocardium** ($(length(roi)) voxels, all slices)
 
         | algorithm | mean (HU) | σ (HU) |
@@ -603,7 +634,8 @@ let
 
         Hybrid IR lowers the noise by **$(round(100 * (1 - σ_hir / σ_fbp); digits = 1)) %** and leaves the mean
         where it was. The package's calibration band for strength 60 is $(band[1])–$(band[2]) %.
-        """)
+        """,
+        )
     end
 end
 

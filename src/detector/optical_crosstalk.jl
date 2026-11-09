@@ -38,7 +38,7 @@ end
 Typical optical crosstalk for GOS scintillator detector.
 Values from CatSim: row=0.045, col=0.040.
 """
-optical_crosstalk_typical() = OpticalCrosstalkModel(0.045, 0.040)
+optical_crosstalk_typical() = OpticalCrosstalkModel(0.045, 0.04)
 
 """
     create_optical_crosstalk_kernel(model::OpticalCrosstalkModel)
@@ -65,10 +65,11 @@ Apply optical crosstalk to projection-domain sinogram (in-place, GPU-native).
 Converts to intensity, applies 3×3 separable convolution, converts back.
 """
 function apply_optical_crosstalk!(
-    sinogram::AbstractArray{T,3},
+    sinogram::AbstractArray{T, 3},
     model::OpticalCrosstalkModel;
-    ws_output=nothing, ws_kernel=nothing
-) where T
+    ws_output = nothing,
+    ws_kernel = nothing,
+) where {T}
     if model.row_coeff ≈ 0 && model.col_coeff ≈ 0
         return sinogram
     end
@@ -108,7 +109,7 @@ function apply_optical_crosstalk!(
                 end
             end
 
-            output[idx] = -log(max(acc, T(1e-10)))
+            output[idx] = -log(max(acc, T(1.0e-10)))
         end
     end
 

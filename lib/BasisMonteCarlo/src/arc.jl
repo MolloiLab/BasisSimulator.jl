@@ -67,10 +67,16 @@ material_key(m::DetectorMaterial) = m.name
 
 function Base.:(==)(a::ArcDetector, b::ArcDetector)
     materials = (:material, :grid_material, :septum_material)
-    same_materials = all(material_key(getfield(a, f)) == material_key(getfield(b, f)) for f in materials)
-    return same_materials && all(
-        getfield(a, f) == getfield(b, f) for f in fieldnames(ArcDetector) if !(f in materials)
+    same_materials = all(
+        material_key(getfield(a, f)) == material_key(getfield(b, f))
+        for f in materials
     )
+    return same_materials &&
+        all(
+            getfield(a, f) == getfield(b, f)
+            for f in fieldnames(ArcDetector)
+            if !(f in materials)
+        )
 end
 
 same_geometry(a::ArcDetector, b::ArcDetector) = a == b
@@ -295,7 +301,9 @@ function set_spectrum!(e::Engine, spectrum::Spectrum, beam::Beam, seed::Integer)
     cdf = cumsum(spectrum.weights)
     gen.spectrum_keV = copy(spectrum.energies_keV)
     gen.spectrum_cdf = cdf ./ last(cdf)
-    gen.spectrum_bin_keV = length(spectrum.energies_keV) > 1 ? spectrum.energies_keV[2] - spectrum.energies_keV[1] : 0.0
+    gen.spectrum_bin_keV = length(spectrum.energies_keV) > 1 ?
+        spectrum.energies_keV[2] - spectrum.energies_keV[1] :
+        0.0
 
     h = hash((seed, :spectrum))
     ui("/random/setSeeds $(1 + h % 2147483646) $(1 + (h >> 32) % 2147483646)")
@@ -312,15 +320,15 @@ within its bin). The run's `energy_keV` is the spectrum's mean and `photon_energ
 each photon's energy.
 """
 function simulate_spectrum(
-        detector::AbstractDetector,
-        spectrum::Spectrum;
-        n::Integer = 100_000,
-        beam::Beam,
-        physics::PhysicsSettings = PhysicsSettings(),
-        seed::Integer = 1,
-        record_deposits::Bool = false,
-        record_vertices::Bool = false,
-    )
+    detector::AbstractDetector,
+    spectrum::Spectrum;
+    n::Integer = 100_000,
+    beam::Beam,
+    physics::PhysicsSettings = PhysicsSettings(),
+    seed::Integer = 1,
+    record_deposits::Bool = false,
+    record_vertices::Bool = false,
+)
     e = engine(detector, physics)
     set_spectrum!(e, spectrum, beam, seed)
     return run_photons(
@@ -369,7 +377,12 @@ struct ArcCounts
     counts::Array{Int32, 3}
 end
 
-Base.:+(a::ArcCounts, b::ArcCounts) = ArcCounts(a.detector, a.readout, a.n + b.n, a.counts .+ b.counts)
+Base.:+(a::ArcCounts, b::ArcCounts) = ArcCounts(
+    a.detector,
+    a.readout,
+    a.n + b.n,
+    a.counts .+ b.counts,
+)
 
 """Dexel index along one axis (1-based) and its collecting edges, for a position `u` on the face."""
 function arc_dexel(u, p, G, g, n_cells)
@@ -381,7 +394,7 @@ function arc_dexel(u, p, G, g, n_cells)
     local_u = v - group * pitch
     k = clamp(floor(Int, (local_u + G * p / 2) / p), 0, G - 1)
     m = group * G + k
-    first_group = -(n_cells ÷ 2)      # groups run from -(n ÷ 2) on either layout
+    first_group = -(n_cells ÷ 2) # groups run from -(n ÷ 2) on either layout
     index = m - first_group * G + 1
     return index, m, offset
 end
@@ -427,7 +440,7 @@ function arc_counts(run::MonoenergeticRun, readout::ArcReadout)
             current = dep.event[k]
         end
         x, y, z, e = dep.x_mm[k], dep.y_mm[k], dep.z_mm[k], dep.energy_keV[k]
-        s = R * atan(x, y)          # arc length at the front face (charge drifts radially)
+        s = R * atan(x, y) # arc length at the front face (charge drifts radially)
 
         col, mc, off_s = arc_dexel(s, p[1], G[1], g[1], cells[1])
         row, mr, off_z = arc_dexel(z, p[2], G[2], g[2], cells[2])
@@ -529,7 +542,9 @@ function arc_signal(run::MonoenergeticRun, ::ArcEnergyReadout)
     flush!()
 
     drawn = run.photon_energy_keV
-    photon_keV = drawn === nothing || isempty(drawn) ? run.n * run.energy_keV : sum(Float64, drawn)
+    photon_keV = drawn === nothing || isempty(drawn) ?
+        run.n * run.energy_keV :
+        sum(Float64, drawn)
     return ArcSignal(d, run.n, photon_keV, energy, energy2)
 end
 

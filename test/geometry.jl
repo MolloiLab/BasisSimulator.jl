@@ -8,7 +8,7 @@
 # EICTScanner / PCCTScanner over ScannerGeometry: defaults + ctor
 # -----------------------------------------------------------------------------
 @testset "Scanner — defaults + kwarg propagation" begin
-    s = BS.EICTScanner()  # all defaults
+    s = BS.EICTScanner() # all defaults
     # CatSim-style defaults.
     @test s.source_to_isocenter == 540.0
     @test s.source_to_detector == 950.0
@@ -19,21 +19,34 @@
     # a native dexel's pitch at the detector = pixel × (SDD/SAD) / binning
     p = BS.PCCTScanner(energy_thresholds = [20.0, 50.0], binning_factor = 2)
     mag = p.source_to_detector / p.source_to_isocenter
-    @test BS._build_pcct_detector(p).pixel_size_mm == (p.detector_row_size, p.detector_col_size) .* (mag / 2)
+    @test BS._build_pcct_detector(p).pixel_size_mm ==
+        (p.detector_row_size, p.detector_col_size) .* (mag / 2)
 end
 
 @testset "Scanner — flat-panel-style geometry kwargs" begin
     s = BS.EICTScanner(
-        detector_rows = 512, detector_cols = 512,
-        detector_row_size = 0.15, detector_col_size = 0.15,
+        detector_rows = 512,
+        detector_cols = 512,
+        detector_row_size = 0.15,
+        detector_col_size = 0.15,
     )
     @test s.detector_rows == 512
     @test s.detector_cols == 512
 end
 
 @testset "Scanner — the removed photon-counting keywords are refused" begin
-    for kw in (:native_dexel_col_mm, :pixel_mode, :energy_resolution, :charge_sharing_fwhm, :n_energy_bins, :fill_factor_row)
-        @test_throws Exception BS.PCCTScanner(; energy_thresholds = [20.0, 50.0], (kw => 1)...)
+    for kw in (
+            :native_dexel_col_mm,
+            :pixel_mode,
+            :energy_resolution,
+            :charge_sharing_fwhm,
+            :n_energy_bins,
+            :fill_factor_row,
+        )
+        @test_throws Exception BS.PCCTScanner(;
+            energy_thresholds = [20.0, 50.0],
+            (kw => 1)...,
+        )
     end
 end
 
@@ -54,13 +67,15 @@ end
 
     @testset "empty energy_thresholds errors" begin
         @test_throws ErrorException BS.PCCTScanner(;
-            pcct_kwargs..., energy_thresholds = Float64[],
+            pcct_kwargs...,
+            energy_thresholds = Float64[],
         )
     end
 
     @testset "unsorted energy_thresholds errors" begin
         @test_throws ErrorException BS.PCCTScanner(;
-            pcct_kwargs..., energy_thresholds = [50.0, 20.0, 80.0, 110.0],
+            pcct_kwargs...,
+            energy_thresholds = [50.0, 20.0, 80.0, 110.0],
         )
     end
 
@@ -82,8 +97,10 @@ end
     s = BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
-        detector_rows = 32, detector_cols = 256,
-        detector_row_size = 1.0, detector_col_size = 1.0,
+        detector_rows = 32,
+        detector_cols = 256,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
     )
 
     @testset "defaults: full coverage, n_rows/n_cols from scanner" begin
@@ -98,7 +115,7 @@ end
         # FOV = n_cols × pixel_size at iso.
         @test g.fov[1] ≈ 0.1 * 256
         @test g.fov[2] ≈ 0.1 * 256
-        @test g.fov[3] ≈ 0.1 * 32   # z = n_rows × pixel_row
+        @test g.fov[3] ≈ 0.1 * 32 # z = n_rows × pixel_row
     end
 
     @testset "explicit fov_cm / z_cm override" begin
@@ -122,15 +139,20 @@ end
 
     @testset "axial cone guards cover the full reconstruction cylinder" begin
         pcct = BS.EICTScanner(
-            source_to_isocenter = 610.0, source_to_detector = 1113.0,
-            detector_rows = 144, detector_cols = 1195,
+            source_to_isocenter = 610.0,
+            source_to_detector = 1113.0,
+            detector_rows = 144,
+            detector_cols = 1195,
             detector_row_size = 0.3529559748427673,
             detector_col_size = 0.3015274034141959,
         )
         @test BS.required_axial_detector_rows(pcct; fov_cm = 35.0, z_cm = 0.5) == 20
         g = BS.CTGeometry(
-            pcct; n_angles = 8, fov_cm = 35.0, z_cm = 0.5,
-            collimation_mm = 5.0
+            pcct;
+            n_angles = 8,
+            fov_cm = 35.0,
+            z_cm = 0.5,
+            collimation_mm = 5.0,
         )
         @test g.n_rows == 20
         @test g.fov[3] == 0.5 # guard acquisition never changes the saved z grid
@@ -139,15 +161,14 @@ end
     @testset "collimation_mm vs n_rows mutual exclusion" begin
         @test_throws ErrorException BS.CTGeometry(
             s;
-            n_angles = 8, collimation_mm = 16.0, n_rows = 16,
+            n_angles = 8,
+            collimation_mm = 16.0,
+            n_rows = 16,
         )
     end
 
     @testset "collimation_mm exceeds scanner physical max errors" begin
-        @test_throws ErrorException BS.CTGeometry(
-            s;
-            n_angles = 8, collimation_mm = 999.0,
-        )
+        @test_throws ErrorException BS.CTGeometry(s; n_angles = 8, collimation_mm = 999.0)
     end
 
     @testset "extended_collimation bypasses cap with @warn" begin
@@ -155,22 +176,23 @@ end
         local g
         @test_logs (:warn, r"EXTENDED-COLLIMATION MODE"i) match_mode = :any begin
             g = BS.CTGeometry(
-                s; n_angles = 8, collimation_mm = 80.0,
-                extended_collimation = true
+                s;
+                n_angles = 8,
+                collimation_mm = 80.0,
+                extended_collimation = true,
             )
         end
-        @test g.n_rows == 80   # round(80 / 1.0)
+        @test g.n_rows == 80 # round(80 / 1.0)
         # Mutual-exclusion still holds in extended mode.
         @test_throws ErrorException BS.CTGeometry(
             s;
-            n_angles = 8, collimation_mm = 80.0, n_rows = 80,
+            n_angles = 8,
+            collimation_mm = 80.0,
+            n_rows = 80,
             extended_collimation = true,
         )
         # Default (extended=false) still errors.
-        @test_throws ErrorException BS.CTGeometry(
-            s;
-            n_angles = 8, collimation_mm = 80.0,
-        )
+        @test_throws ErrorException BS.CTGeometry(s; n_angles = 8, collimation_mm = 80.0)
     end
 
     @testset "angles cover [0, 2π) uniformly" begin
@@ -188,7 +210,7 @@ end
         g = BS.CTGeometry(s; n_angles = 16)
         for i in 1:g.n_angles
             r = sqrt(g.source_positions[1, i]^2 + g.source_positions[2, i]^2)
-            @test r ≈ g.SAD  atol = 1.0e-10
+            @test r ≈ g.SAD atol = 1.0e-10
             @test g.source_positions[3, i] == 0.0
         end
     end
@@ -198,7 +220,7 @@ end
         det_dist = g.SDD - g.SAD
         for i in 1:g.n_angles
             r = sqrt(g.detector_centers[1, i]^2 + g.detector_centers[2, i]^2)
-            @test r ≈ det_dist  atol = 1.0e-10
+            @test r ≈ det_dist atol = 1.0e-10
             # Opposite source: detector x = -det_dist/SAD · source x.
             @test g.detector_centers[1, i] ≈ -det_dist / g.SAD * g.source_positions[1, i]
             @test g.detector_centers[2, i] ≈ -det_dist / g.SAD * g.source_positions[2, i]
@@ -211,8 +233,8 @@ end
             u = g.detector_u[:, i]
             v = g.detector_v[:, i]
             @test v == [0.0, 0.0, 1.0]
-            @test abs(u[1]^2 + u[2]^2 + u[3]^2 - 1) < 1.0e-12   # |u| = 1
-            @test abs(sum(u .* v)) < 1.0e-12                     # u ⊥ v
+            @test abs(u[1]^2 + u[2]^2 + u[3]^2 - 1) < 1.0e-12 # |u| = 1
+            @test abs(sum(u .* v)) < 1.0e-12                  # u ⊥ v
         end
     end
 end
@@ -315,8 +337,11 @@ end
     fov_z = ph.voxel_size[3] * nz
     g = BS.CTGeometry(
         s;
-        n_angles = 4, fov_cm = fov_xy, z_cm = fov_z,
-        n_rows = nz, n_cols = nx,
+        n_angles = 4,
+        fov_cm = fov_xy,
+        z_cm = fov_z,
+        n_rows = nz,
+        n_cols = nx,
     )
 
     @testset "nearest method preserves labels" begin
@@ -336,7 +361,12 @@ end
     end
 
     @testset "unknown method errors" begin
-        @test_throws ErrorException BS.resample_to_recon(ph, g, (nx, ny, nz); method = :bogus)
+        @test_throws ErrorException BS.resample_to_recon(
+            ph,
+            g,
+            (nx, ny, nz);
+            method = :bogus,
+        )
     end
 end
 
@@ -344,11 +374,7 @@ end
     # Recon grid larger than phantom → out-of-bounds voxels stay zero.
     ph = _toy_phantom()
     s = BS.EICTScanner()
-    g = BS.CTGeometry(
-        s;
-        n_angles = 4, fov_cm = 10.0, z_cm = 5.0,
-        n_rows = 8, n_cols = 16,
-    )
+    g = BS.CTGeometry(s; n_angles = 4, fov_cm = 10.0, z_cm = 5.0, n_rows = 8, n_cols = 16)
     out = BS.resample_to_recon(ph, g, (16, 16, 8); method = :nearest)
     @test size(out) == (16, 16, 8)
     @test eltype(out) == UInt8
@@ -382,13 +408,16 @@ end
     @testset "helical trajectory: feed, centering, total views" begin
         # 32 rows × 1.0 mm at iso = 3.2 cm collimation; pitch 1 → feed 3.2 cm/rot
         g = BS.CTGeometry(
-            scanner; n_angles = 90, fov_cm = 20.0,
-            pitch = 1.0, n_rotations = 4.0
+            scanner;
+            n_angles = 90,
+            fov_cm = 20.0,
+            pitch = 1.0,
+            n_rotations = 4.0,
         )
         @test BS.is_helical(g)
         @test g.pitch == 1.0
         @test g.table_feed ≈ 3.2
-        @test g.n_angles == 360                          # 90 × 4 total views
+        @test g.n_angles == 360 # 90 × 4 total views
         @test length(g.angles) == 360
         @test g.angles[end] ≈ 2π * 4 * (1 - 1 / 360) atol = 1.0e-9
         # helix centred on isocentre: z spans ±travel/2
@@ -406,8 +435,11 @@ end
 
     @testset "half pitch halves the feed" begin
         g = BS.CTGeometry(
-            scanner; n_angles = 90, fov_cm = 20.0,
-            pitch = 0.5, n_rotations = 2.0
+            scanner;
+            n_angles = 90,
+            fov_cm = 20.0,
+            pitch = 0.5,
+            n_rotations = 2.0,
         )
         @test g.table_feed ≈ 1.6
     end
@@ -417,12 +449,15 @@ end
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, pitch = 0.0)
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, pitch = -0.5)
         @test_throws ArgumentError BS.CTGeometry(
-            scanner; n_angles = 90,
-            pitch = 1.0, n_rotations = 0.5
+            scanner;
+            n_angles = 90,
+            pitch = 1.0,
+            n_rotations = 0.5,
         )
         @test_throws ArgumentError BS.CTGeometry(
-            scanner; n_angles = 90,
-            collimation_mm = 0.0
+            scanner;
+            n_angles = 90,
+            collimation_mm = 0.0,
         )
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, n_rows = 0)
         @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, n_cols = 0)
@@ -430,8 +465,11 @@ end
 
     @testset "subset geometry carries helical metadata" begin
         g = BS.CTGeometry(
-            scanner; n_angles = 90, fov_cm = 20.0,
-            pitch = 1.0, n_rotations = 2.0
+            scanner;
+            n_angles = 90,
+            fov_cm = 20.0,
+            pitch = 1.0,
+            n_rotations = 2.0,
         )
         sub = BS.create_subset_geometry(g, collect(1:5:180))
         @test BS.is_helical(sub)
@@ -454,9 +492,12 @@ end
         detector_col_size = 1.0,
     )
     geom = BS.CTGeometry(
-        scanner; n_angles = 96, fov_cm = 12.8,
-        pitch = 1.0, n_rotations = 3.0
-    )      # feed 1.6 cm/rot, travel 4.8 cm
+        scanner;
+        n_angles = 96,
+        fov_cm = 12.8,
+        pitch = 1.0,
+        n_rotations = 3.0,
+    ) # feed 1.6 cm/rot, travel 4.8 cm
 
     nx, nz = 64, 48
     vol_extent = (12.8, 12.8, 6.4)
@@ -475,11 +516,11 @@ end
     # μ accuracy inside the cylinder, central slice
     roi = rec[25:40, 25:40, 12]
     μ̄ = sum(roi) / length(roi)
-    @test abs(μ̄ - 0.2) < 0.01                         # within 5%
+    @test abs(μ̄ - 0.2) < 0.01 # within 5%
 
     # z-uniformity across the usable fov_z: no helical banding
     zmeans = [sum(rec[25:40, 25:40, k]) / 256 for k in 2:23]
-    @test (maximum(zmeans) - minimum(zmeans)) < 0.02   # < 10% of water μ
+    @test (maximum(zmeans) - minimum(zmeans)) < 0.02 # < 10% of water μ
 
     # axial parity: same phantom, circular scan
     geom_ax = BS.CTGeometry(scanner; n_angles = 96, fov_cm = 12.8)
@@ -495,10 +536,13 @@ end
 # -----------------------------------------------------------------------------
 @testset "arc detector — reconstruction round-trips" begin
     scanner = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0,
-        detector_rows = 16, detector_cols = 128,
-        detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_shape = :arc
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 16,
+        detector_cols = 128,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_shape = :arc,
     )
 
     nx, nz = 64, 48
@@ -515,8 +559,8 @@ end
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_forward_project!(sino, vol, geom; volume_extent = (12.8, 12.8, 9.6))
         rec = BS.fdk_reconstruct(sino, geom, (64, 64, 8))
-        roi_c = rec[29:36, 29:36, 4]                       # centre
-        roi_e = rec[43:50, 29:36, 4]                       # off-centre (in water)
+        roi_c = rec[29:36, 29:36, 4] # centre
+        roi_e = rec[43:50, 29:36, 4] # off-centre (in water)
         @test abs(sum(roi_c) / length(roi_c) - 0.2) < 0.01
         # equiangular weighting keeps the profile flat centre→edge
         @test abs(sum(roi_e) / length(roi_e) - sum(roi_c) / length(roi_c)) < 0.008
@@ -524,22 +568,29 @@ end
 
     @testset "helical WFBP on arc: z-uniformity" begin
         geom = BS.CTGeometry(
-            scanner; n_angles = 96, fov_cm = 12.8,
-            pitch = 1.0, n_rotations = 3.0
+            scanner;
+            n_angles = 96,
+            fov_cm = 12.8,
+            pitch = 1.0,
+            n_rotations = 3.0,
         )
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_forward_project!(sino, vol, geom; volume_extent = (12.8, 12.8, 9.6))
         rec = BS.fdk_reconstruct(sino, geom, (64, 64, 24))
         zmeans = [sum(rec[25:40, 25:40, k]) / 256 for k in 2:23]
         @test abs(sum(zmeans) / length(zmeans) - 0.2) < 0.012
-        @test (maximum(zmeans) - minimum(zmeans)) < 0.015   # no banding on arc
+        @test (maximum(zmeans) - minimum(zmeans)) < 0.015 # no banding on arc
     end
 end
 
 @testset "resample_field_to_recon is a box average" begin
     scanner = BS.EICTScanner(
-        source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
-        detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.5,
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 4,
+        detector_cols = 64,
+        detector_row_size = 1.0,
+        detector_col_size = 1.5,
     )
     # recon grid: 8 cm over 40 voxels in-plane (2 mm), 0.4 cm over 2 slices
     geom = BS.CTGeometry(scanner; n_angles = 8, fov_cm = 8.0, z_cm = 0.4)
@@ -554,19 +605,55 @@ end
     ones_field = ones(Float32, dims)
     out = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix)
     @test size(out) == matrix
-    @test all(≈(1.0f0), out[:, 6:35, :])          # y = ±3 cm covers recon voxels 6:35
-    @test all(==(0.0f0), out[:, 1:5, :])          # beyond the field, `outside` defaults to 0
+    @test all(≈(1.0f0), out[:, 6:35, :]) # y = ±3 cm covers recon voxels 6:35
+    # beyond the field, `outside` defaults to 0
+    @test all(==(0.0f0), out[:, 1:5, :])
     # …and with `outside = 1` (an air fraction) the uncovered part is filled
     air = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix; outside = 1.0)
     # the same contraction through `to_backend`, and with every axis order: a backend that only
     # wraps the weights must not change a bit
-    wrapped = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix; to_backend = identity)
+    wrapped = BS.resample_field_to_recon(
+        ones_field,
+        vox,
+        origin,
+        geom,
+        matrix;
+        to_backend = identity,
+    )
     @test wrapped == out
-    tall = rand(Random.MersenneTwister(5), Float32, 9, 7, 40)   # z shrinks most: contracted first
-    ref = let f = Float64.(tall), W = ntuple(d -> BS._overlap_weights(size(tall, d), Float64(vox[d]), Float64(origin[d]), matrix[d], geom.fov[d] / matrix[d], -geom.fov[d] / 2 + geom.fov[d] / matrix[d] / 2), 3)
+    # z shrinks most: contracted first
+    tall = rand(Random.MersenneTwister(5), Float32, 9, 7, 40)
+    ref = let f = Float64.(tall),
+        W = ntuple(
+            d -> BS._overlap_weights(
+                size(tall, d),
+                Float64(vox[d]),
+                Float64(origin[d]),
+                matrix[d],
+                geom.fov[d] / matrix[d],
+                -geom.fov[d] / 2 + geom.fov[d] / matrix[d] / 2,
+            ),
+            3,
+        )
         g = reshape(W[1] * reshape(f, size(f, 1), :), matrix[1], size(f, 2), size(f, 3))
-        g = permutedims(reshape(W[2] * reshape(permutedims(g, (2, 1, 3)), size(g, 2), :), matrix[2], matrix[1], size(g, 3)), (2, 1, 3))
-        Float32.(permutedims(reshape(W[3] * reshape(permutedims(g, (3, 1, 2)), size(g, 3), :), matrix[3], matrix[1], matrix[2]), (2, 3, 1)))
+        g = permutedims(
+            reshape(
+                W[2] * reshape(permutedims(g, (2, 1, 3)), size(g, 2), :),
+                matrix[2],
+                matrix[1],
+                size(g, 3),
+            ),
+            (2, 1, 3),
+        )
+        Float32.(permutedims(
+            reshape(
+                W[3] * reshape(permutedims(g, (3, 1, 2)), size(g, 3), :),
+                matrix[3],
+                matrix[1],
+                matrix[2],
+            ),
+            (2, 3, 1),
+        ))
     end
     @test BS.resample_field_to_recon(tall, vox, origin, geom, matrix) ≈ ref rtol = 1.0e-6
     @test all(≈(1.0f0), air)
@@ -574,7 +661,7 @@ end
     # a step at x = 0.05 cm (between field columns 100 and 101 — off a recon voxel edge): the recon
     # voxel straddling it gets exactly the area fraction of the step it contains
     step = zeros(Float32, dims)
-    step[102:end, :, :] .= 1                      # field column 102 starts at x = +0.05 cm
+    step[102:end, :, :] .= 1 # field column 102 starts at x = +0.05 cm
     out = BS.resample_field_to_recon(step, vox, origin, geom, matrix)
     # recon voxel 21 spans x ∈ [0.0, 0.2) cm; the step covers [0.05, 0.2) of it = 0.75
     @test out[21, 20, 1] ≈ 0.75f0 atol = 1.0e-5
@@ -587,6 +674,16 @@ end
     frac = [rand(Float32, dims) for _ in 1:6]
     total = sum(frac)
     frac = [f ./ total for f in frac]
-    outs = [BS.resample_field_to_recon(frac[b], vox, origin, geom, matrix; outside = b == 1 ? 1.0 : 0.0) for b in 1:6]
+    outs = [
+        BS.resample_field_to_recon(
+            frac[b],
+            vox,
+            origin,
+            geom,
+            matrix;
+            outside = b == 1 ? 1.0 : 0.0,
+        )
+        for b in 1:6
+    ]
     @test all(≈(1.0f0, atol = 1.0e-4), sum(outs))
 end

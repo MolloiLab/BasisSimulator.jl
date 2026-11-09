@@ -30,31 +30,37 @@ at every keV, and its attenuation and depth for the obliquity), Geant4's attenua
 ([`single_scatter`](@ref)), `provenance` and `scorecard`.
 """
 function write_scatter_library(
-        path::AbstractString,
-        lib::ShapeScatterLibrary;
-        scorecard::AbstractString = "",
-        provenance = Dict{String, Any}(),
-    )
+    path::AbstractString,
+    lib::ShapeScatterLibrary;
+    scorecard::AbstractString = "",
+    provenance = Dict{String, Any}(),
+)
     header_path, data_path = path * ".toml", path * ".bin"
     arrays = Dict{String, Any}[]
     offset = 0
     open(data_path, "w") do io
         blocks = vcat(
             [
-                (s.name, kind, A) for s in lib.scanners for (kind, A) in (
-                        ("scatter", lib.scatter[s.name]),
-                        ("rayleigh", lib.rayleigh[s.name]),
-                        ("forward", lib.forward[s.name]),
-                        ("primary", lib.primary[s.name]),
-                        ("paths", lib.paths[s.name]),
-                        ("offsets", lib.offsets[s.name]),
-                        ("spreads", lib.spreads[s.name]),
-                        ("angles", lib.angles[s.name]),
-                    )
+                (s.name, kind, A)
+                for s in lib.scanners
+                for (kind, A) in (
+                    ("scatter", lib.scatter[s.name]),
+                    ("rayleigh", lib.rayleigh[s.name]),
+                    ("forward", lib.forward[s.name]),
+                    ("primary", lib.primary[s.name]),
+                    ("paths", lib.paths[s.name]),
+                    ("offsets", lib.offsets[s.name]),
+                    ("spreads", lib.spreads[s.name]),
+                    ("angles", lib.angles[s.name]),
+                )
             ],
             [
                 ("elements", "scattering", Float32.(element_scattering_table(ELEMENT_Z))),
-                ("elements", "water_pdf", Float32.(cached_scattering_tables(DETECTOR_MATERIALS[:Water]).pdf)),
+                (
+                    "elements",
+                    "water_pdf",
+                    Float32.(cached_scattering_tables(DETECTOR_MATERIALS[:Water]).pdf),
+                ),
             ],
         )
         for (owner, kind, A) in blocks
@@ -78,20 +84,48 @@ function write_scatter_library(
         "element_type" => "Float32",
         "byte_order" => "little-endian",
         "array_order" => "column-major",
-        "units" => "detected signal per incident photon (keV per photon for energy-integrating detectors, counts per photon for photon-counting ones)",
+        "units" =>
+            "detected signal per incident photon (keV per photon for energy-integrating detectors, counts per photon for photon-counting ones)",
         "axes" => Dict{String, Any}(
-            "scatter" => ["column", "row", "impact_fraction", "aspect", "thickness_mm", "energy_keV"],
+            "scatter" => [
+                "column",
+                "row",
+                "impact_fraction",
+                "aspect",
+                "thickness_mm",
+                "energy_keV",
+            ],
             "primary" => ["impact_fraction", "aspect", "thickness_mm", "energy_keV"],
-            "paths" => ["process", "path_energy_band", "impact_fraction", "aspect", "thickness_mm", "energy_keV"],
+            "paths" => [
+                "process",
+                "path_energy_band",
+                "impact_fraction",
+                "aspect",
+                "thickness_mm",
+                "energy_keV",
+            ],
             "angles" => ["process", "scatter_angle_bin", "energy_keV"],
-            "offsets" => ["column", "impact_fraction", "aspect", "thickness_mm", "energy_keV"],
-            "spreads" => ["column", "impact_fraction", "aspect", "thickness_mm", "energy_keV"],
+            "offsets" => [
+                "column",
+                "impact_fraction",
+                "aspect",
+                "thickness_mm",
+                "energy_keV",
+            ],
+            "spreads" => [
+                "column",
+                "impact_fraction",
+                "aspect",
+                "thickness_mm",
+                "energy_keV",
+            ],
             "thickness_mm" => lib.thicknesses_mm,
             "aspect" => lib.aspects,
             "impact_fraction" => lib.impact_fractions,
             "energy_keV" => lib.energies_keV,
         ),
-        "geometry" => "a pencil beam along the thickness of a water elliptical cylinder `thickness_mm` thick and `aspect × thickness_mm` wide (at most 700 mm), passing its axis at `impact_fraction` of the half-width the tilted ray sees (sqrt(b² cos²t + a² sin²t), t its tilt), tilted as a ray from a focal spot 600 mm from the axis; the scanner's focal spot on the ray's line at its source-to-isocentre distance from the cylinder's axis; columns in degrees across the fan from the central ray (+ toward the ray's side), rows in mm along z at the detector",
+        "geometry" =>
+            "a pencil beam along the thickness of a water elliptical cylinder `thickness_mm` thick and `aspect × thickness_mm` wide (at most 700 mm), passing its axis at `impact_fraction` of the half-width the tilted ray sees (sqrt(b² cos²t + a² sin²t), t its tilt), tilted as a ray from a focal spot 600 mm from the axis; the scanner's focal spot on the ray's line at its source-to-isocentre distance from the cylinder's axis; columns in degrees across the fan from the central ray (+ toward the ray's side), rows in mm along z at the detector",
         "water_mu_per_mm" => lib.water_mu_per_mm,
         "water_compton_per_mm" => lib.water_compton_per_mm,
         "water_rayleigh_per_mm" => lib.water_rayleigh_per_mm,
@@ -108,22 +142,22 @@ function write_scatter_library(
         "element_Z" => collect(ELEMENT_Z),
         "scanners" => [
             Dict{String, Any}(
-                    "name" => s.name,
-                    "source_to_isocenter_mm" => s.source_to_isocenter_mm,
-                    "source_to_detector_mm" => s.source_to_detector_mm,
-                    "fan_deg" => s.fan_deg,
-                    "z_half_mm" => s.z_half_mm,
-                    "column_edges_deg" => column_edges(s),
-                    "row_edges_mm" => row_edges(s),
-                    "grid" => String(s.grid),
-                    "grid_height_mm" => s.grid_height_mm,
-                    "grid_opening_mm" => [isinf(x) ? -1.0 : x for x in s.grid_opening_mm],
-                    "energy_weighted" => s.energy_weighted,
-                    "efficiency" => s.efficiency,
-                    "detector_mu_per_mm" => s.mu_per_mm,
-                    "detector_depth_mm" => s.depth_mm,
-                )
-                for s in lib.scanners
+                "name" => s.name,
+                "source_to_isocenter_mm" => s.source_to_isocenter_mm,
+                "source_to_detector_mm" => s.source_to_detector_mm,
+                "fan_deg" => s.fan_deg,
+                "z_half_mm" => s.z_half_mm,
+                "column_edges_deg" => column_edges(s),
+                "row_edges_mm" => row_edges(s),
+                "grid" => String(s.grid),
+                "grid_height_mm" => s.grid_height_mm,
+                "grid_opening_mm" => [isinf(x) ? -1.0 : x for x in s.grid_opening_mm],
+                "energy_weighted" => s.energy_weighted,
+                "efficiency" => s.efficiency,
+                "detector_mu_per_mm" => s.mu_per_mm,
+                "detector_depth_mm" => s.depth_mm,
+            )
+            for s in lib.scanners
         ],
         "arrays" => arrays,
         "provenance" => provenance,
@@ -153,7 +187,11 @@ function read_scatter_library(header_path::AbstractString)
             seek(io, entry["offset_bytes"])
             read!(io, A)
             A .= ltoh.(A)
-            get!(arrays, entry["scanner"], Dict{String, Array{Float32}}())[entry["kind"]] = A
+            get!(
+                arrays,
+                entry["scanner"],
+                Dict{String, Array{Float32}}(),
+            )[entry["kind"]] = A
         end
     end
     header["arrays"] = arrays
@@ -175,14 +213,25 @@ function element_scattering_table(Zs = 1:92)
     table = zeros(length(Zs), 2, nbins, 150)
     for (i, Z) in enumerate(Zs)
         symbol = element_symbol(Z)
-        tables = scattering_tables(DetectorMaterial(symbol; density = 1.0, mass_fractions = Dict(symbol => 1.0)))
+        tables = scattering_tables(DetectorMaterial(
+            symbol;
+            density = 1.0,
+            mass_fractions = Dict(symbol => 1.0),
+        ))
         cells = tables.cells
-        for E in 1:150, (process, xa) in ((1, XA.IncoherentScattering()), (2, XA.CoherentScattering()))
+        for E in 1:150, (process, xa) in (
+                (1, XA.IncoherentScattering()),
+                (2, XA.CoherentScattering()),
+            )
             σ = ustrip(XA.mass_attenuation_coeff(XA.get_element_by_Z(Z), E * u"keV", xa))
             mass = zeros(nbins)
             for k in 1:cells
                 θ = acosd(clamp(-1 + (k - 0.5) * 2 / cells, -1.0, 1.0))
-                mass[clamp(searchsortedlast(SCATTER_ANGLE_EDGES_DEG, θ), 1, nbins)] += tables.pdf[k, E, process]
+                mass[clamp(
+                    searchsortedlast(SCATTER_ANGLE_EDGES_DEG, θ),
+                    1,
+                    nbins,
+                )] += tables.pdf[k, E, process]
             end
             table[i, process, :, E] .= σ .* mass ./ sum(mass)
         end
@@ -207,14 +256,18 @@ function material_scattering_factors(header, scanner::AbstractString, mass_fract
     energies = Float64.(header["axes"]["energy_keV"])
     nbins = size(table, 3)
     water = Dict(1 => 0.111894, 8 => 0.888106)
-    split(fractions, process, E) = sum(w .* Float64.(table[findfirst(==(Z), Zs), process, :, E]) for (Z, w) in fractions)
+    split(fractions, process, E) = sum(
+        w .* Float64.(table[findfirst(==(Z), Zs), process, :, E])
+        for (Z, w) in fractions
+    )
     factors = zeros(2, 150)
     for process in 1:2, E in 1:150
         # the profile's share of each bin at this energy, interpolated between the library's
         i = clamp(searchsortedlast(energies, Float64(E)), 1, length(energies))
         j = min(i + 1, length(energies))
         t = j == i ? 0.0 : clamp((E - energies[i]) / (energies[j] - energies[i]), 0.0, 1.0)
-        f = (1 - t) .* Float64.(profile[process, :, i]) .+ t .* Float64.(profile[process, :, j])
+        f = (1 - t) .* Float64.(profile[process, :, i]) .+
+            t .* Float64.(profile[process, :, j])
         f = sum(f) > 0 ? f ./ sum(f) : fill(1 / nbins, nbins)
         m, w = split(mass_fractions, process, E), split(water, process, E)
         sm, sw = m ./ sum(m), w ./ sum(w)

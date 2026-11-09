@@ -14,10 +14,10 @@ Reference:
 """
 
 # Physical constants
-const _COMPTON_N_A        = 6.02214076e23      # Avogadro's, 1/mol
-const _COMPTON_α_FS       = 7.2973525693e-3    # fine-structure constant
-const _COMPTON_R_E_CM     = 2.8179403262e-13   # classical electron radius, cm
-const _COMPTON_M_E_C2_KEV = 510.99895          # electron rest energy, keV
+const _COMPTON_N_A = 6.02214076e23       # Avogadro's, 1/mol
+const _COMPTON_α_FS = 7.2973525693e-3    # fine-structure constant
+const _COMPTON_R_E_CM = 2.8179403262e-13 # classical electron radius, cm
+const _COMPTON_M_E_C2_KEV = 510.99895    # electron rest energy, keV
 
 """
     p_photoelectric(E_keV)
@@ -26,8 +26,7 @@ Photoelectric cross-section per electron at energy `E_keV` (Cong Eq 3c).
 """
 function p_photoelectric(E_keV::Real)
     ε = E_keV / _COMPTON_M_E_C2_KEV
-    _COMPTON_N_A * _COMPTON_α_FS^4 * (8 / 3) * π *
-        _COMPTON_R_E_CM^2 * sqrt(32 / ε^7)
+    _COMPTON_N_A * _COMPTON_α_FS^4 * (8 / 3) * π * _COMPTON_R_E_CM^2 * sqrt(32 / ε^7)
 end
 
 """

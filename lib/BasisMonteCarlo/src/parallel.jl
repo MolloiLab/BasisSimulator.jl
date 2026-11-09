@@ -27,7 +27,7 @@ The default takes about a third of the machine's cores (at least 1), leaving the
 whatever else runs on it. [`stop_workers`](@ref) stops them.
 """
 function start_workers(n::Integer = default_worker_count())
-    filter!(in(Distributed.workers()), WORKER_POOL)    # forget any that have died
+    filter!(in(Distributed.workers()), WORKER_POOL) # forget any that have died
     missing_count = n - length(WORKER_POOL)
     if missing_count > 0
         project = Base.active_project()
@@ -92,15 +92,15 @@ whose detector changes with energy (a thickness rule, say) rebuilds it for every
 costs a fraction of a second each (a whole scanner's detector, a few seconds).
 """
 function simulate_sweep(
-        jobs::AbstractVector;
-        n::Integer = 100_000,
-        beam::Beam = PencilBeam(),
-        physics::PhysicsSettings = PhysicsSettings(),
-        seed::Integer = 1,
-        readout = nothing,
-        checkpoint::Union{Nothing, AbstractString} = nothing,
-        checkpoint_batch::Integer = 256,
-    )
+    jobs::AbstractVector;
+    n::Integer = 100_000,
+    beam::Beam = PencilBeam(),
+    physics::PhysicsSettings = PhysicsSettings(),
+    seed::Integer = 1,
+    readout = nothing,
+    checkpoint::Union{Nothing, AbstractString} = nothing,
+    checkpoint_batch::Integer = 256,
+)
     function run_one(job)
         detector, source = job[1], job[2]
         job_seed = length(job) >= 3 ? job[3] : seed
@@ -151,8 +151,18 @@ function simulate_sweep(
     results = Vector{Any}(undef, length(all_jobs))
     for first_job in 1:checkpoint_batch:length(all_jobs)
         range = first_job:min(first_job + checkpoint_batch - 1, length(all_jobs))
-        key = hash((repr(all_jobs[range]), n, repr(beam), repr(physics), seed, repr(readout)))
-        file = joinpath(checkpoint, "batch_$(lpad(first_job, 8, '0'))_$(string(key; base = 16)).jls")
+        key = hash((
+            repr(all_jobs[range]),
+            n,
+            repr(beam),
+            repr(physics),
+            seed,
+            repr(readout),
+        ))
+        file = joinpath(
+            checkpoint,
+            "batch_$(lpad(first_job, 8, '0'))_$(string(key; base = 16)).jls",
+        )
         batch = if isfile(file)
             Serialization.deserialize(file)
         else

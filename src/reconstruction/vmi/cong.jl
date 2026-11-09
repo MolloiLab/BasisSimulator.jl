@@ -67,12 +67,18 @@ Type parameters:
 
 Construct with [`create_cong_workspace`](@ref).
 """
-struct CongWorkspace{T <: AbstractFloat,
-                      AŴ_L <: AbstractArray{T},
-                      AŴ_H <: AbstractArray{T},
-                      A1   <: AbstractVector{T}}
-    ŵ_L::AŴ_L; p_L::A1; q_L::A1
-    ŵ_H::AŴ_H; p_H::A1; q_H::A1
+struct CongWorkspace{
+    T <: AbstractFloat,
+    AŴ_L <: AbstractArray{T},
+    AŴ_H <: AbstractArray{T},
+    A1 <: AbstractVector{T},
+}
+    ŵ_L::AŴ_L
+    p_L::A1
+    q_L::A1
+    ŵ_H::AŴ_H
+    p_H::A1
+    q_H::A1
 end
 
 """
@@ -95,14 +101,19 @@ the same basis).
 `ŵ_L` / `ŵ_H` may be 1D `[n_E]` (centered spectrum) or 3D
 `[n_col, n_row, n_E]` (per-ray bowtie).  Both must share dimensionality.
 """
-function create_cong_workspace(
-        sino_template::AbstractArray{<:AbstractFloat, 3},
-        basis,
-    )
-    for (name, arr) in ((:ŵ_L, basis.ŵ_L), (:p_L, basis.p_L), (:q_L, basis.q_L),
-                        (:ŵ_H, basis.ŵ_H), (:p_H, basis.p_H), (:q_H, basis.q_H))
+function create_cong_workspace(sino_template::AbstractArray{<:AbstractFloat, 3}, basis)
+    for (name, arr) in (
+            (:ŵ_L, basis.ŵ_L),
+            (:p_L, basis.p_L),
+            (:q_L, basis.q_L),
+            (:ŵ_H, basis.ŵ_H),
+            (:p_H, basis.p_H),
+            (:q_H, basis.q_H),
+        )
         eltype(arr) === Float32 ||
-            error("create_cong_workspace: basis.$(name) has eltype $(eltype(arr)); Float32 required.")
+            error(
+                "create_cong_workspace: basis.$(name) has eltype $(eltype(arr)); Float32 required.",
+            )
     end
     ndims(basis.ŵ_L) == ndims(basis.ŵ_H) ||
         error("create_cong_workspace: basis.ŵ_L and basis.ŵ_H must share ndims.")
@@ -115,7 +126,12 @@ function create_cong_workspace(
     q_H = _match_backend(basis.q_H, sino_template)
 
     CongWorkspace{Float32, typeof(ŵ_L), typeof(ŵ_H), typeof(p_L)}(
-        ŵ_L, p_L, q_L, ŵ_H, p_H, q_H,
+        ŵ_L,
+        p_L,
+        q_L,
+        ŵ_H,
+        p_H,
+        q_H,
     )
 end
 
@@ -154,32 +170,37 @@ Per-ray Cong 2022 decomposition, writing results into `sino_y` and
 - `y_max_cap`          : hard ceiling on `y_max`.
 """
 function apply_cong!(
-        ws::CongWorkspace,
-        sino_y::AbstractArray{Float32, 3},
-        sino_c::AbstractArray{Float32, 3},
-        sino_low::AbstractArray{Float32, 3},
-        sino_high::AbstractArray{Float32, 3};
-        water_basis,
-        newton_max_iter::Int = 12,
-        newton_tol::Real     = eps(Float32),
-        y_max_factor::Real   = 0.99,
-        y_max_cap::Real      = 1f7,
-    )
-    (water_basis.a isa Float32 && water_basis.c isa Float32) || error(
-        "apply_cong!: water_basis has $(typeof(water_basis.a))/$(typeof(water_basis.c)); " *
-        "Float32/Float32 required, e.g. water_basis = (a = 0f0, c = 1f0)."
-    )
+    ws::CongWorkspace,
+    sino_y::AbstractArray{Float32, 3},
+    sino_c::AbstractArray{Float32, 3},
+    sino_low::AbstractArray{Float32, 3},
+    sino_high::AbstractArray{Float32, 3};
+    water_basis,
+    newton_max_iter::Int = 12,
+    newton_tol::Real = eps(Float32),
+    y_max_factor::Real = 0.99,
+    y_max_cap::Real = 1.0f7,
+)
+    (water_basis.a isa Float32 && water_basis.c isa Float32) ||
+        error(
+            "apply_cong!: water_basis has $(typeof(water_basis.a))/$(typeof(water_basis.c)); " *
+                "Float32/Float32 required, e.g. water_basis = (a = 0f0, c = 1f0).",
+        )
     size(sino_y) == size(sino_c) == size(sino_low) == size(sino_high) ||
         error("apply_cong!: sino_y / sino_c / sino_low / sino_high must share shape.")
 
-    ŵ_L = ws.ŵ_L;  p_L = ws.p_L;  q_L = ws.q_L
-    ŵ_H = ws.ŵ_H;  p_H = ws.p_H;  q_H = ws.q_H
+    ŵ_L = ws.ŵ_L
+    p_L = ws.p_L
+    q_L = ws.q_L
+    ŵ_H = ws.ŵ_H
+    p_H = ws.p_H
+    q_H = ws.q_H
     per_ray = ndims(ŵ_L) == 3
     nE_L = per_ray ? size(ŵ_L, 3) : length(ŵ_L)
     nE_H = per_ray ? size(ŵ_H, 3) : length(ŵ_H)
 
-    a_w     = Float32(water_basis.a)
-    c_w     = Float32(water_basis.c)
+    a_w = Float32(water_basis.a)
+    c_w = Float32(water_basis.c)
     p_L_min = Float32(minimum(p_L))
     # softest per-cm water attenuation over the low spectrum — used for the
     # adaptive Brent bracket (audit B3)
@@ -187,15 +208,15 @@ function apply_cong!(
 
     # Capture tuning knobs as locals so the AK closure sees them on every backend.
     nm_iter = newton_max_iter
-    n_tol   = Float32(newton_tol)
-    y_fac   = Float32(y_max_factor)
-    y_cap   = Float32(y_max_cap)
+    n_tol = Float32(newton_tol)
+    y_fac = Float32(y_max_factor)
+    y_cap = Float32(y_max_cap)
 
     n_col = Int(size(sino_low, 1))
     n_row = Int(size(sino_low, 2))
 
     AK.foreachindex(sino_low) do idx
-        i0  = idx - 1
+        i0 = idx - 1
         col = (i0 % n_col) + 1
         row = ((i0 ÷ n_col) % n_row) + 1
 
@@ -205,9 +226,9 @@ function apply_cong!(
         # Symmetric air gate: |p| small in BOTH channels → air.  (The old
         # one-sided `p < 1e-6` gate rectified zero-mean air noise into a
         # positive-mean basis bias — audit finding B4.)
-        if abs(p_L_meas) < 5f-3 && abs(p_H_meas) < 5f-3
-            sino_y[idx] = 0f0
-            sino_c[idx] = 0f0
+        if abs(p_L_meas) < 5.0f-3 && abs(p_H_meas) < 5.0f-3
+            sino_y[idx] = 0.0f0
+            sino_c[idx] = 0.0f0
             return
         end
         T_L_meas = exp(-p_L_meas)
@@ -215,7 +236,7 @@ function apply_cong!(
 
         # Step 1 — Brent on water-equivalent path L (Cong Eq 7).
         water_T_L = function (L::Float32)
-            T = 0f0
+            T = 0.0f0
             if per_ray
                 @inbounds for i in 1:nE_L
                     T += ŵ_L[col, row, i] * exp(-(p_L[i] * a_w + q_L[i] * c_w) * L)
@@ -232,59 +253,67 @@ function apply_cong!(
         # BOTH bases on dense rays (p_L/μ_min > 60) → paired dropout streaks.
         # Bound L by the measured low-channel integral over the softest μ in
         # the spectrum, with margin; floor at 60 cm for the water-only regime.
-        L_hi = max(60f0, 1.5f0 * p_L_meas / max(μ_w_min, 1f-4))
-        L_water, ok_L = brent_solve(water_T_L, -1f0, L_hi)
+        L_hi = max(60.0f0, 1.5f0 * p_L_meas / max(μ_w_min, 1.0f-4))
+        L_water, ok_L = brent_solve(water_T_L, -1.0f0, L_hi)
         if !ok_L
-            sino_y[idx] = 0f0
-            sino_c[idx] = 0f0
+            sino_y[idx] = 0.0f0
+            sino_c[idx] = 0.0f0
             return
         end
         c̄ = c_w * L_water
 
         y_max = min(y_fac * p_L_meas / max(p_L_min, eps(Float32)), y_cap)
-        if y_max <= 0f0
-            sino_y[idx] = 0f0
+        if y_max <= 0.0f0
+            sino_y[idx] = 0.0f0
             sino_c[idx] = c̄
             return
         end
 
         # Step 2 — Newton on Eq 8 quintic for x = h(y).
         solve_quintic = function (y::Float32, c̄_::Float32)
-            P0 = 0f0; P1 = 0f0; P2 = 0f0
-            P3 = 0f0; P4 = 0f0; P5 = 0f0
+            P0 = 0.0f0
+            P1 = 0.0f0
+            P2 = 0.0f0
+            P3 = 0.0f0
+            P4 = 0.0f0
+            P5 = 0.0f0
             if per_ray
                 @inbounds for i in 1:nE_L
-                    q_i  = q_L[i]
-                    q2   = q_i * q_i;  q3 = q2 * q_i
-                    q4   = q3 * q_i;   q5 = q4 * q_i
+                    q_i = q_L[i]
+                    q2 = q_i * q_i
+                    q3 = q2 * q_i
+                    q4 = q3 * q_i
+                    q5 = q4 * q_i
                     wexp = ŵ_L[col, row, i] * exp(-p_L[i] * y - q_i * c̄_)
                     P0 += wexp
                     P1 -= wexp * q_i
                     P2 += wexp * q2 * 0.5f0
-                    P3 -= wexp * q3 * (1f0 / 6f0)
-                    P4 += wexp * q4 * (1f0 / 24f0)
-                    P5 -= wexp * q5 * (1f0 / 120f0)
+                    P3 -= wexp * q3 * (1.0f0 / 6.0f0)
+                    P4 += wexp * q4 * (1.0f0 / 24.0f0)
+                    P5 -= wexp * q5 * (1.0f0 / 120.0f0)
                 end
             else
                 @inbounds for i in 1:nE_L
-                    q_i  = q_L[i]
-                    q2   = q_i * q_i;  q3 = q2 * q_i
-                    q4   = q3 * q_i;   q5 = q4 * q_i
+                    q_i = q_L[i]
+                    q2 = q_i * q_i
+                    q3 = q2 * q_i
+                    q4 = q3 * q_i
+                    q5 = q4 * q_i
                     wexp = ŵ_L[i] * exp(-p_L[i] * y - q_i * c̄_)
                     P0 += wexp
                     P1 -= wexp * q_i
                     P2 += wexp * q2 * 0.5f0
-                    P3 -= wexp * q3 * (1f0 / 6f0)
-                    P4 += wexp * q4 * (1f0 / 24f0)
-                    P5 -= wexp * q5 * (1f0 / 120f0)
+                    P3 -= wexp * q3 * (1.0f0 / 6.0f0)
+                    P4 += wexp * q4 * (1.0f0 / 24.0f0)
+                    P5 -= wexp * q5 * (1.0f0 / 120.0f0)
                 end
             end
-            x = 0f0
+            x = 0.0f0
             for _ in 1:nm_iter
-                F  = (P0 - T_L_meas) +
-                     x * (P1 + x * (P2 + x * (P3 + x * (P4 + x * P5))))
-                dF = P1 + x * (2f0*P2 + x * (3f0*P3 + x * (4f0*P4 + x * 5f0*P5)))
-                abs(dF) < 1f-30 && break
+                F = (P0 - T_L_meas) + x * (P1 + x * (P2 + x * (P3 + x * (P4 + x * P5))))
+                dF = P1 +
+                    x * (2.0f0 * P2 + x * (3.0f0 * P3 + x * (4.0f0 * P4 + x * 5.0f0 * P5)))
+                abs(dF) < 1.0f-30 && break
                 Δ = F / dF
                 x -= Δ
                 abs(Δ) < n_tol && break
@@ -294,7 +323,7 @@ function apply_cong!(
 
         # Step 3 — Outer Brent on y via G(y) = T_H_pred − T_H_meas.
         T_H_pred = function (y::Float32, C::Float32)
-            T = 0f0
+            T = 0.0f0
             if per_ray
                 @inbounds for i in 1:nE_H
                     T += ŵ_H[col, row, i] * exp(-p_H[i] * y - q_H[i] * C)
@@ -320,33 +349,33 @@ function apply_cong!(
         # bracket geometrically from a small start, never evaluating G
         # outside its validity; open only a NOISE-scale negative window when
         # G(0) > 0 proves the root sits below zero.
-        G0 = G(0f0)
-        y_opt, ok_y = if G0 == 0f0
-            (0f0, true)
-        elseif G0 < 0f0
+        G0 = G(0.0f0)
+        y_opt, ok_y = if G0 == 0.0f0
+            (0.0f0, true)
+        elseif G0 < 0.0f0
             # positive-iodine root: double y_hi until G flips sign (finite)
             y_hi = min(0.01f0, y_max)
             G_hi = G(y_hi)
             n_exp = Int32(0)
-            while isfinite(G_hi) && G_hi < 0f0 && y_hi < y_max && n_exp < Int32(24)
-                y_hi = min(y_hi * 2f0, y_max)
+            while isfinite(G_hi) && G_hi < 0.0f0 && y_hi < y_max && n_exp < Int32(24)
+                y_hi = min(y_hi * 2.0f0, y_max)
                 G_hi = G(y_hi)
                 n_exp += Int32(1)
             end
-            if isfinite(G_hi) && G_hi >= 0f0
-                brent_solve(G, 0f0, y_hi)
+            if isfinite(G_hi) && G_hi >= 0.0f0
+                brent_solve(G, 0.0f0, y_hi)
             else
-                (0f0, false)                     # no valid root → water-only fallback
+                (0.0f0, false) # no valid root → water-only fallback
             end
         else
             # G0 > 0: zero-mean noise excursion → root slightly below 0.
             # Window at the noise scale only — far-negative y is outside the
             # quintic's validity and hosts spurious roots.
             Glo = G(-0.1f0)
-            if isfinite(Glo) && Glo < 0f0
-                brent_solve(G, -0.1f0, 0f0)
+            if isfinite(Glo) && Glo < 0.0f0
+                brent_solve(G, -0.1f0, 0.0f0)
             else
-                (0f0, true)
+                (0.0f0, true)
             end
         end
         if !ok_y
@@ -360,8 +389,8 @@ function apply_cong!(
         # to 0 creates a positive-mean bias that ramp-filtering spreads into
         # the body as a keV-dependent HU offset (previously masked by
         # noise_reduction).  Clamp only at absurd magnitudes.
-        sino_y[idx] = clamp(y_opt, -5f0, 1f4)
-        sino_c[idx] = clamp(c̄ + x_final, -5f0, 1f4)
+        sino_y[idx] = clamp(y_opt, -5.0f0, 1.0f4)
+        sino_c[idx] = clamp(c̄ + x_final, -5.0f0, 1.0f4)
     end
 
     (sino_y, sino_c)

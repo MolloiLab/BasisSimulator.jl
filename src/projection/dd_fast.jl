@@ -74,11 +74,22 @@ end
 # The walk's lanes: `nothing` keeps one lane per material (`_plen_accum`); a matrix `Ct` (R × M) keeps
 # R lanes of an attenuation basis, voxel material `m` adding `w · Ct[:, m]` (see
 # `_attenuation_basis`): R products per voxel however many materials there are.
-@inline _lane_add(plens::NTuple, ::Nothing, mat::Int32, a, b) = _plen_accum(plens, mat, a, b)
+@inline _lane_add(plens::NTuple, ::Nothing, mat::Int32, a, b) = _plen_accum(
+    plens,
+    mat,
+    a,
+    b,
+)
 # Written out lane by lane, as every per-lane helper here: a closure capturing the device array
 # (`ntuple(k -> … Ct[k, mat] …)`) is not reliably inlined into a GPU kernel, and with
 # AcceleratedKernels 0.4 / CUDA.jl 5 it compiled to wrong sums (72 % off at rank 6, 288 energies).
-@generated function _lane_add(plens::NTuple{R, T}, Ct::AbstractMatrix, mat::Int32, a::T, b::T) where {R, T}
+@generated function _lane_add(
+    plens::NTuple{R, T},
+    Ct::AbstractMatrix,
+    mat::Int32,
+    a::T,
+    b::T,
+) where {R, T}
     sums = [:(plens[$k] + w * @inbounds(Ct[$k, mat])) for k in 1:R]
     return quote
         Base.@_inline_meta
@@ -121,7 +132,8 @@ end
 # Up to this many materials the walk keeps one lane per material; above it, the basis.
 const _DIRECT_MAX_MATERIALS = Ref(16)
 
-const _BASIS_CACHE = Dict{Tuple{UInt64, DataType, DataType}, Any}()   # by the table's content and active energies
+# by the table's content and active energies
+const _BASIS_CACHE = Dict{Tuple{UInt64, DataType, DataType}, Any}()
 const _BASIS_LOCK = ReentrantLock()
 
 # The Float64 μ table each workspace computed before rounding it for the device, by the hash of the
@@ -148,7 +160,10 @@ attenuation (columns normalised), not its size: a pivot at
 a few keV, where nothing is transmitted, would carry line integrals of thousands and cancel away the
 Float32 precision of the energies that matter. `G` is zero at inactive energies.
 """
-function _attenuation_basis(μ_table::AbstractMatrix{T}, weight::AbstractVector{<:Real}) where {T}
+function _attenuation_basis(
+    μ_table::AbstractMatrix{T},
+    weight::AbstractVector{<:Real},
+) where {T}
     host = Array(μ_table)
     key = (hash((host, weight)), typeof(μ_table), T)
     cached = lock(() -> get(_BASIS_CACHE, key, missing), _BASIS_LOCK)
@@ -182,7 +197,11 @@ function _attenuation_basis(μ_table::AbstractMatrix{T}, weight::AbstractVector{
                 G = zeros(R, E)
                 G[:, on] = Ga
                 device(x) = copyto!(similar(μ_table, T, size(x)), T.(x))
-                basis = (Ct = device(_pad_lanes(permutedims(μa[:, J]))), G = device(_pad_lanes(G)), J = on[J])
+                basis = (
+                    Ct = device(_pad_lanes(permutedims(μa[:, J]))),
+                    G = device(_pad_lanes(G)),
+                    J = on[J],
+                )
                 break
             end
         end
@@ -228,13 +247,12 @@ end
 # energies reproduce, which a mixture of real elements never is.
 function _plen_lanes!(μ_table::AbstractMatrix, weight::AbstractVector{<:Real})
     lanes = _plen_lanes(μ_table, weight)
-    lanes === nothing && throw(
-        ArgumentError(
+    lanes === nothing &&
+        throw(ArgumentError(
             "the material table has $(size(μ_table, 1)) materials, and no attenuation basis of at most " *
                 "$(_PLEN_MAX_MATERIALS) energies reproduces it: the attenuation of real materials has at most " *
-                "as many shapes as elements. Check the table, or compact_materials(phantom) to drop unused materials."
-        )
-    )
+                "as many shapes as elements. Check the table, or compact_materials(phantom) to drop unused materials.",
+        ))
     return lanes
 end
 
@@ -254,24 +272,86 @@ end
 # staying in registers, or the single-pass design has no point.  Its scalars come from
 # `_dd_walk_setup` below, which is the other half of the same rule.
 @inline function _dd_plen_walk(
-        ::Val{M}, lanes, mask, col::Int32, row::Int32, angle::Int32,
-        sp, dc, du, dv,
-        vmx::T, vmy::T, vmz::T, vsx::T, vsy::T, vsz::T,
-        nx::Int32, ny::Int32, nz::Int32,
-        mag::T, ps::T, prs::T, cc::T, rc::T, arc_det::Bool, dγ::T,
-        n_seg::Int32 = Int32(1), seg::Int32 = Int32(0),
-    ) where {M, T <: AbstractFloat}
-
-    sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-    dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-    ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
+    ::Val{M},
+    lanes,
+    mask,
+    col::Int32,
+    row::Int32,
+    angle::Int32,
+    sp,
+    dc,
+    du,
+    dv,
+    vmx::T,
+    vmy::T,
+    vmz::T,
+    vsx::T,
+    vsy::T,
+    vsz::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    mag::T,
+    ps::T,
+    prs::T,
+    cc::T,
+    rc::T,
+    arc_det::Bool,
+    dγ::T,
+    n_seg::Int32 = Int32(1),
+    seg::Int32 = Int32(0),
+) where {M, T <: AbstractFloat}
+    sx = sp[1, angle]
+    sy = sp[2, angle]
+    sz = sp[3, angle]
+    dcx = dc[1, angle]
+    dcy = dc[2, angle]
+    dcz = dc[3, angle]
+    ux = du[1, angle]
+    uy = du[2, angle]
+    vvz = dv[3, angle]
 
     (
-        valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-        n_t, v_t, vmin_t, n_long, v_long, vmin_long,
+        valid,
+        vertical,
+        s_long,
+        s_tran,
+        dXlo,
+        dXhi,
+        dZlo,
+        dZhi,
+        norm,
+        n_t,
+        v_t,
+        vmin_t,
+        n_long,
+        v_long,
+        vmin_long,
     ) = _dd_cell_setup(
-        col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-        mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ
+        col,
+        row,
+        sx,
+        sy,
+        sz,
+        dcx,
+        dcy,
+        dcz,
+        ux,
+        uy,
+        vvz,
+        mag,
+        ps,
+        prs,
+        cc,
+        rc,
+        nx,
+        ny,
+        vmx,
+        vmy,
+        vsx,
+        vsy,
+        arc_det,
+        dγ,
     )
 
     plens = ntuple(_ -> zero(T), Val(M))
@@ -314,7 +394,6 @@ end
     return plens
 end
 
-
 # =============================================================================
 # Fused polychromatic — mirror siddon_fused_poly_project!
 # =============================================================================
@@ -322,25 +401,76 @@ end
 # Path-length kernel launch: one walk accumulating per-material P (Val(M)
 # registers), then a runtime loop over ALL n_E energies at the cell level.
 function _dd_fused_poly_plen!(
-        ::Val{M}, lanes,
-        sinogram::AbstractArray{T, 3}, mask, μ_table_gpu, wη_gpu, _bt, has_bowtie::Bool,
-        sp, dc, du, dv,
-        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
-        arc_det::Bool, dγ::T,
-        w2_gpu, out2, has2::Bool,
-    ) where {M, T <: AbstractFloat}
-
+    ::Val{M},
+    lanes,
+    sinogram::AbstractArray{T, 3},
+    mask,
+    μ_table_gpu,
+    wη_gpu,
+    _bt,
+    has_bowtie::Bool,
+    sp,
+    dc,
+    du,
+    dv,
+    vmin_x::T,
+    vmin_y::T,
+    vmin_z::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    n_cols::Int32,
+    n_rows::Int32,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    nc_nr::Int32,
+    arc_det::Bool,
+    dγ::T,
+    w2_gpu,
+    out2,
+    has2::Bool,
+) where {M, T <: AbstractFloat}
     n_E = Int32(length(wη_gpu))
 
-    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu, arc_det = arc_det, dγ = dγ, lanes = lanes,
-            sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
-            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
-            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center,
-            ncnr = nc_nr, hbt = has_bowtie, nE = n_E, w2 = w2_gpu, o2 = out2, h2 = has2
-
+    let mask = mask,
+        μ_tbl = μ_table_gpu,
+        wη = wη_gpu,
+        arc_det = arc_det,
+        dγ = dγ,
+        lanes = lanes,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        bt = _bt,
+        vmx = vmin_x,
+        vmy = vmin_y,
+        vmz = vmin_z,
+        vsx = vx,
+        vsy = vy,
+        vsz = vz,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = n_cols,
+        nr = n_rows,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        cc = col_center,
+        rc = row_center,
+        ncnr = nc_nr,
+        hbt = has_bowtie,
+        nE = n_E,
+        w2 = w2_gpu,
+        o2 = out2,
+        h2 = has2
         AK.foreachindex(sinogram) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % nc) + Int32(1)
@@ -349,14 +479,48 @@ function _dd_fused_poly_plen!(
             angle = (idx_0 ÷ nr) + Int32(1)
 
             plens = _dd_plen_walk(
-                Val(M), lanes, mask, col, row, angle, sp, dc, du, dv,
-                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ
+                Val(M),
+                lanes,
+                mask,
+                col,
+                row,
+                angle,
+                sp,
+                dc,
+                du,
+                dv,
+                vmx,
+                vmy,
+                vmz,
+                vsx,
+                vsy,
+                vsz,
+                nx,
+                ny,
+                nz,
+                mag,
+                ps,
+                prs,
+                cc,
+                rc,
+                arc_det,
+                dγ,
             )
 
             _plen_spectral_sums!(
-                sinogram, o2, idx, plens, μ_tbl, wη, w2, h2, bt, hbt,
-                Int32(col) + (Int32(row) - Int32(1)) * nc, ncnr, nE,
+                sinogram,
+                o2,
+                idx,
+                plens,
+                μ_tbl,
+                wη,
+                w2,
+                h2,
+                bt,
+                hbt,
+                Int32(col) + (Int32(row) - Int32(1)) * nc,
+                ncnr,
+                nE,
             )
         end
     end
@@ -366,10 +530,20 @@ end
 # The energy loop both path-length kernels end in: S₁ = Σ w B e^{−L} into `sinogram` and,
 # when `h2`, S₂ = Σ w₂ B e^{−L} into `o2`, each stored as −log S.
 @inline function _plen_spectral_sums!(
-        sinogram::AbstractArray{T}, o2, idx, plens, μ_tbl, wη, w2, h2::Bool, bt, hbt::Bool,
-        bt_base::Int32, ncnr::Int32, nE::Int32,
-    ) where {T}
-
+    sinogram::AbstractArray{T},
+    o2,
+    idx,
+    plens,
+    μ_tbl,
+    wη,
+    w2,
+    h2::Bool,
+    bt,
+    hbt::Bool,
+    bt_base::Int32,
+    ncnr::Int32,
+    nE::Int32,
+) where {T}
     I_1 = zero(T)
     I_2 = zero(T)
     e = Int32(1)
@@ -391,7 +565,6 @@ end
     return nothing
 end
 
-
 # =============================================================================
 # Fused spectral (PCCT, tiled) — mirror siddon_fused_spectral_project!
 # =============================================================================
@@ -408,24 +581,77 @@ end
 end
 
 function _dd_fused_spectral_plen!(
-        ::Val{M}, ::Val{NB}, lanes, K::Int32, ts::Int32,
-        pilot::AbstractArray{T, 3}, outputs_flat, n_bins::Int32,
-        mask, μ_table_gpu, W_gpu, _bt, has_src_spectral::Bool,
-        sp, dc, du, dv,
-        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32, n_elem::Int,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
-        arc_det::Bool, dγ::T,
-    ) where {M, NB, T <: AbstractFloat}
-
-    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = ts, kk = K, arc_det = arc_det, dγ = dγ, lanes = lanes,
-            sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
-            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
-            ne = n_elem, nb = n_bins, oflat = outputs_flat,
-            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center,
-            ncnr = nc_nr, hbt = has_src_spectral
-
+    ::Val{M},
+    ::Val{NB},
+    lanes,
+    K::Int32,
+    ts::Int32,
+    pilot::AbstractArray{T, 3},
+    outputs_flat,
+    n_bins::Int32,
+    mask,
+    μ_table_gpu,
+    W_gpu,
+    _bt,
+    has_src_spectral::Bool,
+    sp,
+    dc,
+    du,
+    dv,
+    vmin_x::T,
+    vmin_y::T,
+    vmin_z::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    n_cols::Int32,
+    n_rows::Int32,
+    n_elem::Int,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    nc_nr::Int32,
+    arc_det::Bool,
+    dγ::T,
+) where {M, NB, T <: AbstractFloat}
+    let mask = mask,
+        μ_tbl = μ_table_gpu,
+        W = W_gpu,
+        ts = ts,
+        kk = K,
+        arc_det = arc_det,
+        dγ = dγ,
+        lanes = lanes,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        bt = _bt,
+        vmx = vmin_x,
+        vmy = vmin_y,
+        vmz = vmin_z,
+        vsx = vx,
+        vsy = vy,
+        vsz = vz,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = n_cols,
+        nr = n_rows,
+        ne = n_elem,
+        oflat = outputs_flat,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        cc = col_center,
+        rc = row_center,
+        ncnr = nc_nr,
+        hbt = has_src_spectral
         AK.foreachindex(pilot) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % nc) + Int32(1)
@@ -434,9 +660,32 @@ function _dd_fused_spectral_plen!(
             angle = (idx_0 ÷ nr) + Int32(1)
 
             plens = _dd_plen_walk(
-                Val(M), lanes, mask, col, row, angle, sp, dc, du, dv,
-                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ
+                Val(M),
+                lanes,
+                mask,
+                col,
+                row,
+                angle,
+                sp,
+                dc,
+                du,
+                dv,
+                vmx,
+                vmy,
+                vmz,
+                vsx,
+                vsy,
+                vsz,
+                nx,
+                ny,
+                nz,
+                mag,
+                ps,
+                prs,
+                cc,
+                rc,
+                arc_det,
+                dγ,
             )
 
             # each energy's line integral and transmission once, into every bin's sum (each bin
@@ -450,7 +699,8 @@ function _dd_fused_spectral_plen!(
                 trans = exp(-L)
                 if hbt
                     # W · bt · min(exp(-L), 1e30), as the Siddon tracer
-                    trans = min(trans, T(1.0e30)) * @inbounds bt[bt_base + (e - Int32(1)) * ncnr]
+                    trans = min(trans, T(1.0e30)) *
+                        @inbounds bt[bt_base + (e - Int32(1)) * ncnr]
                 end
                 acc = _bin_sums(acc, W, e, trans)
                 i += Int32(1)
@@ -462,7 +712,6 @@ function _dd_fused_spectral_plen!(
     end
     return outputs_flat
 end
-
 
 # =============================================================================
 # :dd_fast — single-pass per-material path-length DD (same DD model)
@@ -488,41 +737,75 @@ materials (one lane per material up to 16, the lanes of an attenuation basis abo
 [`dd_fast_poly_from_paths!`](@ref).
 """
 function dd_fast_fused_poly_project!(
-        sinogram::AbstractArray{T, 3},
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        μ_table_gpu::AbstractArray{T, 2},
-        wη_gpu::AbstractArray{T, 1},
-        ::Val{N_E};
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        ws_bowtie_spectral = nothing,
-        ws_w2_gpu = nothing,
-        ws_out2 = nothing,
-    ) where {T <: AbstractFloat, N_E}
-
+    sinogram::AbstractArray{T, 3},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    wη_gpu::AbstractArray{T, 1},
+    ::Val{N_E};
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing,
+    ws_w2_gpu = nothing,
+    ws_out2 = nothing,
+) where {T <: AbstractFloat, N_E}
     (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
         throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
     lanes = _plen_lanes!(μ_table_gpu, _poly_weight(wη_gpu, ws_w2_gpu))
 
     g = _dd_walk_setup(
-        T, size(mask), (size(sinogram, 1), size(sinogram, 2)), geom, volume_extent, sinogram,
-        ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
+        T,
+        size(mask),
+        (size(sinogram, 1), size(sinogram, 2)),
+        geom,
+        volume_extent,
+        sinogram,
+        ws_source_positions,
+        ws_detector_centers,
+        ws_detector_u,
+        ws_detector_v,
     )
     has_bowtie = ws_bowtie_spectral !== nothing
     _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     return _dd_fused_poly_plen!(
-        Val(lanes.n), lanes.lanes, sinogram, mask, lanes.table, wη_gpu, _bt, has_bowtie,
-        g.sp, g.dc, g.du, g.dv,
-        g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-        g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
-        g.mag, g.ps, g.prs, g.col_center, g.row_center, g.nc_nr,
-        g.arc_det, g.dγ,
-        something(ws_w2_gpu, wη_gpu), something(ws_out2, sinogram), ws_w2_gpu !== nothing
+        Val(lanes.n),
+        lanes.lanes,
+        sinogram,
+        mask,
+        lanes.table,
+        wη_gpu,
+        _bt,
+        has_bowtie,
+        g.sp,
+        g.dc,
+        g.du,
+        g.dv,
+        g.vmin_x,
+        g.vmin_y,
+        g.vmin_z,
+        g.vx,
+        g.vy,
+        g.vz,
+        g.nx,
+        g.ny,
+        g.nz,
+        g.n_cols,
+        g.n_rows,
+        g.mag,
+        g.ps,
+        g.prs,
+        g.col_center,
+        g.row_center,
+        g.nc_nr,
+        g.arc_det,
+        g.dγ,
+        something(ws_w2_gpu, wη_gpu),
+        something(ws_out2, sinogram),
+        ws_w2_gpu !== nothing,
     )
 end
 
@@ -531,15 +814,30 @@ end
 # and two-pass paths cannot drift apart — the helical backprojector's arc-mapping bug was
 # exactly that kind of divergence.
 function _dd_walk_setup(
-        ::Type{T}, mask_size, det_size, geom, volume_extent, like,
-        ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
-    ) where {T}
-    nx = Int32(mask_size[1]); ny = Int32(mask_size[2]); nz = Int32(mask_size[3])
-    n_cols = Int32(det_size[1]); n_rows = Int32(det_size[2])
+    ::Type{T},
+    mask_size,
+    det_size,
+    geom,
+    volume_extent,
+    like,
+    ws_source_positions,
+    ws_detector_centers,
+    ws_detector_u,
+    ws_detector_v,
+) where {T}
+    nx = Int32(mask_size[1])
+    ny = Int32(mask_size[2])
+    nz = Int32(mask_size[3])
+    n_cols = Int32(det_size[1])
+    n_rows = Int32(det_size[2])
 
     vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
-    vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)
-    vx = T(vol_bounds[1]) / T(nx); vy = T(vol_bounds[2]) / T(ny); vz = T(vol_bounds[3]) / T(nz)
+    vmin_x = T(-vol_bounds[1] / 2)
+    vmin_y = T(-vol_bounds[2] / 2)
+    vmin_z = T(-vol_bounds[3] / 2)
+    vx = T(vol_bounds[1]) / T(nx)
+    vy = T(vol_bounds[2]) / T(ny)
+    vz = T(vol_bounds[3]) / T(nz)
     _dd_check_isotropy(vx, vy)
 
     return (;
@@ -569,43 +867,80 @@ energies `tile_start … tile_start + K − 1` to `outputs_flat`), with distance
 `K` may be the FULL padded energy count: one volume walk, any number of materials.
 """
 function dd_fast_fused_spectral_project!(
-        pilot::AbstractArray{T, 3},
-        outputs_flat::AbstractArray{T, 1},
-        n_bins::Int32,
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        μ_table_gpu::AbstractArray{T, 2},
-        W_gpu::AbstractArray{T, 2},
-        ::Val{K},
-        tile_start::Int32;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-        ws_bowtie_spectral = nothing,
-    ) where {T <: AbstractFloat, K}
-
+    pilot::AbstractArray{T, 3},
+    outputs_flat::AbstractArray{T, 1},
+    n_bins::Int32,
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    W_gpu::AbstractArray{T, 2},
+    ::Val{K},
+    tile_start::Int32;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing,
+) where {T <: AbstractFloat, K}
     # the tile's energies that any bin weights
     lanes = _plen_lanes!(μ_table_gpu, _spectral_weight(μ_table_gpu, W_gpu, tile_start, K))
 
     g = _dd_walk_setup(
-        T, size(mask), (size(pilot, 1), size(pilot, 2)), geom, volume_extent, mask,
-        ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
+        T,
+        size(mask),
+        (size(pilot, 1), size(pilot, 2)),
+        geom,
+        volume_extent,
+        mask,
+        ws_source_positions,
+        ws_detector_centers,
+        ws_detector_u,
+        ws_detector_v,
     )
-    n_elem = length(pilot)   # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
+    # an Int: bin b's offset (b − 1)·n_elem passes typemax(Int32) at native Alpha sizes
+    n_elem = length(pilot)
     has_src_spectral = ws_bowtie_spectral !== nothing
     _bt = has_src_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     return _dd_fused_spectral_plen!(
-        Val(lanes.n), Val(Int(n_bins)), lanes.lanes, Int32(K), tile_start,
-        pilot, outputs_flat, n_bins,
-        mask, lanes.table, W_gpu, _bt, has_src_spectral,
-        g.sp, g.dc, g.du, g.dv,
-        g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-        g.nx, g.ny, g.nz, g.n_cols, g.n_rows, n_elem,
-        g.mag, g.ps, g.prs, g.col_center, g.row_center, g.nc_nr,
-        g.arc_det, g.dγ
+        Val(lanes.n),
+        Val(Int(n_bins)),
+        lanes.lanes,
+        Int32(K),
+        tile_start,
+        pilot,
+        outputs_flat,
+        n_bins,
+        mask,
+        lanes.table,
+        W_gpu,
+        _bt,
+        has_src_spectral,
+        g.sp,
+        g.dc,
+        g.du,
+        g.dv,
+        g.vmin_x,
+        g.vmin_y,
+        g.vmin_z,
+        g.vx,
+        g.vy,
+        g.vz,
+        g.nx,
+        g.ny,
+        g.nz,
+        g.n_cols,
+        g.n_rows,
+        n_elem,
+        g.mag,
+        g.ps,
+        g.prs,
+        g.col_center,
+        g.row_center,
+        g.nc_nr,
+        g.arc_det,
+        g.dγ,
     )
 end
 
@@ -627,27 +962,67 @@ end
 
 # Pass 1: the walk. Writes per-material path lengths (cm) for every detector element.
 function _dd_material_paths!(
-        ::Val{M}, lanes, offset::Int32,
-        paths::AbstractArray{T, 4}, mask,
-        sp, dc, du, dv,
-        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T,
-        arc_det::Bool, dγ::T,
-    ) where {M, T <: AbstractFloat}
-
+    ::Val{M},
+    lanes,
+    offset::Int32,
+    paths::AbstractArray{T, 4},
+    mask,
+    sp,
+    dc,
+    du,
+    dv,
+    vmin_x::T,
+    vmin_y::T,
+    vmin_z::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    n_cols::Int32,
+    n_rows::Int32,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    arc_det::Bool,
+    dγ::T,
+) where {M, T <: AbstractFloat}
     # The iteration domain is one detector element per thread, so it is the material-1 slice of
     # `paths` — a device array, unlike a plain range, and its linear index is exactly the
     # (col, row, view) ordering the kernels below assume. Only `idx` is taken from it; every
     # write addresses `paths` by its four indices.
     domain = @view paths[1, :, :, :]
 
-    let mask = mask, paths = paths, domain = domain, arc_det = arc_det, dγ = dγ, lanes = lanes, offset = offset,
-            sp = sp, dc = dc, du = du, dv = dv,
-            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
-            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center
-
+    let mask = mask,
+        paths = paths,
+        domain = domain,
+        arc_det = arc_det,
+        dγ = dγ,
+        lanes = lanes,
+        offset = offset,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        vmx = vmin_x,
+        vmy = vmin_y,
+        vmz = vmin_z,
+        vsx = vx,
+        vsy = vy,
+        vsz = vz,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = n_cols,
+        nr = n_rows,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        cc = col_center,
+        rc = row_center
         AK.foreachindex(domain) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % nc) + Int32(1)
@@ -656,9 +1031,32 @@ function _dd_material_paths!(
             angle = (idx_0 ÷ nr) + Int32(1)
 
             plens = _dd_plen_walk(
-                Val(M), lanes, mask, col, row, angle, sp, dc, du, dv,
-                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ
+                Val(M),
+                lanes,
+                mask,
+                col,
+                row,
+                angle,
+                sp,
+                dc,
+                du,
+                dv,
+                vmx,
+                vmy,
+                vmz,
+                vsx,
+                vsy,
+                vsz,
+                nx,
+                ny,
+                nz,
+                mag,
+                ps,
+                prs,
+                cc,
+                rc,
+                arc_det,
+                dγ,
             )
 
             m = Int32(1)
@@ -676,22 +1074,64 @@ end
 # elements (the scatter's coarse rays: thousands of rays, each a long walk over a wide footprint),
 # which leave a GPU mostly idle one walk per thread.
 function _dd_lane_sums_split!(
-        ::Val{M}, lanes, partial::AbstractArray{T, 5}, mask,
-        sp, dc, du, dv,
-        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
-        nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T,
-        arc_det::Bool, dγ::T,
-    ) where {M, T <: AbstractFloat}
+    ::Val{M},
+    lanes,
+    partial::AbstractArray{T, 5},
+    mask,
+    sp,
+    dc,
+    du,
+    dv,
+    vmin_x::T,
+    vmin_y::T,
+    vmin_z::T,
+    vx::T,
+    vy::T,
+    vz::T,
+    nx::Int32,
+    ny::Int32,
+    nz::Int32,
+    n_cols::Int32,
+    n_rows::Int32,
+    mag::T,
+    ps::T,
+    prs::T,
+    col_center::T,
+    row_center::T,
+    arc_det::Bool,
+    dγ::T,
+) where {M, T <: AbstractFloat}
     domain = @view partial[1, :, :, :, :]
     n_seg = Int32(size(partial, 5))
     n_views = Int32(size(partial, 4))
-    let mask = mask, partial = partial, domain = domain, arc_det = arc_det, dγ = dγ, lanes = lanes,
-            sp = sp, dc = dc, du = du, dv = dv,
-            vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
-            nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows, nv = n_views, n_seg = n_seg,
-            mag = mag, ps = ps, prs = prs, cc = col_center, rc = row_center
-
+    let mask = mask,
+        partial = partial,
+        domain = domain,
+        arc_det = arc_det,
+        dγ = dγ,
+        lanes = lanes,
+        sp = sp,
+        dc = dc,
+        du = du,
+        dv = dv,
+        vmx = vmin_x,
+        vmy = vmin_y,
+        vmz = vmin_z,
+        vsx = vx,
+        vsy = vy,
+        vsz = vz,
+        nx = nx,
+        ny = ny,
+        nz = nz,
+        nc = n_cols,
+        nr = n_rows,
+        nv = n_views,
+        n_seg = n_seg,
+        mag = mag,
+        ps = ps,
+        prs = prs,
+        cc = col_center,
+        rc = row_center
         AK.foreachindex(domain) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % nc) + Int32(1)
@@ -702,9 +1142,34 @@ function _dd_lane_sums_split!(
             seg = idx_0 ÷ nv
 
             plens = _dd_plen_walk(
-                Val(M), lanes, mask, col, row, angle, sp, dc, du, dv,
-                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
-                mag, ps, prs, cc, rc, arc_det, dγ, n_seg, seg
+                Val(M),
+                lanes,
+                mask,
+                col,
+                row,
+                angle,
+                sp,
+                dc,
+                du,
+                dv,
+                vmx,
+                vmy,
+                vmz,
+                vsx,
+                vsy,
+                vsz,
+                nx,
+                ny,
+                nz,
+                mag,
+                ps,
+                prs,
+                cc,
+                rc,
+                arc_det,
+                dγ,
+                n_seg,
+                seg,
             )
 
             m = Int32(1)
@@ -739,19 +1204,36 @@ end
 end
 
 function _dd_poly_from_paths!(
-        ::Val{M}, lanes,
-        sinogram::AbstractArray{T, 3}, paths::AbstractArray{T, 4},
-        μ_table_gpu, wη_gpu, _bt, has_bowtie::Bool,
-        n_cols::Int32, n_rows::Int32, nc_nr::Int32,
-        w2_gpu, out2, has2::Bool,
-    ) where {M, T <: AbstractFloat}
-
+    ::Val{M},
+    lanes,
+    sinogram::AbstractArray{T, 3},
+    paths::AbstractArray{T, 4},
+    μ_table_gpu,
+    wη_gpu,
+    _bt,
+    has_bowtie::Bool,
+    n_cols::Int32,
+    n_rows::Int32,
+    nc_nr::Int32,
+    w2_gpu,
+    out2,
+    has2::Bool,
+) where {M, T <: AbstractFloat}
     n_E = Int32(length(wη_gpu))
 
-    let paths = paths, μ_tbl = μ_table_gpu, wη = wη_gpu, bt = _bt, lanes = lanes,
-            nc = n_cols, nr = n_rows, ncnr = nc_nr, hbt = has_bowtie, nE = n_E,
-            w2 = w2_gpu, o2 = out2, h2 = has2
-
+    let paths = paths,
+        μ_tbl = μ_table_gpu,
+        wη = wη_gpu,
+        bt = _bt,
+        lanes = lanes,
+        nc = n_cols,
+        nr = n_rows,
+        ncnr = nc_nr,
+        hbt = has_bowtie,
+        nE = n_E,
+        w2 = w2_gpu,
+        o2 = out2,
+        h2 = has2
         AK.foreachindex(sinogram) do idx
             idx_0 = Int32(idx - 1)
             col = (idx_0 % nc) + Int32(1)
@@ -762,8 +1244,19 @@ function _dd_poly_from_paths!(
             plens = _path_lanes(Val(M), lanes, paths, col, row, angle)
 
             _plen_spectral_sums!(
-                sinogram, o2, idx, plens, μ_tbl, wη, w2, h2, bt, hbt,
-                Int32(col) + (Int32(row) - Int32(1)) * nc, ncnr, nE,
+                sinogram,
+                o2,
+                idx,
+                plens,
+                μ_tbl,
+                wη,
+                w2,
+                h2,
+                bt,
+                hbt,
+                Int32(col) + (Int32(row) - Int32(1)) * nc,
+                ncnr,
+                nE,
             )
         end
     end
@@ -786,38 +1279,65 @@ every tube voltage, filtration, bowtie and detector. Feed it to
     that it was not, so reusing it across a different phantom silently reconstructs the old one.
 """
 function dd_fast_material_paths!(
-        paths::AbstractArray{T, 4},
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry;
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        ws_source_positions = nothing,
-        ws_detector_centers = nothing,
-        ws_detector_u = nothing,
-        ws_detector_v = nothing,
-    ) where {T <: AbstractFloat}
-
+    paths::AbstractArray{T, 4},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+) where {T <: AbstractFloat}
     n_materials = size(paths, 1)
     # The detector shape has to be the geometry's: `col_center`/`row_center` come from `paths`,
     # so a smaller cache would silently trace rays through the middle of the detector.
     (size(paths, 2), size(paths, 3), size(paths, 4)) ==
-        (geom.n_cols, geom.n_rows, geom.n_angles) || throw(
-        DimensionMismatch(
+        (geom.n_cols, geom.n_rows, geom.n_angles) ||
+        throw(DimensionMismatch(
             "paths is $(size(paths)[2:4]) (col, row, view); the geometry is " *
-                "$((geom.n_cols, geom.n_rows, geom.n_angles))"
-        )
-    )
+                "$((geom.n_cols, geom.n_rows, geom.n_angles))",
+        ))
 
     g = _dd_walk_setup(
-        T, size(mask), (size(paths, 2), size(paths, 3)), geom, volume_extent, paths,
-        ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
+        T,
+        size(mask),
+        (size(paths, 2), size(paths, 3)),
+        geom,
+        volume_extent,
+        paths,
+        ws_source_positions,
+        ws_detector_centers,
+        ws_detector_u,
+        ws_detector_v,
     )
     walk(R, lanes, offset) = _dd_material_paths!(
-        Val(R), lanes, Int32(offset), paths, mask,
-        g.sp, g.dc, g.du, g.dv,
-        g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-        g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
-        g.mag, g.ps, g.prs, g.col_center, g.row_center,
-        g.arc_det, g.dγ
+        Val(R),
+        lanes,
+        Int32(offset),
+        paths,
+        mask,
+        g.sp,
+        g.dc,
+        g.du,
+        g.dv,
+        g.vmin_x,
+        g.vmin_y,
+        g.vmin_z,
+        g.vx,
+        g.vy,
+        g.vz,
+        g.nx,
+        g.ny,
+        g.nz,
+        g.n_cols,
+        g.n_rows,
+        g.mag,
+        g.ps,
+        g.prs,
+        g.col_center,
+        g.row_center,
+        g.arc_det,
+        g.dγ,
     )
     if n_materials <= _DIRECT_MAX_MATERIALS[]
         walk(n_materials, nothing, 0)
@@ -848,20 +1368,34 @@ whatever the number of materials. Any `R`, in walks of at most $(_PLEN_MAX_MATER
 the products of an identity `Ct`; at most $(_PLEN_MAX_MATERIALS)).
 """
 function dd_fast_lane_sums!(
-        sums::AbstractArray{T, 4},
-        mask::AbstractArray{<:Unsigned, 3},
-        geom::CTGeometry,
-        Ct::Union{Nothing, AbstractMatrix};
-        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    ) where {T <: AbstractFloat}
+    sums::AbstractArray{T, 4},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    Ct::Union{Nothing, AbstractMatrix};
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+) where {T <: AbstractFloat}
     R = Ct === nothing ? size(sums, 1) : size(Ct, 1)
-    Ct === nothing && R > _PLEN_MAX_MATERIALS && throw(DimensionMismatch("at most $(_PLEN_MAX_MATERIALS) selected lanes"))
-    R == size(sums, 1) || throw(DimensionMismatch("one sum per lane: $(size(sums, 1)) sums, $(R) lanes"))
-    (size(sums, 2), size(sums, 3), size(sums, 4)) == (geom.n_cols, geom.n_rows, geom.n_angles) ||
-        throw(DimensionMismatch("sums is $(size(sums)[2:4]); the geometry is $((geom.n_cols, geom.n_rows, geom.n_angles))"))
+    Ct === nothing &&
+        R > _PLEN_MAX_MATERIALS &&
+        throw(DimensionMismatch("at most $(_PLEN_MAX_MATERIALS) selected lanes"))
+    R == size(sums, 1) ||
+        throw(DimensionMismatch("one sum per lane: $(size(sums, 1)) sums, $(R) lanes"))
+    (size(sums, 2), size(sums, 3), size(sums, 4)) ==
+        (geom.n_cols, geom.n_rows, geom.n_angles) ||
+        throw(DimensionMismatch(
+            "sums is $(size(sums)[2:4]); the geometry is $((geom.n_cols, geom.n_rows, geom.n_angles))",
+        ))
     g = _dd_walk_setup(
-        T, size(mask), (size(sums, 2), size(sums, 3)), geom, volume_extent, sums,
-        nothing, nothing, nothing, nothing,
+        T,
+        size(mask),
+        (size(sums, 2), size(sums, 3)),
+        geom,
+        volume_extent,
+        sums,
+        nothing,
+        nothing,
+        nothing,
+        nothing,
     )
     # few detector elements (a coarse geometry): each walk split along its integration axis into
     # enough segments for about 2^20 threads, the segments' sums added afterwards
@@ -872,24 +1406,68 @@ function dd_fast_lane_sums!(
         lanes = Ct === nothing || n == R ? Ct : Ct[(k0 + 1):(k0 + n), :]
         if n_seg == 1
             _dd_material_paths!(
-                Val(n), lanes, Int32(k0), sums, mask,
-                g.sp, g.dc, g.du, g.dv,
-                g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-                g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
-                g.mag, g.ps, g.prs, g.col_center, g.row_center,
-                g.arc_det, g.dγ
+                Val(n),
+                lanes,
+                Int32(k0),
+                sums,
+                mask,
+                g.sp,
+                g.dc,
+                g.du,
+                g.dv,
+                g.vmin_x,
+                g.vmin_y,
+                g.vmin_z,
+                g.vx,
+                g.vy,
+                g.vz,
+                g.nx,
+                g.ny,
+                g.nz,
+                g.n_cols,
+                g.n_rows,
+                g.mag,
+                g.ps,
+                g.prs,
+                g.col_center,
+                g.row_center,
+                g.arc_det,
+                g.dγ,
             )
         else
             part = similar(sums, T, n, size(sums, 2), size(sums, 3), size(sums, 4), n_seg)
             _dd_lane_sums_split!(
-                Val(n), lanes, part, mask,
-                g.sp, g.dc, g.du, g.dv,
-                g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
-                g.nx, g.ny, g.nz, g.n_cols, g.n_rows,
-                g.mag, g.ps, g.prs, g.col_center, g.row_center,
-                g.arc_det, g.dγ
+                Val(n),
+                lanes,
+                part,
+                mask,
+                g.sp,
+                g.dc,
+                g.du,
+                g.dv,
+                g.vmin_x,
+                g.vmin_y,
+                g.vmin_z,
+                g.vx,
+                g.vy,
+                g.vz,
+                g.nx,
+                g.ny,
+                g.nz,
+                g.n_cols,
+                g.n_rows,
+                g.mag,
+                g.ps,
+                g.prs,
+                g.col_center,
+                g.row_center,
+                g.arc_det,
+                g.dγ,
             )
-            view(sums, (k0 + 1):(k0 + n), :, :, :) .= dropdims(sum(part; dims = 5); dims = 5)
+            view(sums, (k0 + 1):(k0 + n), :, :, :) .= dropdims(
+                sum(part; dims = 5);
+                dims = 5,
+            )
         end
     end
     return sums
@@ -911,25 +1489,24 @@ Bit-identical to the single-pass [`dd_fast_fused_poly_project!`](@ref) on the sa
 accumulation inside a cell and the energy loop are the same expressions in the same order.
 """
 function dd_fast_poly_from_paths!(
-        sinogram::AbstractArray{T, 3},
-        paths::AbstractArray{T, 4},
-        μ_table_gpu::AbstractArray{T, 2},
-        wη_gpu::AbstractArray{T, 1};
-        ws_bowtie_spectral = nothing,
-        ws_w2_gpu = nothing,
-        ws_out2 = nothing,
-    ) where {T <: AbstractFloat}
-
+    sinogram::AbstractArray{T, 3},
+    paths::AbstractArray{T, 4},
+    μ_table_gpu::AbstractArray{T, 2},
+    wη_gpu::AbstractArray{T, 1};
+    ws_bowtie_spectral = nothing,
+    ws_w2_gpu = nothing,
+    ws_out2 = nothing,
+) where {T <: AbstractFloat}
     (ws_w2_gpu === nothing) == (ws_out2 === nothing) ||
         throw(ArgumentError("ws_w2_gpu and ws_out2 come together"))
-    size(paths, 1) == size(μ_table_gpu, 1) || throw(
-        DimensionMismatch(
-            "paths has $(size(paths, 1)) materials, the attenuation table has $(size(μ_table_gpu, 1))"
-        )
-    )
-    (size(paths, 2), size(paths, 3), size(paths, 4)) == size(sinogram) || throw(
-        DimensionMismatch("paths $(size(paths)[2:4]) does not match the sinogram $(size(sinogram))")
-    )
+    size(paths, 1) == size(μ_table_gpu, 1) ||
+        throw(DimensionMismatch(
+            "paths has $(size(paths, 1)) materials, the attenuation table has $(size(μ_table_gpu, 1))",
+        ))
+    (size(paths, 2), size(paths, 3), size(paths, 4)) == size(sinogram) ||
+        throw(DimensionMismatch(
+            "paths $(size(paths)[2:4]) does not match the sinogram $(size(sinogram))",
+        ))
 
     n_cols = Int32(size(sinogram, 1))
     nc_nr = n_cols * Int32(size(sinogram, 2))
@@ -937,16 +1514,26 @@ function dd_fast_poly_from_paths!(
     _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     lanes = _plen_lanes(μ_table_gpu, _poly_weight(wη_gpu, ws_w2_gpu))
-    lanes === nothing && throw(
-        ArgumentError(
+    lanes === nothing &&
+        throw(ArgumentError(
             "dd_fast_poly_from_paths!: no attenuation basis of at most $(_PLEN_MAX_MATERIALS) energies " *
-                "reproduces these $(size(μ_table_gpu, 1)) materials"
-        )
-    )
+                "reproduces these $(size(μ_table_gpu, 1)) materials",
+        ))
     return _dd_poly_from_paths!(
-        Val(lanes.n), lanes.lanes, sinogram, paths, lanes.table, wη_gpu, _bt, has_bowtie,
-        n_cols, Int32(size(sinogram, 2)), nc_nr,
-        something(ws_w2_gpu, wη_gpu), something(ws_out2, sinogram), ws_w2_gpu !== nothing
+        Val(lanes.n),
+        lanes.lanes,
+        sinogram,
+        paths,
+        lanes.table,
+        wη_gpu,
+        _bt,
+        has_bowtie,
+        n_cols,
+        Int32(size(sinogram, 2)),
+        nc_nr,
+        something(ws_w2_gpu, wη_gpu),
+        something(ws_out2, sinogram),
+        ws_w2_gpu !== nothing,
     )
 end
 

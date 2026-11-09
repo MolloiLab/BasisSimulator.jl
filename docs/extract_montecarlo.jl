@@ -29,7 +29,10 @@
 #
 # Force a full rebuild with BASISSIM_FORCE_NB_REBUILD=1.
 
-include(joinpath(@__DIR__, "extract_all.jl"))   # build_env, Pluto, Snapshot and the shared helpers
+include(joinpath(
+    @__DIR__,
+    "extract_all.jl",
+)) # build_env, Pluto, Snapshot and the shared helpers
 
 const MC_ROOT = normpath(joinpath(@__DIR__, "..", "lib", "BasisMonteCarlo"))
 const MC_DOCS = joinpath(MC_ROOT, "docs")
@@ -53,8 +56,8 @@ function mc_notebook_slugs()
     isdir(MC_NOTEBOOKS_DIR) || return String[]
     return [
         MC_PREFIX * splitext(f)[1]
-            for f in sort(readdir(MC_NOTEBOOKS_DIR))
-            if endswith(f, ".jl")
+        for f in sort(readdir(MC_NOTEBOOKS_DIR))
+        if endswith(f, ".jl")
     ]
 end
 
@@ -71,7 +74,11 @@ function mc_input_hash()
     root = dirname(@__DIR__)
     # the docs environment (its lockfiles without this repository's own version lines, one per
     # Julia minor version) and the committed reference data
-    locks = sort([joinpath(MC_DOCS, name) for name in readdir(MC_DOCS) if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)])
+    locks = sort([
+        joinpath(MC_DOCS, name)
+        for name in readdir(MC_DOCS)
+        if occursin(r"^Manifest(-v[0-9.]+)?\.toml$", name)
+    ])
     entries = [string(relpath(path, root), ":", lock_input_hash(path)) for path in locks]
     files = [joinpath(MC_DOCS, "Project.toml")]
     dir = joinpath(MC_DOCS, "reference_data")
@@ -81,7 +88,10 @@ function mc_input_hash()
             isfile(path) && push!(files, path)
         end
     end
-    append!(entries, [string(relpath(path, root), ":", bytes2hex(sha256(read(path)))) for path in files])
+    append!(
+        entries,
+        [string(relpath(path, root), ":", bytes2hex(sha256(read(path)))) for path in files],
+    )
     sort!(entries)
     _MC_INPUT_HASH[] = bytes2hex(sha256(join(entries, '\0')))
     return _MC_INPUT_HASH[]::String
@@ -108,11 +118,12 @@ mc_needs_rebuild(slug::AbstractString) = cached_hash(slug) != mc_export_fingerpr
 
 """`BASISSIM_SKIP_NOTEBOOKS`, where a trailing `*` matches a prefix (`mc-*` skips every one)."""
 function mc_skipped(slug::AbstractString)
-    patterns = strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false))
-    return any(
-        p -> endswith(p, "*") ? startswith(slug, chop(p)) : slug == p,
-        patterns,
-    )
+    patterns = strip.(split(
+        get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""),
+        ",";
+        keepempty = false,
+    ))
+    return any(p -> endswith(p, "*") ? startswith(slug, chop(p)) : slug == p, patterns)
 end
 
 """Export one notebook into a scratch directory, move it into docs/notebooks-static/ as
@@ -183,7 +194,8 @@ function move_export!(stage, out, stem, slug)
     islands_dst = joinpath(out, new_islands)
     rm(islands_dst; recursive = true, force = true)
     islands_src = joinpath(stage, old_islands)
-    isdir(islands_src) && cp(islands_src, islands_dst)   # the scratch directory may be on another disk
+    # the scratch directory may be on another disk
+    isdir(islands_src) && cp(islands_src, islands_dst)
     return nothing
 end
 
@@ -241,10 +253,14 @@ function mc_export_notebooks(only = nothing)
     force = haskey(ENV, "BASISSIM_FORCE_NB_REBUILD")
     to_render = force ? slugs : filter(mc_needs_rebuild, slugs)
     if isempty(to_render)
-        println("[notebooks] all $(length(slugs)) BasisMonteCarlo exports current — no rebuild")
+        println(
+            "[notebooks] all $(length(slugs)) BasisMonteCarlo exports current — no rebuild",
+        )
         return slugs
     end
-    println("[notebooks] rendering $(length(to_render))/$(length(slugs)) BasisMonteCarlo notebook(s)…")
+    println(
+        "[notebooks] rendering $(length(to_render))/$(length(slugs)) BasisMonteCarlo notebook(s)…",
+    )
     session = render_session()
     foreach(slug -> render_mc_slug!(session, slug), to_render)
     return slugs
@@ -261,7 +277,6 @@ function mc_render_queue(queue::AbstractString)
         render_mc_slug!(session, slug)
         rm(joinpath(queue, "$(slug).claimed.$(getpid())"))
     end
-    return
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
