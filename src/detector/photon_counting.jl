@@ -167,8 +167,8 @@ For thresholds [T₁, T₂, ..., Tₙ]:
 pcct_sino = pcct_forward_project(volume, geom, detector, spectrum)
 
 # Access individual energy bins
-bin1 = pcct_sino.bins[1]  # Lowest energy bin
-bin4 = pcct_sino.bins[4]  # Highest energy bin
+bin1 = pcct_sino.bins[1] # Lowest energy bin
+bin4 = pcct_sino.bins[4] # Highest energy bin
 
 # Total counts (sum of all bins)
 total = sum(pcct_sino.bins)
@@ -361,19 +361,27 @@ where:
 # Example
 
 ```julia
-detector = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [20.0, 35.0, 55.0, 70.0]))
+detector = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [
+    20.0,
+    35.0,
+    55.0,
+    70.0,
+]))
 energies, weights = load_spectrum(120)
 materials = get_region_materials()
 
 pcct_sino = pcct_forward_project(
-    phantom.mask, geom, detector;
-    energies=energies, weights=weights,
-    materials=materials
+    phantom.mask,
+    geom,
+    detector;
+    energies = energies,
+    weights = weights,
+    materials = materials,
 )
 
 # Access energy bins
-low_E_sino = pcct_sino.bins[1]   # 20-35 keV
-high_E_sino = pcct_sino.bins[4]  # 70+ keV
+low_E_sino = pcct_sino.bins[1]  # 20-35 keV
+high_E_sino = pcct_sino.bins[4] # 70+ keV
 ```
 
 See also: [`PhotonCountingDetector`](@ref), [`EnergyResolvedSinogram`](@ref)
@@ -1000,8 +1008,8 @@ dispatch through this function to ensure material-agnostic operation.
 # Example
 ```julia
 props = get_detector_material_properties(CDTE_MATERIAL)
-props.density_g_cm3  # 5.85
-props.k_edges_keV    # [26.7, 31.8]
+props.density_g_cm3 # 5.85
+props.k_edges_keV   # [26.7, 31.8]
 ```
 """
 function get_detector_material_properties(material::DetectorMaterialPCCT)
@@ -1110,8 +1118,8 @@ interpolation. This provides NIST XCOM-calibrated values with proper K-edge hand
 
 # Example
 ```julia
-μ = get_detector_material_attenuation(CDTE_MATERIAL, 60.0)  # ~33 cm⁻¹
-μ = get_detector_material_attenuation(SI_MATERIAL, 60.0)    # ~0.46 cm⁻¹
+μ = get_detector_material_attenuation(CDTE_MATERIAL, 60.0) # ~33 cm⁻¹
+μ = get_detector_material_attenuation(SI_MATERIAL, 60.0)   # ~0.46 cm⁻¹
 ```
 """
 function get_detector_material_attenuation(material::DetectorMaterialPCCT, energy_keV::Real)
@@ -1153,8 +1161,8 @@ where μ_det(E) is the linear attenuation of the detector material and d is thic
 
 # Example
 ```julia
-η_cdte = quantum_efficiency(CDTE_MATERIAL, 1.6, 60.0)  # ≈ 0.995
-η_si = quantum_efficiency(SI_MATERIAL, 1.6, 60.0)      # ≈ 0.071
+η_cdte = quantum_efficiency(CDTE_MATERIAL, 1.6, 60.0) # ≈ 0.995
+η_si = quantum_efficiency(SI_MATERIAL, 1.6, 60.0)     # ≈ 0.071
 ```
 """
 function quantum_efficiency(

@@ -136,7 +136,7 @@ phantom_gpu = Phantom(
     phantom_cpu.materials,
     phantom_cpu.voxel_size,
     phantom_cpu.origin,
-    phantom_cpu.extent
+    phantom_cpu.extent,
 )
 ```
 
@@ -175,7 +175,7 @@ forward projection, so there's no performance penalty vs the old μ field.
 
 # Example
 ```julia
-phantom = create_gammex_472(n_voxels=128)
+phantom = create_gammex_472(n_voxels = 128)
 
 # Get μ at different energies
 μ_60 = compute_μ(phantom, 60.0)   # ~0.207 cm⁻¹ for water
@@ -236,7 +236,7 @@ import XrayAttenuation as XA
 materials_dict = Dict{Int, XA.Material}(
     0 => XA.Materials.air,
     1 => XA.Materials.water,
-    2 => XA.Materials.corticalbone
+    2 => XA.Materials.corticalbone,
 )
 
 # Create phantom (1mm voxels)
@@ -335,7 +335,7 @@ Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any ene
 
 # Example
 ```julia
-phantom = create_gammex_472(n_voxels=128)
+phantom = create_gammex_472(n_voxels = 128)
 
 # Get μ at any energy
 μ_60 = compute_μ(phantom, 60.0)
@@ -528,7 +528,7 @@ xcat_mask = rand(UInt8(0):UInt8(3), 400, 400, 200)
 # Define materials for each label
 materials_dict = Dict{Int, XA.Material}(
     0 => XA.Materials.air,
-    1 => XA.Materials.water,  # soft tissue approximation
+    1 => XA.Materials.water, # soft tissue approximation
     2 => XA.Materials.corticalbone,
     3 => XA.Materials.lung,
 )

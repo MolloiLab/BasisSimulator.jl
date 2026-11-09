@@ -68,16 +68,23 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 # Examples
 ```julia
 # Simple axial
-CTProtocol(kVp=120, mA=200, views=984)
+CTProtocol(kVp = 120, mA = 200, views = 984)
 
 # With collimation (128×0.625mm = 80mm)
-CTProtocol(kVp=120, mA=200, views=984, collimation_mm=80.0)
+CTProtocol(kVp = 120, mA = 200, views = 984, collimation_mm = 80.0)
 
 # Helical: pitch 1.0, 8 rotations, 40 mm collimation → 320 mm table travel
-CTProtocol(kVp=120, mA=200, views=984, collimation_mm=40.0, pitch=1.0, n_rotations=8)
+CTProtocol(
+    kVp = 120,
+    mA = 200,
+    views = 984,
+    collimation_mm = 40.0,
+    pitch = 1.0,
+    n_rotations = 8,
+)
 
 # Extra filtration
-CTProtocol(kVp=120, mA=200, additional_filters=[("Al", 4.5)])
+CTProtocol(kVp = 120, mA = 200, additional_filters = [("Al", 4.5)])
 ```
 """
 function CTProtocol(;

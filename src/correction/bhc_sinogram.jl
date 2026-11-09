@@ -384,10 +384,12 @@ spectrum's mean energy so all columns share a single mono-equivalent target.
 # Example
 ```julia
 bhc = calibrate_bhc_two_material(
-    sim_opts, protocol;
-    scanner = scanner, geom = ws.geom,
-    order   = 2,
-    hu_low  = 450.0,
+    sim_opts,
+    protocol;
+    scanner = scanner,
+    geom = ws.geom,
+    order = 2,
+    hu_low = 450.0,
     hu_high = 600.0,
 )
 ```

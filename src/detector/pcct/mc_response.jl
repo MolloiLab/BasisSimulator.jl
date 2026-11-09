@@ -112,8 +112,13 @@ Returns D[i, b] = probability that a photon of energy E_i registers in bin b.
 
 # Example
 ```julia
-det = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [20.0, 35.0, 55.0, 70.0]))
-D = compute_mc_drm(det, 120.0)  # uses bundled response file
+det = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [
+    20.0,
+    35.0,
+    55.0,
+    70.0,
+]))
+D = compute_mc_drm(det, 120.0) # uses bundled response file
 ```
 """
 function compute_mc_drm(

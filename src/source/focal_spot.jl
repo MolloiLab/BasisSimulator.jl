@@ -253,19 +253,23 @@ formula is mathematically equivalent to averaging rays from a finite source.
 
 # Example
 ```julia
-fs = FocalSpot(1.0, 1.0, :gaussian, 3)  # 1 mm focal spot
-geom = CTGeometry(EICTScanner(detector_rows=64, detector_cols=512); n_angles=360, fov_cm=35.0)
+fs = FocalSpot(1.0, 1.0, :gaussian, 3) # 1 mm focal spot
+geom = CTGeometry(
+    EICTScanner(detector_rows = 64, detector_cols = 512);
+    n_angles = 360,
+    fov_cm = 35.0,
+)
 
 # Blur at isocenter
 blur_iso = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD)
 
 # Blur for object closer to source (more magnification, more blur)
 blur_near = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 0.7)
-@assert blur_near[1] > blur_iso[1]  # Closer = more blur
+@assert blur_near[1] > blur_iso[1] # Closer = more blur
 
 # Blur for object farther from source (less magnification, less blur)
 blur_far = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 1.3)
-@assert blur_far[1] < blur_iso[1]  # Farther = less blur
+@assert blur_far[1] < blur_iso[1] # Farther = less blur
 ```
 
 See also: [`create_focal_spot_kernel_spatial`](@ref), [`apply_focal_spot_blur!`](@ref)

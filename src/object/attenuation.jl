@@ -164,7 +164,7 @@ recon = fdk_reconstruct(sinogram, geom, matrix_size)
 water_mask = phantom.mask .== UInt8(REGION_SOLID_WATER)
 
 # Convert to HU with empirical calibration
-recon_hu = to_hounsfield(recon; water_mask=water_mask)
+recon_hu = to_hounsfield(recon; water_mask = water_mask)
 # Water region will be ~0 HU by construction
 ```
 
@@ -172,10 +172,10 @@ recon_hu = to_hounsfield(recon; water_mask=water_mask)
 ```julia
 # Measure μ_water from reconstruction
 cx, cy, cz = size(recon) .÷ 2
-μ_water_measured = mean(recon[cx-5:cx+5, cy-5:cy+5, cz])
+μ_water_measured = mean(recon[cx - 5:cx + 5, cy - 5:cy + 5, cz])
 
 # Convert
-recon_hu = to_hounsfield(recon; μ_water=μ_water_measured)
+recon_hu = to_hounsfield(recon; μ_water = μ_water_measured)
 ```
 
 **Option 3: Use NIST reference (less accurate)**

@@ -57,20 +57,70 @@ end
 const _NOTEBOOK_GITHUB_BASE = "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/docs/notebooks"
 const _MC_NOTEBOOK_GITHUB_BASE = "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/lib/BasisMonteCarlo/docs/notebooks"
 
+"""The notebooks that have a page, in gallery order (BasisSimulator's, then BasisMonteCarlo's `mc-` ones): every
+rendered fragment with its source, less those `BASISSIM_SKIP_NOTEBOOKS` leaves out (a trailing `*` matches a prefix, as in app.jl)."""
+function _notebook_neighbours(static_dir::AbstractString)
+    patterns = strip.(split(
+        get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""),
+        ",";
+        keepempty = false,
+    ))
+    skipped(s) = any(p -> endswith(p, "*") ? startswith(s, chop(p)) : s == p, patterns)
+    docs_dir = joinpath(static_dir, "..")
+    source(s) = startswith(s, "mc-") ?
+        joinpath(
+            docs_dir,
+            "..",
+            "lib",
+            "BasisMonteCarlo",
+            "docs",
+            "notebooks",
+            "$(chopprefix(s, "mc-")).jl",
+        ) :
+        joinpath(docs_dir, "notebooks", "$(s).jl")
+    slugs = [
+        chopsuffix(f, ".fragment.html")
+        for f in readdir(static_dir)
+        if endswith(f, ".fragment.html")
+    ]
+    return sort(filter(s -> !skipped(s) && isfile(source(s)), slugs))
+end
+
+"""A display title split at its first ` · ` into the numeral (`01`, `MC 04`) and the name."""
+function _title_parts(title::AbstractString)
+    parts = split(title, " · "; limit = 2)
+    return length(parts) == 2 ? (String(parts[1]), String(parts[2])) : ("", String(title))
+end
+
+"""A glass tile to the previous or next notebook, at the foot of a notebook page."""
+function _notebook_neighbour_tile(BASE, slug, direction::Symbol)
+    numeral, name = _title_parts(_notebook_display_title(slug))
+    previous = direction === :previous
+    return A(
+        :href => "$(BASE)/examples/$(slug)/",
+        :class =>
+            "bs-tile p-5 sm:p-6 gap-1.5 " *
+                (previous ? "items-start text-left" : "items-end text-right"),
+        Span(:class => "bs-eyebrow text-[0.6875rem]", previous ? "← Previous" : "Next →"),
+        Span(
+            :class => "bs-tile-title bs-title text-xl sm:text-2xl",
+            Span(:class => "bs-numeral", numeral),
+            isempty(numeral) ? "" : " ",
+            name,
+        ),
+    )
+end
+
 function NotebookPage(slug::AbstractString)
     BASE = get(ENV, "BASISSIM_BASE", "")
-    title = _notebook_display_title(slug)
+    numeral, name = _title_parts(_notebook_display_title(slug))
+    is_mc = startswith(slug, "mc-")
     # A BasisMonteCarlo notebook's slug is `mc-` and the stem of its file in lib/BasisMonteCarlo.
-    github_src_url = startswith(slug, "mc-") ?
+    github_src_url = is_mc ?
         "$(_MC_NOTEBOOK_GITHUB_BASE)/$(chopprefix(slug, "mc-")).jl" :
         "$(_NOTEBOOK_GITHUB_BASE)/$(slug).jl"
-    fragment_path = normpath(joinpath(
-        @__DIR__,
-        "..",
-        "..",
-        "notebooks-static",
-        "$(slug).fragment.html",
-    ))
+    static_dir = normpath(joinpath(@__DIR__, "..", "..", "notebooks-static"))
+    fragment_path = joinpath(static_dir, "$(slug).fragment.html")
     isfile(fragment_path) ||
         error(
             "Missing notebook fragment $(fragment_path). Run `docs/render_notebooks.sh $(slug)`.",
@@ -79,54 +129,73 @@ function NotebookPage(slug::AbstractString)
         read(fragment_path, String),
         "__BASISSIM_NOTEBOOKS_BASE__" => "$(BASE)/notebooks-static",
     )
+    order = _notebook_neighbours(static_dir)
+    k = findfirst(==(slug), order)
+    previous = k === nothing || k == 1 ? nothing : order[k - 1]
+    next = k === nothing || k == length(order) ? nothing : order[k + 1]
 
-    # The notebook takes the page's full width beside its table of contents (see `PageWithTOC`); its prose keeps a
-    # readable measure while figures and code use the width (input.css, "Notebook pages").
-    PageWithTOC(
+    # The notebook takes the page's width beside its table of contents (see `PageWithTOC`), floating in a large
+    # glass island; its prose keeps a readable measure while figures and code use the width (input.css,
+    # "Notebook pages").
+    return PageWithTOC(
         _notebook_sections(notebook_html),
         Div(
-            :class => "py-4 sm:py-6 space-y-5",
-            # Breadcrumb (left) + GitHub source link (right) — single flex row.
+            :class => "space-y-8 sm:space-y-10",
+            # Back pill (left) + source pill (right)
             Div(
-                :class =>
-                    "flex items-center justify-between gap-3 text-[10px] tracking-[0.2em] uppercase font-mono text-warm-500 dark:text-warm-500",
-                # Left: breadcrumb back-link
-                Div(
-                    :class => "flex items-center gap-3",
-                    A(
-                        :href => "$(BASE)/examples/",
-                        :class =>
-                            "hover:text-accent-600 dark:hover:text-accent-400 no-underline transition-colors",
-                        "← Examples",
-                    ),
-                    Span(:class => "text-warm-300 dark:text-warm-700", "/"),
-                    Span(
-                        :class => "hidden sm:inline text-warm-700 dark:text-warm-300",
-                        title,
-                    ),
+                :class => "flex items-center justify-between gap-3",
+                A(
+                    :href => "$(BASE)/examples/",
+                    :class => "bs-pill bs-pill-sm",
+                    "← Examples",
                 ),
-                # Right: direct link to the .jl source on GitHub
                 A(
                     :href => github_src_url,
                     :target => "_blank",
                     :rel => "noopener",
-                    :class =>
-                        "flex items-center gap-2 px-3 py-1.5 rounded-full border border-warm-300 dark:border-warm-700 hover:border-accent-400 dark:hover:border-accent-600 hover:text-accent-600 dark:hover:text-accent-400 transition-colors no-underline",
-                    RawHtml(
-                        """<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>""",
-                    ),
-                    Span(:class => "hidden sm:inline", "View source on GitHub"),
+                    :class => "bs-pill bs-pill-sm",
+                    RawHtml(GITHUB_ICON),
+                    Span(:class => "hidden sm:inline", "View Source"),
                 ),
             ),
-            # Native inline notebook — scoped Pluto/Snapshot styles, one page
-            # scroll, inherited Therapy theme, no nested viewport or iframe chrome.
-            # Same native reading surface used by Snapshot.jl's docs: the fragment
-            # remains real DOM and theme-aware, while the soft boundary makes its
-            # own Pluto typography/layout feel intentional inside Therapy.
+            # The title: the numeral in violet italic, then the name
             Div(
-                :class =>
-                    "bg-white dark:bg-[#20212b] rounded-box sn-bubble px-4 sm:px-8 lg:px-10 py-6 sm:py-8 overflow-hidden transition-colors",
+                :class => "relative space-y-4",
+                Div(:class => "bs-glow"),
+                P(
+                    :class => "relative bs-eyebrow",
+                    is_mc ?
+                        "BasisMonteCarlo.jl · Pluto notebook" :
+                        "BasisSimulator.jl · Pluto notebook",
+                ),
+                H1(
+                    :class => "relative bs-display text-[2.5rem] sm:text-6xl",
+                    isempty(numeral) ? Fragment() : Span(:class => "bs-numeral", numeral),
+                    isempty(numeral) ?
+                        Fragment() :
+                        Span(:class => "bs-muted font-normal", " · "),
+                    name,
+                ),
+            ),
+            # Native inline notebook — scoped Pluto/Snapshot styles, one page scroll, inherited Therapy theme, no
+            # nested viewport or iframe chrome. The fragment stays real DOM and theme-aware inside the island.
+            Div(
+                :class => "bs-island px-4 sm:px-10 lg:px-14 py-7 sm:py-12",
                 RawHtml(notebook_html),
+            ),
+            # Onward: the neighbouring notebooks, and the way back to the gallery
+            Div(
+                :class => "grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5 pt-2",
+                previous === nothing ?
+                    Div(:class => "hidden sm:block") :
+                    _notebook_neighbour_tile(BASE, previous, :previous),
+                next === nothing ?
+                    Div(:class => "hidden sm:block") :
+                    _notebook_neighbour_tile(BASE, next, :next),
+            ),
+            Div(
+                :class => "flex justify-center",
+                A(:href => "$(BASE)/examples/", :class => "bs-pill", "← All Examples"),
             ),
         ),
     )

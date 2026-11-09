@@ -1,6 +1,6 @@
 # Examples gallery — one card per Pluto notebook in docs/notebooks/, grouped by topic, and one per
 # BasisMonteCarlo.jl notebook in lib/BasisMonteCarlo/docs/notebooks/ (slug `mc-<stem>`, under
-# "Detector physics"). Each card links to /examples/<slug>/, registered programmatically in
+# "Detector Physics"). Each card links to /examples/<slug>/, registered programmatically in
 # docs/app.jl and served by NotebookPage(slug). A notebook without an entry in NOTEBOOK_META still
 # gets a card (under "More"), so a new notebook never 404s; give it an entry and a group for a real
 # description. A BasisMonteCarlo notebook not rendered yet (no export) gets an unlinked card, and its
@@ -25,13 +25,13 @@ let BASE = get(ENV, "BASISSIM_BASE", ""),
     GROUPS = [
         (
             "getting-started",
-            "Getting started",
+            "Getting Started",
             "The API end to end, on one clinical scanner.",
             ["01_five_struct_api"],
         ),
         (
             "phantoms",
-            "Phantoms & anatomy",
+            "Phantoms & Anatomy",
             "Digital anatomy, custom materials, and mapping ground truth onto the reconstruction.",
             ["02_xcat_custom_materials", "05_xcat_grid_to_recon"],
         ),
@@ -48,19 +48,19 @@ let BASE = get(ENV, "BASISSIM_BASE", ""),
         ),
         (
             "scanners",
-            "Scanner models",
+            "Scanner Models",
             "Dual-source Siemens systems with their own Monte Carlo detector tables, read out as mixed images and VMIs.",
             ["09_siemens_force_ufc_dual_source_vmi", "12_siemens_flash_ufc"],
         ),
         (
             "acquisition",
-            "Acquisition, artifacts & validation",
+            "Acquisition, Artifacts & Validation",
             "Helical coverage, metal artifacts, and a head-to-head with CatSim.",
             ["11_helical_scanning", "10_titanium_implant", "06_catsim_vs_basissim"],
         ),
         (
             "detector-physics",
-            "Detector physics (BasisMonteCarlo.jl)",
+            "Detector Physics",
             "Geant4 Monte Carlo of the detectors and the scatter behind BasisSimulator's tables, each piece checked against documentation and the literature.",
             [
                 "mc-01_cdte_slab_efficiency",
@@ -271,8 +271,9 @@ let BASE = get(ENV, "BASISSIM_BASE", ""),
     rendered(slug) = !startswith(slug, "mc-") ||
         isfile(joinpath(static_dir, "$(slug).fragment.html"))
 
-    # Card builder — defined inside the `let` so Therapy's file-based router does not register it.
-    notebook_card = function (slug::AbstractString)
+    # Card builder — defined inside the `let` so Therapy's file-based router does not register it. A group's only
+    # card is `wide`: it spans the row, its figure beside its text.
+    notebook_card = function (slug::AbstractString, k::Integer; wide::Bool = false)
         meta = get(
             NOTEBOOK_META,
             slug,
@@ -284,72 +285,69 @@ let BASE = get(ENV, "BASISSIM_BASE", ""),
             ),
         )
         live = rendered(slug)
-        wrap = live ?
-            (
-                card -> A(
-                    :href => "$(BASE)/examples/$(slug)/",
-                    :class => "block group no-underline",
-                    card,
-                )
-            ) :
-            (
-                card -> Div(:class => "block opacity-70", card)
-            ) # not rendered yet: no page to open
-        wrap(Div(
-            :class =>
-                "h-full flex flex-col border border-warm-200 dark:border-warm-800 rounded-xl overflow-hidden bg-warm-50 dark:bg-warm-900/40 hover:bg-white dark:hover:bg-warm-900/70 hover:border-accent-400 dark:hover:border-accent-600 transition-colors",
-            if meta.thumbnail !== nothing && isfile(joinpath(assets_dir, meta.thumbnail))
-                Div(
-                    :class => "bg-white border-b border-warm-200 dark:border-warm-800",
+        has_image = meta.thumbnail !== nothing &&
+            isfile(joinpath(assets_dir, meta.thumbnail))
+        children = (
+            Div(
+                :class =>
+                    "bs-plate" *
+                        (has_image ? "" : " bs-plate-empty") *
+                        (wide ? " md:w-[56%] md:shrink-0 md:mb-2.5" : ""),
+                has_image ?
                     Img(
                         :src => "$(BASE)/assets/$(meta.thumbnail)",
                         :alt => meta.title,
                         :loading => "lazy",
                         :class => "w-full aspect-[16/10] object-contain",
-                    ),
-                )
-            else
-                Div(
-                    :class =>
-                        "w-full aspect-[16/10] bg-accent-100/50 dark:bg-accent-900/30",
-                )
-            end,
+                    ) :
+                    Div(:class => "w-full aspect-[16/10]"),
+            ),
             Div(
-                :class => "p-6 space-y-3 flex-1 flex flex-col",
+                :class =>
+                    "px-6 sm:px-7 pt-5 pb-6 flex-1 flex flex-col gap-3" *
+                        (wide ? " md:justify-center md:px-9 md:py-8" : ""),
                 Div(
-                    :class =>
-                        "flex flex-wrap items-center gap-2 text-[10px] tracking-[0.15em] uppercase font-mono",
+                    :class => "flex items-baseline gap-3",
                     Span(
-                        :class =>
-                            "px-2 py-0.5 rounded bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300",
+                        :class => "bs-numeral text-[1.75rem] leading-none shrink-0",
                         number(slug),
                     ),
-                    [
-                        Span(
-                            :class =>
-                                "px-2 py-0.5 rounded border border-warm-300 dark:border-warm-700 text-warm-600 dark:text-warm-400",
-                            tag,
-                        )
-                        for tag in meta.tags
-                    ]...,
-                ),
-                H3(
-                    :class =>
-                        "no-rule font-serif font-semibold text-xl text-warm-900 dark:text-warm-100 leading-snug group-hover:text-accent-600 dark:group-hover:text-accent-400 transition-colors",
-                    meta.title,
+                    H3(:class => "bs-tile-title bs-title text-[1.625rem]", meta.title),
                 ),
                 P(
-                    :class =>
-                        "text-sm text-warm-600 dark:text-warm-400 leading-relaxed flex-1",
+                    :class => "bs-body text-[1.0625rem]" * (wide ? "" : " flex-1"),
                     meta.summary,
                 ),
                 Div(
-                    :class =>
-                        "pt-2 text-xs font-mono text-warm-500 group-hover:text-accent-600 dark:group-hover:text-accent-400 transition-colors",
-                    live ? "Open notebook →" : "Not rendered yet",
+                    :class => "flex flex-wrap items-center gap-1.5 pt-1",
+                    [
+                        Span(:class => "bs-pill bs-pill-xs bs-pill-static", tag)
+                        for tag in meta.tags
+                    ]...,
+                ),
+                Div(
+                    :class => "bs-tile-more pt-1",
+                    live ? "Open Notebook →" : "Not Rendered Yet",
                 ),
             ),
-        ))
+        )
+        style = "animation-delay:$(min(60 * (k - 1), 360))ms"
+        # not rendered yet: no page to open, so the card is not a link
+        return live ?
+            A(
+                :href => "$(BASE)/examples/$(slug)/",
+                :class =>
+                    "bs-tile bs-enter h-full" * (wide ? " md:col-span-2 md:flex-row" : ""),
+                :style => style,
+                children...,
+            ) :
+            Div(
+                :class =>
+                    "bs-tile bs-tile-off bs-enter h-full" *
+                        (wide ? " md:col-span-2 md:flex-row" : ""),
+                :style => style,
+                children...,
+            )
     end
 
     () -> begin
@@ -387,94 +385,87 @@ let BASE = get(ENV, "BASISSIM_BASE", ""),
         groups = filter(g -> !isempty(g[4]), groups)
 
         Div(
-            :class => "max-w-5xl mx-auto space-y-14",
+            :class => "space-y-16 sm:space-y-20",
             Div(
-                :class => "space-y-4",
-                Div(
-                    :class =>
-                        "text-[10px] tracking-[0.2em] uppercase font-mono text-warm-500",
-                    RawHtml(
-                        """<span style="color:var(--color-accent-500)">●</span>&nbsp; $(length(present)) Pluto notebooks""",
-                    ),
-                ),
-                H1(
-                    :class =>
-                        "no-rule font-serif font-medium text-warm-900 dark:text-warm-100 text-4xl md:text-5xl leading-[1.05] tracking-tight",
-                    "Examples",
-                ),
-                P(
-                    :class =>
-                        "max-w-2xl text-warm-600 dark:text-warm-400 leading-relaxed text-base",
+                :class => "space-y-7",
+                PageHeader(
+                    "$(length(present)) Pluto notebooks",
+                    ("Examples, ", Span(:class => "bs-flourish", "worked in full.")),
                     "Complete studies, each run end to end (on a GPU; the detector-physics notebooks on CPU workers): ",
-                    "the code, the prose and every figure, rendered ",
-                    "in place. Each page links to the notebook's source, which opens in Pluto.",
+                    "the code, the prose and every figure, rendered in place. Each page links to the notebook's source, ",
+                    "which opens in Pluto.",
                 ),
                 # One row of section links per package: BasisSimulator.jl's notebooks, then BasisMonteCarlo.jl's
-                [
-                    Div(
-                        :class => "flex flex-wrap items-center gap-2 pt-2",
-                        Span(
-                            :class =>
-                                "w-44 text-[10px] tracking-[0.15em] uppercase font-mono text-warm-500",
-                            package,
-                        ),
-                        [
-                            A(
-                                :href => "#$(id)",
+                Div(
+                    :class => "space-y-3 pt-2",
+                    [
+                        Div(
+                            :class => "flex flex-wrap items-center gap-2",
+                            Span(
                                 :class =>
-                                    "px-3 py-1 rounded-full border border-warm-300 dark:border-warm-700 text-xs text-warm-700 dark:text-warm-300 hover:border-accent-400 hover:text-accent-600 dark:hover:text-accent-400 no-underline transition-colors",
-                                "$(t) · $(length(slugs))",
-                            )
-                            for (id, t, _, slugs) in rows
-                        ]...,
-                    )
-                    for (package, rows) in (
-                        (
-                            "BasisSimulator.jl",
-                            [g for g in groups if !all(startswith("mc-"), g[4])],
-                        ),
-                        (
-                            "BasisMonteCarlo.jl",
-                            [g for g in groups if all(startswith("mc-"), g[4])],
-                        ),
-                    )
-                    if !isempty(rows)
-                ]...,
+                                    "bs-eyebrow text-[0.6875rem] w-full sm:w-44 shrink-0",
+                                package,
+                            ),
+                            [
+                                A(
+                                    :href => "#$(id)",
+                                    :class => "bs-pill bs-pill-sm",
+                                    t,
+                                    Span(:class => "bs-numeral", string(length(slugs))),
+                                )
+                                for (id, t, _, slugs) in rows
+                            ]...,
+                        )
+                        for (package, rows) in (
+                            (
+                                "BasisSimulator.jl",
+                                [g for g in groups if !all(startswith("mc-"), g[4])],
+                            ),
+                            (
+                                "BasisMonteCarlo.jl",
+                                [g for g in groups if all(startswith("mc-"), g[4])],
+                            ),
+                        )
+                        if !isempty(rows)
+                    ]...,
+                ),
             ),
             if isempty(groups)
                 Div(
-                    :class =>
-                        "py-16 border border-dashed border-warm-300 dark:border-warm-700 rounded-xl text-center",
+                    :class => "bs-island py-16 text-center",
                     P(
-                        :class => "text-warm-500 text-sm",
+                        :class => "bs-body",
                         "No notebooks yet. Drop a .jl in ",
-                        Code(
-                            :class => "font-mono text-accent-600 dark:text-accent-400",
-                            "docs/notebooks/",
-                        ),
+                        Code(:class => "bs-code", "docs/notebooks/"),
                         " and rebuild.",
                     ),
                 )
             else
                 Div(
-                    :class => "space-y-16",
+                    :class => "space-y-20 sm:space-y-24",
                     [
                         Section(
                             :id => id,
-                            :class => "space-y-6 scroll-mt-24",
+                            :class => "space-y-8 scroll-mt-28",
                             Div(
-                                :class =>
-                                    "flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-b border-warm-200 dark:border-warm-800 pb-3",
-                                H2(
-                                    :class =>
-                                        "no-rule font-serif text-2xl md:text-3xl text-warm-900 dark:text-warm-100",
-                                    t,
+                                :class => "max-w-3xl space-y-3",
+                                P(
+                                    :class => "bs-eyebrow text-[0.6875rem]",
+                                    all(startswith("mc-"), slugs) ?
+                                        "BasisMonteCarlo.jl" :
+                                        "BasisSimulator.jl",
                                 ),
-                                P(:class => "text-sm text-warm-500 dark:text-warm-400", d),
+                                H2(:class => "bs-display text-4xl sm:text-5xl", t),
+                                isempty(d) ?
+                                    Fragment() :
+                                    P(:class => "bs-body text-[1.1875rem]", d),
                             ),
                             Div(
-                                :class => "grid grid-cols-1 md:grid-cols-2 gap-6",
-                                [notebook_card(s) for s in slugs]...,
+                                :class => "grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6",
+                                [
+                                    notebook_card(s, k; wide = length(slugs) == 1)
+                                    for (k, s) in enumerate(slugs)
+                                ]...,
                             ),
                         )
                         for (id, t, d, slugs) in groups

@@ -404,11 +404,12 @@ the compute backend from the mask's array type):
 
 ```julia
 p = load_xcat_female_slab()                                     # auto-download → pieces
-phantom = Phantom(p.mask, p.materials, p.voxel_size_cm)          # CPU
-phantom = Phantom(to_gpu(p.mask), p.materials, p.voxel_size_cm)  # GPU
+phantom = Phantom(p.mask, p.materials, p.voxel_size_cm)         # CPU
+phantom = Phantom(to_gpu(p.mask), p.materials, p.voxel_size_cm) # GPU
 
 # customize materials up front, by XCIST name …
-mats = xcat_default_materials(); mats["ncat_blood"] = XA.Materials.wholeblood
+mats = xcat_default_materials()
+mats["ncat_blood"] = XA.Materials.wholeblood
 p = load_xcat_female_slab(; materials = mats, downsample = 6)
 # … or edit the returned label-keyed dict before building:
 p.materials[7] = XA.Materials.wholeblood

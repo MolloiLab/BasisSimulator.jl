@@ -17,29 +17,22 @@ include(joinpath(@__DIR__, "..", "..", "api_sections.jl"))
 const _API_GITHUB_SRC = "https://github.com/MolloiLab/BasisSimulator.jl/blob/v$(pkgversion(BasisSimulator))/src"
 
 # ── classes ───────────────────────────────────────────────────────────────────────────────────
-# Written out in full here so Tailwind (which scans docs/src/**/*.jl) generates them.
+# A docstring's elements are styled by their container (`.bs-api-doc`, `.bs-api-intro` in input.css), so
+# most tags get no class of their own; signatures and code listings get the dark slab.
 const _API_CLS = Dict(
-    "p" => "text-sm text-warm-700 dark:text-warm-300 leading-relaxed my-2",
-    "code" =>
-        "font-mono text-[0.8em] px-1 py-0.5 rounded bg-warm-200/70 dark:bg-warm-800/70 text-accent-700 dark:text-accent-300",
-    "pre" =>
-        "my-3 bg-warm-900 dark:bg-warm-950 text-warm-200 p-3 rounded-lg text-xs font-mono overflow-x-auto",
-    "sig" =>
-        "bg-warm-900 dark:bg-warm-950 text-warm-100 px-3 py-2 rounded-lg text-xs font-mono overflow-x-auto whitespace-pre",
-    "ul" => "list-disc pl-5 my-2 space-y-1 text-sm text-warm-700 dark:text-warm-300",
-    "ol" => "list-decimal pl-5 my-2 space-y-1 text-sm text-warm-700 dark:text-warm-300",
-    "h" =>
-        "no-rule text-xs font-semibold uppercase tracking-wider text-warm-500 dark:text-warm-400 mt-4 mb-1",
-    "table" => "w-full text-xs text-left border-collapse my-3",
-    "th" =>
-        "py-1.5 pr-4 font-mono text-warm-700 dark:text-warm-300 border-b border-warm-200 dark:border-warm-800 align-top",
-    "td" =>
-        "py-1.5 pr-4 text-warm-600 dark:text-warm-400 border-b border-warm-100 dark:border-warm-900 align-top",
-    "blockquote" =>
-        "border-l-2 border-accent-300 dark:border-accent-700 pl-3 my-2 text-warm-600 dark:text-warm-400",
-    "a" => "text-accent-600 dark:text-accent-400 hover:underline",
-    "admonition" =>
-        "my-3 rounded-lg border border-accent-200 dark:border-accent-900 bg-accent-50/60 dark:bg-accent-950/30 px-3 py-1",
+    "p" => "",
+    "code" => "",
+    "pre" => "",
+    "sig" => "bs-api-sig",
+    "ul" => "",
+    "ol" => "",
+    "h" => "",
+    "table" => "",
+    "th" => "",
+    "td" => "",
+    "blockquote" => "",
+    "a" => "",
+    "admonition" => "",
 )
 
 _api_esc(s) = replace(
@@ -107,7 +100,11 @@ function _api_style_html(html::AbstractString, onpage::Set{String})
     )
 end
 
-_api_md_html(md, onpage) = _api_style_html(Markdown.html(md), onpage)
+_api_md_html(md, onpage) = replace(
+    _api_style_html(Markdown.html(md), onpage),
+    r" class=\"\s*\"" => "",
+    "class=\" admonition" => "class=\"admonition",
+)
 
 # ── collecting the docstrings ─────────────────────────────────────────────────────────────────
 
@@ -259,7 +256,7 @@ _api_srcurl(path, line) = "$(_API_GITHUB_SRC)/$(path)" * (line > 0 ? "#L$(line)"
 
 function _api_source_link(path, line)
     path === nothing && return ""
-    """<a href="$(_api_esc(_api_srcurl(path, line)))" target="_blank" rel="noopener" title="src/$(_api_esc(path))$(line > 0 ? ":$line" : "") on GitHub" class="shrink-0 inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-warm-500 dark:text-warm-500 hover:text-accent-600 dark:hover:text-accent-400 no-underline transition-colors">source ↗</a>"""
+    """<a href="$(_api_esc(_api_srcurl(path, line)))" target="_blank" rel="noopener" title="src/$(_api_esc(path))$(line > 0 ? ":$line" : "") on GitHub" class="bs-api-src">Source ↗</a>"""
 end
 
 _api_sig_html(
@@ -271,13 +268,13 @@ function _api_entry_html(e)
     id = _api_esc(e.name)
     print(
         io,
-        """<article id="$id" data-api-entry="$(_api_esc(lowercase(e.name)))" class="scroll-mt-12 border border-warm-200 dark:border-warm-800 rounded-xl p-4 sm:p-5 bg-warm-50 dark:bg-warm-900/40 space-y-3">""",
+        """<article id="$id" data-api-entry="$(_api_esc(lowercase(e.name)))" class="bs-api-entry">""",
     )
     print(
         io,
-        """<header class="flex flex-wrap items-center gap-x-3 gap-y-1">""",
-        """<a href="#$id" class="font-mono font-semibold text-[15px] text-warm-900 dark:text-warm-100 hover:text-accent-600 dark:hover:text-accent-400 no-underline break-all">$id</a>""",
-        """<span class="text-[10px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded border border-warm-300 dark:border-warm-700 text-warm-500 dark:text-warm-400">$(_api_esc(e.kind))</span>""",
+        """<header class="bs-api-head">""",
+        """<a href="#$id" class="bs-api-name">$id</a>""",
+        """<span class="bs-api-kind">$(_api_esc(e.kind))</span>""",
         """<span class="flex-1"></span>""",
     )
     length(e.docs) == 1 && print(io, _api_source_link(e.path, e.line))
@@ -286,11 +283,11 @@ function _api_entry_html(e)
         print(
             io,
             _api_sig_html(e.fallback),
-            """<p class="text-sm italic text-warm-500">No docstring yet.</p>""",
+            """<p class="bs-api-missing">No docstring yet.</p>""",
         )
     end
     for (i, d) in enumerate(e.docs)
-        i > 1 && print(io, """<hr class="border-warm-200 dark:border-warm-800">""")
+        i > 1 && print(io, """<hr class="bs-api-rule">""")
         length(e.docs) > 1 &&
             print(
                 io,
@@ -299,7 +296,7 @@ function _api_entry_html(e)
                 "</div>",
             )
         print(io, _api_sig_html(something(d.sig, e.fallback)))
-        print(io, """<div class="api-doc">""", d.body, "</div>")
+        print(io, """<div class="bs-api-doc">""", d.body, "</div>")
     end
     print(io, "</article>")
     String(take!(io))
@@ -309,15 +306,16 @@ function _api_section_html(sec, entries, onpage)
     io = IOBuffer()
     print(
         io,
-        """<div class="space-y-4">""",
+        """<div class="space-y-4"><div class="bs-api-intro">""",
         _api_md_html(Markdown.parse(sec.intro), onpage),
+        "</div>",
     )
     if !isempty(entries)
         print(io, """<div class="flex flex-wrap gap-1.5 pt-1">""")
         for e in entries
             print(
                 io,
-                """<a href="#$(_api_esc(e.name))" data-api-chip="$(_api_esc(lowercase(e.name)))" class="font-mono text-[11px] px-2 py-0.5 rounded-full border border-warm-300 dark:border-warm-700 text-warm-600 dark:text-warm-400 hover:border-accent-400 hover:text-accent-600 dark:hover:text-accent-400 no-underline transition-colors">$(_api_esc(e.name))</a>""",
+                """<a href="#$(_api_esc(e.name))" data-api-chip="$(_api_esc(lowercase(e.name)))" class="bs-api-chip">$(_api_esc(e.name))</a>""",
             )
         end
         print(io, "</div>")
@@ -326,10 +324,7 @@ function _api_section_html(sec, entries, onpage)
             if !isequal(e.path, lastpath)
                 lastpath = e.path
                 label = e.path === nothing ? "undocumented" : "src/" * e.path
-                print(
-                    io,
-                    """<p data-api-file class="pt-3 text-[10px] font-mono uppercase tracking-[0.18em] text-warm-400 dark:text-warm-500">$(_api_esc(label))</p>""",
-                )
+                print(io, """<p data-api-file class="bs-api-file">$(_api_esc(label))</p>""")
             end
             print(io, _api_entry_html(e))
         end
@@ -376,38 +371,27 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
         PageWithTOC(
             toc,
             Div(
-                :class => "max-w-3xl mx-auto space-y-10",
-                Div(
-                    :class => "space-y-4",
-                    H1(
-                        :class =>
-                            "text-3xl font-serif font-bold text-warm-900 dark:text-warm-100",
-                        "API Reference",
-                    ),
-                    P(
-                        :class => "text-warm-600 dark:text-warm-400 leading-relaxed",
-                        "Every exported name of BasisSimulator.jl, generated from its docstrings at build time. ",
-                        "The core surface is five structs, two entry points (",
-                        Code(:class => "text-accent-500 font-mono", "simulate!"),
-                        " and ",
-                        Code(:class => "text-accent-500 font-mono", "reconstruct!"),
-                        "), and helpers grouped by workflow stage. The ",
-                        A(
-                            :href => "$(BASE)/examples/",
-                            :class =>
-                                "text-accent-600 dark:text-accent-400 hover:underline",
-                            "worked examples",
-                        ),
-                        " show them in real pipelines.",
-                    ),
+                :class => "space-y-10 sm:space-y-12",
+                PageHeader(
+                    "Generated from the docstrings",
+                    ("API ", Span(:class => "bs-flourish", "Reference")),
+                    "Every exported name of BasisSimulator.jl. The core surface is five structs, two entry points (",
+                    Code(:class => "bs-code", "simulate!"),
+                    " and ",
+                    Code(:class => "bs-code", "reconstruct!"),
+                    "), and helpers grouped by workflow stage. The ",
+                    A(:href => "$(BASE)/examples/", :class => "bs-link", "worked examples"),
+                    " show them in real pipelines.",
                 ),
-                # The filter bar is a direct child of the page column so it stays pinned under the
-                # nav bar for the whole page (a sticky element only sticks within its parent).
+                # The filter bar is a direct child of the page column so it stays pinned under the nav for the whole
+                # page (a sticky element only sticks within its parent).
                 Div(
-                    :class =>
-                        "sticky top-16 z-30 -mx-3 sm:mx-0 px-3 sm:px-0 py-2 bg-warm-100/90 dark:bg-warm-950/90 backdrop-blur",
+                    :class => "bs-search-bar max-w-4xl",
                     Div(
-                        :class => "flex items-center gap-3",
+                        :class => "relative",
+                        RawHtml(
+                            """<svg class="bs-search-icon w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>""",
+                        ),
                         Input(
                             :id => "api-filter",
                             :type => "search",
@@ -415,13 +399,11 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                             :autocomplete => "off",
                             :spellcheck => "false",
                             Symbol("aria-label") => "Filter the API reference by name",
-                            :class =>
-                                "w-full rounded-lg border border-warm-300 dark:border-warm-700 bg-warm-50 dark:bg-warm-900 px-3 py-2 text-sm font-mono text-warm-800 dark:text-warm-200 placeholder:text-warm-400 focus:outline-none focus:ring-2 focus:ring-accent-400",
+                            :class => "bs-search",
                         ),
                         Span(
                             :id => "api-filter-count",
-                            :class =>
-                                "shrink-0 text-xs font-mono text-warm-500 dark:text-warm-400",
+                            :class => "bs-search-count",
                             "$(length(entries)) exported names",
                         ),
                     ),
@@ -429,13 +411,9 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 [
                     Section(
                         :id => s.id,
-                        :class => "space-y-4 scroll-mt-12",
+                        :class => "max-w-4xl space-y-5 scroll-mt-40",
                         Symbol("data-api-section") => s.id,
-                        H2(
-                            :class =>
-                                "text-2xl font-semibold text-warm-800 dark:text-warm-200",
-                            s.title,
-                        ),
+                        H2(:class => "bs-h2", s.title),
                         RawHtml(_api_section_html(s, get(by_section, s.id, []), onpage)),
                     )
                     for s in shown

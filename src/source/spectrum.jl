@@ -71,7 +71,7 @@ Load a pre-computed X-ray spectrum from .dat file.
 # Example
 ```julia
 energies, weights = load_spectrum(120)
-energies, weights = load_spectrum(120; target_angle=10.0)
+energies, weights = load_spectrum(120; target_angle = 10.0)
 ```
 """
 function load_spectrum(
@@ -159,7 +159,7 @@ This is important for memory efficiency in polychromatic projection.
 
 # Example
 ```julia
-energies, weights = load_spectrum(120)  # 240 bins
+energies, weights = load_spectrum(120) # 240 bins
 energies_ds, weights_ds = downsample_spectrum(energies, weights, 24)
 ```
 """

@@ -424,25 +424,26 @@ No code changes needed - just pass appropriate array types.
 
 ```julia
 using BasisSimulator
-using Metal  # or: using CUDA
+using Metal # or: using CUDA
 
 # Create geometry for GE Revolution Apex-like scanner
 scanner = GERevolutionApex()
-geom = CTGeometry(scanner; n_angles=360, fov=(350.0, 350.0, 40.0))
+geom = CTGeometry(scanner; n_angles = 360, fov = (350.0, 350.0, 40.0))
 
 # Create a simple water cylinder phantom
 phantom = zeros(Float32, 256, 256, 64)
 for i in 1:256, j in 1:256, k in 1:64
-    x, y = (i - 128.5) * 1.37, (j - 128.5) * 1.37  # mm from center
-    if x^2 + y^2 < 100^2  # 100mm radius cylinder
-        phantom[i, j, k] = 0.02f0  # μ_water ≈ 0.02 mm⁻¹ at 60 keV
+    x, y = (i - 128.5) * 1.37, (j - 128.5) * 1.37 # mm from center
+    if x^2 + y^2 < 100^2
+        # 100mm radius cylinder
+        phantom[i, j, k] = 0.02f0 # μ_water ≈ 0.02 mm⁻¹ at 60 keV
     end
 end
 
 # GPU forward projection
-phantom_gpu = MtlArray(phantom)  # or CuArray
+phantom_gpu = MtlArray(phantom) # or CuArray
 sinogram_gpu = similar(phantom_gpu, Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-fill!(sinogram_gpu, 0f0)
+fill!(sinogram_gpu, 0.0f0)
 
 siddon_forward_project!(sinogram_gpu, phantom_gpu, geom)
 
@@ -658,13 +659,13 @@ The returned sinogram is allocated on the same device as the input volume:
 
 ```julia
 # CPU version
-sinogram = siddon_forward_project(Array(phantom), geom)  # returns Array
+sinogram = siddon_forward_project(Array(phantom), geom) # returns Array
 
 # GPU version (Metal)
-sinogram = siddon_forward_project(MtlArray(phantom), geom)  # returns MtlArray
+sinogram = siddon_forward_project(MtlArray(phantom), geom) # returns MtlArray
 
 # GPU version (CUDA)
-sinogram = siddon_forward_project(CuArray(phantom), geom)  # returns CuArray
+sinogram = siddon_forward_project(CuArray(phantom), geom) # returns CuArray
 ```
 
 # Example
@@ -674,7 +675,7 @@ using BasisSimulator
 
 # Create scanner and geometry
 scanner = GERevolutionApex()
-geom = CTGeometry(scanner; n_angles=180, fov=(300.0, 300.0, 32.0))
+geom = CTGeometry(scanner; n_angles = 180, fov = (300.0, 300.0, 32.0))
 
 # Create uniform water phantom (μ ≈ 0.02 mm⁻¹)
 phantom = fill(0.02f0, 128, 128, 32)

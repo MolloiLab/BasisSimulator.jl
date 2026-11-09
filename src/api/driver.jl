@@ -192,7 +192,12 @@ before the other two corrections, it would leave each dexel S·(1 − 1/g) of it
 to 8 HU on the NAEOTOM Alpha's Gammex 472.
 
 ```julia
-calibration = calibrate(NAEOTOM_ALPHA, protocol, recon_opts, phantom)   # once per scanner and protocol
+calibration = calibrate(
+    NAEOTOM_ALPHA,
+    protocol,
+    recon_opts,
+    phantom,
+) # once per scanner and protocol
 ws = create_workspace(NAEOTOM_ALPHA, protocol, sim_opts, recon_opts, phantom; calibration)
 result = simulate!(ws, phantom, protocol, sim_opts)
 ```
@@ -1048,12 +1053,16 @@ simulate! applied.
 # Example
 ```julia
 e_L, ŵ_L = BS.resolve_source_spectrum_full(
-    sim_opts, protocol_low;
-    scanner = scanner, geom = sim_low.geom,
+    sim_opts,
+    protocol_low;
+    scanner = scanner,
+    geom = sim_low.geom,
 )
 e_H, ŵ_H = BS.resolve_source_spectrum_full(
-    sim_opts, protocol_high;
-    scanner = scanner, geom = sim_high.geom,
+    sim_opts,
+    protocol_high;
+    scanner = scanner,
+    geom = sim_high.geom,
 )
 material_basis = (ŵ_L = ŵ_L, p_L = …, q_L = …, ŵ_H = ŵ_H, p_H = …, q_H = …)
 ```
@@ -1863,8 +1872,9 @@ it to [`simulate!`](@ref) as `paths` and each further acquisition costs the spec
 alone, bit-identically.
 
 ```julia
-paths = material_paths(ws_120, phantom)              # one walk
-for (kvp, ws) in workspaces                          # 80, 100, 120, 140 kVp
+paths = material_paths(ws_120, phantom) # one walk
+for (kvp, ws) in workspaces
+    # 80, 100, 120, 140 kVp
     simulate!(ws, phantom, protocols[kvp], sim_opts; paths)
 end
 ```

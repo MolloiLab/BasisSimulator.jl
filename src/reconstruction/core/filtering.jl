@@ -96,8 +96,7 @@ using the same CatSim-style mechanism as `StandardFilter`, `SoftFilter`, and `Bo
 # Example
 ```julia
 # Soft-tissue–optimised apodization
-f = CustomFilter((0.0, 0.25, 0.5, 0.75, 1.0),
-                 (1.0, 0.82, 0.54, 0.26, 0.001))
+f = CustomFilter((0.0, 0.25, 0.5, 0.75, 1.0), (1.0, 0.82, 0.54, 0.26, 0.001))
 ws = create_fdk_recon_workspace(sino, geom, recon_size; filter = f)
 ```
 """
@@ -424,7 +423,7 @@ The filtered sinogram (modified in place)
 
 # Example
 ```julia
-filter_sinogram!(sinogram, geom; filter=SheppLoganFilter(), cutoff=0.8)
+filter_sinogram!(sinogram, geom; filter = SheppLoganFilter(), cutoff = 0.8)
 ```
 """
 function filter_sinogram!(
@@ -526,7 +525,7 @@ New filtered sinogram
 
 # Example
 ```julia
-filtered = filter_sinogram(sinogram, geom; filter=StandardFilter())
+filtered = filter_sinogram(sinogram, geom; filter = StandardFilter())
 ```
 """
 function filter_sinogram(

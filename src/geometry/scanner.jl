@@ -832,15 +832,15 @@ scanner = EICTScanner(
     source_to_isocenter = 541.0,
     source_to_detector = 949.0,
     detector_rows = 64,
-    detector_cols = 900
+    detector_cols = 900,
 )
-geom = CTGeometry(scanner; n_angles=360, fov_cm=35.0)
+geom = CTGeometry(scanner; n_angles = 360, fov_cm = 35.0)
 
 # Or with reduced detector for fast testing
-geom_fast = CTGeometry(scanner; n_angles=90, n_rows=16, n_cols=128, fov_cm=35.0)
+geom_fast = CTGeometry(scanner; n_angles = 90, n_rows = 16, n_cols = 128, fov_cm = 35.0)
 
 # With collimation (derives n_rows automatically)
-geom_coll = CTGeometry(scanner; n_angles=360, collimation_mm=80.0)
+geom_coll = CTGeometry(scanner; n_angles = 360, collimation_mm = 80.0)
 ```
 """
 function CTGeometry(

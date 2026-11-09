@@ -30,7 +30,7 @@ The transform encodes:
 ```julia
 A = phantom_to_world_affine(phantom)
 # World coordinate of voxel (0,0,0):
-world = A * [0, 0, 0, 1]  # == [origin_x, origin_y, origin_z, 1]
+world = A * [0, 0, 0, 1] # == [origin_x, origin_y, origin_z, 1]
 ```
 """
 function phantom_to_world_affine(phantom::Phantom)
@@ -53,7 +53,7 @@ The reconstruction grid is centered at isocenter with voxel size `geom.fov ./ ma
 ```julia
 A = recon_to_world_affine(geom, (512, 512, 64))
 # World coordinate of first voxel:
-world = A * [0, 0, 0, 1]  # == [-fov_x/2 + vx/2, -fov_y/2 + vy/2, -fov_z/2 + vz/2, 1]
+world = A * [0, 0, 0, 1] # == [-fov_x/2 + vx/2, -fov_y/2 + vy/2, -fov_z/2 + vz/2, 1]
 ```
 """
 function recon_to_world_affine(geom::CTGeometry, matrix_size)

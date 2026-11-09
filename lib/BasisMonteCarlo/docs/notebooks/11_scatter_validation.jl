@@ -70,16 +70,16 @@ workers = MC.start_workers(8)
 # One colour per kind of particle, used by every figure
 PALETTE = (
     photon = Mke.RGBf(0.13, 0.36, 0.66),  # the incident photon
-    xray = Mke.RGBf(0.9, 0.45, 0.05),     # characteristic x rays
-    electron = Mke.RGBf(0.7, 0.12, 0.17), # electrons, and the light they make
-    kept = Mke.RGBf(0.27, 0.55, 0.34),    # the signal
+    xray = Mke.RGBf(0.9, 0.45, 0.05),  # characteristic x rays
+    electron = Mke.RGBf(0.7, 0.12, 0.17),  # electrons, and the light they make
+    kept = Mke.RGBf(0.27, 0.55, 0.34),  # the signal
     slab = Mke.RGBAf(0.45, 0.52, 0.62, 0.3),
     slab_edge = Mke.RGBf(0.3, 0.36, 0.44),
     reflector = Mke.RGBf(0.85, 0.83, 0.7),
     ceramic = Mke.RGBf(0.9, 0.92, 0.95),
     ceramic_hit = Mke.RGBf(0.78, 0.85, 0.95),
     tungsten = Mke.RGBf(0.25, 0.25, 0.3),
-    reference = Mke.RGBf(0.55, 0.2, 0.6), # BasisSimulator v0.15.1's analytic model
+    reference = Mke.RGBf(0.55, 0.2, 0.6),  # BasisSimulator v0.15.1's analytic model
     ink = Mke.RGBf(0.13, 0.13, 0.16),
     muted = Mke.RGBf(0.42, 0.42, 0.46),
 )
@@ -114,8 +114,15 @@ THEME = Mke.Theme(
         yticklabelsize = 15,
         zticklabelsize = 15,
     ),
-    Legend = (labelsize = 17, framevisible = false, patchsize = (30, 14), rowgap = 8),
-    Lines = (linewidth = 2.5,),
+    Legend = (
+        labelsize = 17,
+        framevisible = false,
+        patchsize = (30, 14),
+        rowgap = 8,
+    ),
+    Lines = (
+        linewidth = 2.5,
+    ),
 )
 
 # ╔═╡ 5cfb96aa-3d6a-509a-bc47-89f3c7dafa85
@@ -123,16 +130,16 @@ THEME = Mke.Theme(
 An in-figure annotation on a translucent rounded background, so it never fights the data.
 """
 function note!(
-    ax,
-    x,
-    y,
-    text;
-    align = (:left, :center),
-    color = PALETTE.ink,
-    fontsize = 16,
-    offset = (0, 0),
-    alpha = 0.85,
-)
+        ax,
+        x,
+        y,
+        text;
+        align = (:left, :center),
+        color = PALETTE.ink,
+        fontsize = 16,
+        offset = (0, 0),
+        alpha = 0.85,
+    )
     return Mke.textlabel!(
         ax,
         Mke.Point2f(x, y);
@@ -161,9 +168,7 @@ table_dir = joinpath(@__DIR__, "..", "..", "tables");
 library = Serialization.deserialize(joinpath(table_dir, "scatter_library_v2.jls"))
 
 # ╔═╡ 9ae13765-5bf9-5316-9464-18955d2d91df
-Markdown.parse(
-    "**The library's own checks (notebook 10):**\n\n" * library.metadata["scorecard"],
-)
+Markdown.parse("**The library's own checks (notebook 10):**\n\n" * library.metadata["scorecard"])
 
 # ╔═╡ df809b21-81f0-5d9e-971f-942df142a15f
 md"""
@@ -186,35 +191,21 @@ phantoms = let
     gammex_rods = vcat(
         [
             MC.PhantomInsert(;
-                material = MC.DetectorMaterial(m),
-                x_mm = 50.0 * cos(2π * i / 7),
-                y_mm = 50.0 * sin(2π * i / 7),
-                semi_axes_mm = (14.0, 14.0),
-            )
-            for (i, m) in zip(
-                0:6,
-                (
-                    BS.Ca_50,
-                    BS.Ca_100,
-                    BS.Ca_200,
-                    BS.Ca_300,
-                    BS.Ca_400,
-                    BS.Ca_500,
-                    BS.Ca_600,
-                ),
-            )
+                    material = MC.DetectorMaterial(m),
+                    x_mm = 50.0 * cos(2π * i / 7),
+                    y_mm = 50.0 * sin(2π * i / 7),
+                    semi_axes_mm = (14.0, 14.0),
+                )
+                for (i, m) in zip(0:6, (BS.Ca_50, BS.Ca_100, BS.Ca_200, BS.Ca_300, BS.Ca_400, BS.Ca_500, BS.Ca_600))
         ],
         [
             MC.PhantomInsert(;
-                material = MC.DetectorMaterial(m),
-                x_mm = 105.0 * cos(2π * i / 7 + π / 7),
-                y_mm = 105.0 * sin(2π * i / 7 + π / 7),
-                semi_axes_mm = (14.0, 14.0),
-            )
-            for (i, m) in zip(
-                0:6,
-                (BS.I_2_0, BS.I_2_5, BS.I_5_0, BS.I_7_5, BS.I_10_0, BS.I_15_0, BS.I_20_0),
-            )
+                    material = MC.DetectorMaterial(m),
+                    x_mm = 105.0 * cos(2π * i / 7 + π / 7),
+                    y_mm = 105.0 * sin(2π * i / 7 + π / 7),
+                    semi_axes_mm = (14.0, 14.0),
+                )
+                for (i, m) in zip(0:6, (BS.I_2_0, BS.I_2_5, BS.I_5_0, BS.I_7_5, BS.I_10_0, BS.I_15_0, BS.I_20_0))
         ],
     )
     [
@@ -318,9 +309,7 @@ let
             strokewidth = 2,
         )
         for insert in p.inserts
-            color = insert.material.density < 0.5 ?
-                (PALETTE.muted, 0.25) :
-                (PALETTE.xray, 0.6)
+            color = insert.material.density < 0.5 ? (PALETTE.muted, 0.25) : (PALETTE.xray, 0.6)
             Mke.poly!(
                 ax,
                 ellipse(p.centre_mm .+ (insert.x_mm, insert.y_mm), insert.semi_axes_mm);
@@ -420,14 +409,7 @@ attenuation = MC.forced_attenuation(
         m -> m.name,
         vcat(
             MC.DetectorMaterial(:Water),
-            [
-                m
-                for case in phantoms
-                for m in vcat(
-                    case.phantom.material,
-                    [i.material for i in case.phantom.inserts],
-                )
-            ],
+            [m for case in phantoms for m in vcat(case.phantom.material, [i.material for i in case.phantom.inserts])],
         ),
     );
     physics,
@@ -438,49 +420,31 @@ attenuation = MC.forced_attenuation(
 # water: from the library's own profile of the angles its kernels' scatter arrived at
 angular = Dict(
     s.name => MC.angular_factors(
-        [
-            MC.DetectorMaterial(:Water)
-            [
-                m
-                for case in phantoms
-                for m in vcat(
-                    case.phantom.material,
-                    [i.material for i in case.phantom.inserts],
-                )
-            ]
-        ],
-        library.angles[s.name],
-        library.energies_keV,
-    )
-    for s in library.scanners
+            [MC.DetectorMaterial(:Water); [m for case in phantoms for m in vcat(case.phantom.material, [i.material for i in case.phantom.inserts])]],
+            library.angles[s.name],
+            library.energies_keV,
+        )
+        for s in library.scanners
 )
 
 # ╔═╡ 56dcfda7-4d44-5201-8424-15fbdc7859cc
 # Every photon of the fan beam: 32 independent chunks of 1.5 million per case
 direct_chunks = [
     let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
-        beam = MC.FocalSpot(;
-            distance_mm = s.source_to_isocenter_mm,
-            fan_deg = s.fan_deg,
-            z_half_mm = 20.0,
-        )
-        chunks = MC.simulate_sweep(
-            [
-                (
-                    at_isocenter(case.phantom.phantom, s),
-                    MC.Spectrum(spectrum...),
-                    9000 + 100j + chunk,
-                    beam,
-                )
-                for chunk in 1:32
-            ];
-            n = 1_500_000,
-            physics,
-            readout = MC.ForcedScatterReadout([s]; attenuation),
-        )
-        [only(chunk) for chunk in chunks]
+            beam = MC.FocalSpot(;
+                distance_mm = s.source_to_isocenter_mm,
+                fan_deg = s.fan_deg,
+                z_half_mm = 20.0,
+            )
+            chunks = MC.simulate_sweep(
+                [(at_isocenter(case.phantom.phantom, s), MC.Spectrum(spectrum...), 9000 + 100j + chunk, beam) for chunk in 1:32];
+                n = 1_500_000,
+                physics,
+                readout = MC.ForcedScatterReadout([s]; attenuation),
+            )
+            [only(chunk) for chunk in chunks]
     end
-    for (j, case) in enumerate(cases)
+        for (j, case) in enumerate(cases)
 ]
 
 
@@ -493,53 +457,43 @@ direct = [reduce(+, chunks) for chunks in direct_chunks]
 # Rayleigh scattering against water's
 projections = [
     let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
-        p = at_isocenter(case.phantom.phantom, s)
-        cols = MC.column_edges(s)
-        function ray(γ, width_deg)
-            d = (sind(γ), cosd(γ))
-            wet = MC.water_equivalent_length(p, (0.0, 0.0), d)
-            r = MC.process_ratios(
-                p,
-                (0.0, 0.0),
-                d,
-                attenuation,
-                wet;
-                angular = angular[s.name],
-            )
-            return (
-                angle_deg = γ,
-                wet_mm = wet,
-                outline_mm = MC.ellipse_chord((0.0, 0.0), d, p.centre_mm, p.semi_axes_mm),
-                weight = abs(γ) <= s.fan_deg / 2 ? width_deg / s.fan_deg : 0.0,
-                compton_ratio = r.compton,
-                rayleigh_ratio = r.rayleigh,
-                rayleigh_forward_ratio = r.rayleigh_forward,
-                delta_mu_per_mm = r.delta_mu_per_mm,
-            )
+            p = at_isocenter(case.phantom.phantom, s)
+            cols = MC.column_edges(s)
+            function ray(γ, width_deg)
+                d = (sind(γ), cosd(γ))
+                wet = MC.water_equivalent_length(p, (0.0, 0.0), d)
+                r = MC.process_ratios(p, (0.0, 0.0), d, attenuation, wet; angular = angular[s.name])
+                return (
+                    angle_deg = γ,
+                    wet_mm = wet,
+                    outline_mm = MC.ellipse_chord((0.0, 0.0), d, p.centre_mm, p.semi_axes_mm),
+                    weight = abs(γ) <= s.fan_deg / 2 ? width_deg / s.fan_deg : 0.0,
+                    compton_ratio = r.compton,
+                    rayleigh_ratio = r.rayleigh,
+                    rayleigh_forward_ratio = r.rayleigh_forward,
+                    delta_mu_per_mm = r.delta_mu_per_mm,
+                )
         end
-        (
-            rays = [
-                ray(γ, s.column_bin_deg)
-                for γ in (cols[1:(end - 1)] .+ cols[2:end]) ./ 2
-            ],
-            fine_rays = [ray(γ, 0.1) for γ in (cols[1] + 0.05):0.1:cols[end]],
-            wed_mm = MC.water_equivalent_diameter(p; fan_deg = s.fan_deg),
-        )
+            (
+                rays = [ray(γ, s.column_bin_deg) for γ in (cols[1:(end - 1)] .+ cols[2:end]) ./ 2],
+                fine_rays = [ray(γ, 0.1) for γ in (cols[1] + 0.05):0.1:cols[end]],
+                wed_mm = MC.water_equivalent_diameter(p; fan_deg = s.fan_deg),
+            )
     end
-    for case in cases
+        for case in cases
 ]
 
 # ╔═╡ a3a2c951-b97d-5e30-aae2-29f934c02655
 predicted = [
     MC.library_scan(
-        library,
-        case.scanner,
-        projections[j].fine_rays;
-        collimation_mm = 40.0,
-        spectrum,
-        view = :mean,
-    )
-    for (j, case) in enumerate(cases)
+            library,
+            case.scanner,
+            projections[j].fine_rays;
+            collimation_mm = 40.0,
+            spectrum,
+            view = :mean,
+        )
+        for (j, case) in enumerate(cases)
 ]
 
 # ╔═╡ 241b138e-6fce-5b2a-a217-71902cdf0f62
@@ -554,20 +508,13 @@ column.
 """
 
 # ╔═╡ f20ef946-92af-51a4-b778-2a29e23e4804
-water_mu = [
-    MC.geant4_attenuation(MC.DetectorMaterial(:Water), Float64(E); physics)
-    for E in 1:150
-]
+water_mu = [MC.geant4_attenuation(MC.DetectorMaterial(:Water), Float64(E); physics) for E in 1:150]
 
 # ╔═╡ 6d28368c-4aae-566f-bdfc-140f80a10b98
 """The fraction of the beam's photons a water-equivalent length lets through, unscattered."""
 function transmission(wet_mm)
     e, w = spectrum
-    return sum(
-        wk * exp(-water_mu[clamp(round(Int, Ek), 1, 150)] * wet_mm)
-        for (Ek, wk) in zip(e, w)
-    ) /
-        sum(w)
+    return sum(wk * exp(-water_mu[clamp(round(Int, Ek), 1, 150)] * wet_mm) for (Ek, wk) in zip(e, w)) / sum(w)
 end
 
 # ╔═╡ a569223d-d467-56fa-9122-3b32a5ca8d8f
@@ -575,24 +522,24 @@ end
 # scatter-to-primary ratio on the central row, column by column
 bs_profiles = [
     let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
-        rays = projections[j].rays
-        sinogram = zeros(Float64, length(rays), 64, 1)
-        for (i, ray) in enumerate(rays)
-            sinogram[i, :, 1] .= -log(transmission(ray.wet_mm))
+            rays = projections[j].rays
+            sinogram = zeros(Float64, length(rays), 64, 1)
+            for (i, ray) in enumerate(rays)
+                sinogram[i, :, 1] .= -log(transmission(ray.wet_mm))
         end
-        e, w = spectrum
-        scatter = MC.basissimulator_v0_15_1_scatter(
-            sinogram;
-            source_to_isocenter_mm = s.source_to_isocenter_mm,
-            source_to_detector_mm = s.source_to_detector_mm,
-            detector_col_size_mm = s.source_to_isocenter_mm * deg2rad(s.column_bin_deg),
-            phantom_diameter_cm = projections[j].wed_mm / 10,
-            energies = e,
-            weights = w,
-        )
-        scatter[:, 32, 1] ./ exp.(-sinogram[:, 32, 1])
+            e, w = spectrum
+            scatter = MC.basissimulator_v0_15_1_scatter(
+                sinogram;
+                source_to_isocenter_mm = s.source_to_isocenter_mm,
+                source_to_detector_mm = s.source_to_detector_mm,
+                detector_col_size_mm = s.source_to_isocenter_mm * deg2rad(s.column_bin_deg),
+                phantom_diameter_cm = projections[j].wed_mm / 10,
+                energies = e,
+                weights = w,
+            )
+            scatter[:, 32, 1] ./ exp.(-sinogram[:, 32, 1])
     end
-    for (j, case) in enumerate(cases)
+        for (j, case) in enumerate(cases)
 ]
 
 # ╔═╡ 3855003e-b0ba-5371-b6a8-dd1c9a31da0e
@@ -609,16 +556,9 @@ function exact_primary(case, s, row_share)
         abs(γ) <= s.fan_deg / 2 || return 0.0
         lengths = MC.material_lengths(p, (0.0, 0.0), (sind(γ), cosd(γ)))
         detected = sum(
-            wk *
-                exp(
-                    -sum(
-                        get!(() -> μ(m), cache, m.name)[clamp(round(Int, Ek), 1, 150)] * L
-                        for (m, L) in lengths
-                    )
-                ) *
-                s.efficiency[clamp(round(Int, Ek), 1, 150)] *
-                Ek
-            for (Ek, wk) in zip(e, weights)
+            wk * exp(-sum(get!(() -> μ(m), cache, m.name)[clamp(round(Int, Ek), 1, 150)] * L for (m, L) in lengths)) *
+                s.efficiency[clamp(round(Int, Ek), 1, 150)] * Ek
+                for (Ek, wk) in zip(e, weights)
         )
         return s.column_bin_deg / s.fan_deg * row_share * detected
     end
@@ -631,41 +571,34 @@ end
 # own noise at the centre
 comparison = [
     let s = library.scanners[findfirst(x -> x.name == case.scanner, library.scanners)]
-    d = direct[j].scatter ./ direct[j].n
-    l = predicted[j].scatter
-    r = (size(d, 2) + 1) ÷ 2
-    width = 40.0 * s.source_to_detector_mm / s.source_to_isocenter_mm
-    primary = exact_primary(case, s, min(s.row_bin_mm, width) / width)
-    # every column whose ray crosses the phantom: the most attenuated rays included
-    inside = findall(
-        i -> projections[j].rays[i].wet_mm > 0 && primary[i] > 0 && d[i, r] > 0,
-        1:size(d, 1),
-    )
-    middle = ((size(d, 1) + 1) ÷ 2 - 1):((size(d, 1) + 1) ÷ 2 + 1)
-    chunk_centres = [sum(k.scatter[middle, r]) / k.n for k in direct_chunks[j]]
-    spr_direct = d[inside, r] ./ primary[inside]
-    spr_library = l[inside, r] ./ primary[inside]
-    spr_bs = bs_profiles[j][inside]
-    rms(a, b) = sqrt(sum(abs2, a ./ b .- 1) / length(b))
-    (
-        centre = abs(sum(l[middle, r]) / sum(d[middle, r]) - 1),
-        direct_noise = std(chunk_centres) /
-            sqrt(length(chunk_centres)) /
-            mean(chunk_centres),
-        library_rms = rms(spr_library, spr_direct),
-        bs_rms = rms(spr_bs, spr_direct),
-        inside = inside,
-        angles = (
+            d = direct[j].scatter ./ direct[j].n
+            l = predicted[j].scatter
+            r = (size(d, 2) + 1) ÷ 2
+            width = 40.0 * s.source_to_detector_mm / s.source_to_isocenter_mm
+            primary = exact_primary(case, s, min(s.row_bin_mm, width) / width)
+            # every column whose ray crosses the phantom: the most attenuated rays included
+            inside = findall(
+                i -> projections[j].rays[i].wet_mm > 0 && primary[i] > 0 && d[i, r] > 0,
+                1:size(d, 1),
+            )
+            middle = ((size(d, 1) + 1) ÷ 2 - 1):((size(d, 1) + 1) ÷ 2 + 1)
+            chunk_centres = [sum(k.scatter[middle, r]) / k.n for k in direct_chunks[j]]
+            spr_direct = d[inside, r] ./ primary[inside]
+            spr_library = l[inside, r] ./ primary[inside]
+            spr_bs = bs_profiles[j][inside]
+            rms(a, b) = sqrt(sum(abs2, a ./ b .- 1) / length(b))
             (
-                direct[j].column_edges_deg[1:(end - 1)] .+ direct[j].column_edges_deg[2:end]
-            ) ./
-                2
-        )[inside],
-        spr_direct = spr_direct,
-        spr_library = spr_library,
-        spr_bs = spr_bs,
-    )
-end
+                centre = abs(sum(l[middle, r]) / sum(d[middle, r]) - 1),
+                direct_noise = std(chunk_centres) / sqrt(length(chunk_centres)) / mean(chunk_centres),
+                library_rms = rms(spr_library, spr_direct),
+                bs_rms = rms(spr_bs, spr_direct),
+                inside = inside,
+                angles = ((direct[j].column_edges_deg[1:(end - 1)] .+ direct[j].column_edges_deg[2:end]) ./ 2)[inside],
+                spr_direct = spr_direct,
+                spr_library = spr_library,
+                spr_bs = spr_bs,
+            )
+    end
         for (j, case) in enumerate(cases)
 ]
 
@@ -719,7 +652,7 @@ end
 let
     rows = [
         "| $(case.phantom.name) | $(case.scanner) | $(round(projections[j].wed_mm / 10; digits = 1)) cm | $(round(100comparison[j].centre; digits = 1)) % | $(round(100comparison[j].library_rms; digits = 1)) % | $(round(100comparison[j].bs_rms; digits = 1)) % |"
-        for (j, case) in enumerate(cases)
+            for (j, case) in enumerate(cases)
     ]
     Markdown.parse(
         """
@@ -728,7 +661,7 @@ let
         $(join(rows, "\n"))
 
         Differences from the direct simulation: the scatter at the centre, and the scatter-to-primary ratio across the fan.
-        """,
+        """
     )
 end
 
@@ -748,41 +681,26 @@ second held out, against the direct simulation under each reading:
 # The library's prediction for every case with lungs under each reading of the view's ellipse
 view_comparison = [
     let d = direct[j].scatter ./ direct[j].n
-        r = (size(d, 2) + 1) ÷ 2
-        middle = ((size(d, 1) + 1) ÷ 2 - 1):((size(d, 1) + 1) ÷ 2 + 1)
-        inside = comparison[j].inside
-        errors = map((:wet, :outline, :mean)) do v
-            l = MC.library_scan(
-                library,
-                case.scanner,
-                projections[j].fine_rays;
-                collimation_mm = 40.0,
-                spectrum,
-                view = v,
-            ).scatter
-            (
-                view = v,
-                centre = abs(sum(l[middle, r]) / sum(d[middle, r]) - 1),
-                library_rms = sqrt(
-                    sum(abs2, l[inside, r] ./ d[inside, r] .- 1) / length(inside),
-                ),
-            )
+            r = (size(d, 2) + 1) ÷ 2
+            middle = ((size(d, 1) + 1) ÷ 2 - 1):((size(d, 1) + 1) ÷ 2 + 1)
+            inside = comparison[j].inside
+            errors = map((:wet, :outline, :mean)) do v
+                l = MC.library_scan(library, case.scanner, projections[j].fine_rays; collimation_mm = 40.0, spectrum, view = v).scatter
+                (
+                    view = v,
+                    centre = abs(sum(l[middle, r]) / sum(d[middle, r]) - 1),
+                    library_rms = sqrt(sum(abs2, l[inside, r] ./ d[inside, r] .- 1) / length(inside)),
+                )
         end
-        (phantom = case.phantom.name, scanner = case.scanner, errors = errors)
+            (phantom = case.phantom.name, scanner = case.scanner, errors = errors)
     end
-    for (j, case) in enumerate(cases)
-    if startswith(case.phantom.name, "thorax")
+        for (j, case) in enumerate(cases) if startswith(case.phantom.name, "thorax")
 ]
 
 # ╔═╡ 10db6197-a1f6-43cb-bcbf-7e1f33290858
 let
-    cell(
-        e,
-    ) = "$(round(100e.centre; digits = 1)) %, $(round(100e.library_rms; digits = 1)) %"
-    rows = [
-        "| $(v.phantom) | $(v.scanner) | $(join(cell.(v.errors), " | ")) |"
-        for v in view_comparison
-    ]
+    cell(e) = "$(round(100e.centre; digits = 1)) %, $(round(100e.library_rms; digits = 1)) %"
+    rows = ["| $(v.phantom) | $(v.scanner) | $(join(cell.(v.errors), " | ")) |" for v in view_comparison]
     Markdown.parse(
         """
         | phantom | scanner | water-equivalent lengths: centre, across the fan | outline | geometric mean (the method) |
@@ -792,7 +710,7 @@ let
         The mean was chosen on the first thorax, in the pilot; the held-out thorax, larger and with larger
         lungs, tests it. Every reading swaps each kernel's single scatter for the ray's own in the
         patient (notebook 10).
-        """,
+        """
     )
 end
 
@@ -815,102 +733,64 @@ photon on the same photons.
 # against the library, from water kernels alone and with its material correction
 gammex_body = [
     let s = library.scanners[findfirst(x -> x.name == name, library.scanners)]
-        beam = MC.FocalSpot(;
-            distance_mm = s.source_to_isocenter_mm,
-            fan_deg = s.fan_deg,
-            z_half_mm = 20.0,
-        )
-        cols = MC.column_edges(s)
-        p = at_isocenter(MC.CylinderPhantom(; material, semi_axes_mm = (165.0, 165.0)), s)
-        chunks = [
-            only(c)
-            for c in MC.simulate_sweep(
-                [(p, MC.Spectrum(spectrum...), 9900 + chunk, beam) for chunk in 1:16];
-                n = 1_500_000,
-                physics,
-                readout = MC.ForcedScatterReadout([s]; attenuation),
-            )
-        ]
-        t = reduce(+, chunks)
-        r = (size(t.scatter, 2) + 1) ÷ 2
-        middle = ((size(t.scatter, 1) + 1) ÷ 2 - 1):((size(t.scatter, 1) + 1) ÷ 2 + 1)
-        rays = map((cols[1] + 0.05):0.1:cols[end]) do γ
-            d = (sind(γ), cosd(γ))
-            wet = MC.water_equivalent_length(p, (0.0, 0.0), d)
-            x = MC.process_ratios(
-                p,
-                (0.0, 0.0),
-                d,
-                attenuation,
-                wet;
-                angular = angular[s.name],
-            )
-            (
-                angle_deg = γ,
-                wet_mm = wet,
-                outline_mm = MC.ellipse_chord((0.0, 0.0), d, p.centre_mm, p.semi_axes_mm),
-                weight = abs(γ) <= s.fan_deg / 2 ? 0.1 / s.fan_deg : 0.0,
-                compton_ratio = x.compton,
-                rayleigh_ratio = x.rayleigh,
-                rayleigh_forward_ratio = x.rayleigh_forward,
-                delta_mu_per_mm = x.delta_mu_per_mm,
-            )
+            beam = MC.FocalSpot(; distance_mm = s.source_to_isocenter_mm, fan_deg = s.fan_deg, z_half_mm = 20.0)
+            cols = MC.column_edges(s)
+            p = at_isocenter(MC.CylinderPhantom(; material, semi_axes_mm = (165.0, 165.0)), s)
+            chunks = [
+                only(c) for c in MC.simulate_sweep(
+                    [(p, MC.Spectrum(spectrum...), 9900 + chunk, beam) for chunk in 1:16];
+                    n = 1_500_000,
+                    physics,
+                    readout = MC.ForcedScatterReadout([s]; attenuation),
+                )
+            ]
+            t = reduce(+, chunks)
+            r = (size(t.scatter, 2) + 1) ÷ 2
+            middle = ((size(t.scatter, 1) + 1) ÷ 2 - 1):((size(t.scatter, 1) + 1) ÷ 2 + 1)
+            rays = map((cols[1] + 0.05):0.1:cols[end]) do γ
+                d = (sind(γ), cosd(γ))
+                wet = MC.water_equivalent_length(p, (0.0, 0.0), d)
+                x = MC.process_ratios(p, (0.0, 0.0), d, attenuation, wet; angular = angular[s.name])
+                (
+                    angle_deg = γ,
+                    wet_mm = wet,
+                    outline_mm = MC.ellipse_chord((0.0, 0.0), d, p.centre_mm, p.semi_axes_mm),
+                    weight = abs(γ) <= s.fan_deg / 2 ? 0.1 / s.fan_deg : 0.0,
+                    compton_ratio = x.compton,
+                    rayleigh_ratio = x.rayleigh,
+                    rayleigh_forward_ratio = x.rayleigh_forward,
+                    delta_mu_per_mm = x.delta_mu_per_mm,
+                )
         end
-        plain = [
+            plain = [(angle_deg = x.angle_deg, wet_mm = x.wet_mm, outline_mm = x.outline_mm, weight = x.weight) for x in rays]
+            centre(rays) = sum(MC.library_scan(library, s.name, rays; collimation_mm = 40.0, spectrum, view = :mean).scatter[middle, r])
+            direct_centre = sum(t.scatter[middle, r]) / t.n
+            forced_over_analog = [sum(c.scatter) / sum(c.analog_scatter) for c in chunks]
             (
-                angle_deg = x.angle_deg,
-                wet_mm = x.wet_mm,
-                outline_mm = x.outline_mm,
-                weight = x.weight,
+                scanner = name,
+                material = material.name,
+                wed_mm = MC.water_equivalent_diameter(p; fan_deg = s.fan_deg),
+                water_kernels_over_direct = centre(plain) / direct_centre,
+                library_over_direct = centre(rays) / direct_centre,
+                centre_per_photon = direct_centre,
+                rayleigh_share = sum(t.rayleigh[middle, r]) / sum(t.scatter[middle, r]),
+                forced_over_analog = mean(forced_over_analog),
+                forced_over_analog_error = std(forced_over_analog) / sqrt(length(forced_over_analog)),
             )
-            for x in rays
-        ]
-        centre(rays) = sum(MC.library_scan(
-            library,
-            s.name,
-            rays;
-            collimation_mm = 40.0,
-            spectrum,
-            view = :mean,
-        ).scatter[
-            middle,
-            r,
-        ])
-        direct_centre = sum(t.scatter[middle, r]) / t.n
-        forced_over_analog = [sum(c.scatter) / sum(c.analog_scatter) for c in chunks]
-        (
-            scanner = name,
-            material = material.name,
-            wed_mm = MC.water_equivalent_diameter(p; fan_deg = s.fan_deg),
-            water_kernels_over_direct = centre(plain) / direct_centre,
-            library_over_direct = centre(rays) / direct_centre,
-            centre_per_photon = direct_centre,
-            rayleigh_share = sum(t.rayleigh[middle, r]) / sum(t.scatter[middle, r]),
-            forced_over_analog = mean(forced_over_analog),
-            forced_over_analog_error = std(forced_over_analog) /
-                sqrt(length(forced_over_analog)),
-        )
     end
-    for name in ("SOMATOM Force", "Aquilion ONE")
-    for material in (MC.DetectorMaterial(:Water), MC.DetectorMaterial(BS.solid_water))
+        for name in ("SOMATOM Force", "Aquilion ONE") for material in (MC.DetectorMaterial(:Water), MC.DetectorMaterial(BS.solid_water))
 ]
 
 # ╔═╡ 8c16e306-3a3a-46b4-bc4a-6d08a6a7bab8
 let
-    solid, water = MC.DetectorMaterial(BS.solid_water).name,
-        MC.DetectorMaterial(:Water).name
-    ratio(kind, E) = getproperty(attenuation[solid], kind)[E] /
-        getproperty(attenuation[water], kind)[E]
+    solid, water = MC.DetectorMaterial(BS.solid_water).name, MC.DetectorMaterial(:Water).name
+    ratio(kind, E) = getproperty(attenuation[solid], kind)[E] / getproperty(attenuation[water], kind)[E]
     rows = [
         "| $(g.scanner) | $(g.material == water ? "water" : "Gammex solid water") | $(round(g.wed_mm / 10; digits = 1)) cm | $(round(100g.rayleigh_share; digits = 0)) % | $(round(g.water_kernels_over_direct; digits = 3)) | $(round(g.library_over_direct; digits = 3)) | $(round(g.forced_over_analog; digits = 4)) ± $(round(g.forced_over_analog_error; digits = 4)) |"
-        for g in gammex_body
+            for g in gammex_body
     ]
-    drop(name) = let w = only(
-        g
-        for g in gammex_body
-        if g.scanner == name && g.material == water
-    ),
-        sw = only(g for g in gammex_body if g.scanner == name && g.material == solid)
+    drop(name) = let w = only(g for g in gammex_body if g.scanner == name && g.material == water),
+            sw = only(g for g in gammex_body if g.scanner == name && g.material == solid)
         round(100 * (1 - sw.centre_per_photon / w.centre_per_photon); digits = 0)
     end
     Markdown.parse(
@@ -929,7 +809,7 @@ let
         attenuation there) takes most of it back. What is left is largest on the Aquilion, whose 1-D grid
         lets in more scatter that has scattered more than once, which a correction by the last
         scattering's cross-sections and by the mean path describes least well.
-        """,
+        """
     )
 end
 
@@ -954,30 +834,30 @@ checks = vcat(
     ),
     [
         MC.check_below(
-            "$(case.phantom.name), $(case.scanner): library, scatter at the centre",
-            comparison[j].centre,
-            0.1;
-            source = "direct Monte Carlo",
-        )
-        for (j, case) in enumerate(cases)
+                "$(case.phantom.name), $(case.scanner): library, scatter at the centre",
+                comparison[j].centre,
+                0.1;
+                source = "direct Monte Carlo",
+            )
+            for (j, case) in enumerate(cases)
     ],
     [
         MC.check_below(
-            "$(case.phantom.name), $(case.scanner): library, SPR across the fan (rms)",
-            comparison[j].library_rms,
-            0.15;
-            source = "direct Monte Carlo",
-        )
-        for (j, case) in enumerate(cases)
+                "$(case.phantom.name), $(case.scanner): library, SPR across the fan (rms)",
+                comparison[j].library_rms,
+                0.15;
+                source = "direct Monte Carlo",
+            )
+            for (j, case) in enumerate(cases)
     ],
     [
         MC.check_below(
-            "$(case.phantom.name), $(case.scanner): library error over BasisSimulator v0.15.1's",
-            comparison[j].library_rms / comparison[j].bs_rms,
-            1.0;
-            source = "direct Monte Carlo",
-        )
-        for (j, case) in enumerate(cases)
+                "$(case.phantom.name), $(case.scanner): library error over BasisSimulator v0.15.1's",
+                comparison[j].library_rms / comparison[j].bs_rms,
+                1.0;
+                source = "direct Monte Carlo",
+            )
+            for (j, case) in enumerate(cases)
     ],
 )
 
@@ -999,20 +879,12 @@ saved = let
     Serialization.serialize(
         path,
         Dict{String, Any}(
-            "cases" => [
-                (
-                    phantom = case.phantom.name,
-                    scanner = case.scanner,
-                    wed_mm = projections[j].wed_mm,
-                )
-                for (j, case) in enumerate(cases)
-            ],
+            "cases" => [(phantom = case.phantom.name, scanner = case.scanner, wed_mm = projections[j].wed_mm) for (j, case) in enumerate(cases)],
             "comparison" => comparison,
             "view_comparison" => view_comparison,
             "gammex_body" => gammex_body,
             "scorecard" => MC.scorecard(checks),
-            "source" =>
-                "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 11_scatter_validation.jl",
+            "source" => "BasisMonteCarlo.jl (Geant4 via Geant4.jl), notebook 11_scatter_validation.jl",
         ),
     )
     path

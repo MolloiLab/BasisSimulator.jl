@@ -236,18 +236,19 @@ No code changes needed - just pass appropriate array types.
 
 ```julia
 using BasisSimulator
-using Metal  # or: using CUDA
+using Metal # or: using CUDA
 
 # Create scanner and geometry
 scanner = GERevolutionApex()
-geom = CTGeometry(scanner; n_angles=360, fov=(350.0, 350.0, 160.0))
+geom = CTGeometry(scanner; n_angles = 360, fov = (350.0, 350.0, 160.0))
 
 # Create a water cylinder phantom
 phantom = zeros(Float32, 256, 256, 64)
-μ_water = 0.02f0  # mm⁻¹ at ~60 keV
+μ_water = 0.02f0 # mm⁻¹ at ~60 keV
 for i in 1:256, j in 1:256, k in 1:64
-    x, y = (i - 128.5) * 1.37, (j - 128.5) * 1.37  # mm from center
-    if x^2 + y^2 < 100^2  # 100mm radius cylinder
+    x, y = (i - 128.5) * 1.37, (j - 128.5) * 1.37 # mm from center
+    if x^2 + y^2 < 100^2
+        # 100mm radius cylinder
         phantom[i, j, k] = μ_water
     end
 end
@@ -261,11 +262,11 @@ recon_gpu = fdk_reconstruct(sinogram_gpu, geom, (256, 256, 64))
 
 # Convert to Hounsfield Units
 recon_cpu = Array(recon_gpu)
-recon_hu = 1000f0 .* (recon_cpu .- μ_water) ./ μ_water
+recon_hu = 1000.0f0 .* (recon_cpu .- μ_water) ./ μ_water
 
 # Water region should have HU ≈ 0
 water_mask = phantom .> 0
-println("Mean HU in water: ", mean(recon_hu[water_mask]))  # Should be ≈ 0 ± 20
+println("Mean HU in water: ", mean(recon_hu[water_mask])) # Should be ≈ 0 ± 20
 ```
 
 # Filter Selection Guide

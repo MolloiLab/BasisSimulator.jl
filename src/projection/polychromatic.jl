@@ -187,11 +187,11 @@ using BasisSimulator
 
 # Create a simple 2-material phantom mask
 mask = zeros(UInt8, 128, 128, 32)
-mask[40:90, 40:90, :] .= 1  # Water region
+mask[40:90, 40:90, :] .= 1 # Water region
 # Region 0 = air (background), Region 1 = water
 
 # Get material definitions
-materials = get_region_materials()  # Returns [air, water, ...]
+materials = get_region_materials() # Returns [air, water, ...]
 
 # Create μ-volume at 60 keV
 μ_volume = zeros(Float32, 128, 128, 32)

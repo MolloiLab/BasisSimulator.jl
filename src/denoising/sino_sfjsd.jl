@@ -431,12 +431,16 @@ one per channel, same shapes as the inputs.
 # Example — dual-kVp pair
 ```julia
 e_lo, w_lo = BS.resolve_source_spectrum_without_bowtie(
-    sim_opts, protocol_low; scanner = scanner,
+    sim_opts,
+    protocol_low;
+    scanner = scanner,
 )
 e_hi, w_hi = BS.resolve_source_spectrum_without_bowtie(
-    sim_opts, protocol_high; scanner = scanner,
+    sim_opts,
+    protocol_high;
+    scanner = scanner,
 )
-I0_lo = BS.compute_detector_I0(sim_low.geom,  protocol_low,  Float64(sum(w_lo)))
+I0_lo = BS.compute_detector_I0(sim_low.geom, protocol_low, Float64(sum(w_lo)))
 I0_hi = BS.compute_detector_I0(sim_high.geom, protocol_high, Float64(sum(w_hi)))
 
 out = BS.apply_sino_sfjsd_denoise(
@@ -448,9 +452,12 @@ sino_low_d, sino_high_d = out[1], out[2]
 
 # Example — PCCT bin-combined pair
 ```julia
-I0 = sim_bins.I0_bins                             # per ray, [n_cols, n_rows, 4]
-I0_lo = mean(sum(I0[:, :, 1:2]; dims = 3))        # bins 1+2 → low channel (fan mean; the denoiser takes one count per channel)
-I0_hi = mean(sum(I0[:, :, 3:4]; dims = 3))        # bins 3+4 → high channel
+I0 = sim_bins.I0_bins # per ray, [n_cols, n_rows, 4]
+I0_lo = mean(sum(
+    I0[:, :, 1:2];
+    dims = 3,
+)) # bins 1+2 → low channel (fan mean; the denoiser takes one count per channel)
+I0_hi = mean(sum(I0[:, :, 3:4]; dims = 3)) # bins 3+4 → high channel
 out = BS.apply_sino_sfjsd_denoise(
     [Float32.(sino_lo_combined), Float32.(sino_hi_combined)],
     [I0_lo, I0_hi],

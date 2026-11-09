@@ -137,7 +137,7 @@ The package ships with GE Revolution bowtie profiles (888 data points each,
 # Example
 ```julia
 filter = load_builtin_bowtie("large")
-length(filter.angles)  # 888
+length(filter.angles) # 888
 ```
 """
 function load_builtin_bowtie(size::String; bowtie_dir::AbstractString = BOWTIE_DIR)
@@ -236,7 +236,7 @@ This function loads bowtie profiles in the exact format used by CatSim/XCIST:
 # Example
 ```julia
 # Load CatSim's medium body bowtie
-filter = load_catsim_bowtie("/path/to/gecatsim/bowtie/medium.txt", name="catsim_medium")
+filter = load_catsim_bowtie("/path/to/gecatsim/bowtie/medium.txt", name = "catsim_medium")
 ```
 
 # Implementation Notes

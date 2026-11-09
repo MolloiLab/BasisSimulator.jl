@@ -47,7 +47,8 @@ jobs:
           v in allowed || error("version $(v) is not the last registered version or a valid next one; see RELEASING.md")
 
   # Fatou formats and lints every Julia file with its defaults (fatou.toml): src, test, docs,
-  # lib/BasisMonteCarlo, and the Pluto notebooks cell by cell (Pluto owns its header and markers).
+  # lib/BasisMonteCarlo; docs/fatou.jl covers the Julia its walk cannot see as code (the Pluto
+  # notebooks cell by cell, the docs pages' listings, README/AGENTS and docstring examples).
   fatou:
     runs-on: ubuntu-latest
     steps:
@@ -55,10 +56,13 @@ jobs:
       - uses: jolars/fatou-action@v1
         with:
           version: v0.26.1
-      - name: Notebook cells are Fatou-formatted
-        run: python3 docs/fatou_notebooks.py
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - name: Notebook cells and code snippets are Fatou-formatted
+        run: julia --startup-file=no docs/fatou.jl
       - name: Notebooks lint clean
-        run: fatou lint docs/notebooks/*.jl lib/BasisMonteCarlo/docs/notebooks/*.jl
+        run: fatou lint docs/notebooks/*.jl
 
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}

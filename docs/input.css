@@ -1,7 +1,9 @@
 @import "tailwindcss";
 
 /* Match Snapshot.jl's native notebook docs: DaisyUI owns the notebook reading
-   surface and shares its theme tokens with each inline Snapshot fragment. */
+   surface and shares its theme tokens with each inline Snapshot fragment. The
+   site re-points those tokens at its own paper-and-ink palette ("Notebook
+   pages", below), so a notebook reads as part of the page in both modes. */
 @plugin "daisyui" {
   themes: all;
 }
@@ -12,30 +14,22 @@
 /* Enable class-based dark mode (toggle via .dark class on <html>) */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* View Transitions API override — Therapy's ClientRouter wraps each
-   SPA swap in `document.startViewTransition(doSwap)` when the browser
-   supports it. The default user-agent transition cross-fades the
-   whole `root` capture; during that animation old and new page
-   snapshots are both painted, briefly showing layout shifts when the
-   two routes' `#page-content` inner layouts differ. Zeroing the
-   animation keeps the VT pipeline (so anything we tag later with a
-   custom transition-name still animates) while avoiding the
-   cross-fade artifacts on route boundaries. */
+/* View Transitions API override — Therapy's ClientRouter wraps each SPA swap in
+   `document.startViewTransition(doSwap)`. Zero the default cross-fade so route
+   changes stay still (no doubled snapshots while the layouts differ). */
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;
 }
 
-/* Stable scrollbar gutter so the document scrollbar appearing /
-   disappearing between pages doesn't reflow the content and shift
-   nav widths by a few pixels mid-navigation. */
+/* Stable scrollbar gutter so the scrollbar appearing between pages never shifts
+   the layout by a few pixels mid-navigation. */
 html {
   scrollbar-gutter: stable;
 }
 
 /* Native details gives the compact navigation keyboard semantics without an
-   island. Hide only the browser's disclosure marker; the visible menu icon is
-   part of the summary and remains available to assistive technology by label. */
+   island. Hide only the browser's disclosure marker. */
 [data-mobile-nav] > summary {
   list-style: none;
 }
@@ -43,18 +37,13 @@ html {
   display: none;
 }
 
-@layer components {
-  .sn-bubble {
-    box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-base-content) 11%, transparent),
-                -2px 6px 18px color-mix(in oklab, var(--color-base-content) 8%, transparent);
-  }
-}
-
-/* Theme customizations */
+/* ── Type and the brand palettes ──────────────────────────────────────────
+   Calligraphic: EB Garamond (loaded from Google Fonts) for every heading and
+   for prose; Optima where the reader has it for UI labels. */
 @theme {
-  --font-sans: 'Optima', 'Palatino Linotype', 'Book Antiqua', 'EB Garamond', serif;
-  --font-serif: 'EB Garamond', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
-  --font-mono: 'JuliaMono', 'Fira Code', 'JetBrains Mono', monospace;
+  --font-sans: 'Optima', 'Candara', 'Palatino Linotype', 'Book Antiqua', 'EB Garamond', serif;
+  --font-serif: 'EB Garamond', 'Garamond', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
+  --font-mono: 'JuliaMono', 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
 
   /* Warm neutral palette */
   --color-warm-50: #f8f7f4;
@@ -95,97 +84,606 @@ html {
   --color-accent-secondary-900: #164e63;
   --color-accent-secondary-950: #083344;
 
-  /* Border radius tokens (shadcn compatibility) */
   --radius: 0.5rem;
 }
 
-/* Design System CSS custom properties */
+/* ── The site palette: warm paper and ink, glass islands floating on it ───
+   Light: paper with a faint violet and cyan wash under frosted white glass.
+   Dark: warm black with the same wash, under smoked glass. Every component
+   below reads these tokens, never a literal colour. */
 @layer base {
-  button { cursor: pointer; }
-  therapy-island { display: contents; }
-
-  /* Heading spacing and underlines — scoped to page content */
-  #page-content h1:not(.no-rule) { padding-top: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--color-warm-200); margin-bottom: 1rem; }
-  #page-content h2:not(.no-rule) { padding-top: 1.25rem; padding-bottom: 0.375rem; border-bottom: 1px solid var(--color-warm-200); margin-bottom: 0.75rem; }
-  #page-content h3:not(.no-rule) { padding-top: 1rem; padding-bottom: 0.25rem; border-bottom: 1px solid var(--color-warm-100); margin-bottom: 0.5rem; }
-  .dark #page-content h1:not(.no-rule), .dark #page-content h2:not(.no-rule) { border-bottom-color: var(--color-warm-800); }
-  .dark #page-content h3:not(.no-rule) { border-bottom-color: var(--color-warm-900); }
-
   :root {
-    /* Shared neutrals */
-    --bg-primary: #f8f7f4;
-    --bg-secondary: #f0ece4;
-    --bg-tertiary: #e8e3d9;
-    --text-primary: #2a2520;
-    --text-secondary: #6b6560;
-    --text-tertiary: #9a9590;
+    --bg: #f3efe7;
+    --wash-1: rgba(124, 58, 237, 0.11);
+    --wash-2: rgba(8, 145, 178, 0.09);
+    --wash-3: rgba(203, 160, 92, 0.12);
+    --glass: rgba(255, 253, 249, 0.62);
+    --glass-strong: rgba(255, 253, 250, 0.84);
+    --glass-edge: rgba(42, 37, 32, 0.09);
+    --glass-hi: rgba(255, 255, 255, 0.95);
+    --menu-bg: #fcfaf6;
+    --ink: #2a2520;
+    --ink-2: #57514b;
+    --ink-3: #8f877e;
+    --hairline: rgba(42, 37, 32, 0.1);
+    --accent: #7c3aed;
+    --accent-2: #0891b2;
+    --accent-soft: rgba(124, 58, 237, 0.09);
+    --pill-bg: rgba(255, 253, 249, 0.55);
+    --pill-edge: rgba(42, 37, 32, 0.1);
+    --pill-hover: rgba(255, 255, 255, 0.96);
+    --pill-on-bg: #2a2520;
+    --pill-on-text: #f8f5ef;
+    --plate: #ffffff;
+    --plate-filter: none;
+    --code-bg: #24201c;
+    --code-text: #ece6dc;
+    --code-edge: rgba(42, 37, 32, 0.12);
+    --inline-code-bg: rgba(124, 58, 237, 0.07);
+    --inline-code-text: #5b21b6;
+    --shadow: 0 1px 1px rgba(42, 37, 32, 0.03), 0 10px 30px -12px rgba(42, 37, 32, 0.16);
+    --shadow-lift: 0 2px 4px rgba(42, 37, 32, 0.04), 0 30px 60px -18px rgba(42, 37, 32, 0.26);
+    --focus: rgba(124, 58, 237, 0.7);
 
-    /* Julia palette */
-    --julia-red: #cb3c33;
-    --julia-purple: #9558b2;
-    --julia-blue: #4063d8;
-    --julia-green: #389826;
-
-    /* BasisSimulator.jl accent overrides */
-    --accent: #7c3aed;          /* violet 600 */
-    --accent-secondary: #0891b2; /* cyan 600 */
-
-    /* .jl wordmark tri-colors (exclude Purple — close to the violet accent) */
-    --jl-dot: #4063d8;  /* Blue */
-    --jl-j: #389826;    /* Green */
-    --jl-l: #cb3c33;    /* Red */
+    /* .jl wordmark tri-colors (no purple: it would fight the violet accent) */
+    --jl-dot: #4063d8;
+    --jl-j: #389826;
+    --jl-l: #cb3c33;
   }
 
-  html {
-    /* The page grows with the screen: 16px type up to a 1280px window, 19px at 2560px, so a large monitor shows a
-       proportionally larger page instead of a narrow column in empty space. Media queries keep the browser's own
-       16px rem, so the breakpoints do not move. */
-    font-size: clamp(100%, 0.234vw + 13px, 118.75%);
-    scroll-behavior: smooth;
-    /* Sticky navbar is `h-16` (4rem); add ~1rem breathing room above the
-       targeted heading so ToC anchor clicks don't land flush under the bar. */
-    scroll-padding-top: 5rem;
+  .dark {
+    --bg: #12100e;
+    --wash-1: rgba(139, 92, 246, 0.16);
+    --wash-2: rgba(6, 182, 212, 0.08);
+    --wash-3: rgba(203, 160, 92, 0.06);
+    --glass: rgba(40, 36, 32, 0.5);
+    --glass-strong: rgba(30, 27, 24, 0.82);
+    --glass-edge: rgba(255, 244, 228, 0.09);
+    --glass-hi: rgba(255, 248, 238, 0.07);
+    --menu-bg: #1f1c19;
+    --ink: #f2ece2;
+    --ink-2: #c3bbb0;
+    --ink-3: #8a8279;
+    --hairline: rgba(255, 244, 228, 0.09);
+    --accent: #b49cff;
+    --accent-2: #3fd0e8;
+    --accent-soft: rgba(167, 139, 250, 0.12);
+    --pill-bg: linear-gradient(180deg, rgba(255, 248, 238, 0.12), rgba(255, 248, 238, 0.05));
+    --pill-edge: rgba(255, 248, 238, 0.15);
+    --pill-hover: rgba(255, 248, 238, 0.18);
+    --pill-on-bg: #f2ece2;
+    --pill-on-text: #1a1714;
+    --plate: #f4f1ea;
+    --plate-filter: brightness(0.9) contrast(1.04);
+    --code-bg: #0c0b0a;
+    --code-text: #e8e1d6;
+    --code-edge: rgba(255, 244, 228, 0.08);
+    --inline-code-bg: rgba(167, 139, 250, 0.12);
+    --inline-code-text: #d3c4ff;
+    --shadow: 0 0 0 1px rgba(0, 0, 0, 0.2), 0 24px 60px -24px rgba(0, 0, 0, 0.8);
+    --shadow-lift: 0 0 0 1px rgba(0, 0, 0, 0.2), 0 36px 80px -24px rgba(0, 0, 0, 0.9);
+    --focus: rgba(180, 156, 255, 0.85);
   }
 
-  /* The page root paints the layout's own background (warm-100 / warm-950), so scrolling past either
-     end never shows DaisyUI's [data-theme] background or white. */
+  /* The page root paints the paper, so scrolling past either end never shows
+     DaisyUI's [data-theme] background or white. */
   html,
   html[data-theme],
   body {
-    background-color: var(--color-warm-100) !important;
+    background-color: var(--bg) !important;
     overscroll-behavior: none;
     min-height: 100%;
-  }
-  html.dark,
-  html.dark[data-theme],
-  html.dark body {
-    background-color: var(--color-warm-950) !important;
   }
   html.dark { color-scheme: dark; }
   html:not(.dark) { color-scheme: light; }
 
+  html {
+    /* The page grows with the screen: 16px type up to a 1280px window, 19px at 2560px. Media queries keep the
+       browser's own 16px rem, so the breakpoints do not move. */
+    font-size: clamp(100%, 0.234vw + 13px, 118.75%);
+    scroll-behavior: smooth;
+    /* The floating nav capsule is 4.5rem from the top; anchored headings land below it. */
+    scroll-padding-top: 6rem;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    color: var(--ink);
+    font-family: var(--font-serif);
+    font-feature-settings: "kern", "liga", "onum";
+    text-rendering: optimizeLegibility;
+  }
+
+  /* The wash: soft violet, cyan and gold light behind the glass, fixed to the window so the islands drift over it. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(48rem 34rem at 8% -6%, var(--wash-1), transparent 70%),
+      radial-gradient(40rem 30rem at 96% 12%, var(--wash-2), transparent 70%),
+      radial-gradient(44rem 30rem at 60% 108%, var(--wash-3), transparent 70%);
+  }
+
+  button { cursor: pointer; }
+  therapy-island { display: contents; }
+
   pre code {
-    font-family: 'JuliaMono', 'Fira Code', 'JetBrains Mono', monospace;
+    font-family: var(--font-mono);
+  }
+
+  ::selection { background: rgba(124, 58, 237, 0.22); }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 3px;
   }
 }
 
-/* Dark mode custom properties */
-@layer base {
-  .dark {
-    --bg-primary: #111110;
-    --bg-secondary: #1a1918;
-    --bg-tertiary: #252422;
-    --text-primary: #d4d0c8;
-    --text-secondary: #8a8680;
-    --text-tertiary: #5a5855;
+/* ── Components ───────────────────────────────────────────────────────── */
+@layer components {
+  /* Text roles */
+  .bs-display {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1.02;
+    color: var(--ink);
+    font-feature-settings: "kern", "liga", "dlig", "onum";
+    text-wrap: balance;
   }
+  .bs-title {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    letter-spacing: -0.012em;
+    line-height: 1.15;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+  .bs-flourish {
+    font-style: italic;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .bs-body { color: var(--ink-2); line-height: 1.65; }
+  .bs-ink { color: var(--ink); }
+  .bs-muted { color: var(--ink-3); }
+  .bs-accent { color: var(--accent); }
+  .bs-accent-2 { color: var(--accent-2); }
+  .bs-eyebrow {
+    font-family: var(--font-sans);
+    font-size: 0.8125rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .bs-numeral {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 500;
+    color: var(--accent);
+    font-feature-settings: "onum";
+  }
+  .bs-lede {
+    color: var(--ink);
+    font-size: 1.3rem;
+    line-height: 1.55;
+  }
+  .bs-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent);
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+    transition: text-decoration-color 200ms;
+  }
+  .bs-link:hover { text-decoration-color: var(--accent); }
+  .bs-code {
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    color: var(--inline-code-text);
+    background: var(--inline-code-bg);
+    padding: 0.08em 0.38em;
+    border-radius: 0.4em;
+  }
+
+  /* The fleuron: a hairline with a centred ornament, between the big parts of a page. */
+  .bs-fleuron {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    color: var(--ink-3);
+    font-family: var(--font-serif);
+    font-size: 1.25rem;
+  }
+  .bs-fleuron::before,
+  .bs-fleuron::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--hairline) 30%, var(--hairline) 70%, transparent);
+  }
+
+  /* Glass: frosted, with a hairline edge, a lit top edge and a soft shadow underneath. */
+  .bs-glass {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    backdrop-filter: blur(22px) saturate(160%);
+    box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow);
+  }
+
+  /* The island: a large glass surface that carries a page's reading content. */
+  .bs-island {
+    position: relative;
+    border-radius: 2rem;
+    background: var(--glass-strong);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    backdrop-filter: blur(28px) saturate(150%);
+    box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow);
+  }
+  @media (max-width: 639px) {
+    .bs-island { border-radius: 1.5rem; }
+  }
+
+  /* Frosted pill, tvOS style: hover brightens, the current page fills with ink. */
+  .bs-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.5rem;
+    padding: 0 1.125rem;
+    border-radius: 9999px;
+    background: var(--pill-bg);
+    box-shadow: inset 0 0 0 1px var(--pill-edge), inset 0 1px 0 var(--glass-hi);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 200ms, color 200ms, box-shadow 200ms, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .bs-pill:hover { background: var(--pill-hover); }
+  .bs-pill:active { transform: scale(0.97); }
+  .bs-pill-icon { width: 2.5rem; padding: 0; }
+  .bs-pill-sm { height: 2rem; padding: 0 0.875rem; font-size: 0.8125rem; gap: 0.4rem; }
+  .bs-pill-xs {
+    height: 1.5rem;
+    padding: 0 0.625rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+    color: var(--ink-2);
+  }
+  .bs-pill-on,
+  .bs-pill-on:hover {
+    background: var(--pill-on-bg);
+    color: var(--pill-on-text);
+    box-shadow: 0 6px 18px -8px rgba(42, 37, 32, 0.45);
+  }
+  .bs-pill-accent,
+  .bs-pill-accent:hover {
+    background: linear-gradient(180deg, #8b5cf6, #7c3aed);
+    color: #ffffff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 22px -10px rgba(124, 58, 237, 0.75);
+  }
+  .bs-pill-accent:hover { filter: brightness(1.06); }
+  .bs-pill-static { pointer-events: none; }
+
+  /* The strip the capsule floats in: the paper fades in behind it, so text scrolling up softens before it
+     meets the glass. */
+  .bs-header {
+    background: linear-gradient(to bottom, var(--bg) 0%, color-mix(in oklab, var(--bg) 70%, transparent) 55%, transparent 100%);
+  }
+
+  /* The floating nav capsule */
+  .bs-navbar {
+    border-radius: 9999px;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(24px) saturate(170%);
+    backdrop-filter: blur(24px) saturate(170%);
+    box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow);
+  }
+  .bs-navbar .bs-pill:not(.bs-pill-on) {
+    background: transparent;
+    box-shadow: none;
+  }
+  .bs-navbar .bs-pill:not(.bs-pill-on):hover {
+    background: var(--pill-hover);
+    box-shadow: inset 0 0 0 1px var(--pill-edge);
+  }
+  /* Opaque: it opens inside the nav capsule, whose own backdrop filter keeps a nested one from blurring. */
+  .bs-menu {
+    border-radius: 1.5rem;
+    background: var(--menu-bg);
+    box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow-lift);
+  }
+
+  /* Tiles: glass cards that lift on hover and focus. A white plate holds each figure, like a print on a mat. */
+  .bs-tile {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.75rem;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    backdrop-filter: blur(22px) saturate(150%);
+    box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow);
+    color: inherit;
+    text-decoration: none;
+    transition: transform 460ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 460ms cubic-bezier(0.2, 0.8, 0.2, 1), background 300ms;
+  }
+  a.bs-tile:hover,
+  a.bs-tile:focus-visible {
+    transform: translateY(-5px) scale(1.012);
+    box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow-lift);
+    background: var(--glass-strong);
+  }
+  a.bs-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+  .bs-plate {
+    margin: 0.625rem 0.625rem 0;
+    border-radius: 1.25rem;
+    overflow: hidden;
+    background: var(--plate);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .bs-plate img {
+    filter: var(--plate-filter);
+    transition: transform 620ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  a.bs-tile:hover .bs-plate img,
+  a.bs-tile:focus-visible .bs-plate img { transform: scale(1.03); }
+  .bs-plate-empty {
+    background:
+      radial-gradient(circle at 30% 30%, var(--wash-1), transparent 60%),
+      radial-gradient(circle at 75% 70%, var(--wash-2), transparent 60%),
+      var(--accent-soft);
+  }
+  .bs-tile-title { transition: color 200ms; }
+  a.bs-tile:hover .bs-tile-title { color: var(--accent); }
+  .bs-tile-more {
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    color: var(--ink-3);
+    transition: color 200ms, transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  a.bs-tile:hover .bs-tile-more { color: var(--accent); transform: translateX(3px); }
+  .bs-tile-off { opacity: 0.62; }
+
+  /* Ambient glow behind a hero */
+  .bs-glow {
+    position: absolute;
+    inset: -12rem -8rem auto -8rem;
+    height: 34rem;
+    background:
+      radial-gradient(ellipse at 22% 45%, var(--wash-1), transparent 60%),
+      radial-gradient(ellipse at 70% 30%, var(--wash-2), transparent 60%);
+    filter: blur(8px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Tiles enter with a short rise, staggered by an inline animation-delay. */
+  .bs-enter {
+    animation: bs-enter 560ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  /* Long-form guide pages (Getting Started, Scanners): headings, notes that open, tables, steps, figures */
+  .bs-h2 {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    font-size: 2.125rem;
+    line-height: 1.15;
+    letter-spacing: -0.012em;
+    color: var(--ink);
+    padding-top: 2.5rem;
+    scroll-margin-top: 6rem;
+    text-wrap: balance;
+  }
+  .bs-h2::after {
+    content: "";
+    display: block;
+    width: 2.75rem;
+    height: 2px;
+    margin-top: 0.75rem;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    opacity: 0.8;
+  }
+  .bs-h3 {
+    font-family: var(--font-serif);
+    font-weight: 500;
+    font-style: italic;
+    font-size: 1.5rem;
+    line-height: 1.25;
+    color: var(--ink);
+    padding-top: 0.75rem;
+    scroll-margin-top: 6rem;
+  }
+  .bs-prose { color: var(--ink-2); font-size: 1.1875rem; line-height: 1.68; }
+  .bs-small { color: var(--ink-2); font-size: 1.0625rem; line-height: 1.62; }
+  .bs-strong { color: var(--ink); font-weight: 600; }
+
+  .bs-note {
+    border-radius: 1.25rem;
+    background: color-mix(in oklab, var(--glass-strong) 55%, transparent);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    transition: background 200ms;
+  }
+  .bs-note:hover { background: var(--glass-strong); }
+  .bs-note > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 0.85rem 1.25rem;
+    font-weight: 600;
+    color: var(--ink);
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+  }
+  .bs-note > summary::-webkit-details-marker { display: none; }
+  .bs-note > summary::before {
+    content: "+";
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.375rem;
+    height: 1.375rem;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--accent);
+    background: var(--accent-soft);
+    transform: translateY(0.1rem);
+    transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .bs-note[open] > summary::before { transform: translateY(0.1rem) rotate(45deg); }
+  .bs-note-body { padding: 0 1.25rem 1.1rem 3.375rem; }
+  .bs-edge > summary::before { content: "!"; color: var(--accent-2); background: color-mix(in oklab, var(--accent-2) 12%, transparent); }
+  .bs-edge[open] > summary::before { transform: translateY(0.1rem); }
+
+  .bs-table-wrap {
+    overflow-x: auto;
+    border-radius: 1.25rem;
+    background: color-mix(in oklab, var(--glass-strong) 55%, transparent);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .bs-table { font-variant-numeric: lining-nums tabular-nums; width: 100%; border-collapse: collapse; font-size: 1rem; line-height: 1.5; }
+  .bs-table th {
+    text-align: left;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    font-size: 0.6875rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 0.8rem 1rem 0.6rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .bs-table td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--hairline); vertical-align: top; color: var(--ink-2); }
+  .bs-table tr:last-child td { border-bottom: 0; }
+  .bs-table td code { white-space: nowrap; }
+
+  .bs-steps { counter-reset: bs-step; list-style: none; padding-left: 0; }
+  .bs-steps > li { counter-increment: bs-step; position: relative; padding-left: 2.75rem; }
+  .bs-steps > li::before {
+    content: counter(bs-step);
+    position: absolute;
+    left: 0;
+    top: 0.05rem;
+    width: 1.875rem;
+    height: 1.875rem;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 1.125rem;
+    color: var(--accent);
+    background: var(--pill-bg);
+    box-shadow: inset 0 0 0 1px var(--pill-edge);
+  }
+
+  .bs-figure img {
+    width: 100%;
+    border-radius: 1.25rem;
+    background: var(--plate);
+    filter: var(--plate-filter);
+    box-shadow: inset 0 0 0 1px var(--hairline), var(--shadow);
+  }
+  .bs-figure figcaption { margin-top: 0.75rem; font-size: 1rem; font-style: italic; color: var(--ink-3); line-height: 1.55; text-align: center; text-wrap: balance; }
+
+  /* Code listings: a dark slab with a copy pill, on every page. */
+  .bs-codeblock {
+    position: relative;
+    border-radius: 1.25rem;
+    background: var(--code-bg);
+    box-shadow: inset 0 0 0 1px var(--code-edge), 0 14px 30px -18px rgba(20, 16, 12, 0.55);
+    overflow: hidden;
+  }
+  .bs-codeblock-title {
+    padding: 0.6rem 1.25rem;
+    border-bottom: 1px solid rgba(255, 244, 228, 0.08);
+    font-family: var(--font-sans);
+    font-size: 0.6875rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(236, 230, 220, 0.55);
+  }
+  .bs-pre {
+    color: var(--code-text);
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    font-size: 0.8125rem;
+    line-height: 1.7;
+  }
+  .bs-copy {
+    position: absolute;
+    top: 0.625rem;
+    right: 0.625rem;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    height: 1.75rem;
+    padding: 0 0.7rem;
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: rgba(236, 230, 220, 0.75);
+    background: rgba(255, 248, 238, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(255, 248, 238, 0.14);
+    opacity: 0.75;
+    transition: opacity 200ms, background 200ms, color 200ms;
+  }
+  [data-codeblock]:hover .bs-copy,
+  .bs-copy:focus-visible { opacity: 1; }
+  .bs-copy:hover { background: rgba(255, 248, 238, 0.16); color: #fff; }
+  .bs-copy .bs-copy-done { display: none; }
+  .bs-copy[data-copied] .bs-copy-idle { display: none; }
+  .bs-copy[data-copied] .bs-copy-done { display: inline; }
+
+  /* The "On This Page" rail */
+  .bs-toc-link {
+    display: block;
+    padding: 0.32rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.9375rem;
+    line-height: 1.3;
+    color: var(--ink-2);
+    text-decoration: none;
+    transition: background 200ms, color 200ms;
+  }
+  .bs-toc-link:hover { background: var(--pill-hover); color: var(--ink); }
+  .bs-toc-link[data-active] { color: var(--accent); background: var(--accent-soft); }
+}
+
+@keyframes bs-enter {
+  from { opacity: 0; transform: translateY(18px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bs-enter { animation: none; }
+  .bs-tile, .bs-plate img, .bs-pill, .bs-tile-more { transition: none; }
+  a.bs-tile:hover, a.bs-tile:focus-visible, a.bs-tile:hover .bs-plate img { transform: none; }
+  html { scroll-behavior: auto; }
 }
 
 /* Julia syntax highlighting for CodeBlock */
 @layer components {
   .suite-hl-keyword { color: #c792ea; }
   .suite-hl-string  { color: #c3e88d; }
-  .suite-hl-comment { color: #6b6560; font-style: italic; }
+  .suite-hl-comment { color: #7d766e; font-style: italic; }
   .suite-hl-number  { color: #f78c6c; }
   .suite-hl-funcall { color: #82aaff; }
   .suite-hl-type    { color: #ffcb6b; }
@@ -195,110 +693,315 @@ html {
   .suite-hl-operator { color: #89ddff; }
 }
 
-/* Notebook figures are white CairoMakie canvases; in dark mode dim them slightly and round them so
-   they sit on the dark card instead of glaring out of it. */
-@layer components {
-  .dark .snap-notebook img {
-    filter: brightness(0.88) contrast(1.05);
-    border-radius: 0.5rem;
-  }
-}
-
-/* Getting Started guide: collapsible notes and rough-edge cards, tables, numbered steps, figures. */
-@layer components {
-  .bs-note {
-    border: 1px solid var(--color-warm-200);
-    border-radius: 0.75rem;
-    background: var(--color-warm-50);
-  }
-  .dark .bs-note { border-color: var(--color-warm-800); background: color-mix(in oklab, var(--color-warm-900) 40%, transparent); }
-  .bs-note > summary {
-    cursor: pointer;
-    list-style: none;
-    padding: 0.85rem 1.1rem;
-    font-weight: 600;
-    color: var(--color-warm-900);
-    display: flex;
-    gap: 0.6rem;
-    align-items: baseline;
-  }
-  .dark .bs-note > summary { color: var(--color-warm-100); }
-  .bs-note > summary::-webkit-details-marker { display: none; }
-  .bs-note > summary::before {
-    content: "+";
-    font-family: var(--font-mono);
-    color: var(--color-accent-500);
-    width: 0.75rem;
-    flex-shrink: 0;
-  }
-  .bs-note[open] > summary::before { content: "−"; }
-  .bs-note-body { padding: 0 1.1rem 1rem 2.45rem; }
-  .bs-edge { border-left: 3px solid var(--color-accent-500); }
-
-  .bs-table-wrap { overflow-x: auto; border: 1px solid var(--color-warm-200); border-radius: 0.75rem; background: var(--color-warm-50); }
-  .dark .bs-table-wrap { border-color: var(--color-warm-800); background: color-mix(in oklab, var(--color-warm-900) 40%, transparent); }
-  .bs-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-  .bs-table th {
-    text-align: left;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--color-warm-500);
-    padding: 0.7rem 1rem;
-    border-bottom: 1px solid var(--color-warm-200);
-  }
-  .bs-table td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--color-warm-200); vertical-align: top; color: var(--color-warm-700); }
-  .bs-table tr:last-child td { border-bottom: 0; }
-  .bs-table td code { white-space: nowrap; }
-  .dark .bs-table th, .dark .bs-table td { border-color: var(--color-warm-800); }
-  .dark .bs-table td { color: var(--color-warm-300); }
-
-  .bs-steps { counter-reset: bs-step; list-style: none; padding-left: 0; }
-  .bs-steps > li { counter-increment: bs-step; position: relative; padding-left: 2.4rem; }
-  .bs-steps > li::before {
-    content: counter(bs-step);
-    position: absolute;
-    left: 0;
-    top: -0.1rem;
-    font-family: var(--font-serif);
-    font-size: 1.5rem;
-    line-height: 1;
-    color: var(--color-accent-500);
-  }
-
-  .bs-figure img { width: 100%; border-radius: 0.75rem; border: 1px solid var(--color-warm-200); background: #fff; }
-  .dark .bs-figure img { border-color: var(--color-warm-800); filter: brightness(0.9); }
-  .bs-figure figcaption { margin-top: 0.6rem; font-size: 0.875rem; color: var(--color-warm-600); line-height: 1.6; }
-  .dark .bs-figure figcaption { color: var(--color-warm-400); }
-}
-
-/* Prism's theme gives every `pre[class*="language-"]` its own margin, grey background, radius and
-   padding, which showed as a darker band above and below the listing inside a CodeBlock. The block
-   owns those; this stays unlayered so it outranks the (unlayered) Prism stylesheet. */
+/* Prism's theme gives every `pre[class*="language-"]` its own margin, background, radius, padding and font size.
+   The code block owns those; this stays unlayered so it outranks the (unlayered) Prism stylesheet. */
 [data-codeblock] pre[class*="language-"] {
   margin: 0;
   background: transparent;
   border-radius: 0;
-  padding: 1.25rem;
+  padding: 1.25rem 1.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  text-shadow: none;
 }
-@media (min-width: 768px) {
-  [data-codeblock] pre[class*="language-"] { padding: 1.5rem; }
+[data-codeblock] code[class*="language-"] {
+  font-family: var(--font-mono);
+  font-size: inherit;
+  line-height: inherit;
+  text-shadow: none;
+  background: none;
+}
+[data-codeblock] .token.comment { color: #8a8279; font-style: italic; }
+
+/* ── The API reference: one glass card per name ───────────────────────── */
+.bs-search-bar {
+  position: sticky;
+  top: 5rem;
+  z-index: 30;
+}
+.bs-search {
+  width: 100%;
+  height: 3rem;
+  padding: 0 1.25rem 0 2.75rem;
+  border-radius: 999px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  outline: none;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+  backdrop-filter: blur(24px) saturate(170%);
+  box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow);
+  transition: box-shadow 200ms;
+}
+.bs-search::placeholder { color: var(--ink-3); font-family: var(--font-serif); font-style: italic; font-size: 1rem; }
+.bs-search:focus { box-shadow: inset 0 0 0 2px var(--focus), var(--shadow); }
+.bs-search-icon { z-index: 1; position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--ink-3); pointer-events: none; }
+.bs-search-count { z-index: 1; position: absolute; right: 1.25rem; top: 50%; transform: translateY(-50%); font-family: var(--font-sans); font-size: 0.75rem; color: var(--ink-3); pointer-events: none; }
+@media (max-width: 639px) { .bs-search-count { display: none; } .bs-search { padding-right: 1rem; } }
+
+.bs-api-entry {
+  scroll-margin-top: 9rem;
+  border-radius: 1.5rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: inset 0 0 0 1px var(--glass-edge), inset 0 1px 0 var(--glass-hi), var(--shadow);
+  padding: 1.125rem 1.375rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.bs-api-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; }
+.bs-api-name { font-family: var(--font-mono); font-weight: 600; font-size: 0.9375rem; color: var(--ink); word-break: break-all; text-decoration: none; }
+.bs-api-name:hover { color: var(--accent); }
+.bs-api-kind {
+  font-family: var(--font-serif); font-style: italic; font-size: 0.875rem;
+  padding: 0 0.6rem; border-radius: 999px; color: var(--accent); background: var(--accent-soft);
+}
+.bs-api-src { font-family: var(--font-sans); font-size: 0.75rem; letter-spacing: 0.04em; color: var(--ink-3); text-decoration: none; flex: none; }
+.bs-api-src:hover { color: var(--accent); }
+#page-content pre.bs-api-sig {
+  margin: 0; text-shadow: none;
+  background: var(--code-bg); color: var(--code-text); border-radius: 0.875rem; padding: 0.7rem 1rem;
+  font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.6; overflow-x: auto; white-space: pre;
+  box-shadow: inset 0 0 0 1px var(--code-edge);
+}
+#page-content pre.bs-api-sig code { font-family: var(--font-mono); font-size: inherit; line-height: inherit; background: none; padding: 0; text-shadow: none; }
+.bs-api-doc { color: var(--ink-2); font-size: 1.0625rem; line-height: 1.6; }
+.bs-api-doc > * + * { margin-top: 0.6rem; }
+.bs-api-doc :not(pre) > code {
+  font-family: var(--font-mono); font-size: 0.78em; padding: 0.06rem 0.32rem; border-radius: 0.35rem;
+  background: var(--inline-code-bg); color: var(--inline-code-text);
+}
+#page-content :is(.bs-api-doc, .bs-api-intro) pre {
+  background: var(--code-bg); color: var(--code-text); border-radius: 0.875rem; padding: 0.75rem 1rem;
+  overflow-x: auto; font-size: 0.75rem; line-height: 1.6; box-shadow: inset 0 0 0 1px var(--code-edge); margin: 0.75rem 0;
+}
+#page-content :is(.bs-api-doc, .bs-api-intro) pre code {
+  background: none; padding: 0; color: inherit; font-family: var(--font-mono); font-size: inherit; line-height: inherit; text-shadow: none;
+}
+.bs-api-doc ul { list-style: disc; padding-left: 1.25rem; }
+.bs-api-doc ol { list-style: decimal; padding-left: 1.25rem; }
+.bs-api-doc li + li { margin-top: 0.25rem; }
+.bs-api-doc a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent); text-underline-offset: 3px; }
+.bs-api-doc h4 {
+  font-family: var(--font-sans); font-size: 0.6875rem; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--ink-3); margin-top: 1.1rem;
+}
+.bs-api-doc table { display: block; overflow-x: auto; width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.bs-api-doc th, .bs-api-doc td { text-align: left; padding: 0.35rem 0.9rem 0.35rem 0; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+.bs-api-doc th { font-weight: 600; color: var(--ink); }
+.bs-api-doc blockquote { border-left: 2px solid var(--accent); padding-left: 0.85rem; font-style: italic; }
+.bs-api-doc .admonition {
+  border-radius: 1rem; padding: 0.6rem 1rem; background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 22%, transparent);
+}
+.bs-api-doc .admonition-title { font-weight: 600; color: var(--ink); }
+.bs-api-intro { color: var(--ink-2); font-size: 1.1875rem; line-height: 1.65; }
+.bs-api-intro > * + * { margin-top: 0.6rem; }
+.bs-api-intro :not(pre) > code { font-family: var(--font-mono); font-size: 0.78em; padding: 0.06rem 0.32rem; border-radius: 0.35rem; background: var(--inline-code-bg); color: var(--inline-code-text); }
+.bs-api-intro a { color: var(--accent); }
+.bs-api-chip {
+  font-family: var(--font-mono); font-size: 0.6875rem; height: 1.625rem; display: inline-flex; align-items: center;
+  padding: 0 0.7rem; border-radius: 999px; color: var(--ink-2); text-decoration: none;
+  background: var(--pill-bg); box-shadow: inset 0 0 0 1px var(--pill-edge);
+  transition: background 200ms, color 200ms;
+}
+.bs-api-chip:hover { color: var(--accent); background: var(--pill-hover); }
+.bs-api-file { padding-top: 0.75rem; font-family: var(--font-sans); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.18em; color: var(--ink-3); }
+.bs-api-rule { border: 0; border-top: 1px solid var(--hairline); }
+.bs-api-missing { font-size: 1rem; font-style: italic; color: var(--ink-3); }
+
+/* ── Notebook pages ───────────────────────────────────────────────────────
+   The notebook is Snapshot's scoped Pluto fragment, floating in the island. Its DaisyUI tokens are re-pointed at
+   the site's paper-and-ink palette, its prose is set in EB Garamond, its code cells become small dark-on-paper
+   slabs, and its admonitions become glass notes. The island already carries the notebook's title, so the
+   notebook's own first heading is not repeated. Prose keeps a readable measure while figures, tables and code use
+   the island's width. Snapshot's floating table of contents gives way to the page's own rail.
+   Selectors start at #page-content: the fragment's sheet is scoped (`@scope (.snap-notebook)`) and its theme
+   tokens sit at (0,3,0), so these must outrank both, unlayered. */
+#page-content .snap-notebook {
+  color-scheme: light;
+  --color-base-100: #fdfbf7;
+  --color-base-200: #f5f1e9;
+  --color-base-300: #e3dccf;
+  --color-base-content: #2a2520;
+  --color-primary: #7c3aed;
+  --color-primary-content: #ffffff;
+  --color-secondary: #0891b2;
+  --color-secondary-content: #ffffff;
+  --color-accent: #0891b2;
+  --color-accent-content: #ffffff;
+  --color-neutral: #2a2520;
+  --color-neutral-content: #f8f7f4;
+  --color-info: #7c3aed;
+  --color-info-content: #ffffff;
+  --color-success: #3f8f5f;
+  --color-success-content: #ffffff;
+  --color-warning: #b7791f;
+  --color-warning-content: #ffffff;
+  --color-error: #c2410c;
+  --color-error-content: #ffffff;
+  --radius-box: 1.25rem;
+  --system-ui-font-stack: 'EB Garamond', 'Palatino Linotype', Georgia, serif;
+  --julia-mono-font-stack: 'JuliaMono', 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  --snapshot-syntax-keyword: #7c3aed;
+  --snapshot-syntax-function: #1d4ed8;
+  --snapshot-syntax-type: #0e7490;
+  --snapshot-syntax-string: #3f7f3a;
+  --snapshot-syntax-number: #b45309;
+  --snapshot-syntax-macro: #be185d;
+  background: transparent;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-serif);
+  color: var(--ink);
+}
+html.dark #page-content .snap-notebook {
+  color-scheme: dark;
+  --color-base-100: #1d1a17;
+  --color-base-200: #141210;
+  --color-base-300: #3a342d;
+  --color-base-content: #ebe4d9;
+  --color-primary: #b49cff;
+  --color-primary-content: #1a1325;
+  --color-secondary: #3fd0e8;
+  --color-secondary-content: #062a31;
+  --color-accent: #3fd0e8;
+  --color-accent-content: #062a31;
+  --color-neutral: #ebe4d9;
+  --color-neutral-content: #1a1714;
+  --color-info: #b49cff;
+  --color-info-content: #1a1325;
+  --color-success: #7fc79a;
+  --color-success-content: #0f2418;
+  --color-warning: #e0b264;
+  --color-warning-content: #2b1d07;
+  --color-error: #f08a6c;
+  --color-error-content: #2b1007;
+  --snapshot-syntax-keyword: #c4b0ff;
+  --snapshot-syntax-function: #8cb4ff;
+  --snapshot-syntax-type: #67dbee;
+  --snapshot-syntax-string: #a9d98d;
+  --snapshot-syntax-number: #f5a97a;
+  --snapshot-syntax-macro: #f58fc0;
+}
+#page-content .snap-notebook pluto-output {
+  font-family: var(--font-serif);
+  font-size: 1.125rem;
+  line-height: 1.62;
+  background: transparent;
+}
+#page-content .snap-notebook pluto-output :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  font-feature-settings: "kern", "liga", "onum";
+}
+#page-content .snap-notebook pluto-output h1 { font-size: 2.4rem; line-height: 1.1; }
+#page-content .snap-notebook pluto-output h2 {
+  font-size: 2rem;
+  line-height: 1.15;
+  margin-block-start: 2.75rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--hairline);
+  scroll-margin-top: 6rem;
+}
+#page-content .snap-notebook pluto-output h3 { font-size: 1.5rem; font-style: italic; margin-block-start: 1.75rem; scroll-margin-top: 6rem; }
+#page-content .snap-notebook pluto-output h4 { font-size: 1.25rem; margin-block-start: 1.25rem; }
+#page-content .snap-notebook pluto-output :is(h2, h3) code { font-size: 0.72em; }
+#page-content .snap-notebook pluto-output strong { color: var(--ink); font-weight: 600; }
+#page-content .snap-notebook pluto-output a { color: var(--accent); text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent); text-underline-offset: 3px; }
+#page-content .snap-notebook .markdown :not(pre) > code {
+  font-size: 0.76em;
+  padding: 0.08em 0.36em;
+  border-radius: 0.4em;
+  background: var(--inline-code-bg);
+  color: var(--inline-code-text);
+}
+#page-content .snap-notebook .markdown > :is(p, ul, ol, blockquote, details, .admonition) { max-width: 46rem; }
+#page-content .snap-notebook .markdown > p:has(> img:only-child) { max-width: none; }
+#page-content .snap-notebook .snap-cells > .pl-cell:first-child { margin-top: 0; }
+#page-content .snap-notebook .snap-cells > .pl-cell:first-child .markdown > h1:first-child { display: none; }
+#page-content .snap-notebook .snap-cells > .pl-cell:first-child .markdown > h1:first-child + p { margin-top: 0; }
+#page-content .snap-notebook nav.plutoui-toc { display: none; }
+
+/* Code cells: a slab of warm paper in light mode, near-black in dark, with a hairline and a soft radius. */
+#page-content .snap-notebook .pl-code {
+  background: var(--color-base-200);
+  border-radius: 1rem;
+  padding: 0.85rem 1.1rem;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+html.dark #page-content .snap-notebook .pl-code { background: #0e0d0b; }
+
+/* Markdown tables read as text (Pluto styles every table as data: monospace, right-aligned). */
+#page-content .snap-notebook .markdown :is(table, th, td) { font-family: inherit; }
+#page-content .snap-notebook .markdown td code { white-space: nowrap; }
+#page-content .snap-notebook .markdown table { font-variant-numeric: lining-nums tabular-nums; margin-left: 0; margin-right: auto; font-size: 1rem; border-top: 0; border-bottom: 0; }
+#page-content .snap-notebook .markdown :is(th, td) { text-align: left; font-size: inherit; padding: 0.4rem 0.9rem 0.4rem 0; border-bottom: 1px solid var(--hairline); }
+#page-content .snap-notebook .markdown th {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+#page-content .snap-notebook pluto-output table > tbody tr:hover { background: var(--accent-soft); }
+
+/* Admonitions: a glass note with a coloured hairline at the left, its title in italic serif. */
+#page-content .snap-notebook pluto-output div.admonition {
+  --adm: var(--accent);
+  border: 0;
+  border-radius: 1.125rem;
+  padding: 0.85rem 1.2rem 0.95rem;
+  background: color-mix(in oklab, var(--adm) 7%, var(--color-base-100));
+  box-shadow: inset 3px 0 0 var(--adm), inset 0 0 0 1px color-mix(in oklab, var(--adm) 20%, transparent);
+}
+#page-content .snap-notebook pluto-output div.admonition > .admonition-title {
+  background: none;
+  margin: 0 0 0.25rem;
+  padding: 0;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 1.2rem;
+  color: var(--adm);
+}
+#page-content .snap-notebook pluto-output div.admonition.tip,
+#page-content .snap-notebook pluto-output div.admonition.compat { --adm: #0891b2; }
+#page-content .snap-notebook pluto-output div.admonition.warning,
+#page-content .snap-notebook pluto-output div.admonition.alert-danger { --adm: #b7791f; }
+#page-content .snap-notebook pluto-output div.admonition.danger { --adm: #c2410c; }
+html.dark #page-content .snap-notebook pluto-output div.admonition.tip,
+html.dark #page-content .snap-notebook pluto-output div.admonition.compat { --adm: #3fd0e8; }
+html.dark #page-content .snap-notebook pluto-output div.admonition.warning,
+html.dark #page-content .snap-notebook pluto-output div.admonition.alert-danger { --adm: #e0b264; }
+html.dark #page-content .snap-notebook pluto-output div.admonition.danger { --adm: #f08a6c; }
+#page-content .snap-notebook pluto-output blockquote {
+  border-radius: 1rem;
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+  font-style: italic;
 }
 
-/* Notebook pages. The card takes the page's width; prose keeps a readable measure of about 80 characters while
-   figures, tables and code use the full width. Markdown tables read as text (Pluto styles every table as data:
-   monospace, right-aligned). Snapshot's floating table of contents gives way to the page's own, which sits beside
-   the card instead of over it. Unlayered, to outrank the fragment's own (unlayered) styles. */
-.snap-notebook pluto-output { font-size: 0.95rem; }
-.snap-notebook .markdown > :is(p, ul, ol, blockquote, details, .admonition) { max-width: 46rem; }
-.snap-notebook .markdown > p:has(> img:only-child) { max-width: none; }
-.snap-notebook .snap-cells > .pl-cell:first-child { margin-top: 0; }
-.snap-notebook .snap-cells > .pl-cell:first-child .markdown > h1:first-child { margin-top: 0; padding-top: 0; }
-.snap-notebook .markdown :is(table, th, td) { font-family: inherit; }
-.snap-notebook .markdown table { margin-left: 0; margin-right: auto; font-size: 0.95em; }
-.snap-notebook .markdown :is(th, td) { text-align: left; font-size: inherit; }
-.snap-notebook nav.plutoui-toc { display: none; }
+/* Figures: white CairoMakie canvases, rounded like prints; dimmed a touch in dark mode so they sit in the glass. */
+#page-content .snap-notebook pluto-output img {
+  border-radius: 0.875rem;
+}
+html.dark #page-content .snap-notebook pluto-output img {
+  filter: var(--plate-filter);
+}
 
 /* Long identifiers in running text break instead of running past a phone's edge. */
 #page-content :not(pre) > code { overflow-wrap: anywhere; }
+
+/* A plain-text listing (the agent block on Getting Started) wraps, so it reads without scrolling sideways;
+   Prism's own `white-space: pre` on the code would otherwise win. */
+[data-codeblock] pre.whitespace-pre-wrap code { white-space: pre-wrap; }

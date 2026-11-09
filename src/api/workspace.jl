@@ -148,9 +148,14 @@ recorded counts with it in a scanner's order, the pile-up, the dexels' flat fiel
 or has dexel defects needs it while the scatter correction is on (`NAEOTOM_ALPHA` does both):
 
 ```julia
-calibration = calibrate(NAEOTOM_ALPHA, protocol, recon_opts, phantom)   # once per scanner and protocol
+calibration = calibrate(
+    NAEOTOM_ALPHA,
+    protocol,
+    recon_opts,
+    phantom,
+) # once per scanner and protocol
 ws = create_workspace(NAEOTOM_ALPHA, protocol, sim_opts, recon_opts, phantom; calibration)
-result = simulate!(ws, phantom, protocol, sim_opts)                      # corrected, every scan
+result = simulate!(ws, phantom, protocol, sim_opts) # corrected, every scan
 ```
 
 Uses `similar(phantom.mask, T, shape)` for GPU-side buffers, which auto-detects

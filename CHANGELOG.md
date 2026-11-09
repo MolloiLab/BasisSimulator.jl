@@ -15,8 +15,9 @@ onward they are written by hand, and releases are cut by hand — see
 ### Changed
 
 - The code is formatted and linted with [Fatou](https://github.com/jolars/fatou) at its
-  defaults (line width 92), replacing Runic: `src/`, `test/`, `docs/`, `lib/BasisMonteCarlo`
-  and every notebook cell. A new `fatou` CI job checks both. Lint clean-up removed unused
+  defaults (line width 92), replacing Runic: `src/`, `test/`, `docs/`, `lib/BasisMonteCarlo/src`,
+  every example notebook cell, and the Julia listings in the docs pages, README, AGENTS and
+  docstrings (`docs/fatou.jl`). A new `fatou` CI job checks both. Lint clean-up removed unused
   locals and the internal `R_energies` workspace field and `ws_R_energies` keyword, which
   nothing read; no results change.
 

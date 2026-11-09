@@ -149,7 +149,7 @@ in the tilted anode surface.
 
 # Example
 ```julia
-heel = default_heel_effect(anode_angle_deg=7.0)
+heel = default_heel_effect(anode_angle_deg = 7.0)
 apply_heel_effect!(intensity, heel, geom)
 ```
 """
