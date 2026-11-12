@@ -655,9 +655,10 @@ end
     end
 end
 
-# The 16 materials of the compacted Gammex 472: with CUDA.jl 5 the scatter of this phantom came out
-# wrong on the device (0.12 in log transmission against the CPU) while 3 to 12 materials were right,
-# so the three-material phantom above did not catch it. CUDA.jl 6 is the compat floor since 0.16.7.
+# The 16 materials of the compacted Gammex 472: under Julia 1.13, CUDA.jl 5 miscompiled the scatter
+# estimate's per-material walk at exactly 16 lanes (0.12 in log transmission against the CPU; 15
+# lanes were exact), so the three-material phantom above did not catch it. CUDA.jl 6 is the compat
+# floor since 0.16.7.
 @testset "CPU and GPU agree: 16 materials" begin
     if !(@isdefined(HAS_GPU)) || !HAS_GPU
         @warn "Skipping the 16-material scatter CPU/GPU agreement: no GPU backend."
