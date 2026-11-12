@@ -12,6 +12,24 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.7](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.6...v0.16.7) (2026-11-11)
+
+### Fixed
+
+- **CUDA.jl 6 is now the minimum.** With CUDA.jl 5 (5.11.3; GPUCompiler 1.15–1.17,
+  AcceleratedKernels 0.4.3–0.4.4) the device scatter of phantoms with 16 materials was wrong
+  since 0.16.4, with no error: on the compacted Gammex 472 the GPU sinogram differed from the CPU
+  by up to 1.12 in log transmission with scatter on (3.8e-6 with it off), and noise-free 70 keV
+  iodine (10 mg/mL) read 167–215 HU instead of about 253. The 0.16.6 lane padding fixed the
+  projection, not this. CUDA.jl 6.1 agrees with the CPU to 2e-5 (RTX PRO 6000 Blackwell). CUDA is
+  a weak dependency with compat `"6"`: nothing new is installed, but Pkg will not resolve
+  BasisSimulator with CUDA.jl 5. The docs environment moves to CUDA.jl 6.1.
+
+### Added
+
+- A 16-material GPU-vs-CPU scatter test (the compacted Gammex 472); the three-material one
+  passed on CUDA.jl 5.
+
 ### Changed
 
 - The code is formatted and linted with [Fatou](https://github.com/jolars/fatou) at its

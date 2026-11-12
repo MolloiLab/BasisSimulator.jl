@@ -654,3 +654,28 @@ end
         @test gpu.sinogram ≈ cpu.sinogram rtol = 1.0e-5
     end
 end
+
+# The 16 materials of the compacted Gammex 472: with CUDA.jl 5 the scatter of this phantom came out
+# wrong on the device (0.12 in log transmission against the CPU) while 3 to 12 materials were right,
+# so the three-material phantom above did not catch it. CUDA.jl 6 is the compat floor since 0.16.7.
+@testset "CPU and GPU agree: 16 materials" begin
+    if !(@isdefined(HAS_GPU)) || !HAS_GPU
+        @warn "Skipping the 16-material scatter CPU/GPU agreement: no GPU backend."
+    else
+        g = BS.compact_materials(BS.create_gammex_472(
+            n_voxels = 160,
+            n_slices = 8,
+            fov_cm = 40.0,
+            z_cm = 2.0,
+        ))
+        @test length(g.materials) == 16
+        materials = Dict{Int, Any}(i - 1 => m for (i, m) in enumerate(g.materials))
+        cpu = _eict_scatter_scan(_SCATTER_EICT, BS.Phantom(g.mask, materials, g.voxel_size))
+        gpu = _eict_scatter_scan(
+            _SCATTER_EICT,
+            BS.Phantom(to_gpu(g.mask), materials, g.voxel_size),
+        )
+        @test Array(gpu.ws.scatter.estimate) ≈ Array(cpu.ws.scatter.estimate) rtol = 1.0e-5
+        @test gpu.sinogram ≈ cpu.sinogram rtol = 1.0e-5
+    end
+end
