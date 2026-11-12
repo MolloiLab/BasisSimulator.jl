@@ -18,3 +18,6 @@ XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 
 [sources]
 BasisSimulator = {path = ".."}
+
+[compat]
+CUDA = "6"

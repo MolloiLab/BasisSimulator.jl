@@ -12,6 +12,26 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.7](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.6...v0.16.7) (2026-11-12)
+
+### Fixed
+
+- **CUDA.jl 6 is now the minimum.** Under Julia 1.13, CUDA.jl 5 (5.11.3) miscompiles the
+  segmented per-material walk that the scatter estimate runs on its coarse rays when a phantom
+  has exactly 16 materials (16 lanes): its lane sums came out 100 % wrong with no error, while 15
+  lanes were exact. On the compacted Gammex 472 the GPU sinogram differed from the CPU by up to
+  1.12 in log transmission with scatter on, and noise-free 70 keV iodine (10 mg/mL) read
+  167–215 HU instead of about 253. Julia 1.12 with CUDA.jl 5, and either Julia with CUDA.jl 6.1,
+  agree with the CPU to 2e-5 (RTX PRO 6000 Blackwell), so the published docs, rendered on Julia
+  1.12, were not affected. CUDA is a weak dependency with compat `"6"`: nothing new is
+  installed, but Pkg will not resolve BasisSimulator with CUDA.jl 5. The docs environment moves
+  to CUDA.jl 6.1 and the 12 example notebooks are re-rendered on it.
+
+### Added
+
+- A 16-material GPU-vs-CPU scatter test (the compacted Gammex 472): the existing
+  three-material one could not catch a fault at exactly 16 lanes.
+
 ### Changed
 
 - The code is formatted and linted with [Fatou](https://github.com/jolars/fatou) at its
@@ -20,6 +40,9 @@ onward they are written by hand, and releases are cut by hand — see
   docstrings (`docs/fatou.jl`). A new `fatou` CI job checks both. Lint clean-up removed unused
   locals and the internal `R_energies` workspace field and `ws_R_energies` keyword, which
   nothing read; no results change.
+
+- CI runs the test suite without coverage (2.5–5 h a run with it, and Ubuntu runs hit GitHub's
+  5 h limit); nothing read the coverage reports, so the Codecov upload is gone too.
 
 ### Docs
 
