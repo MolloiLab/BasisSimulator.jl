@@ -12,6 +12,45 @@ onward they are written by hand, and releases are cut by hand — see
 
 ## [Unreleased]
 
+## [0.16.8](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.7...v0.16.8) (2026-11-12)
+
+### Fixed
+
+- **AcceleratedKernels 0.5 and CUDA.jl 6.5 are the minimum**, so every GPU runs on the
+  KernelAbstractions 0.10 / GPUCompiler 2 stack. The older AcceleratedKernels 0.4 /
+  KernelAbstractions 0.9 / GPUCompiler 1 stack miscompiled a third kernel: with CUDA.jl 6.1 under
+  Julia 1.12 (0.16.7's docs) the projection of notebook 02's XCAT slab (10 materials, one slice)
+  came out about half its value with no error (mean line integral 1.12 against the CPU's 2.14),
+  and the page showed a washed-out chest with σ 592 HU in the myocardium. On the new stack the
+  device agrees with the CPU to 2e-6 under both Julia 1.12 and 1.13. The AcceleratedKernels 0.4
+  shim is gone.
+- **The scatter of a patient centred in the field no longer depends on the device.** In a view
+  along an axis the ray through the middle passes the water ellipse's axis, and the side its
+  kernels lean to was the sign of a rounding (the centroid of a centred patient is ±1e-4 mm), of
+  opposite signs on the CPU and a GPU: the device's scatter was the CPU's mirror image in those
+  views, 2.6e-3 in log transmission on the test's symmetric thorax (both sides physically alike).
+  Within a thousandth of the ellipse's width every device now takes the same side; scatter changes
+  by that ray's mirror only, in those views. Found by `docs/gpu_agreement.jl`.
+- The docs no longer use GPUSelect, whose every release pins KernelAbstractions 0.9 and with it
+  the old stack: the notebooks, Getting Started and the README pick the GPU with
+  `CUDA.functional() ? CUDA.CuArray : Array` (`Metal.MtlArray` on Apple silicon). Both docs
+  lockfiles (Julia 1.12 and 1.13) are on CUDA.jl 6.5.1, and the `docs/Manifest.toml` symlink
+  GPUSelect needed is removed.
+
+### Added
+
+- `docs/gpu_agreement.jl`: before any GPU render, `render_notebooks.sh` compares the device with
+  the CPU in the docs environment (notebook 02's XCAT slab with scatter off and on, the scatter
+  estimate at 3, 12, 16 and 27 materials, a photon-counting scan) and renders nothing if they
+  differ. Each case is one a toolchain got wrong.
+- A photon-counter CPU/GPU scatter test on a symmetric patient (the suite compared only an energy
+  integrator's).
+- Notebook 02 checks itself: the myocardium's CT number in FBP and Hybrid IR, and its noise.
+
+### Docs
+
+- The 12 example notebooks re-rendered on the new stack.
+
 ## [0.16.7](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.6...v0.16.7) (2026-11-12)
 
 ### Fixed

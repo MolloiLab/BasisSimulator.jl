@@ -18,6 +18,9 @@
 # BASISSIM_SKIP_NOTEBOOKS=mc-10_scatter_library leaves one out of the stale set (`mc-*`: all of them).
 #
 # Data: notebook 05 reads the XCAT phantom from BASISSIM_XCAT_DIR (AGENTS.md, "The documentation site").
+#
+# Before any GPU render, docs/gpu_agreement.jl checks that the device agrees with the CPU in this
+# environment (a few minutes); if it does not, nothing renders.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -55,6 +58,14 @@ for slug in "${slugs[@]}"; do
     fi
 done
 [ "$n_gpu" -eq 0 ] || julia --project=. -e 'using Pkg; Pkg.instantiate()'
+# Before rendering on a GPU, the device must agree with the CPU in this very environment: a kernel
+# that compiles wrongly on one toolchain gives wrong pages with no error (docs/gpu_agreement.jl).
+if [ "$n_gpu" -gt 0 ]; then
+    julia --project=. --threads=auto gpu_agreement.jl || {
+        echo "the GPU disagrees with the CPU in the docs environment: not rendering" >&2
+        exit 1
+    }
+fi
 [ "$n_mc" -eq 0 ] || julia --project="$mc_docs" -e 'using Pkg; Pkg.instantiate()'
 
 lanes=()   # "gpu:<index>" (empty index: the CPU) for docs/notebooks, "mc" for BasisMonteCarlo

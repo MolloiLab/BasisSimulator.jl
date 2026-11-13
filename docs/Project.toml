@@ -2,7 +2,6 @@
 BasisSimulator = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
-GPUSelect = "203851ad-5791-4cf9-9fcc-5933b5611f42"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
@@ -20,4 +19,4 @@ XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 BasisSimulator = {path = ".."}
 
 [compat]
-CUDA = "6"
+CUDA = "6.5"

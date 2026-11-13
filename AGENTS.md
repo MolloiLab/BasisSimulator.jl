@@ -161,10 +161,11 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   is rendered; `BASISSIM_SKIP_NOTEBOOKS='mc-*' docs/build.sh` builds without them (a trailing `*`
   matches a prefix, in the verifier and the site).
 - **Docs lockfiles:** `docs/Manifest-v1.12.toml` and `docs/Manifest-v1.13.toml`, one per Julia minor version
-  (Julia reads the one for its version). `docs/Manifest.toml` is a committed symlink to the 1.12 file, only
-  because GPUSelect finds the GPU backend by reading a file named exactly `Manifest.toml`; without it
-  every notebook silently renders on the CPU ("Backend detected: Array"). Remove the symlink once
-  GPUSelect looks the manifest up the way Julia does.
+  (Julia reads the one for its version); both on the same GPU stack. The notebooks pick the GPU with
+  `CUDA.functional() ? CUDA.CuArray : Array`, not GPUSelect: GPUSelect pins KernelAbstractions 0.9,
+  which holds AcceleratedKernels at 0.4 and GPUCompiler at 1.x, the stack that miscompiled three
+  kernels (0.16.6, 0.16.7, 0.16.8). Every GPU render starts with `docs/gpu_agreement.jl`, which
+  compares the device with the CPU in the docs environment and stops the render if they differ.
 - **Render with Julia 1.12** (`julia +1.12`, or `JULIAUP_CHANNEL=1.12 docs/render_notebooks.sh …`): under 1.13 the
   island compiler (WasmTarget) compiles nothing for some sliders (notebooks 01 `tube_mA`, 11 `pitch_x100`), so they
   fall back to static and the verifier refuses the export. Checked 2026-11-04.
@@ -191,7 +192,7 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   (`mu_water`) becomes italics: put identifiers in backticks.
 - **Notebook rules:** use the package, never a re-implementation of a package stage; keep seeds
   fixed; print no machine paths (the verifier rejects `/home/…`, `/Users/…`, `/tmp/…`); state only
-  numbers the notebook computes; pick the GPU with `GPUSelect.Storage()`.
+  numbers the notebook computes; pick the GPU with `CUDA.functional() ? CUDA.CuArray : Array`.
 - **VMI in notebooks and examples** follows basis-spectral-denoising's final version: view
   integration on every scanner (`SimOptions(; view_samples = 5)`, `view_arc` the duty cycle for
   rapid kVp switching), one projection per exposure shared by its draws (`keep_projection` /

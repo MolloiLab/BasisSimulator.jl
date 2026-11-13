@@ -177,12 +177,13 @@ let BASE = get(ENV, "BASISSIM_BASE", ""),
                         ),
                         shell("julia -t auto"),
                         p(
-                            "Add the package, GPUSelect (which picks your GPU), and the package for your GPU, all in the same environment:",
+                            "Add the package and the package for your GPU, in the same environment:",
                         ),
                         julia(
                             raw"""using Pkg
-Pkg.add(["BasisSimulator", "GPUSelect"])
-Pkg.add("Metal") # Apple silicon; "CUDA" for NVIDIA; nothing for the CPU""",
+Pkg.add("BasisSimulator")
+# NVIDIA (CUDA.jl 6.5 or later); "Metal" on Apple silicon; nothing for the CPU
+Pkg.add("CUDA")""",
                         ),
                         p(
                             "The first install and precompile take about two minutes. The first scan in a new Julia session also ",
@@ -241,9 +242,9 @@ Pkg.add("Metal") # Apple silicon; "CUDA" for NVIDIA; nothing for the CPU""",
                         ),
                         julia(
                             raw"""import BasisSimulator as BS
-import GPUSelect
+import CUDA # Metal on Apple silicon
 
-device = GPUSelect.Storage() # a GPU array type (MtlArray, CuArray), or Array
+device = CUDA.CuArray # the GPU's array type (Metal.MtlArray on Apple silicon), or Array
 
 gammex = BS.create_gammex_472(n_voxels = 512, n_slices = 4, z_cm = 1.0)
 mask = device(gammex.mask) # the label map, on the GPU
@@ -1141,10 +1142,10 @@ julia --project=docs -t auto -e 'using Pluto; Pluto.run()'""",
                                 ),
                             ),
                             edge(
-                                "Everything runs on the CPU, or GPUSelect warns that it fell back",
+                                "Everything runs on the CPU",
                                 (
-                                    "GPUSelect finds your GPU only through its package (Metal, CUDA) in the same environment, and the scan ",
-                                    "runs wherever the phantom's mask is.",
+                                    "The scan runs wherever the phantom's mask is, and the GPU's array type comes from its package (CUDA, ",
+                                    "Metal) in the same environment.",
                                 ),
                                 (
                                     c("Pkg.add(\"Metal\")"),
@@ -1863,9 +1864,9 @@ python3 docs/verify_notebook_exports.py""",
                             raw"""You are writing Julia code with BasisSimulator.jl (github.com/MolloiLab/BasisSimulator.jl; docs: molloilab.github.io/BasisSimulator.jl), a GPU-portable simulator of energy-integrating (EICT) and photon-counting (PCCT) CT: spectrum -> phantom -> detector counts with noise -> beam-hardening correction -> FBP / helical WFBP / hybrid IR -> HU, plus water/iodine decomposition and VMI, with the dose of every scan.
 
 SETUP
-- Julia >= 1.12. Pkg.add(["BasisSimulator", "GPUSelect"]) plus "Metal" or "CUDA" in the SAME environment. Start Julia with -t auto. Restart Julia after any Pkg change.
+- Julia >= 1.12. Pkg.add("BasisSimulator") plus "CUDA" (6.5 or later) or "Metal" in the SAME environment. Start Julia with -t auto. Restart Julia after any Pkg change.
 - import BasisSimulator as BS; materials via BS.XA (never import XrayAttenuation separately).
-- device = GPUSelect.Storage(); the phantom mask's array type picks the device for the whole scan: BS.Phantom(device(mask), ...). Float32 throughout (Metal has no Float64).
+- device = CUDA.CuArray (Metal.MtlArray on Apple silicon; Array for the CPU); the phantom mask's array type picks the device for the whole scan: BS.Phantom(device(mask), ...). Float32 throughout (Metal has no Float64).
 
 THE CHAIN
 - phantom = BS.Phantom(device(labels), Dict(label => BS.XA.Materials.x, ...), (dx_cm, dy_cm, dz_cm))

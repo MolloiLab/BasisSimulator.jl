@@ -1295,7 +1295,10 @@ function _scatter_ray_shapes!(
                 # kernel ray crosses the ray's own water-equivalent length; a ray longer than the
                 # ellipse is thick gets an ellipse as thick as itself
                 offset = xs[i] - x0 * cos(deg2rad(angle_deg[i]))
-                side = offset >= 0 ? o : -o
+                # Within a thousandth of the ellipse's width the ray passes through its axis, and
+                # the sign of the offset is rounding (a centred patient's centroid is ±1e-4 mm, of
+                # opposite signs on the CPU and a GPU): take the same side on every device
+                side = offset >= -b * T(1.0e-3) ? o : -o
                 a_ray = max(a, L / 2)
                 u, q = _kernel_impact(a_ray, b, L)
                 aspect = b / a_ray

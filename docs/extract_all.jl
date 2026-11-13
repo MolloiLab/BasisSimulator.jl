@@ -16,7 +16,7 @@
 # Workflow (RELEASING.md, step 6):
 #   1. Render on a GPU machine: `docs/render_notebooks.sh` runs one of these processes per GPU,
 #      each taking notebooks from a shared queue. The notebooks pick the backend themselves
-#      (GPUSelect: Metal, CUDA, AMDGPU, or the CPU).
+#      (CUDA when it is functional, the CPU otherwise), after docs/gpu_agreement.jl passes.
 #   2. `git add docs/notebooks-static/` and commit.
 #   3. CI re-computes the fingerprint (docs/verify_notebook_exports.py) and refuses stale exports;
 #      it never renders.

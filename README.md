@@ -22,8 +22,9 @@ Julia 1.12 or later, started with `julia -t auto`:
 
 ```julia
 using Pkg
-Pkg.add(["BasisSimulator", "GPUSelect"])
-Pkg.add("Metal") # Apple silicon; "CUDA" for NVIDIA; leave it out to run on the CPU
+Pkg.add("BasisSimulator")
+# NVIDIA (CUDA.jl 6.5 or later); "Metal" on Apple silicon; leave it out for the CPU
+Pkg.add("CUDA")
 ```
 
 ## Start here

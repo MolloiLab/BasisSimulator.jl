@@ -159,16 +159,15 @@ TableOfContents()
 md"""
 ### Choosing the Device
 
-`GPUSelect.Storage()` returns the array type of the GPU it finds (`CuArray`, `MtlArray`,
-`ROCArray`, `oneArray`), or `Array` on a CPU-only host; moving the phantom mask to it decides
-where the pipeline runs.
+The GPU's array type (`CuArray` here; `MtlArray` on Apple silicon), or `Array` on a host without
+one; moving the phantom mask to it decides where the pipeline runs.
 """
 
 # ╔═╡ 02000005-0000-4000-8000-000000000001
 begin
-    import GPUSelect
-    # the backend array type, directly: MtlArray / CuArray / ROCArray
-    AT = GPUSelect.Storage()
+    import CUDA
+    # the NVIDIA GPU's array type, or Array on a host without one (on Apple silicon, Metal.MtlArray)
+    AT = CUDA.functional() ? CUDA.CuArray : Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
@@ -1220,6 +1219,54 @@ let
     end
 end
 
+# ╔═╡ 09c08fc7-a7d0-4ccb-87e1-329639a7b119
+md"""
+### The Notebook Checks Itself
+
+Every row must pass for the page to publish. The myocardium is soft tissue: a few tens of HU, the
+same in both reconstructions, and quieter in Hybrid IR than in FBP.
+"""
+
+# ╔═╡ b9ceb7e2-6bda-4d08-ad64-11a6950e7866
+verification = myocardium === nothing ?
+    nothing :
+    let
+        checks = NamedTuple[]
+        addcheck(name, value, pass) = push!(checks, (; name, value, pass))
+
+        f, h = myocardium.fbp, myocardium.hir
+        addcheck(
+            "myocardium, FBP: soft tissue, 20 to 80 HU",
+            round(f.mean, digits = 1),
+            20 <= f.mean <= 80,
+        )
+        addcheck(
+            "myocardium, Hybrid IR within 5 HU of FBP",
+            round(h.mean - f.mean, digits = 1),
+            abs(h.mean - f.mean) <= 5,
+        )
+        addcheck("myocardium noise, FBP: σ below 40 HU", round(f.σ, digits = 1), f.σ < 40)
+        addcheck("myocardium noise, Hybrid IR below FBP", round(h.σ, digits = 1), h.σ < f.σ)
+        (; checks, passed = count(c -> c.pass, checks))
+    end;
+
+# ╔═╡ 3b6f2542-295a-4717-947e-9dbe9b505a95
+verification === nothing ?
+    md"" :
+    let v = verification
+        status(c) = c.pass ? "✅ pass" : "❌ CHECK (outside bounds)"
+        rows = join(["| $(c.name) | $(c.value) | $(status(c)) |" for c in v.checks], "\n")
+        Markdown.parse(
+            """
+        **$(v.passed) of $(length(v.checks)) checks pass.**
+
+        | Check | Value | Status |
+        |---|---:|:---|
+        $(rows)
+        """,
+        )
+    end
+
 # ╔═╡ 11000001-0000-4000-8000-000000000001
 md"""
 ### The Images
@@ -1390,6 +1437,9 @@ end
 # ╟─11000000-0000-4000-8000-000000000000
 # ╠═270e47b9-b687-45f9-a6de-05abd9e699d6
 # ╟─ad66fcbb-94fb-4716-a3db-62fe61770c73
+# ╟─09c08fc7-a7d0-4ccb-87e1-329639a7b119
+# ╠═b9ceb7e2-6bda-4d08-ad64-11a6950e7866
+# ╟─3b6f2542-295a-4717-947e-9dbe9b505a95
 # ╟─11000001-0000-4000-8000-000000000001
 # ╟─11000002-0000-4000-8000-000000000001
 # ╟─11000003-0000-4000-8000-000000000001

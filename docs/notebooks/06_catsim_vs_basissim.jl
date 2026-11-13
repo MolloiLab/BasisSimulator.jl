@@ -168,9 +168,9 @@ PlutoUI.TableOfContents()
 
 # ╔═╡ 06000001-0000-4000-8000-000000000040
 begin
-    import GPUSelect
-    # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
-    AT = GPUSelect.Storage()
+    import CUDA
+    # the NVIDIA GPU's array type, or Array on a host without one (on Apple silicon, Metal.MtlArray)
+    AT = CUDA.functional() ? CUDA.CuArray : Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
