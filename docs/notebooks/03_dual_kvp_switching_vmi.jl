@@ -115,9 +115,9 @@ PlutoUI.TableOfContents()
 
 # ╔═╡ 86c52e9e-7987-4504-93e6-128017f5e703
 begin
-    import GPUSelect
-    # the backend array type, directly: MtlArray / CuArray / ROCArray
-    AT = GPUSelect.Storage()
+    import CUDA
+    # the NVIDIA GPU's array type, or Array on a host without one (on Apple silicon, Metal.MtlArray)
+    AT = CUDA.functional() ? CUDA.CuArray : Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end

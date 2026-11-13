@@ -40,12 +40,8 @@ using FFTW
 import AcceleratedKernels as AK
 import XrayAttenuation as XA
 
-# AcceleratedKernels 0.4 takes foreachindex's backend positionally, 0.5 as a keyword
-@static if pkgversion(AK) >= v"0.5"
-    _foreachindex(f, itr, backend) = AK.foreachindex(f, itr; backend)
-else
-    _foreachindex(f, itr, backend) = AK.foreachindex(f, itr, backend)
-end
+# `foreachindex` over `itr` on `backend` (AcceleratedKernels 0.5 takes it as a keyword)
+_foreachindex(f, itr, backend) = AK.foreachindex(f, itr; backend)
 
 # XCAT phantom download/load (artifact store + XCIST voxelized parsing)
 import Artifacts

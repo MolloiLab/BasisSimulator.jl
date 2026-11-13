@@ -680,3 +680,43 @@ end
         @test gpu.sinogram ≈ cpu.sinogram rtol = 1.0e-5
     end
 end
+
+# A photon counter on a left-right symmetric patient: in a view along an axis the ray through the
+# middle passes the ellipse's axis, and the side its kernels lean to was the sign of a rounding
+# (±1e-4 mm), of opposite signs on the CPU and the GPU, so the device's scatter was the CPU's mirror
+# image (2.6e-3 in log transmission). Within a thousandth of the ellipse's width every device takes
+# the same side since 0.16.8.
+@testset "CPU and GPU agree: photon counter, symmetric patient" begin
+    if !(@isdefined(HAS_GPU)) || !HAS_GPU
+        @warn "Skipping the photon-counter scatter CPU/GPU agreement: no GPU backend."
+    else
+        scanner = BS.PCCTScanner(
+            BS.NAEOTOM_ALPHA;
+            detector_rows = 4,
+            detector_cols = 96,
+            detector_col_size = 3.0,
+            detector_row_size = 2.0,
+            detector_col_offset = 0.0,
+            pileup = false,
+            gain_spread = 0.0,
+            threshold_spread_keV = 0.0,
+            scatter_kernels = "BS test counter",
+        )
+        phantom = _scatter_phantom(; a_cm = 30.0, lungs = true)
+        materials = Dict{Int, Any}(i - 1 => m for (i, m) in enumerate(phantom.materials))
+        protocol = BS.CTProtocol(; kVp = 120.0, mAs = 50.0, views = 24)
+        opts = _scatter_opts()
+        scan(device) = let ph = BS.Phantom(
+            device(phantom.mask),
+            materials,
+            phantom.voxel_size,
+        )
+            ws = BS.create_workspace(scanner, protocol, opts, _SCATTER_RECON, ph)
+            r = BS.simulate!(ws, ph, protocol, opts; report_dose = false)
+            (; field = Array(ws.scatter.field), bins = [Array(b) for b in r.pcct_sino.bins])
+        end
+        cpu, gpu = scan(identity), scan(to_gpu)
+        @test gpu.field ≈ cpu.field rtol = 1.0e-5
+        @test all(isapprox(g, c; rtol = 1.0e-5) for (g, c) in zip(gpu.bins, cpu.bins))
+    end
+end

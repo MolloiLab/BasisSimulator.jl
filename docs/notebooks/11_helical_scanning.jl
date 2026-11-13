@@ -40,9 +40,9 @@ import CairoMakie as Mke
 
 # ╔═╡ 11000001-0000-4000-8000-000000000006
 begin
-    import GPUSelect
-    # the backend array type, directly: MtlArray / CuArray / ROCArray
-    AT = GPUSelect.Storage()
+    import CUDA
+    # the NVIDIA GPU's array type, or Array on a host without one (on Apple silicon, Metal.MtlArray)
+    AT = CUDA.functional() ? CUDA.CuArray : Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end
@@ -111,7 +111,7 @@ as in image quality.
 md"""
 ## Notebook Setup
 
-The shared docs environment, the device from `GPUSelect`, and a table of contents. Nothing is
+The shared docs environment, the device (notebook 01), and a table of contents. Nothing is
 simulated until section 4.
 """
 

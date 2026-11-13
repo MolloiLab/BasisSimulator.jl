@@ -157,16 +157,16 @@ md"""
 
 `BasisSimulator` writes its kernels once, with
 [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl), and runs them on
-whatever array type it is handed. `GPUSelect.Storage()` returns the array type of the GPU it
-finds (`CuArray`, `MtlArray`, `ROCArray` or `oneArray`), or `Array` when there is none. Moving the
-phantom mask to that type is the only thing that decides where the whole pipeline runs.
+whatever array type it is handed: `CuArray` for an NVIDIA GPU (here), `MtlArray` on Apple silicon,
+`ROCArray` on AMD, or `Array` for the CPU. Moving the phantom mask to that type is the only thing
+that decides where the whole pipeline runs.
 """
 
 # ╔═╡ 01000005-0000-4000-8000-000000000001
 begin
-    import GPUSelect
-    # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
-    AT = GPUSelect.Storage()
+    import CUDA
+    # the NVIDIA GPU's array type, or Array on a host without one (on Apple silicon, Metal.MtlArray)
+    AT = CUDA.functional() ? CUDA.CuArray : Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end;
